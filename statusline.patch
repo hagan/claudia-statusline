@@ -1,6 +1,6 @@
---- statusline.rs.backup	2025-08-22 19:52:25.837819367 -0700
-+++ statusline.rs	2025-08-22 19:58:02.570297649 -0700
-@@ -53,6 +53,7 @@
+--- statusline.rs.orig	2025-08-22 20:22:47.344169635 -0700
++++ statusline.rs	2025-08-22 20:22:47.379169891 -0700
+@@ -48,6 +48,7 @@
      const CYAN: &'static str = "\x1b[36m";
      const GREEN: &'static str = "\x1b[32m";
      const GRAY: &'static str = "\x1b[90m";
@@ -8,26 +8,49 @@
      const RED: &'static str = "\x1b[31m";
      const ORANGE: &'static str = "\x1b[38;5;208m";
      const YELLOW: &'static str = "\x1b[33m";
-@@ -108,7 +109,7 @@
+@@ -95,15 +96,17 @@
+         Self { percentage }
+     }
+
+-    fn color(&self) -> &'static str {
++    fn color(&self, is_dark_theme: bool) -> &'static str {
+         if self.percentage >= 90.0 {
+             Colors::RED
+         } else if self.percentage >= 70.0 {
+             Colors::ORANGE
          } else if self.percentage >= 50.0 {
              Colors::YELLOW
++        } else if is_dark_theme {
++            Colors::WHITE  // White for dark theme
          } else {
 -            Colors::GRAY
-+            Colors::WHITE  // Changed from GRAY for better visibility in dark mode
++            Colors::GRAY   // Gray for light theme
          }
      }
- 
-@@ -333,11 +334,11 @@
-             
+
+@@ -305,6 +308,10 @@
+     let _short_mode = args.contains(&"--short".to_string());
+     let _show_pr_status = !args.contains(&"--skip-pr-status".to_string());
+
++    // Detect theme from environment variable (defaults to dark)
++    let theme = env::var("STATUSLINE_THEME").unwrap_or_else(|_| "dark".to_string());
++    let is_dark_theme = theme != "light";
++
+     // Read JSON input from stdin
+     let mut input_json = String::new();
+     io::stdin().read_to_string(&mut input_json)?;
+@@ -327,11 +334,11 @@
+
              model_display.push_str(&format!(
                  " {}• {}{}{} {}{}",
 -                Colors::GRAY,
-+                Colors::LIGHT_GRAY,
-                 usage.color(),
+-                usage.color(),
++                if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY },
++                usage.color(is_dark_theme),
                  pct_str,
                  "%",
 -                Colors::GRAY,
 +                Colors::CYAN,
                  model_type.abbreviation()
              ));
- 
+

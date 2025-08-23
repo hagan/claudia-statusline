@@ -11,7 +11,8 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 - 📊 **Context Usage Tracking** - Real-time percentage of Claude's context window with color warnings
 - 🤖 **Model Detection** - Shows current Claude model (Opus/Sonnet/Haiku)
 - ⏱️ **Session Duration** - Tracks conversation length from transcript
-- 🎨 **Color Coded** - ANSI colors for visual clarity and quick status recognition
+- 🎨 **Theme-Aware Colors** - Automatically adapts to dark/light terminal themes
+- 🌙 **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
 - ⚡ **High Performance** - Written in Rust for minimal overhead
 - 🔒 **Source Integrity** - SHA256 hash validation ensures authentic source
 - 📦 **Patch-Based** - Respects original author's copyright
@@ -163,14 +164,48 @@ For XDG systems, edit `~/.config/claude/claude.json`:
 jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline-wrapper.sh", "padding": 0}}' ~/.config/claude/claude.json > /tmp/claude.json && mv /tmp/claude.json ~/.config/claude/claude.json
 ```
 
-### Color Coding
+### Theme Support
+
+The statusline automatically adapts its colors based on your terminal theme for optimal visibility.
+
+#### Setting Your Theme
+- **Dark Mode (default)**: Best for dark terminals and Claude's dark theme
+- **Light Mode**: Optimized for light backgrounds
+
+To set your theme, export the `CLAUDE_THEME` environment variable:
+```bash
+# For dark terminals (default)
+export CLAUDE_THEME=dark
+
+# For light terminals
+export CLAUDE_THEME=light
+
+# Add to your shell profile (~/.bashrc or ~/.zshrc) to make it permanent
+echo 'export CLAUDE_THEME=dark' >> ~/.bashrc
+```
+
+#### Color Coding
+
+**Dark Theme Colors:**
 - **Directory**: Cyan
 - **Git Info**: Green
 - **Context Usage**:
-  - Red (>90%) - Critical
-  - Orange (>70%) - Warning
-  - Yellow (>50%) - Caution
-  - Gray (<50%) - Normal
+  - Red (≥90%) - Critical
+  - Orange (≥70%) - Warning
+  - Yellow (≥50%) - Caution
+  - White (<50%) - Normal (high contrast for dark backgrounds)
+- **Model Name**: Cyan
+- **Session Duration**: Light gray
+
+**Light Theme Colors:**
+- **Directory**: Cyan
+- **Git Info**: Green
+- **Context Usage**:
+  - Red (≥90%) - Critical
+  - Orange (≥70%) - Warning
+  - Yellow (≥50%) - Caution
+  - Gray (<50%) - Normal (appropriate for light backgrounds)
+- **Model Name**: Cyan
 - **Session Duration**: Light gray
 
 ### JSON Input Format
@@ -265,6 +300,13 @@ make clean && make fetch-source
 echo '{}' | ./target/release/statusline
 echo '{"workspace":{"current_dir":"/tmp"}}' | ./target/release/statusline
 echo '{"model":{"display_name":"Claude Sonnet"}}' | ./target/release/statusline
+
+# Test with different themes
+export CLAUDE_THEME=dark
+echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}}' | ./target/release/statusline
+
+export CLAUDE_THEME=light
+echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}}' | ./target/release/statusline
 
 # Test with Claude Code format (camelCase)
 echo '{"workspace":{"currentDir":"/tmp"},"model":{"displayName":"Claude Opus"}}' | ./statusline-wrapper.sh

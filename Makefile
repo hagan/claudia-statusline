@@ -49,6 +49,8 @@ help:
 	@echo "  $(YELLOW)make check$(NC)        - Check build tools and dependencies"
 	@echo "  $(YELLOW)make dev$(NC)          - Build and run with test input"
 	@echo "  $(YELLOW)make bench$(NC)        - Run performance benchmark"
+	@echo "  $(YELLOW)make clean-patch$(NC)  - Remove trailing whitespace from patch file"
+	@echo "  $(YELLOW)make update-patch$(NC) - Generate new patch from current source"
 	@echo ""
 	@echo "$(GREEN)Installation paths:$(NC)"
 	@echo "  Binary: $(INSTALL_DIR)/$(BINARY_NAME)"
@@ -100,6 +102,37 @@ verify-source:
 		echo "$(YELLOW)The original gist may have been updated.$(NC)"; \
 	fi
 	@rm -f .verify.tmp
+
+# Clean whitespace from patch file
+.PHONY: clean-patch
+clean-patch:
+	@echo "$(BLUE)Cleaning whitespace from patch file...$(NC)"
+	@if [ -f statusline.patch ]; then \
+		sed -i 's/[[:space:]]*$$//' statusline.patch && \
+		echo "$(GREEN)✓$(NC) Removed trailing whitespace from patch file"; \
+		lines=$$(grep '[[:space:]]$$' statusline.patch 2>/dev/null | wc -l); \
+		if [ "$$lines" = "0" ]; then \
+			echo "$(GREEN)✓$(NC) Patch file is clean (no trailing whitespace)"; \
+		else \
+			echo "$(YELLOW)Warning:$(NC) Still found $$lines lines with trailing whitespace"; \
+		fi \
+	else \
+		echo "$(RED)Error:$(NC) statusline.patch not found"; \
+		exit 1; \
+	fi
+
+# Generate new patch from current source
+.PHONY: update-patch
+update-patch: $(SOURCE)
+	@echo "$(BLUE)Generating new patch from current source...$(NC)"
+	@if [ ! -f statusline.rs.orig ]; then \
+		echo "$(YELLOW)Fetching original for comparison...$(NC)"; \
+		curl -s $(GIST_URL) -o statusline.rs.orig; \
+	fi
+	@diff -u statusline.rs.orig $(SOURCE) > statusline.patch.tmp || true
+	@mv statusline.patch.tmp statusline.patch
+	@$(MAKE) -s clean-patch
+	@echo "$(GREEN)✓$(NC) Patch updated and cleaned"
 
 # Check build environment
 .PHONY: check
