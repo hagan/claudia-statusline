@@ -1,0 +1,33 @@
+--- statusline.rs.backup	2025-08-22 19:52:25.837819367 -0700
++++ statusline.rs	2025-08-22 19:58:02.570297649 -0700
+@@ -53,6 +53,7 @@
+     const CYAN: &'static str = "\x1b[36m";
+     const GREEN: &'static str = "\x1b[32m";
+     const GRAY: &'static str = "\x1b[90m";
++    const WHITE: &'static str = "\x1b[37m";
+     const RED: &'static str = "\x1b[31m";
+     const ORANGE: &'static str = "\x1b[38;5;208m";
+     const YELLOW: &'static str = "\x1b[33m";
+@@ -108,7 +109,7 @@
+         } else if self.percentage >= 50.0 {
+             Colors::YELLOW
+         } else {
+-            Colors::GRAY
++            Colors::WHITE  // Changed from GRAY for better visibility in dark mode
+         }
+     }
+ 
+@@ -333,11 +334,11 @@
+             
+             model_display.push_str(&format!(
+                 " {}• {}{}{} {}{}",
+-                Colors::GRAY,
++                Colors::LIGHT_GRAY,
+                 usage.color(),
+                 pct_str,
+                 "%",
+-                Colors::GRAY,
++                Colors::CYAN,
+                 model_type.abbreviation()
+             ));
+ 

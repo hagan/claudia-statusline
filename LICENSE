@@ -1,0 +1,45 @@
+MIT License
+
+Copyright (c) 2024 Claude Statusline Contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+IMPORTANT NOTICE:
+================================================================================
+
+This license applies ONLY to:
+- The patch file (statusline.patch) containing our modifications
+- Build configuration files (Makefile, Cargo.toml)
+- Integration scripts (install-claude-code.sh, statusline-wrapper.sh)
+- Documentation files (README.md, *.md files)
+- Any other original work in this repository
+
+This license DOES NOT apply to:
+- The original statusline.rs code by Peter Steinberger (@steipete)
+- Any code fetched from https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e
+- The base functionality that our patches modify
+
+The original statusline.rs remains the property of its author and is used here
+under the principle of modification for personal/educational use. Users of this
+project must fetch the original code directly from its source, ensuring proper
+attribution to the original author.
+
+Our modifications are distributed separately as patches, not as a complete work,
+to respect the original author's rights.

@@ -1,0 +1,32 @@
+# Build artifacts
+/target/
+Cargo.lock
+
+# Generated source file (fetched and patched from original gist)
+statusline.rs
+statusline.rs.orig
+statusline.rs.tmp
+statusline-modified.rs
+
+# Claude-specific files (local development context)
+CLAUDE.md
+.claude/
+
+# Temporary files from build process
+*.patch.new
+.verify.tmp
+
+# Backup files
+*.orig
+*.bak
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

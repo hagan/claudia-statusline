@@ -1,0 +1,32 @@
+NOTICE OF THIRD-PARTY CODE
+===========================
+
+This project is based on and modifies code from the following source:
+
+Original statusline.rs
+----------------------
+Author: Peter Steinberger (@steipete)
+Source: https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e
+License: Not explicitly stated (assumed all rights reserved)
+
+The original code is NOT included in this repository. It is fetched directly
+from the author's gist during the build process. Our modifications are
+distributed as a patch file (statusline.patch) that is applied to the original.
+
+This approach ensures:
+1. We do not redistribute the original copyrighted code
+2. Users obtain the original code directly from its source
+3. Clear separation between original work and our modifications
+4. Proper attribution to the original author
+
+Our Contributions
+-----------------
+The following components are our original work and are licensed under MIT:
+- statusline.patch (modifications to original)
+- Build system (Makefile, Cargo.toml)
+- Integration scripts (install-claude-code.sh, statusline-wrapper.sh)
+- Documentation (all *.md files except this NOTICE)
+- Claude Code integration components
+
+Users must comply with any license terms of the original code. Our MIT license
+applies only to our contributions, not to the original work.
