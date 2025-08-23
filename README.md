@@ -1,6 +1,6 @@
 # Claude Statusline
 
-A high-performance, customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, and session duration in your terminal.
+A high-performance, customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
 ![Claude Statusline Screenshot](statusline.png)
 
@@ -11,6 +11,8 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 - **Context Usage Tracking** - Real-time percentage of Claude's context window with color warnings
 - **Model Detection** - Shows current Claude model (Opus/Sonnet/Haiku)
 - **Session Duration** - Tracks conversation length from transcript
+- **Cost Tracking** - Displays session cost in USD with color-coded warnings
+- **Lines Changed** - Shows added/removed lines count from session
 - **Theme-Aware Colors** - Automatically adapts to dark/light terminal themes
 - **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
 - **High Performance** - Written in Rust for minimal overhead
@@ -113,7 +115,7 @@ The statusline automatically integrates with Claude Code when installed via the 
 
 ### Example Output
 ```
-~/myproject [main +2 ~1 ?3] • 45% Sonnet • 1h 23m
+~/myproject [main +2 ~1 ?3] • 45% Sonnet • 1h 23m • +150 -42 • $3.50
 ```
 
 This shows:
@@ -122,6 +124,8 @@ This shows:
 - Using 45% of context window
 - Running Claude Sonnet model
 - Session has been active for 1 hour 23 minutes
+- Added 150 lines and removed 42 lines
+- Current session cost is $3.50
 
 ## Configuration
 
@@ -185,6 +189,11 @@ echo 'export CLAUDE_THEME=dark' >> ~/.bashrc
   - White (<50%) - Normal (high contrast for dark backgrounds)
 - **Model Name**: Cyan
 - **Session Duration**: Light gray
+- **Lines Changed**: Green (+added) / Red (-removed)
+- **Cost**:
+  - Green (<$5) - Low cost
+  - Yellow ($5-$20) - Medium cost
+  - Red (≥$20) - High cost
 
 **Light Theme Colors:**
 - **Directory**: Cyan
@@ -196,6 +205,11 @@ echo 'export CLAUDE_THEME=dark' >> ~/.bashrc
   - Gray (<50%) - Normal (appropriate for light backgrounds)
 - **Model Name**: Cyan
 - **Session Duration**: Light gray
+- **Lines Changed**: Green (+added) / Red (-removed)
+- **Cost**:
+  - Green (<$5) - Low cost
+  - Yellow ($5-$20) - Medium cost
+  - Red (≥$20) - High cost
 
 ### JSON Input Format
 ```json
@@ -207,7 +221,12 @@ echo 'export CLAUDE_THEME=dark' >> ~/.bashrc
     "display_name": "Claude Sonnet 3.5"
   },
   "session_id": "optional-session-id",
-  "transcript_path": "/path/to/transcript.jsonl"
+  "transcript_path": "/path/to/transcript.jsonl",
+  "cost": {
+    "total_cost_usd": 3.50,
+    "total_lines_added": 150,
+    "total_lines_removed": 42
+  }
 }
 ```
 
@@ -299,6 +318,22 @@ echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}
 
 # Test with Claude Code format (camelCase)
 echo '{"workspace":{"currentDir":"/tmp"},"model":{"displayName":"Claude Opus"}}' | ./statusline-wrapper.sh
+
+# Test with cost tracking
+echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"},"cost":{"total_cost_usd":3.50,"total_lines_added":150,"total_lines_removed":42}}' | ./target/release/statusline
+
+# Test with different cost levels
+# Low cost (green)
+echo '{"workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":2.50}}' | ./target/release/statusline
+
+# Medium cost (yellow)
+echo '{"workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":12.00}}' | ./target/release/statusline
+
+# High cost (red)
+echo '{"workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":25.00}}' | ./target/release/statusline
+
+# Test with lines changed only
+echo '{"workspace":{"current_dir":"/tmp"},"cost":{"total_lines_added":500,"total_lines_removed":100}}' | ./target/release/statusline
 ```
 
 ## Customization
@@ -327,6 +362,26 @@ latest_usage = Some((total * 100.0 / 160000.0).min(100.0));
 - [NOTICE](NOTICE) - Attribution and copyright notices
 - [SOURCE_VERSION.md](SOURCE_VERSION.md) - Source version and hash documentation
 
+## Changelog
+
+### Latest (2025-08-23)
+- Added cost tracking feature - displays session cost in USD with color-coded thresholds
+- Added lines changed tracking - shows added/removed line counts
+- Enhanced display logic for multiple optional components
+- Updated wrapper scripts to handle cost object conversion
+- Improved component separation with conditional bullet points
+- Binary size increased slightly to ~529KB
+
+### 2025-08-22
+- Initial release with core features
+- Git integration with detailed file status
+- Context usage tracking with color warnings
+- Model detection (Opus/Sonnet/Haiku)
+- Session duration tracking
+- Theme support for dark/light terminals
+- SHA256 source validation
+- Patch-based build system
+
 ## Contributing
 
 Contributions are welcome! Please:
@@ -341,7 +396,7 @@ Contributions are welcome! Please:
 - **CPU Usage**: <0.1% (minimal overhead)
 - **Execution Time**: ~5ms average
 - **Memory Usage**: ~2MB resident
-- **Binary Size**: ~513KB (release build with optimizations)
+- **Binary Size**: ~529KB (release build with optimizations)
 - **Update Frequency**: Every 300ms in Claude Code
 - **Transcript Processing**: Only reads last 50 lines for efficiency
 
@@ -375,6 +430,12 @@ Contributions are welcome! Please:
 - Test binary directly: `echo '{"workspace":{"current_dir":"/tmp"}}' | ~/.local/bin/statusline`
 - Ensure jq is installed: `which jq`
 - **IMPORTANT**: Restart Claude Code after installation or configuration changes
+
+**Cost tracking not showing**
+- Ensure you're using the latest wrapper scripts (updated 2025-08-23)
+- Check if cost data is being sent: Use debug wrapper to see JSON input
+- Update wrapper scripts: `./install-claude-code.sh`
+- Cost only appears if Claude Code sends cost data in the JSON
 
 ## How It Works
 

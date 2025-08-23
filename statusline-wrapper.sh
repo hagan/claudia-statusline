@@ -8,7 +8,11 @@
 #   "transcriptPath": "...",
 #   "workspace": { "currentDir": "..." },
 #   "model": { "displayName": "..." },
-#   ...additional fields...
+#   "cost": {
+#     "totalCostUsd": 3.50,
+#     "totalLinesAdded": 150,
+#     "totalLinesRemoved": 42
+#   }
 # }
 #
 # We need to transform it to our statusline's expected format:
@@ -16,7 +20,12 @@
 #   "session_id": "...",
 #   "transcript_path": "...",
 #   "workspace": { "current_dir": "..." },
-#   "model": { "display_name": "..." }
+#   "model": { "display_name": "..." },
+#   "cost": {
+#     "total_cost_usd": 3.50,
+#     "total_lines_added": 150,
+#     "total_lines_removed": 42
+#   }
 # }
 
 # Read JSON from stdin
@@ -33,7 +42,12 @@ if command -v jq &> /dev/null; then
         },
         model: {
             display_name: .model.displayName
-        }
+        },
+        cost: (if .cost then {
+            total_cost_usd: .cost.totalCostUsd,
+            total_lines_added: .cost.totalLinesAdded,
+            total_lines_removed: .cost.totalLinesRemoved
+        } else null end)
     }')
     
     # Pass transformed JSON to statusline
@@ -44,7 +58,10 @@ else
         -e 's/"sessionId"/"session_id"/g' \
         -e 's/"transcriptPath"/"transcript_path"/g' \
         -e 's/"currentDir"/"current_dir"/g' \
-        -e 's/"displayName"/"display_name"/g')
+        -e 's/"displayName"/"display_name"/g' \
+        -e 's/"totalCostUsd"/"total_cost_usd"/g' \
+        -e 's/"totalLinesAdded"/"total_lines_added"/g' \
+        -e 's/"totalLinesRemoved"/"total_lines_removed"/g')
     
     echo "$transformed_json" | ~/.local/bin/statusline
 fi

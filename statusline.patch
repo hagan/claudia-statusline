@@ -1,5 +1,5 @@
---- statusline.rs.orig	2025-08-22 20:56:19.078926850 -0700
-+++ statusline.rs	2025-08-22 21:11:55.918827406 -0700
+--- statusline.rs.orig	2025-08-23 09:50:35.243401681 -0700
++++ statusline.rs	2025-08-23 09:56:54.868176200 -0700
 @@ -1,5 +1,4 @@
 -use serde::{Deserialize, Serialize};
 -use std::collections::HashMap;
@@ -7,7 +7,29 @@
  use std::env;
  use std::io::{self, Read};
  use std::process::Command;
-@@ -48,6 +47,7 @@
+@@ -10,6 +9,7 @@
+     model: Option<Model>,
+     session_id: Option<String>,
+     transcript_path: Option<String>,
++    cost: Option<Cost>,
+ }
+
+ #[derive(Debug, Deserialize)]
+@@ -23,6 +23,13 @@
+ }
+
+ #[derive(Debug, Deserialize)]
++struct Cost {
++    total_cost_usd: Option<f64>,
++    total_lines_added: Option<u64>,
++    total_lines_removed: Option<u64>,
++}
++
++#[derive(Debug, Deserialize)]
+ struct Usage {
+     input_tokens: Option<u64>,
+     output_tokens: Option<u64>,
+@@ -48,6 +55,7 @@
      const CYAN: &'static str = "\x1b[36m";
      const GREEN: &'static str = "\x1b[32m";
      const GRAY: &'static str = "\x1b[90m";
@@ -15,7 +37,7 @@
      const RED: &'static str = "\x1b[31m";
      const ORANGE: &'static str = "\x1b[38;5;208m";
      const YELLOW: &'static str = "\x1b[33m";
-@@ -95,15 +95,17 @@
+@@ -95,15 +103,17 @@
          Self { percentage }
      }
 
@@ -35,7 +57,7 @@
          }
      }
 
-@@ -125,10 +127,6 @@
+@@ -125,10 +135,6 @@
  }
 
  impl GitStatus {
@@ -46,7 +68,32 @@
      fn format(&self) -> String {
          let mut result = String::new();
          if self.added > 0 {
-@@ -305,6 +303,10 @@
+@@ -300,11 +306,35 @@
+         .unwrap_or_default()
+ }
+
++fn format_cost(cost: f64) -> String {
++    if cost < 0.01 {
++        format!("${:.3}", cost)
++    } else if cost < 1.0 {
++        format!("${:.2}", cost)
++    } else {
++        format!("${:.2}", cost)
++    }
++}
++
++fn get_cost_color(cost: f64) -> &'static str {
++    if cost < 5.0 {
++        Colors::GREEN  // Green for < $5.00
++    } else if cost < 20.0 {
++        Colors::YELLOW  // Yellow for < $20.00
++    } else {
++        Colors::RED  // Red for >= $20.00
++    }
++}
++
+ fn main() -> Result<(), Box<dyn std::error::Error>> {
+     let args: Vec<String> = env::args().collect();
      let _short_mode = args.contains(&"--short".to_string());
      let _show_pr_status = !args.contains(&"--skip-pr-status".to_string());
 
@@ -57,7 +104,20 @@
      // Read JSON input from stdin
      let mut input_json = String::new();
      io::stdin().read_to_string(&mut input_json)?;
-@@ -327,11 +329,11 @@
+@@ -317,8 +347,11 @@
+         }
+     };
+
+-    // Build model display
++    // Build model display with all components
+     let mut model_display = String::new();
++    let mut has_content = false;
++
++    // Add model and context usage
+     if let Some(model) = input.model {
+         if let Some(name) = model.display_name {
+             let model_type = ModelType::from_name(&name);
+@@ -327,24 +360,65 @@
 
              model_display.push_str(&format!(
                  " {}• {}{}{} {}{}",
@@ -71,4 +131,66 @@
 +                Colors::CYAN,
                  model_type.abbreviation()
              ));
+-
+-            if let Some(duration) = format_session_duration(input.transcript_path.as_deref()) {
+-                model_display.push_str(&format!(
+-                    " • {}{}{}",
+-                    Colors::LIGHT_GRAY,
+-                    duration,
+-                    Colors::RESET
+-                ));
++            has_content = true;
++        }
++    }
++
++    // Add session duration
++    if let Some(duration) = format_session_duration(input.transcript_path.as_deref()) {
++        if has_content {
++            model_display.push_str(&format!(" {}•{} ", Colors::GRAY, Colors::RESET));
++        } else {
++            model_display.push_str(&format!(" {}• ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }));
++        }
++        model_display.push_str(&format!("{}{}", Colors::LIGHT_GRAY, duration));
++        has_content = true;
++    }
++
++    // Add lines changed if available
++    if let Some(ref cost) = input.cost {
++        let lines_added = cost.total_lines_added.unwrap_or(0);
++        let lines_removed = cost.total_lines_removed.unwrap_or(0);
++
++        if lines_added > 0 || lines_removed > 0 {
++            if has_content {
++                model_display.push_str(&format!(" {}•{} ", Colors::GRAY, Colors::RESET));
++            } else {
++                model_display.push_str(&format!(" {}• ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }));
+             }
++            model_display.push_str(&format!("{}+{}{} {}-{}",
++                Colors::GREEN, lines_added, Colors::RESET,
++                Colors::RED, lines_removed
++            ));
++            has_content = true;
+         }
+     }
++
++    // Add cost if available
++    if let Some(ref cost) = input.cost {
++        if let Some(total_cost) = cost.total_cost_usd {
++            if has_content {
++                model_display.push_str(&format!(" {}•{} ", Colors::GRAY, Colors::RESET));
++            } else {
++                model_display.push_str(&format!(" {}• ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }));
++            }
++            let formatted_cost = format_cost(total_cost);
++            let cost_color = get_cost_color(total_cost);
++            model_display.push_str(&format!("{}{}", cost_color, formatted_cost));
++            has_content = true;
++        }
++    }
++
++    if has_content {
++        model_display.push_str(Colors::RESET);
++    }
 
+     // Handle workspace directory
+     let Some(workspace) = input.workspace else {
