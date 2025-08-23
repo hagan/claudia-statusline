@@ -16,18 +16,12 @@ echo -e "${BLUE}Claude Code Statusline Installer${NC}"
 echo "=================================="
 echo ""
 
-# Detect Claude Code configuration location
-# Claude Code uses XDG_CONFIG_HOME or ~/.config/claude on Linux/Mac
-if [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/claude" ]; then
-    CLAUDE_CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/claude"
-    CLAUDE_CONFIG_FILE="$CLAUDE_CONFIG_DIR/claude.json"
-    echo -e "${BLUE}Detected XDG config location: $CLAUDE_CONFIG_DIR${NC}"
-else
-    # Fallback to legacy location
-    CLAUDE_CONFIG_DIR="$HOME/.claude"
-    CLAUDE_CONFIG_FILE="$CLAUDE_CONFIG_DIR/settings.json"
-    echo -e "${BLUE}Using legacy config location: $CLAUDE_CONFIG_DIR${NC}"
-fi
+# Claude Code configuration location
+# Note: Claude Code does NOT respect CLAUDE_HOME or XDG environment variables
+# It always uses ~/.claude/settings.json
+CLAUDE_CONFIG_DIR="$HOME/.claude"
+CLAUDE_CONFIG_FILE="$CLAUDE_CONFIG_DIR/settings.json"
+echo -e "${BLUE}Claude Code config location: $CLAUDE_CONFIG_DIR${NC}"
 
 # Check if we're in the right directory
 if [ ! -f "Makefile" ] || [ ! -f "statusline.patch" ]; then

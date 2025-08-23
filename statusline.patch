@@ -1,6 +1,13 @@
---- statusline.rs.orig	2025-08-22 20:22:47.344169635 -0700
-+++ statusline.rs	2025-08-22 20:22:47.379169891 -0700
-@@ -48,6 +48,7 @@
+--- statusline.rs.orig	2025-08-22 20:56:19.078926850 -0700
++++ statusline.rs	2025-08-22 21:11:55.918827406 -0700
+@@ -1,5 +1,4 @@
+-use serde::{Deserialize, Serialize};
+-use std::collections::HashMap;
++use serde::Deserialize;
+ use std::env;
+ use std::io::{self, Read};
+ use std::process::Command;
+@@ -48,6 +47,7 @@
      const CYAN: &'static str = "\x1b[36m";
      const GREEN: &'static str = "\x1b[32m";
      const GRAY: &'static str = "\x1b[90m";
@@ -8,7 +15,7 @@
      const RED: &'static str = "\x1b[31m";
      const ORANGE: &'static str = "\x1b[38;5;208m";
      const YELLOW: &'static str = "\x1b[33m";
-@@ -95,15 +96,17 @@
+@@ -95,15 +95,17 @@
          Self { percentage }
      }
 
@@ -28,7 +35,18 @@
          }
      }
 
-@@ -305,6 +308,10 @@
+@@ -125,10 +127,6 @@
+ }
+
+ impl GitStatus {
+-    fn is_empty(&self) -> bool {
+-        self.added == 0 && self.modified == 0 && self.deleted == 0 && self.untracked == 0
+-    }
+-
+     fn format(&self) -> String {
+         let mut result = String::new();
+         if self.added > 0 {
+@@ -305,6 +303,10 @@
      let _short_mode = args.contains(&"--short".to_string());
      let _show_pr_status = !args.contains(&"--skip-pr-status".to_string());
 
@@ -39,7 +57,7 @@
      // Read JSON input from stdin
      let mut input_json = String::new();
      io::stdin().read_to_string(&mut input_json)?;
-@@ -327,11 +334,11 @@
+@@ -327,11 +329,11 @@
 
              model_display.push_str(&format!(
                  " {}• {}{}{} {}{}",

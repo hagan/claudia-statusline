@@ -2,24 +2,24 @@
 
 A high-performance, customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, and session duration in your terminal.
 
-![Status Line Example](https://img.shields.io/badge/statusline-~/projects%20%5Bmain%20+2%20~1%5D%20•%2045%25%20Sonnet%20•%201h%2023m-blue)
+![Claude Statusline Screenshot](statusline.png)
 
 ## Features
 
-- 📁 **Smart Path Display** - Shows current directory with `~` home substitution
-- 🌿 **Git Integration** - Displays branch name and file status (added/modified/deleted/untracked)
-- 📊 **Context Usage Tracking** - Real-time percentage of Claude's context window with color warnings
-- 🤖 **Model Detection** - Shows current Claude model (Opus/Sonnet/Haiku)
-- ⏱️ **Session Duration** - Tracks conversation length from transcript
-- 🎨 **Theme-Aware Colors** - Automatically adapts to dark/light terminal themes
-- 🌙 **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
-- ⚡ **High Performance** - Written in Rust for minimal overhead
-- 🔒 **Source Integrity** - SHA256 hash validation ensures authentic source
-- 📦 **Patch-Based** - Respects original author's copyright
+- **Smart Path Display** - Shows current directory with `~` home substitution
+- **Git Integration** - Displays branch name and file status (added/modified/deleted/untracked)
+- **Context Usage Tracking** - Real-time percentage of Claude's context window with color warnings
+- **Model Detection** - Shows current Claude model (Opus/Sonnet/Haiku)
+- **Session Duration** - Tracks conversation length from transcript
+- **Theme-Aware Colors** - Automatically adapts to dark/light terminal themes
+- **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
+- **High Performance** - Written in Rust for minimal overhead
+- **Source Integrity** - SHA256 hash validation ensures authentic source
+- **Patch-Based** - Respects original author's copyright
 
 ## Quick Start
 
-### 🚀 One-Line Install (Claude Code)
+### One-Line Install (Claude Code)
 ```bash
 git clone https://github.com/hagan/claude-statusline && cd claude-statusline && ./install-claude-code.sh
 ```
@@ -462,6 +462,6 @@ make clean
 
 ## Support
 
-- Report issues: [GitHub Issues](https://github.com/yourusername/claude-statusline/issues)
+- Report issues: [GitHub Issues](https://github.com/hagan/claude-statusline/issues)
 - Claude Code docs: [Official Documentation](https://docs.anthropic.com/en/docs/claude-code)
 - Original gist: [Peter Steinberger's statusline](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e)
