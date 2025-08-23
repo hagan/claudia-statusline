@@ -21,7 +21,7 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 
 ### 🚀 One-Line Install (Claude Code)
 ```bash
-git clone https://github.com/yourusername/claude-statusline && cd claude-statusline && ./install-claude-code.sh
+git clone https://github.com/hagan/claude-statusline && cd claude-statusline && ./install-claude-code.sh
 ```
 
 ### System Requirements
@@ -43,7 +43,7 @@ git clone https://github.com/yourusername/claude-statusline && cd claude-statusl
 #### For Claude Code Users (Recommended)
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/claude-statusline
+git clone https://github.com/hagan/claude-statusline
 cd claude-statusline
 
 # Run the automated installer
@@ -52,7 +52,7 @@ chmod +x install-claude-code.sh
 ```
 
 The installer will:
-1. ✅ Detect Claude Code configuration location (XDG or legacy)
+1. ✅ Detect Claude Code configuration location
 2. ✅ Download and validate the original source (SHA256 check)
 3. ✅ Apply our patches
 4. ✅ Build the optimized binary
@@ -61,11 +61,10 @@ The installer will:
 7. ✅ Configure Claude Code settings automatically
 8. ✅ Check your PATH configuration
 
-**Configuration Locations:**
-- **XDG Systems** (Linux/Unix): `~/.config/claude/claude.json`
-- **Legacy Location**: `~/.claude/settings.json`
-
-The installer automatically detects which location Claude Code uses on your system.
+**Configuration Location:**
+- Claude Code always uses: `~/.claude/settings.json`
+- **Note**: Claude Code does NOT respect `CLAUDE_HOME` or `CLAUDE_CONFIG_DIR` environment variables
+- Configuration is always stored in `~/.claude/` regardless of system settings
 
 #### Manual Build
 ```bash
@@ -128,21 +127,11 @@ This shows:
 
 ### Claude Code Integration
 
-Claude Code stores its configuration in different locations depending on your system:
+Claude Code stores its configuration in a fixed location:
 
-#### XDG-Compliant Systems (Most Linux/Unix)
 ```bash
-# Configuration file
-~/.config/claude/claude.json    # Main Claude Code configuration
-
-# Or with custom XDG_CONFIG_HOME
-$XDG_CONFIG_HOME/claude/claude.json
-```
-
-#### Legacy Systems
-```bash
-# Configuration file
-~/.claude/settings.json          # Legacy configuration location
+# Configuration file (always here, regardless of environment variables)
+~/.claude/settings.json
 ```
 
 #### Manual Configuration
@@ -159,9 +148,9 @@ If the installer doesn't configure automatically, add this to your Claude Code c
 }
 ```
 
-For XDG systems, edit `~/.config/claude/claude.json`:
+Add to Claude Code settings:
 ```bash
-jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline-wrapper.sh", "padding": 0}}' ~/.config/claude/claude.json > /tmp/claude.json && mv /tmp/claude.json ~/.config/claude/claude.json
+jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline-wrapper.sh", "padding": 0}}' ~/.claude/settings.json > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
 ```
 
 ### Theme Support
@@ -253,7 +242,7 @@ claude-statusline/
 ├── NOTICE                   # Attribution to original author
 ├── Cargo.toml              # Rust dependencies
 ├── Makefile                # Build automation with SHA256 validation
-├── install-claude-code.sh  # Automated installer (XDG-aware)
+├── install-claude-code.sh  # Automated installer
 ├── statusline-wrapper.sh   # JSON format adapter (camelCase → snake_case)
 ├── claude-settings-example.json # Example Claude Code config
 ├── README.md               # This file
@@ -380,9 +369,7 @@ Contributions are welcome! Please:
 - Ensure transcript file is readable: `ls -la /path/to/transcript.jsonl`
 
 **Claude Code integration not working**
-- Check your config location:
-  - XDG: `cat ~/.config/claude/claude.json | jq '.statusLine'`
-  - Legacy: `cat ~/.claude/settings.json | jq '.statusLine'`
+- Check your config: `cat ~/.claude/settings.json | jq '.statusLine'`
 - Verify wrapper script exists: `ls -la ~/.local/bin/statusline-wrapper.sh`
 - Test wrapper manually: `echo '{"workspace":{"currentDir":"/tmp"}}' | ~/.local/bin/statusline-wrapper.sh`
 - Test binary directly: `echo '{"workspace":{"current_dir":"/tmp"}}' | ~/.local/bin/statusline`
@@ -440,18 +427,12 @@ A: After fetching the source with `make fetch-source`, edit the colors in `statu
 A: Not natively, but it works in WSL (Windows Subsystem for Linux) or Git Bash.
 
 **Q: Where does Claude Code store its configuration?**  
-A: It depends on your system:
-- **XDG-compliant systems** (most Linux/Unix): `~/.config/claude/claude.json` or `$XDG_CONFIG_HOME/claude/claude.json`
-- **Legacy systems**: `~/.claude/settings.json`
-- The installer automatically detects which location your system uses.
+A: Claude Code always stores configuration in `~/.claude/settings.json`, regardless of environment variables or system configuration.
 
 **Q: The installer configured the wrong location. How do I fix it?**  
 A: Manually add the statusLine configuration to the correct file using:
 ```bash
-# For XDG systems (~/.config/claude/claude.json)
-jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline-wrapper.sh", "padding": 0}}' ~/.config/claude/claude.json > /tmp/claude.json && mv /tmp/claude.json ~/.config/claude/claude.json
-
-# For legacy systems (~/.claude/settings.json)
+# Add statusline to Claude Code settings
 jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline-wrapper.sh", "padding": 0}}' ~/.claude/settings.json > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
 ```
 
