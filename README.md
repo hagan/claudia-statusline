@@ -28,7 +28,7 @@ git clone https://github.com/hagan/claude-statusline && cd claude-statusline && 
 
 ### System Requirements
 
-**Supported Platforms**: Linux, macOS, Unix-like systems  
+**Supported Platforms**: Linux, macOS, Unix-like systems
 **Terminal**: Any terminal with ANSI color support
 
 ### Prerequisites
@@ -250,6 +250,8 @@ The project includes a comprehensive Makefile with these targets:
 | `make dev` | Clean, build, and test |
 | `make size` | Compare binary sizes |
 | `make clean` | Remove all artifacts and source |
+| `make clean-whitespace` | Remove trailing whitespace from all project files |
+| `make update-patch` | Generate new patch from current source |
 | `make help` | Show all available targets |
 
 ### Project Structure
@@ -316,8 +318,8 @@ echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}
 export CLAUDE_THEME=light
 echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}}' | ./target/release/statusline
 
-# Test with Claude Code format (camelCase)
-echo '{"workspace":{"currentDir":"/tmp"},"model":{"displayName":"Claude Opus"}}' | ./statusline-wrapper.sh
+# Test with Claude Code format (snake_case - what Claude actually sends)
+echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}}' | ./statusline-wrapper.sh
 
 # Test with cost tracking
 echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"},"cost":{"total_cost_usd":3.50,"total_lines_added":150,"total_lines_removed":42}}' | ./target/release/statusline
@@ -364,7 +366,18 @@ latest_usage = Some((total * 100.0 / 160000.0).min(100.0));
 
 ## Changelog
 
-### Latest (2025-08-23)
+### v1.2.1 (2025-08-24)
+- **Fixed bullet separator visibility** - Now uses light gray in dark theme for better visibility
+- All separator bullets are now theme-aware for optimal contrast
+
+### v1.2.0 (2025-08-24)
+- **CRITICAL FIX**: Fixed wrapper script JSON format handling (Claude sends snake_case, not camelCase)
+- Added automatic debug wrapper creation during installation
+- Enhanced troubleshooting documentation and installer output
+- Improved error messages emphasizing Claude Code restart requirement
+- Updated all documentation to reflect correct JSON format
+
+### v1.1.0 (2025-08-23)
 - Added cost tracking feature - displays session cost in USD with color-coded thresholds
 - Added lines changed tracking - shows added/removed line counts
 - Enhanced display logic for multiple optional components
@@ -372,7 +385,7 @@ latest_usage = Some((total * 100.0 / 160000.0).min(100.0));
 - Improved component separation with conditional bullet points
 - Binary size increased slightly to ~529KB
 
-### 2025-08-22
+### v1.0.0 (2025-08-22)
 - Initial release with core features
 - Git integration with detailed file status
 - Context usage tracking with color warnings
@@ -404,15 +417,34 @@ Contributions are welcome! Please:
 
 ### Common Issues
 
+**Statusline only shows "~" (most common issue)**
+- This means Claude Code is sending JSON but the wrapper isn't parsing it correctly
+- **Quick Fix**: Re-run the installer to get the updated wrapper:
+  ```bash
+  git pull && ./install-claude-code.sh
+  ```
+- **Debug Mode** (to see what Claude is sending):
+  ```bash
+  # Switch to debug wrapper
+  jq '.statusLine.command = "~/.local/bin/statusline-wrapper-debug.sh"' ~/.claude/settings.json > /tmp/config.tmp && mv /tmp/config.tmp ~/.claude/settings.json
+
+  # Restart Claude Code, then check the log
+  cat ~/.cache/statusline-debug.log
+  ```
+- **Manual Test**:
+  ```bash
+  echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}' | ~/.local/bin/statusline
+  ```
+
 **Build fails with "Hash mismatch!"**
 - The original gist may have been updated
 - Check SOURCE_VERSION.md for the expected version
 - Report an issue if the gist has changed
 
-**Statusline not displaying**
+**Statusline not displaying at all**
 - Ensure binary is in PATH: `export PATH="$HOME/.local/bin:$PATH"`
 - Check executable permissions: `chmod 755 ~/.local/bin/statusline ~/.local/bin/statusline-wrapper.sh`
-- Test manually with sample JSON
+- **MUST RESTART CLAUDE CODE** after installation
 
 **Git status not showing**
 - Verify you're in a git repository: `git rev-parse --is-inside-work-tree`
@@ -426,7 +458,7 @@ Contributions are welcome! Please:
 **Claude Code integration not working**
 - Check your config: `cat ~/.claude/settings.json | jq '.statusLine'`
 - Verify wrapper script exists: `ls -la ~/.local/bin/statusline-wrapper.sh`
-- Test wrapper manually: `echo '{"workspace":{"currentDir":"/tmp"}}' | ~/.local/bin/statusline-wrapper.sh`
+- Test wrapper manually: `echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}' | ~/.local/bin/statusline-wrapper.sh`
 - Test binary directly: `echo '{"workspace":{"current_dir":"/tmp"}}' | ~/.local/bin/statusline`
 - Ensure jq is installed: `which jq`
 - **IMPORTANT**: Restart Claude Code after installation or configuration changes
@@ -472,50 +504,59 @@ This project's modifications and build system are licensed under the MIT License
 
 ## FAQ
 
-**Q: Why does the build download code from a gist?**  
+**Q: Why does the build download code from a gist?**
 A: We respect the original author's copyright. By fetching the source directly and applying patches, we only distribute our modifications, not the original code.
 
-**Q: What if the gist changes?**  
+**Q: What if the gist changes?**
 A: The build includes SHA256 hash validation. If the source changes, the build will fail with a hash mismatch error, preventing unexpected behavior.
 
-**Q: Can I use this outside of Claude Code?**  
+**Q: Can I use this outside of Claude Code?**
 A: Yes! The statusline binary works standalone. Just pipe JSON to it: `echo '{...}' | statusline`
 
-**Q: How do I customize the colors?**  
+**Q: How do I customize the colors?**
 A: After fetching the source with `make fetch-source`, edit the colors in `statusline.rs`, then recreate the patch file.
 
-**Q: Does this work on Windows?**  
+**Q: Does this work on Windows?**
 A: Not natively, but it works in WSL (Windows Subsystem for Linux) or Git Bash.
 
-**Q: Where does Claude Code store its configuration?**  
+**Q: Where does Claude Code store its configuration?**
 A: Claude Code always stores configuration in `~/.claude/settings.json`, regardless of environment variables or system configuration.
 
-**Q: The installer configured the wrong location. How do I fix it?**  
+**Q: The installer configured the wrong location. How do I fix it?**
 A: Manually add the statusLine configuration to the correct file using:
 ```bash
 # Add statusline to Claude Code settings
 jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline-wrapper.sh", "padding": 0}}' ~/.claude/settings.json > /tmp/settings.json && mv /tmp/settings.json ~/.claude/settings.json
 ```
 
-**Q: How much does it impact Claude Code performance?**  
+**Q: How much does it impact Claude Code performance?**
 A: Minimal impact - uses <0.1% CPU and updates only every 300ms.
 
 ## Uninstallation
 
-### Automated
+### Automated (Recommended)
 ```bash
-make uninstall
+./uninstall-statusline.sh
 ```
+
+The uninstaller will:
+- Show you the current statusLine configuration before removing it
+- Offer options to automatically remove or skip settings.json modification
+- Create a timestamped backup of your settings before any changes
+- Preserve all other Claude Code settings
+- Remove the statusline binary and wrapper scripts
+- Optionally clean up debug logs
 
 ### Manual
 ```bash
-# Remove binary
+# Remove binary and wrapper scripts
 rm ~/.local/bin/statusline
-
-# Remove Claude Code integration
-rm ~/.claude/statusline-wrapper.sh
+rm ~/.local/bin/statusline-wrapper.sh
+rm ~/.local/bin/statusline-wrapper-debug.sh
 
 # Edit ~/.claude/settings.json and remove the "statusLine" section
+# Or use jq to remove it:
+jq 'del(.statusLine)' ~/.claude/settings.json > /tmp/settings.tmp && mv /tmp/settings.tmp ~/.claude/settings.json
 
 # Clean build artifacts
 make clean

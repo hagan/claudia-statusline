@@ -56,23 +56,27 @@ echo -e "${YELLOW}Step 4: Creating wrapper script...${NC}"
 cat > ~/.local/bin/statusline-wrapper.sh << 'EOF'
 #!/bin/bash
 # Claude Code Statusline Wrapper
-# This script adapts Claude Code's camelCase JSON to snake_case for the statusline binary
+# This script passes Claude Code's JSON to the statusline binary
 
 # Read JSON from stdin
 json_input=$(cat)
 
-# Convert camelCase to snake_case for the statusline binary
-# Claude Code sends: currentDir, displayName
-# Statusline expects: current_dir, display_name
+# Claude Code already sends the correct format (snake_case), just ensure fields are present
+# and handle optional cost data
 converted_json=$(echo "$json_input" | jq '{
+  session_id: .session_id,
+  transcript_path: .transcript_path,
   workspace: {
-    current_dir: .workspace.currentDir
+    current_dir: (.workspace.current_dir // .cwd // null)
   },
   model: {
-    display_name: .model.displayName
+    display_name: .model.display_name
   },
-  session_id: .sessionId,
-  transcript_path: .transcriptPath
+  cost: (if .cost then {
+    total_cost_usd: .cost.total_cost_usd,
+    total_lines_added: .cost.total_lines_added,
+    total_lines_removed: .cost.total_lines_removed
+  } else null end)
 }')
 
 # Execute the statusline binary with the converted input
@@ -84,6 +88,70 @@ EOF
 
 chmod 755 ~/.local/bin/statusline-wrapper.sh
 echo -e "${GREEN}✓ Wrapper script created at ~/.local/bin/statusline-wrapper.sh${NC}"
+
+# Create debug wrapper for troubleshooting
+cat > ~/.local/bin/statusline-wrapper-debug.sh << 'EOF'
+#!/bin/bash
+# Claude Code Statusline Debug Wrapper
+# This script logs input and output for debugging
+
+# Log file (user-specific and secure)
+LOG_FILE="$HOME/.cache/statusline-debug.log"
+
+# Ensure log directory exists and is secure
+mkdir -p "$(dirname "$LOG_FILE")"
+touch "$LOG_FILE"
+chmod 600 "$LOG_FILE"  # Only user can read/write
+
+# Read JSON from stdin
+json_input=$(cat)
+
+# Log the raw input
+echo "[$(date)] Raw input:" >> "$LOG_FILE"
+echo "$json_input" >> "$LOG_FILE"
+
+# Convert to format expected by statusline binary
+# Claude Code already sends correct format, just ensure fields are present
+converted_json=$(echo "$json_input" | jq '{
+  session_id: .session_id,
+  transcript_path: .transcript_path,
+  workspace: {
+    current_dir: (.workspace.current_dir // .cwd // null)
+  },
+  model: {
+    display_name: .model.display_name
+  },
+  cost: (if .cost then {
+    total_cost_usd: .cost.total_cost_usd,
+    total_lines_added: .cost.total_lines_added,
+    total_lines_removed: .cost.total_lines_removed
+  } else null end)
+}' 2>> "$LOG_FILE")
+
+# Log the converted JSON
+echo "[$(date)] Converted JSON:" >> "$LOG_FILE"
+echo "$converted_json" >> "$LOG_FILE"
+
+# Detect theme - you can set CLAUDE_THEME=light to override
+# Default to dark mode for better visibility
+THEME="${CLAUDE_THEME:-dark}"
+
+# Execute the statusline binary and capture output with theme
+output=$(echo "$converted_json" | STATUSLINE_THEME="$THEME" ~/.local/bin/statusline 2>> "$LOG_FILE")
+
+# Log the output
+echo "[$(date)] Output:" >> "$LOG_FILE"
+echo "$output" >> "$LOG_FILE"
+echo "---" >> "$LOG_FILE"
+
+# Output the result
+echo "$output"
+
+exit 0
+EOF
+
+chmod 755 ~/.local/bin/statusline-wrapper-debug.sh
+echo -e "${BLUE}  Debug wrapper created at ~/.local/bin/statusline-wrapper-debug.sh${NC}"
 
 # Step 5: Configure Claude Code settings
 echo -e "${YELLOW}Step 5: Configuring Claude Code settings...${NC}"
@@ -101,7 +169,7 @@ if [ -f "$CLAUDE_CONFIG_FILE" ]; then
     # Backup existing config
     cp "$CLAUDE_CONFIG_FILE" "$CLAUDE_CONFIG_FILE.backup"
     echo -e "${BLUE}  Backed up existing config to $CLAUDE_CONFIG_FILE.backup${NC}"
-    
+
     # Check if statusLine is already configured
     if grep -q '"statusLine"' "$CLAUDE_CONFIG_FILE"; then
         echo -e "${YELLOW}  Warning: statusLine already configured in $CLAUDE_CONFIG_FILE${NC}"
@@ -157,15 +225,21 @@ echo ""
 echo -e "${GREEN}Installation complete!${NC}"
 echo ""
 echo -e "${BLUE}Next steps:${NC}"
-echo "1. Restart Claude Code or reload settings"
+echo "1. ${RED}IMPORTANT: Restart Claude Code${NC} (the statusline won't appear until you restart)"
 echo "2. Your custom statusline should now be active"
 echo ""
 echo -e "${BLUE}Configuration location:${NC} $CLAUDE_CONFIG_FILE"
 echo ""
+echo -e "${YELLOW}Troubleshooting:${NC}"
+echo "If you only see '~' in the statusline:"
+echo "1. Switch to debug mode to see what Claude is sending:"
+echo "   jq '.statusLine.command = \"~/.local/bin/statusline-wrapper-debug.sh\"' $CLAUDE_CONFIG_FILE > /tmp/config.tmp && mv /tmp/config.tmp $CLAUDE_CONFIG_FILE"
+echo "2. Restart Claude Code"
+echo "3. Check the debug log: cat ~/.cache/statusline-debug.log"
+echo "4. Report issues at: https://github.com/hagan/claude-statusline/issues"
+echo ""
 echo -e "${BLUE}To test manually:${NC}"
-echo 'echo '"'"'{"workspace":{"currentDir":"/path/to/dir"},"model":{"displayName":"Claude Sonnet"}}'"'"' | ~/.local/bin/statusline-wrapper.sh'
+echo 'echo '"'"'{"workspace":{"current_dir":"/path/to/dir"},"model":{"display_name":"Claude Sonnet"}}'"'"' | ~/.local/bin/statusline-wrapper.sh'
 echo ""
 echo -e "${BLUE}To uninstall:${NC}"
-echo "1. Remove statusLine from $CLAUDE_CONFIG_FILE"
-echo "2. Delete ~/.local/bin/statusline-wrapper.sh"
-echo "3. Delete ~/.local/bin/statusline"
+echo "./uninstall-statusline.sh"

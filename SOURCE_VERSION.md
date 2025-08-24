@@ -19,17 +19,17 @@ The build process automatically validates the downloaded file against this hash 
 If you see a hash mismatch error during build:
 
 1. **Check if the original gist was updated**: Compare the new content with our patches
-2. **Update the patch file if needed**: 
+2. **Update the patch file if needed**:
    ```bash
    # Download new version
    curl -s [gist_url] -o statusline.rs.new
-   
+
    # Review changes
    diff statusline.rs.orig statusline.rs.new
-   
+
    # Update patch if changes are compatible
    diff -u statusline.rs.new statusline-modified.rs > statusline.patch
-   
+
    # Update the hash in Makefile
    sha256sum statusline.rs.new
    ```

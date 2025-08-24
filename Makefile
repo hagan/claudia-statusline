@@ -49,7 +49,7 @@ help:
 	@echo "  $(YELLOW)make check$(NC)        - Check build tools and dependencies"
 	@echo "  $(YELLOW)make dev$(NC)          - Build and run with test input"
 	@echo "  $(YELLOW)make bench$(NC)        - Run performance benchmark"
-	@echo "  $(YELLOW)make clean-patch$(NC)  - Remove trailing whitespace from patch file"
+	@echo "  $(YELLOW)make clean-whitespace$(NC) - Remove trailing whitespace from all project files"
 	@echo "  $(YELLOW)make update-patch$(NC) - Generate new patch from current source"
 	@echo ""
 	@echo "$(GREEN)Installation paths:$(NC)"
@@ -103,23 +103,30 @@ verify-source:
 	fi
 	@rm -f .verify.tmp
 
-# Clean whitespace from patch file
-.PHONY: clean-patch
-clean-patch:
-	@echo "$(BLUE)Cleaning whitespace from patch file...$(NC)"
-	@if [ -f statusline.patch ]; then \
-		sed -i 's/[[:space:]]*$$//' statusline.patch && \
-		echo "$(GREEN)✓$(NC) Removed trailing whitespace from patch file"; \
-		lines=$$(grep '[[:space:]]$$' statusline.patch 2>/dev/null | wc -l); \
-		if [ "$$lines" = "0" ]; then \
-			echo "$(GREEN)✓$(NC) Patch file is clean (no trailing whitespace)"; \
-		else \
-			echo "$(YELLOW)Warning:$(NC) Still found $$lines lines with trailing whitespace"; \
+
+# Clean trailing whitespace from all project files
+.PHONY: clean-whitespace
+clean-whitespace:
+	@echo "$(BLUE)Cleaning trailing whitespace from project files...$(NC)"
+	@files_cleaned=0; \
+	for file in *.md *.sh *.patch Makefile Cargo.toml .claude/context/*.md; do \
+		if [ -f "$$file" ]; then \
+			if grep -q '[[:space:]]$$' "$$file"; then \
+				sed -i 's/[[:space:]]*$$//' "$$file"; \
+				echo "$(GREEN)✓$(NC) Cleaned: $$file"; \
+				files_cleaned=$$((files_cleaned + 1)); \
+			fi \
 		fi \
+	done; \
+	if [ "$$files_cleaned" -eq 0 ]; then \
+		echo "$(GREEN)✓$(NC) All files are clean (no trailing whitespace)"; \
 	else \
-		echo "$(RED)Error:$(NC) statusline.patch not found"; \
-		exit 1; \
+		echo "$(GREEN)✓$(NC) Cleaned $$files_cleaned file(s)"; \
 	fi
+
+# Alias for backward compatibility
+.PHONY: clean-patch
+clean-patch: clean-whitespace
 
 # Generate new patch from current source
 .PHONY: update-patch

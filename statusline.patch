@@ -1,5 +1,5 @@
---- statusline.rs.orig	2025-08-23 09:50:35.243401681 -0700
-+++ statusline.rs	2025-08-23 09:56:54.868176200 -0700
+--- statusline.rs.orig	2025-08-24 09:30:02.205808979 -0700
++++ statusline.rs	2025-08-24 09:31:18.109370947 -0700
 @@ -1,5 +1,4 @@
 -use serde::{Deserialize, Serialize};
 -use std::collections::HashMap;
@@ -117,7 +117,7 @@
      if let Some(model) = input.model {
          if let Some(name) = model.display_name {
              let model_type = ModelType::from_name(&name);
-@@ -327,24 +360,65 @@
+@@ -327,25 +360,66 @@
 
              model_display.push_str(&format!(
                  " {}• {}{}{} {}{}",
@@ -131,14 +131,6 @@
 +                Colors::CYAN,
                  model_type.abbreviation()
              ));
--
--            if let Some(duration) = format_session_duration(input.transcript_path.as_deref()) {
--                model_display.push_str(&format!(
--                    " • {}{}{}",
--                    Colors::LIGHT_GRAY,
--                    duration,
--                    Colors::RESET
--                ));
 +            has_content = true;
 +        }
 +    }
@@ -146,7 +138,7 @@
 +    // Add session duration
 +    if let Some(duration) = format_session_duration(input.transcript_path.as_deref()) {
 +        if has_content {
-+            model_display.push_str(&format!(" {}•{} ", Colors::GRAY, Colors::RESET));
++            model_display.push_str(&format!(" {}•{} ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }, Colors::RESET));
 +        } else {
 +            model_display.push_str(&format!(" {}• ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }));
 +        }
@@ -161,36 +153,44 @@
 +
 +        if lines_added > 0 || lines_removed > 0 {
 +            if has_content {
-+                model_display.push_str(&format!(" {}•{} ", Colors::GRAY, Colors::RESET));
++                model_display.push_str(&format!(" {}•{} ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }, Colors::RESET));
 +            } else {
 +                model_display.push_str(&format!(" {}• ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }));
-             }
++            }
 +            model_display.push_str(&format!("{}+{}{} {}-{}",
 +                Colors::GREEN, lines_added, Colors::RESET,
 +                Colors::RED, lines_removed
 +            ));
 +            has_content = true;
-         }
-     }
-+
++        }
++    }
+
+-            if let Some(duration) = format_session_duration(input.transcript_path.as_deref()) {
+-                model_display.push_str(&format!(
+-                    " • {}{}{}",
+-                    Colors::LIGHT_GRAY,
+-                    duration,
+-                    Colors::RESET
+-                ));
 +    // Add cost if available
 +    if let Some(ref cost) = input.cost {
 +        if let Some(total_cost) = cost.total_cost_usd {
 +            if has_content {
-+                model_display.push_str(&format!(" {}•{} ", Colors::GRAY, Colors::RESET));
++                model_display.push_str(&format!(" {}•{} ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }, Colors::RESET));
 +            } else {
 +                model_display.push_str(&format!(" {}• ", if is_dark_theme { Colors::LIGHT_GRAY } else { Colors::GRAY }));
-+            }
+             }
 +            let formatted_cost = format_cost(total_cost);
 +            let cost_color = get_cost_color(total_cost);
 +            model_display.push_str(&format!("{}{}", cost_color, formatted_cost));
 +            has_content = true;
-+        }
-+    }
-+
+         }
+     }
+
 +    if has_content {
 +        model_display.push_str(Colors::RESET);
 +    }
-
++
      // Handle workspace directory
      let Some(workspace) = input.workspace else {
+         print!("{}~{}{}", Colors::CYAN, Colors::RESET, model_display);
