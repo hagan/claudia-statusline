@@ -59,7 +59,32 @@ git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline &
 
 ### Installation
 
-#### For Claude Code Users (Recommended)
+#### Option 1: Pre-built Binaries (Fastest)
+
+Download the latest release for your platform:
+
+| Platform | Architecture | Download |
+|----------|-------------|----------|
+| Linux | x86_64 | [statusline-linux-amd64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz) |
+| Linux | ARM64 | [statusline-linux-arm64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-arm64.tar.gz) |
+| Linux | musl (Alpine/Docker) | [statusline-linux-musl.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-musl.tar.gz) |
+| macOS | Intel | [statusline-darwin-amd64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-darwin-amd64.tar.gz) |
+| macOS | Apple Silicon | [statusline-darwin-arm64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-darwin-arm64.tar.gz) |
+| Windows | x86_64 | [statusline-windows-amd64.zip](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-windows-amd64.zip) |
+
+**Quick Install Script** (automatically detects your OS and architecture):
+```bash
+curl -sSL https://github.com/hagan/claudia-statusline/releases/latest/download/install.sh | bash
+```
+
+**Manual Download** (example for Linux x86_64):
+```bash
+curl -L https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz | tar xz
+chmod +x statusline
+sudo mv statusline /usr/local/bin/
+```
+
+#### Option 2: Install from Source (For Claude Code Users)
 ```bash
 # Clone the repository
 git clone https://github.com/hagan/claudia-statusline
@@ -93,7 +118,7 @@ The installer will:
 - Configuration is always stored in `~/.claude/` regardless of system settings
 - If `settings.local.json` exists, it overrides `settings.json`
 
-#### Manual Build
+#### Option 3: Manual Build
 ```bash
 # Build the project
 make build
@@ -440,7 +465,13 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.1.3 (2025-08-25) - Latest
+### v2.2.0 (2025-08-25) - Latest
+- **SQLite Dual-Storage Backend** - Added SQLite database alongside JSON for better concurrent access
+- **Database Migration Framework** - Schema versioning system with automatic JSON to SQLite migration
+- **Multi-Platform Releases** - Pre-built binaries for Linux (x86_64, ARM64), macOS (Intel, Apple Silicon), Windows
+- **Comprehensive CI/CD** - Automated builds and releases with GitHub Actions
+- **Enhanced Documentation** - Added migration guide and updated architecture docs
+### v2.1.3 (2025-08-25)
 - **Multi-Console Support** - Added process-safe file locking for concurrent Claude sessions
 - **Improved Data Persistence** - Stats now save on every update to prevent data loss
 - **Session Duration Tracking** - Added start_time tracking for accurate burn rate calculation

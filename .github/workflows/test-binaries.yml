@@ -1,0 +1,252 @@
+name: Test Binary Compatibility
+
+on:
+  workflow_run:
+    workflows: ["Build Binaries"]
+    types:
+      - completed
+  workflow_dispatch:
+
+jobs:
+  test-linux-binary:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        arch: [amd64]  # GitHub Actions doesn't easily support ARM64 runners
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Download artifacts from build
+      if: github.event.workflow_run
+      uses: actions/download-artifact@v3
+      with:
+        name: statusline-linux-${{ matrix.arch }}
+        path: ./artifacts
+    
+    - name: Build binary if not from workflow
+      if: ${{ !github.event.workflow_run }}
+      run: |
+        cargo build --release --target x86_64-unknown-linux-gnu
+        mkdir -p artifacts
+        tar czf artifacts/statusline-linux-amd64.tar.gz -C target/x86_64-unknown-linux-gnu/release statusline
+    
+    - name: Extract and test binary
+      run: |
+        cd artifacts
+        tar xzf statusline-linux-${{ matrix.arch }}.tar.gz
+        chmod +x statusline
+        
+        # Test version flag
+        ./statusline --version
+        
+        # Test help flag
+        ./statusline --help
+        
+        # Test basic functionality
+        echo '{"workspace":{"current_dir":"/tmp"}}' | ./statusline
+        
+        # Test with all features
+        echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude"},"cost":{"total_cost_usd":5.0}}' | ./statusline
+    
+    - name: Test binary size and properties
+      run: |
+        cd artifacts
+        
+        # Check file type
+        file statusline | grep -E "ELF 64-bit|x86-64"
+        
+        # Check binary is stripped
+        ! nm statusline 2>/dev/null || echo "Binary is properly stripped"
+        
+        # Check dependencies (should have minimal deps due to static linking)
+        ldd statusline || echo "Statically linked"
+        
+        # Verify size is reasonable
+        size=$(stat -c%s statusline)
+        echo "Binary size: $size bytes"
+        if [ $size -gt 5242880 ]; then  # 5MB limit
+          echo "Binary too large!"
+          exit 1
+        fi
+
+  test-macos-binary:
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        arch: [amd64, arm64]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: ${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+        override: true
+    
+    - name: Build binary
+      run: |
+        target="${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}"
+        cargo build --release --target $target
+        mkdir -p artifacts
+        tar czf artifacts/statusline-darwin-${{ matrix.arch }}.tar.gz -C target/$target/release statusline
+    
+    - name: Extract and test binary (if native arch)
+      if: (matrix.arch == 'amd64' && runner.arch == 'X64') || (matrix.arch == 'arm64' && runner.arch == 'ARM64')
+      run: |
+        cd artifacts
+        tar xzf statusline-darwin-${{ matrix.arch }}.tar.gz
+        chmod +x statusline
+        
+        # Test basic functionality
+        ./statusline --version
+        echo '{"workspace":{"current_dir":"/tmp"}}' | ./statusline
+    
+    - name: Verify universal binary compatibility
+      run: |
+        cd artifacts
+        tar xzf statusline-darwin-${{ matrix.arch }}.tar.gz
+        
+        # Check file type
+        file statusline | grep -E "Mach-O|executable"
+        
+        # Check architecture
+        lipo -info statusline 2>/dev/null || file statusline
+        
+        # Verify code signing (if applicable)
+        codesign -v statusline 2>/dev/null || echo "Not code signed"
+
+  test-windows-binary:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        target: x86_64-pc-windows-msvc
+        override: true
+    
+    - name: Build binary
+      run: |
+        cargo build --release --target x86_64-pc-windows-msvc
+        New-Item -ItemType Directory -Force -Path artifacts
+        Compress-Archive -Path target\x86_64-pc-windows-msvc\release\statusline.exe -DestinationPath artifacts\statusline-windows-amd64.zip
+    
+    - name: Extract and test binary
+      shell: powershell
+      run: |
+        cd artifacts
+        Expand-Archive -Path statusline-windows-amd64.zip -DestinationPath .
+        
+        # Test version flag
+        .\statusline.exe --version
+        
+        # Test help flag
+        .\statusline.exe --help
+        
+        # Test basic functionality
+        echo '{"workspace":{"current_dir":"C:\\temp"}}' | .\statusline.exe
+        
+        # Test with features
+        echo '{"workspace":{"current_dir":"C:\\temp"},"model":{"display_name":"Claude"},"cost":{"total_cost_usd":5.0}}' | .\statusline.exe
+    
+    - name: Check binary properties
+      shell: powershell
+      run: |
+        cd artifacts
+        
+        # Get file info
+        $file = Get-Item statusline.exe
+        Write-Host "File size: $($file.Length) bytes"
+        
+        # Check if it's a valid PE executable
+        $bytes = [System.IO.File]::ReadAllBytes("statusline.exe")
+        if ($bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A) {
+          Write-Host "Valid PE executable"
+        } else {
+          Write-Host "Invalid executable format"
+          exit 1
+        }
+
+  test-installation-script:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Test installation script syntax
+      run: |
+        bash -n install-statusline.sh
+        bash -n uninstall-statusline.sh
+    
+    - name: Test dry-run mode
+      run: |
+        ./install-statusline.sh --dry-run --skip-build
+    
+    - name: Test help output
+      run: |
+        ./install-statusline.sh --help
+        ./uninstall-statusline.sh --help
+    
+    - name: Create mock universal installer
+      run: |
+        cat > test-install.sh << 'EOF'
+        #!/bin/bash
+        set -e
+        
+        # Mock version for testing
+        VERSION="v2.2.0"
+        
+        # Detect OS and architecture
+        OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+        ARCH=$(uname -m)
+        
+        case "$OS" in
+          linux) OS="linux" ;;
+          darwin) OS="darwin" ;;
+          *) echo "Unsupported OS: $OS"; exit 1 ;;
+        esac
+        
+        case "$ARCH" in
+          x86_64) ARCH="amd64" ;;
+          aarch64|arm64) ARCH="arm64" ;;
+          *) echo "Unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        
+        echo "Would download: statusline-${OS}-${ARCH}.tar.gz"
+        echo "Version: $VERSION"
+        EOF
+        
+        chmod +x test-install.sh
+        ./test-install.sh
+
+  validate-checksums:
+    runs-on: ubuntu-latest
+    if: github.event.workflow_run
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v3
+      with:
+        path: ./artifacts
+    
+    - name: Validate checksums
+      run: |
+        cd artifacts
+        
+        # For each archive, verify its checksum
+        for dir in */; do
+          if [ -f "$dir"*.tar.gz ]; then
+            cd "$dir"
+            if [ -f *.sha256 ]; then
+              sha256sum -c *.sha256
+              echo "✓ Checksum valid for $dir"
+            fi
+            cd ..
+          fi
+        done

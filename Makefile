@@ -142,6 +142,23 @@ dev: debug
 test: debug
 	@echo "$(BLUE)Running tests...$(NC)"
 	@$(CARGO) test
+
+# Run SQLite integration tests
+.PHONY: test-sqlite
+test-sqlite: debug
+	@echo "$(BLUE)Running SQLite integration tests...$(NC)"
+	@$(CARGO) test sqlite_integration
+
+# Run installation test
+.PHONY: test-install
+test-install: install
+	@echo "$(BLUE)Running installation tests...$(NC)"
+	@./test-installation.sh
+
+# Run all tests
+.PHONY: test-all
+test-all: test test-sqlite test-install
+	@echo "$(GREEN)✓$(NC) All tests completed!"
 	@echo ""
 	@echo "Test 1: Empty input"
 	@echo '{}' | $(TARGET_DIR)/debug/$(BINARY_NAME)

@@ -1,0 +1,179 @@
+name: Build Binaries
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/build.yml'
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: statusline-linux-amd64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: statusline-linux-arm64
+            use-cross: true
+          
+          # macOS builds
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: statusline-darwin-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: statusline-darwin-arm64
+          
+          # Windows builds
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: statusline-windows-amd64
+          
+          # Static musl build for Alpine/Docker
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: statusline-linux-musl
+            use-cross: true
+
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
+          override: true
+      
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      
+      - name: Build with cross
+        if: matrix.use-cross
+        run: cross build --release --target ${{ matrix.target }}
+      
+      - name: Build with cargo
+        if: ${{ !matrix.use-cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Strip binary (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            # musl binaries are already stripped
+            echo "Skipping strip for musl binary"
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            strip target/${{ matrix.target }}/release/statusline
+          elif [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            # Cross-compiled ARM binary, skip stripping
+            echo "Skipping strip for cross-compiled ARM binary"
+          else
+            strip target/${{ matrix.target }}/release/statusline
+          fi
+      
+      - name: Create archive (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.artifact }}.tar.gz statusline
+          cd ../../../
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          else
+            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          fi
+      
+      - name: Create archive (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          cd target\${{ matrix.target }}\release
+          Compress-Archive -Path statusline.exe -DestinationPath ..\..\..\${{ matrix.artifact }}.zip
+          cd ..\..\..
+          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ASCII ${{ matrix.artifact }}.zip.sha256
+      
+      - name: Upload artifact (Linux/macOS)
+        if: matrix.os != 'windows-latest'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.tar.gz
+            ${{ matrix.artifact }}.tar.gz.sha256
+      
+      - name: Upload artifact (Windows)
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@v3
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.zip
+            ${{ matrix.artifact }}.zip.sha256
+      
+      - name: Test binary
+        if: matrix.os != 'windows-latest' && !matrix.use-cross
+        run: |
+          ./target/${{ matrix.target }}/release/statusline --version
+          echo '{"workspace":{"current_dir":"/tmp"}}' | ./target/${{ matrix.target }}/release/statusline
+      
+      - name: Test binary (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          .\target\${{ matrix.target }}\release\statusline.exe --version
+          echo '{"workspace":{"current_dir":"C:\temp"}}' | .\target\${{ matrix.target }}\release\statusline.exe
+
+  # Create a job to test that all builds succeeded
+  check-builds:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check build matrix
+        run: echo "All builds completed successfully!"
+
+  # Optional job to measure binary sizes
+  measure-sizes:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          path: artifacts
+      
+      - name: Display binary sizes
+        run: |
+          echo "## Binary Sizes"
+          echo "| Platform | Size |"
+          echo "|----------|------|"
+          for dir in artifacts/*; do
+            if [ -d "$dir" ]; then
+              platform=$(basename "$dir")
+              if [[ -f "$dir/$platform.tar.gz" ]]; then
+                size=$(stat -c%s "$dir/$platform.tar.gz" 2>/dev/null || stat -f%z "$dir/$platform.tar.gz" 2>/dev/null || echo "N/A")
+                size_mb=$(echo "scale=2; $size / 1048576" | bc)
+                echo "| $platform | ${size_mb}MB |"
+              elif [[ -f "$dir/$platform.zip" ]]; then
+                size=$(stat -c%s "$dir/$platform.zip" 2>/dev/null || stat -f%z "$dir/$platform.zip" 2>/dev/null || echo "N/A")
+                size_mb=$(echo "scale=2; $size / 1048576" | bc)
+                echo "| $platform | ${size_mb}MB |"
+              fi
+            fi
+          done

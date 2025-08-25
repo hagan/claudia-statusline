@@ -33,15 +33,20 @@ jobs:
     - name: Test dry-run installation
       run: ./install-statusline.sh --dry-run --verbose
 
+    - name: Build the binary first
+      run: cargo build --release
+
     - name: Test installation with custom prefix
       run: |
-        mkdir -p /tmp/test-install
-        ./install-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config
+        mkdir -p /tmp/test-install /tmp/test-config
+        ./install-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config --skip-build
 
     - name: Verify installation
       run: |
         test -f /tmp/test-install/statusline
-        test -f /tmp/test-config/settings.json
+        # Note: settings.json might not exist if this is a fresh config dir
+        # The install script creates settings.local.json for new installations
+        test -f /tmp/test-config/settings.json || test -f /tmp/test-config/settings.local.json
 
     - name: Test statusline binary
       run: |
@@ -108,11 +113,101 @@ jobs:
       run: |
         size=$(stat -c%s target/release/statusline)
         echo "Binary size: $size bytes"
-        # Fail if binary is larger than 1MB
-        if [ $size -gt 1048576 ]; then
-          echo "Binary too large!"
+        # Fail if binary is larger than 3MB (includes bundled SQLite)
+        if [ $size -gt 3145728 ]; then
+          echo "Binary too large! Expected < 3MB"
           exit 1
         fi
+
+  test-sqlite:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Build project
+      run: cargo build --release
+
+    - name: Test SQLite dual-write functionality
+      run: |
+        # Create test data directory
+        export XDG_DATA_HOME=/tmp/test-data
+        mkdir -p $XDG_DATA_HOME/claudia-statusline
+        
+        # Run statusline with cost data to trigger dual-write
+        echo '{"workspace":{"current_dir":"/tmp"},"session_id":"test-sqlite-ci","cost":{"total_cost_usd":10.50,"total_lines_added":500,"total_lines_removed":100}}' | ./target/release/statusline
+        
+        # Verify both files exist
+        test -f $XDG_DATA_HOME/claudia-statusline/stats.json
+        test -f $XDG_DATA_HOME/claudia-statusline/stats.db
+        
+        # Verify JSON contains the session
+        grep -q "test-sqlite-ci" $XDG_DATA_HOME/claudia-statusline/stats.json
+        
+        # Verify SQLite database is valid
+        sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions WHERE session_id='test-sqlite-ci';" | grep -q "1"
+
+    - name: Test concurrent SQLite access
+      run: |
+        export XDG_DATA_HOME=/tmp/test-data
+        
+        # Run 5 concurrent statusline processes
+        for i in {1..5}; do
+          echo '{"workspace":{"current_dir":"/tmp"},"session_id":"concurrent-'$i'","cost":{"total_cost_usd":'$i'.50}}' | ./target/release/statusline &
+        done
+        
+        # Wait for all to complete
+        wait
+        
+        # Verify all sessions were written
+        for i in {1..5}; do
+          sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions WHERE session_id='concurrent-$i';" | grep -q "1"
+        done
+
+    - name: Test SQLite migration from existing JSON
+      run: |
+        export XDG_DATA_HOME=/tmp/test-migration
+        mkdir -p $XDG_DATA_HOME/claudia-statusline
+        
+        # Create a pre-existing JSON stats file
+        cat > $XDG_DATA_HOME/claudia-statusline/stats.json << 'EOF'
+        {
+          "version": "1.0",
+          "created": "2025-08-25T00:00:00Z",
+          "last_updated": "2025-08-25T01:00:00Z",
+          "sessions": {
+            "existing-session": {
+              "last_updated": "2025-08-25T01:00:00Z",
+              "cost": 25.0,
+              "lines_added": 1000,
+              "lines_removed": 200,
+              "start_time": "2025-08-25T00:00:00Z"
+            }
+          },
+          "daily": {},
+          "monthly": {},
+          "all_time": {
+            "total_cost": 25.0,
+            "sessions": 1,
+            "since": "2025-08-25T00:00:00Z"
+          }
+        }
+        EOF
+        
+        # Run statusline to trigger migration
+        echo '{"workspace":{"current_dir":"/tmp"},"session_id":"new-session","cost":{"total_cost_usd":5.0}}' | ./target/release/statusline
+        
+        # Verify SQLite database was created
+        test -f $XDG_DATA_HOME/claudia-statusline/stats.db
+        
+        # Verify both sessions exist in SQLite
+        sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions;" | grep -q "2"
 
   test-features:
     runs-on: ubuntu-latest
