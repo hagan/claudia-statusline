@@ -1,0 +1,121 @@
+use std::env;
+use std::io::{self, Read};
+
+mod models;
+mod git;
+mod stats;
+mod display;
+mod utils;
+mod version;
+
+use models::StatuslineInput;
+use stats::{get_or_load_stats_data, update_stats_data};
+use display::{Colors, format_output};
+use version::version_string;
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Check for --version or -v argument
+    let args: Vec<String> = env::args().collect();
+    if args.len() > 1 && (args[1] == "--version" || args[1] == "-v" || args[1] == "version") {
+        print!("{}", version_string());
+        return Ok(());
+    }
+
+    // Check for --help or -h argument
+    if args.len() > 1 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help") {
+        println!("Claudia Statusline v{}", env!("CLAUDIA_VERSION"));
+        println!("\nUsage: statusline [OPTIONS]");
+        println!("\nOptions:");
+        println!("  -v, --version    Show version information");
+        println!("  -h, --help       Show this help message");
+        println!("\nInput: Reads JSON from stdin");
+        println!("\nExample:");
+        println!("  echo '{{\"workspace\":{{\"current_dir\":\"/path\"}}}}' | statusline");
+        return Ok(());
+    }
+
+    // Read JSON from stdin
+    let mut buffer = String::new();
+    io::stdin().read_to_string(&mut buffer)?;
+
+    // Parse input
+    let input: StatuslineInput = serde_json::from_str(&buffer).unwrap_or_default();
+
+    // Get current directory
+    let current_dir = input
+        .workspace
+        .as_ref()
+        .and_then(|w| w.current_dir.as_ref())
+        .cloned()
+        .unwrap_or_else(|| {
+            env::current_dir()
+                .ok()
+                .and_then(|p| p.to_str().map(|s| s.to_string()))
+                .unwrap_or_else(|| "~".to_string())
+        });
+
+    // Early exit for empty or home directory only
+    if current_dir.is_empty() || current_dir == "~" {
+        print!("{}~{}", Colors::CYAN, Colors::RESET);
+        return Ok(());
+    }
+
+    // Update stats tracking if we have session and cost data
+    let (daily_total, _monthly_total) = if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
+        if let Some(total_cost) = cost.total_cost_usd {
+            // Update stats with new cost data
+            update_stats_data(|data| {
+                data.update_session(
+                    session_id,
+                    total_cost,
+                    cost.total_lines_added.unwrap_or(0),
+                    cost.total_lines_removed.unwrap_or(0),
+                )
+            })
+        } else {
+            // Have session but no cost data - still load existing daily totals
+            let data = get_or_load_stats_data();
+            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+            let month = chrono::Local::now().format("%Y-%m").to_string();
+
+            let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+            let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
+            (daily_total, monthly_total)
+        }
+    } else {
+        // No session_id - still load stats data to show accumulated totals
+        let data = get_or_load_stats_data();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let month = chrono::Local::now().format("%Y-%m").to_string();
+
+        let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+        let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
+        (daily_total, monthly_total)
+    };
+
+    // Format and print output
+    format_output(
+        &current_dir,
+        input.model.as_ref().and_then(|m| m.display_name.as_deref()),
+        input.transcript.as_deref(),
+        input.cost.as_ref(),
+        daily_total,
+        input.session_id.as_deref(),
+    );
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+    use std::fs;
+
+    #[test]
+    fn test_main_integration() {
+        // This is a placeholder for integration tests
+        // Most tests are now in their respective modules
+        assert!(true);
+    }
+}

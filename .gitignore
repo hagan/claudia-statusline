@@ -2,19 +2,15 @@
 /target/
 Cargo.lock
 
-# Generated source file (fetched and patched from original gist)
-statusline.rs
-statusline.rs.orig
-statusline.rs.tmp
-statusline-modified.rs
+# Archive directory for old patch-based approach
+/archive/
 
 # Claude-specific files (local development context)
 CLAUDE.md
 .claude/
 
-# Temporary files from build process
-*.patch.new
-.verify.tmp
+# Temporary files
+*.tmp
 
 # Backup files
 *.orig

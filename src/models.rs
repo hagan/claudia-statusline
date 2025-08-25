@@ -1,0 +1,246 @@
+use serde::Deserialize;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct StatuslineInput {
+    pub workspace: Option<Workspace>,
+    pub model: Option<Model>,
+    pub session_id: Option<String>,
+    #[serde(alias = "transcript_path")]
+    pub transcript: Option<String>,
+    pub cost: Option<Cost>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Workspace {
+    pub current_dir: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Model {
+    pub display_name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Cost {
+    pub total_cost_usd: Option<f64>,
+    pub total_lines_added: Option<u64>,
+    pub total_lines_removed: Option<u64>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ModelType {
+    Opus,
+    Sonnet,
+    Haiku,
+    Unknown,
+}
+
+impl ModelType {
+    pub fn from_name(name: &str) -> Self {
+        let lower = name.to_lowercase();
+        if lower.contains("opus") {
+            ModelType::Opus
+        } else if lower.contains("sonnet") {
+            ModelType::Sonnet
+        } else if lower.contains("haiku") {
+            ModelType::Haiku
+        } else {
+            ModelType::Unknown
+        }
+    }
+
+    pub fn abbreviation(&self) -> &str {
+        match self {
+            ModelType::Opus => "Opus",
+            ModelType::Sonnet => "S3.5",
+            ModelType::Haiku => "Haiku",
+            ModelType::Unknown => "Claude",
+        }
+    }
+}
+
+// For transcript parsing - matches actual Claude JSONL format
+#[derive(Debug, Deserialize)]
+pub struct TranscriptEntry {
+    pub message: TranscriptMessage,
+    pub timestamp: String,  // ISO 8601 format
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TranscriptMessage {
+    pub role: String,
+    #[serde(default)]
+    pub content: Option<serde_json::Value>,  // Can be string or array
+    #[serde(default)]
+    pub usage: Option<Usage>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Usage {
+    pub input_tokens: Option<u32>,
+    pub output_tokens: Option<u32>,
+    pub cache_read_input_tokens: Option<u32>,
+    pub cache_creation_input_tokens: Option<u32>,
+}
+
+#[derive(Debug)]
+pub struct ContextUsage {
+    pub percentage: f64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_empty_json() {
+        let json = "{}";
+        let result: Result<StatuslineInput, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+        let input = result.unwrap();
+        assert!(input.workspace.is_none());
+        assert!(input.model.is_none());
+        assert!(input.cost.is_none());
+    }
+
+    #[test]
+    fn test_parse_complete_json() {
+        let json = r#"{
+            "workspace": {"current_dir": "/home/user"},
+            "model": {"display_name": "Claude Sonnet"},
+            "session_id": "abc123",
+            "cost": {
+                "total_cost_usd": 2.50,
+                "total_lines_added": 200,
+                "total_lines_removed": 100
+            }
+        }"#;
+        let result: Result<StatuslineInput, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+        let input = result.unwrap();
+        assert_eq!(input.workspace.unwrap().current_dir.unwrap(), "/home/user");
+        assert_eq!(input.model.unwrap().display_name.unwrap(), "Claude Sonnet");
+        assert_eq!(input.session_id.unwrap(), "abc123");
+        assert_eq!(input.cost.unwrap().total_cost_usd.unwrap(), 2.50);
+    }
+
+    #[test]
+    fn test_model_type_detection() {
+        assert_eq!(ModelType::from_name("Claude Opus"), ModelType::Opus);
+        assert_eq!(ModelType::from_name("claude-3-opus-20240229"), ModelType::Opus);
+        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet"), ModelType::Sonnet);
+        assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
+    }
+
+    #[test]
+    fn test_model_type_display() {
+        assert_eq!(ModelType::Opus.abbreviation(), "Opus");
+        assert_eq!(ModelType::Sonnet.abbreviation(), "S3.5");
+        assert_eq!(ModelType::Haiku.abbreviation(), "Haiku");
+        assert_eq!(ModelType::Unknown.abbreviation(), "Claude");
+    }
+
+    #[test]
+    fn test_transcript_field_alias() {
+        // Test that both 'transcript' and 'transcript_path' work
+        let json_with_transcript = r#"{
+            "workspace": {"current_dir": "/home/user"},
+            "transcript": "/path/to/transcript.jsonl"
+        }"#;
+        let result: Result<StatuslineInput, _> = serde_json::from_str(json_with_transcript);
+        assert!(result.is_ok());
+        let input = result.unwrap();
+        assert_eq!(input.transcript.unwrap(), "/path/to/transcript.jsonl");
+
+        // Test with transcript_path (alias)
+        let json_with_transcript_path = r#"{
+            "workspace": {"current_dir": "/home/user"},
+            "transcript_path": "/path/to/transcript2.jsonl"
+        }"#;
+        let result2: Result<StatuslineInput, _> = serde_json::from_str(json_with_transcript_path);
+        assert!(result2.is_ok());
+        let input2 = result2.unwrap();
+        assert_eq!(input2.transcript.unwrap(), "/path/to/transcript2.jsonl");
+    }
+
+    #[test]
+    fn test_transcript_message_content_types() {
+        // Test with string content
+        let json_string_content = r#"{
+            "role": "user",
+            "content": "Hello, world!",
+            "usage": null
+        }"#;
+        let result: Result<TranscriptMessage, _> = serde_json::from_str(json_string_content);
+        assert!(result.is_ok());
+        let msg = result.unwrap();
+        assert_eq!(msg.role, "user");
+        assert!(msg.content.is_some());
+
+        // Test with array content
+        let json_array_content = r#"{
+            "role": "assistant",
+            "content": [{"type": "text", "text": "Response"}],
+            "usage": {"input_tokens": 100, "output_tokens": 50}
+        }"#;
+        let result2: Result<TranscriptMessage, _> = serde_json::from_str(json_array_content);
+        assert!(result2.is_ok());
+        let msg2 = result2.unwrap();
+        assert_eq!(msg2.role, "assistant");
+        assert!(msg2.content.is_some());
+        assert!(msg2.usage.is_some());
+    }
+
+    #[test]
+    fn test_usage_with_cache_tokens() {
+        let json = r#"{
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cache_read_input_tokens": 30000,
+            "cache_creation_input_tokens": 200
+        }"#;
+        let result: Result<Usage, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+        let usage = result.unwrap();
+        assert_eq!(usage.input_tokens.unwrap(), 100);
+        assert_eq!(usage.output_tokens.unwrap(), 50);
+        assert_eq!(usage.cache_read_input_tokens.unwrap(), 30000);
+        assert_eq!(usage.cache_creation_input_tokens.unwrap(), 200);
+    }
+
+    #[test]
+    fn test_transcript_entry_with_string_timestamp() {
+        let json = r#"{
+            "message": {
+                "role": "assistant",
+                "content": "Hello",
+                "usage": {"input_tokens": 100, "output_tokens": 50}
+            },
+            "timestamp": "2025-08-22T18:32:37.789Z"
+        }"#;
+        let result: Result<TranscriptEntry, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+        let entry = result.unwrap();
+        assert_eq!(entry.message.role, "assistant");
+        assert_eq!(entry.timestamp, "2025-08-22T18:32:37.789Z");
+    }
+
+    #[test]
+    fn test_statusline_input_with_empty_cost() {
+        // Test that empty cost object is handled correctly
+        let json = r#"{
+            "workspace": {"current_dir": "/test"},
+            "session_id": "test-session",
+            "cost": {}
+        }"#;
+        let result: Result<StatuslineInput, _> = serde_json::from_str(json);
+        assert!(result.is_ok());
+        let input = result.unwrap();
+        assert_eq!(input.session_id.unwrap(), "test-session");
+        assert!(input.cost.is_some());
+        let cost = input.cost.unwrap();
+        assert!(cost.total_cost_usd.is_none());
+        assert!(cost.total_lines_added.is_none());
+        assert!(cost.total_lines_removed.is_none());
+    }
+}

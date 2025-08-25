@@ -1,0 +1,192 @@
+name: Test Installation
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test-scripts:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y jq curl patch make
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Test install script help
+      run: ./install-statusline.sh --help
+
+    - name: Test uninstall script help
+      run: ./uninstall-statusline.sh --help
+
+    - name: Test dry-run installation
+      run: ./install-statusline.sh --dry-run --verbose
+
+    - name: Test installation with custom prefix
+      run: |
+        mkdir -p /tmp/test-install
+        ./install-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config
+
+    - name: Verify installation
+      run: |
+        test -f /tmp/test-install/statusline
+        test -f /tmp/test-config/settings.json
+
+    - name: Test statusline binary
+      run: |
+        echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}' | /tmp/test-install/statusline
+
+    - name: Test uninstallation
+      run: |
+        ./uninstall-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config
+
+    - name: Verify uninstallation
+      run: |
+        ! test -f /tmp/test-install/statusline
+
+  test-build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Install build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y make
+
+    - name: Build project
+      run: |
+        make clean
+        make build
+
+    - name: Test binary output
+      run: |
+        # Test empty input
+        echo '{}' | ./target/release/statusline
+
+        # Test with workspace
+        echo '{"workspace":{"current_dir":"/home/test"}}' | ./target/release/statusline
+
+        # Test with model
+        echo '{"model":{"display_name":"Claude Opus"}}' | ./target/release/statusline
+
+        # Test with cost and progress
+        cat > /tmp/test.jsonl << 'EOF'
+        {"message":{"role":"assistant","content":"test","usage":{"input_tokens":50000,"output_tokens":10000}},"timestamp":"2025-08-22T18:00:00.000Z"}
+        {"message":{"role":"user","content":"question"},"timestamp":"2025-08-22T18:05:00.000Z"}
+        EOF
+        echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"},"transcript":"/tmp/test.jsonl","cost":{"total_cost_usd":10.50}}' | ./target/release/statusline
+
+        # Test version flag
+        ./target/release/statusline --version
+
+        # Test help flag
+        ./target/release/statusline --help
+
+    - name: Run tests
+      run: make test
+
+    - name: Check binary size
+      run: |
+        size=$(stat -c%s target/release/statusline)
+        echo "Binary size: $size bytes"
+        # Fail if binary is larger than 1MB
+        if [ $size -gt 1048576 ]; then
+          echo "Binary too large!"
+          exit 1
+        fi
+
+  test-features:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install Rust
+      uses: actions-rs/toolchain@v1
+      with:
+        toolchain: stable
+        override: true
+
+    - name: Build project
+      run: cargo build --release
+
+    - name: Test context progress bar
+      run: |
+        # Create test transcript with high token usage
+        cat > /tmp/high-usage.jsonl << 'EOF'
+        {"message":{"role":"assistant","content":"test","usage":{"input_tokens":120000,"output_tokens":5000}},"timestamp":"2025-08-22T18:00:00.000Z"}
+        {"message":{"role":"user","content":"question"},"timestamp":"2025-08-22T18:05:00.000Z"}
+        EOF
+        output=$(echo '{"workspace":{"current_dir":"/tmp"},"transcript":"/tmp/high-usage.jsonl"}' | ./target/release/statusline)
+        if ! echo "$output" | grep -q "78%"; then
+          echo "Context percentage not showing correctly"
+          exit 1
+        fi
+
+    - name: Test burn rate calculation
+      run: |
+        # Create test transcript with timestamps
+        cat > /tmp/burn-test.jsonl << 'EOF'
+        {"message":{"role":"assistant","content":"test","usage":{"input_tokens":10000,"output_tokens":1000}},"timestamp":"2025-08-22T18:00:00.000Z"}
+        {"message":{"role":"user","content":"question"},"timestamp":"2025-08-22T18:05:00.000Z"}
+        EOF
+        output=$(echo '{"workspace":{"current_dir":"/tmp"},"transcript":"/tmp/burn-test.jsonl","cost":{"total_cost_usd":5.00}}' | ./target/release/statusline)
+        if ! echo "$output" | grep -q "/hr"; then
+          echo "Burn rate not showing"
+          exit 1
+        fi
+
+    - name: Test cache tokens support
+      run: |
+        # Create test transcript with cache tokens
+        cat > /tmp/cache-test.jsonl << 'EOF'
+        {"message":{"role":"assistant","content":"test","usage":{"input_tokens":100,"cache_read_input_tokens":30000,"cache_creation_input_tokens":200,"output_tokens":500}},"timestamp":"2025-08-22T18:00:00.000Z"}
+        EOF
+        output=$(echo '{"workspace":{"current_dir":"/tmp"},"transcript":"/tmp/cache-test.jsonl"}' | ./target/release/statusline)
+        if ! echo "$output" | grep -q "19%"; then
+          echo "Cache tokens not calculated correctly"
+          echo "Output: $output"
+          exit 1
+        fi
+
+    - name: Test array content support
+      run: |
+        # Create test transcript with array content
+        cat > /tmp/array-test.jsonl << 'EOF'
+        {"message":{"role":"assistant","content":[{"type":"text","text":"response"}],"usage":{"input_tokens":50000,"output_tokens":1000}},"timestamp":"2025-08-22T18:00:00.000Z"}
+        EOF
+        output=$(echo '{"workspace":{"current_dir":"/tmp"},"transcript":"/tmp/array-test.jsonl"}' | ./target/release/statusline)
+        if ! echo "$output" | grep -q "32%"; then
+          echo "Array content not handled correctly"
+          echo "Output: $output"
+          exit 1
+        fi
+
+    - name: Test session ID with empty cost
+      run: |
+        # Test that statusline doesn't crash with session_id and empty cost
+        output=$(echo '{"workspace":{"current_dir":"/tmp"},"session_id":"test-123","cost":{}}' | ./target/release/statusline)
+        if [ $? -ne 0 ]; then
+          echo "Failed with session_id and empty cost"
+          exit 1
+        fi
+        echo "Output: $output"

@@ -1,10 +1,7 @@
 {
   "statusLine": {
     "type": "command",
-    "command": "~/.local/bin/statusline-wrapper.sh",
+    "command": "~/.local/bin/statusline",
     "padding": 0
-  },
-  "_comment": "Add this statusLine configuration to your Claude Code config file:",
-  "_xdg_location": "~/.config/claude/claude.json (for XDG systems)",
-  "_legacy_location": "~/.claude/settings.json (for legacy systems)"
+  }
 }

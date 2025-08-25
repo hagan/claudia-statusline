@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2024 Claude Statusline Contributors
+Copyright (c) 2024 Claudia Statusline Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -27,7 +27,7 @@ IMPORTANT NOTICE:
 This license applies ONLY to:
 - The patch file (statusline.patch) containing our modifications
 - Build configuration files (Makefile, Cargo.toml)
-- Integration scripts (install-claude-code.sh, statusline-wrapper.sh)
+- Integration scripts (install-statusline.sh, uninstall-statusline.sh, statusline-wrapper.sh)
 - Documentation files (README.md, *.md files)
 - Any other original work in this repository
 
