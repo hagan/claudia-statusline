@@ -1,0 +1,192 @@
+name: Release v2
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g., v2.2.0)'
+        required: true
+        type: string
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: statusline-linux-amd64
+          
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: statusline-linux-arm64
+            use-cross: true
+          
+          # macOS builds
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: statusline-darwin-amd64
+          
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: statusline-darwin-arm64
+          
+          # Windows build
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: statusline-windows-amd64
+    
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      
+      - name: Install cross
+        if: matrix.use-cross
+        run: cargo install cross
+      
+      - name: Build with cross
+        if: matrix.use-cross
+        run: cross build --release --target ${{ matrix.target }}
+      
+      - name: Build with cargo
+        if: ${{ !matrix.use-cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+      
+      - name: Strip binary (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          if [[ "${{ matrix.target }}" == *"musl"* ]] || [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            echo "Skipping strip for ${{ matrix.target }}"
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            strip target/${{ matrix.target }}/release/statusline
+          else
+            strip target/${{ matrix.target }}/release/statusline
+          fi
+      
+      - name: Create archive (Unix)
+        if: matrix.os != 'windows-latest'
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../${{ matrix.artifact }}.tar.gz statusline
+          cd ../../../
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          else
+            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
+          fi
+      
+      - name: Create archive (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: powershell
+        run: |
+          cd target\${{ matrix.target }}\release
+          Compress-Archive -Path statusline.exe -DestinationPath ..\..\..\${{ matrix.artifact }}.zip
+          cd ..\..\..
+          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ASCII ${{ matrix.artifact }}.zip.sha256
+      
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Get version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ github.event.inputs.tag }}"
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Prepare release assets
+        run: |
+          # Move all artifacts to the root directory
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec mv {} . \;
+          
+          # List all files for debugging
+          ls -la *.tar.gz *.zip *.sha256 || true
+      
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Claudia Statusline ${{ steps.version.outputs.version }}
+          body: |
+            ## Claudia Statusline ${{ steps.version.outputs.version }}
+            
+            High-performance statusline for Claude Code with SQLite dual-storage backend.
+            
+            ### Installation
+            
+            #### Quick Install (Linux/macOS)
+            ```bash
+            # Detect architecture and download appropriate binary
+            ARCH=$(uname -m)
+            OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+            
+            if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
+            if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then ARCH="arm64"; fi
+            if [ "$OS" = "darwin" ]; then OS="darwin"; fi
+            
+            curl -L https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/statusline-${OS}-${ARCH}.tar.gz | tar xz
+            chmod +x statusline
+            sudo mv statusline /usr/local/bin/
+            ```
+            
+            #### Manual Download
+            
+            Download the appropriate binary for your platform:
+            - **Linux x86_64**: `statusline-linux-amd64.tar.gz`
+            - **Linux ARM64**: `statusline-linux-arm64.tar.gz`  
+            - **macOS Intel**: `statusline-darwin-amd64.tar.gz`
+            - **macOS Apple Silicon**: `statusline-darwin-arm64.tar.gz`
+            - **Windows**: `statusline-windows-amd64.zip`
+            
+            ### Changes
+            
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md#220---2025-08-25) for details.
+            
+            Key features in v2.2.0:
+            - SQLite dual-storage backend for better concurrent access
+            - Automatic migration from JSON to SQLite
+            - Multi-platform CI/CD with automated releases
+            - Comprehensive test suite (75 tests)
+            
+            ### Verification
+            
+            SHA256 checksums are provided for each binary. To verify:
+            ```bash
+            sha256sum -c statusline-linux-amd64.tar.gz.sha256
+            ```
+          files: |
+            statusline-*.tar.gz
+            statusline-*.tar.gz.sha256
+            statusline-*.zip
+            statusline-*.zip.sha256
+          draft: false
+          prerelease: false
