@@ -19,7 +19,7 @@ jobs:
       version: ${{ steps.get_version.outputs.version }}
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Get version
         id: get_version
         run: |
@@ -29,7 +29,7 @@ jobs:
             VERSION=${GITHUB_REF#refs/tags/}
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-      
+
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -40,42 +40,42 @@ jobs:
           release_name: Claudia Statusline ${{ steps.get_version.outputs.version }}
           body: |
             ## Claudia Statusline ${{ steps.get_version.outputs.version }}
-            
+
             High-performance statusline for Claude Code with SQLite dual-storage backend.
-            
+
             ### Installation
-            
+
             #### Linux (amd64)
             ```bash
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/statusline-linux-amd64.tar.gz | tar xz
             chmod +x statusline
             sudo mv statusline /usr/local/bin/
             ```
-            
+
             #### Linux (arm64)
             ```bash
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/statusline-linux-arm64.tar.gz | tar xz
             chmod +x statusline
             sudo mv statusline /usr/local/bin/
             ```
-            
+
             #### macOS (Intel)
             ```bash
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/statusline-darwin-amd64.tar.gz | tar xz
             chmod +x statusline
             sudo mv statusline /usr/local/bin/
             ```
-            
+
             #### macOS (Apple Silicon)
             ```bash
             curl -L https://github.com/${{ github.repository }}/releases/download/${{ steps.get_version.outputs.version }}/statusline-darwin-arm64.tar.gz | tar xz
             chmod +x statusline
             sudo mv statusline /usr/local/bin/
             ```
-            
+
             ### Changes
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-            
+
             ### Checksums
             SHA256 checksums are provided for each binary in the release assets.
           draft: false
@@ -95,20 +95,20 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
-      
+
       - name: Install cross-compilation tools
         if: matrix.arch == 'arm64'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-      
+
       - name: Build
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
@@ -117,7 +117,7 @@ jobs:
             export CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++
           fi
           cargo build --release --target ${{ matrix.target }}
-      
+
       - name: Strip binary
         run: |
           if [ "${{ matrix.arch }}" = "arm64" ]; then
@@ -125,14 +125,14 @@ jobs:
           else
             strip target/${{ matrix.target }}/release/statusline
           fi
-      
+
       - name: Create archive
         run: |
           cd target/${{ matrix.target }}/release
           tar czf statusline-linux-${{ matrix.arch }}.tar.gz statusline
           sha256sum statusline-linux-${{ matrix.arch }}.tar.gz > statusline-linux-${{ matrix.arch }}.tar.gz.sha256
           mv statusline-linux-${{ matrix.arch }}.tar.gz* ../../../
-      
+
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
@@ -142,7 +142,7 @@ jobs:
           asset_path: ./statusline-linux-${{ matrix.arch }}.tar.gz
           asset_name: statusline-linux-${{ matrix.arch }}.tar.gz
           asset_content_type: application/gzip
-      
+
       - name: Upload Checksum
         uses: actions/upload-release-asset@v1
         env:
@@ -167,27 +167,27 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
-      
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-      
+
       - name: Strip binary
         run: strip target/${{ matrix.target }}/release/statusline
-      
+
       - name: Create archive
         run: |
           cd target/${{ matrix.target }}/release
           tar czf statusline-darwin-${{ matrix.arch }}.tar.gz statusline
           shasum -a 256 statusline-darwin-${{ matrix.arch }}.tar.gz > statusline-darwin-${{ matrix.arch }}.tar.gz.sha256
           mv statusline-darwin-${{ matrix.arch }}.tar.gz* ../../../
-      
+
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
@@ -197,7 +197,7 @@ jobs:
           asset_path: ./statusline-darwin-${{ matrix.arch }}.tar.gz
           asset_name: statusline-darwin-${{ matrix.arch }}.tar.gz
           asset_content_type: application/gzip
-      
+
       - name: Upload Checksum
         uses: actions/upload-release-asset@v1
         env:
@@ -222,17 +222,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
-      
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
-      
+
       - name: Create archive
         shell: powershell
         run: |
@@ -240,7 +240,7 @@ jobs:
           Compress-Archive -Path statusline.exe -DestinationPath ..\..\..\statusline-windows-${{ matrix.arch }}.zip
           cd ..\..\..
           Get-FileHash statusline-windows-${{ matrix.arch }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ASCII statusline-windows-${{ matrix.arch }}.zip.sha256
-      
+
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
@@ -250,7 +250,7 @@ jobs:
           asset_path: ./statusline-windows-${{ matrix.arch }}.zip
           asset_name: statusline-windows-${{ matrix.arch }}.zip
           asset_content_type: application/zip
-      
+
       - name: Upload Checksum
         uses: actions/upload-release-asset@v1
         env:
@@ -269,26 +269,26 @@ jobs:
       image: rust:alpine
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Install build dependencies
         run: |
           apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
-      
+
       - name: Build static binary
         run: |
           rustup target add x86_64-unknown-linux-musl
           cargo build --release --target x86_64-unknown-linux-musl
-      
+
       - name: Strip binary
         run: strip target/x86_64-unknown-linux-musl/release/statusline
-      
+
       - name: Create archive
         run: |
           cd target/x86_64-unknown-linux-musl/release
           tar czf statusline-linux-musl.tar.gz statusline
           sha256sum statusline-linux-musl.tar.gz > statusline-linux-musl.tar.gz.sha256
           mv statusline-linux-musl.tar.gz* ../../../
-      
+
       - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         env:
@@ -298,7 +298,7 @@ jobs:
           asset_path: ./statusline-linux-musl.tar.gz
           asset_name: statusline-linux-musl.tar.gz
           asset_content_type: application/gzip
-      
+
       - name: Upload Checksum
         uses: actions/upload-release-asset@v1
         env:
@@ -315,20 +315,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Create universal installer
         run: |
           cat > install.sh << 'EOF'
           #!/bin/bash
           set -e
-          
+
           VERSION="${1:-latest}"
           REPO="hagan/claudia-statusline"
-          
+
           # Detect OS and architecture
           OS=$(uname -s | tr '[:upper:]' '[:lower:]')
           ARCH=$(uname -m)
-          
+
           case "$OS" in
             linux)
               OS="linux"
@@ -341,7 +341,7 @@ jobs:
               exit 1
               ;;
           esac
-          
+
           case "$ARCH" in
             x86_64)
               ARCH="amd64"
@@ -354,27 +354,27 @@ jobs:
               exit 1
               ;;
           esac
-          
+
           # Get latest version if not specified
           if [ "$VERSION" = "latest" ]; then
             VERSION=$(curl -s "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
           fi
-          
+
           BINARY="statusline-${OS}-${ARCH}.tar.gz"
           URL="https://github.com/$REPO/releases/download/$VERSION/$BINARY"
-          
+
           echo "Downloading Claudia Statusline $VERSION for $OS/$ARCH..."
           curl -L "$URL" | tar xz
-          
+
           echo "Installing to /usr/local/bin/statusline..."
           sudo mv statusline /usr/local/bin/
-          
+
           echo "Installation complete!"
           statusline --version
           EOF
-          
+
           chmod +x install.sh
-      
+
       - name: Upload Installer
         uses: actions/upload-release-asset@v1
         env:

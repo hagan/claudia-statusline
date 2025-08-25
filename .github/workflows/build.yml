@@ -32,7 +32,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: statusline-linux-arm64
             use-cross: true
-          
+
           # macOS builds
           - os: macos-latest
             target: x86_64-apple-darwin
@@ -40,12 +40,12 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: statusline-darwin-arm64
-          
+
           # Windows builds
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: statusline-windows-amd64
-          
+
           # Static musl build for Alpine/Docker
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
@@ -54,26 +54,26 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
           target: ${{ matrix.target }}
           override: true
-      
+
       - name: Install cross
         if: matrix.use-cross
         run: cargo install cross --git https://github.com/cross-rs/cross
-      
+
       - name: Build with cross
         if: matrix.use-cross
         run: cross build --release --target ${{ matrix.target }}
-      
+
       - name: Build with cargo
         if: ${{ !matrix.use-cross }}
         run: cargo build --release --target ${{ matrix.target }}
-      
+
       - name: Strip binary (Linux/macOS)
         if: matrix.os != 'windows-latest'
         run: |
@@ -88,7 +88,7 @@ jobs:
           else
             strip target/${{ matrix.target }}/release/statusline
           fi
-      
+
       - name: Create archive (Linux/macOS)
         if: matrix.os != 'windows-latest'
         run: |
@@ -100,7 +100,7 @@ jobs:
           else
             sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
           fi
-      
+
       - name: Create archive (Windows)
         if: matrix.os == 'windows-latest'
         shell: powershell
@@ -109,7 +109,7 @@ jobs:
           Compress-Archive -Path statusline.exe -DestinationPath ..\..\..\${{ matrix.artifact }}.zip
           cd ..\..\..
           Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ASCII ${{ matrix.artifact }}.zip.sha256
-      
+
       - name: Upload artifact (Linux/macOS)
         if: matrix.os != 'windows-latest'
         uses: actions/upload-artifact@v4
@@ -118,7 +118,7 @@ jobs:
           path: |
             ${{ matrix.artifact }}.tar.gz
             ${{ matrix.artifact }}.tar.gz.sha256
-      
+
       - name: Upload artifact (Windows)
         if: matrix.os == 'windows-latest'
         uses: actions/upload-artifact@v4
@@ -127,13 +127,13 @@ jobs:
           path: |
             ${{ matrix.artifact }}.zip
             ${{ matrix.artifact }}.zip.sha256
-      
+
       - name: Test binary
         if: matrix.os != 'windows-latest' && !matrix.use-cross
         run: |
           ./target/${{ matrix.target }}/release/statusline --version
           echo '{"workspace":{"current_dir":"/tmp"}}' | ./target/${{ matrix.target }}/release/statusline
-      
+
       - name: Test binary (Windows)
         if: matrix.os == 'windows-latest'
         shell: powershell
@@ -157,7 +157,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-      
+
       - name: Display binary sizes
         run: |
           echo "## Binary Sizes"

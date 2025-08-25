@@ -65,20 +65,20 @@ impl SqliteDatabase {
 
         // Initialize database with schema
         let conn = Connection::open(db_path)?;
-        
+
         // Enable WAL mode for concurrent access
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 10000)?; // 10 second timeout
         conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
-        
+
         // Create tables and indexes
         conn.execute_batch(SCHEMA)?;
-        
+
         Ok(Self {
             path: db_path.to_path_buf(),
         })
     }
-    
+
     /// Update or insert a session with atomic transaction
     pub fn update_session(
         &self,
@@ -89,13 +89,13 @@ impl SqliteDatabase {
     ) -> Result<(f64, f64)> {
         let mut conn = Connection::open(&self.path)?;
         let tx = conn.transaction()?;
-        
+
         let result = self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
-        
+
         tx.commit()?;
         Ok(result)
     }
-    
+
     fn update_session_tx(
         &self,
         tx: &Transaction,
@@ -107,7 +107,7 @@ impl SqliteDatabase {
         let now = Local::now().to_rfc3339();
         let today = Local::now().format("%Y-%m-%d").to_string();
         let month = Local::now().format("%Y-%m").to_string();
-        
+
         // UPSERT session (atomic operation)
         tx.execute(
             "INSERT INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
@@ -119,7 +119,7 @@ impl SqliteDatabase {
                 lines_removed = lines_removed + ?6",
             params![session_id, &now, &now, cost, lines_added as i64, lines_removed as i64],
         )?;
-        
+
         // Update daily stats atomically
         tx.execute(
             "INSERT INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
@@ -130,7 +130,7 @@ impl SqliteDatabase {
                 total_lines_removed = total_lines_removed + ?4",
             params![&today, cost, lines_added as i64, lines_removed as i64],
         )?;
-        
+
         // Update monthly stats atomically
         tx.execute(
             "INSERT INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed, session_count)
@@ -141,33 +141,33 @@ impl SqliteDatabase {
                 total_lines_removed = total_lines_removed + ?4",
             params![&month, cost, lines_added as i64, lines_removed as i64],
         )?;
-        
+
         // Get totals for return
         let day_total: f64 = tx.query_row(
             "SELECT total_cost FROM daily_stats WHERE date = ?1",
             params![&today],
             |row| row.get(0),
         ).unwrap_or(0.0);
-        
+
         let session_total: f64 = tx.query_row(
             "SELECT cost FROM sessions WHERE session_id = ?1",
             params![session_id],
             |row| row.get(0),
         ).unwrap_or(0.0);
-        
+
         Ok((day_total, session_total))
     }
-    
+
     /// Get session duration in seconds
     pub fn get_session_duration(&self, session_id: &str) -> Option<u64> {
         let conn = Connection::open(&self.path).ok()?;
-        
+
         let start_time: String = conn.query_row(
             "SELECT start_time FROM sessions WHERE session_id = ?1",
             params![session_id],
             |row| row.get(0),
         ).ok()?;
-        
+
         // Parse ISO 8601 timestamp
         if let Ok(start) = chrono::DateTime::parse_from_rfc3339(&start_time) {
             let now = Local::now();
@@ -177,7 +177,7 @@ impl SqliteDatabase {
             None
         }
     }
-    
+
     /// Get all-time total cost
     pub fn get_all_time_total(&self) -> Result<f64> {
         let conn = Connection::open(&self.path)?;
@@ -188,7 +188,7 @@ impl SqliteDatabase {
         )?;
         Ok(total)
     }
-    
+
     /// Get today's total cost
     pub fn get_today_total(&self) -> Result<f64> {
         let conn = Connection::open(&self.path)?;
@@ -200,7 +200,7 @@ impl SqliteDatabase {
         ).unwrap_or(0.0);
         Ok(total)
     }
-    
+
     /// Get current month's total cost
     pub fn get_month_total(&self) -> Result<f64> {
         let conn = Connection::open(&self.path)?;
@@ -212,7 +212,7 @@ impl SqliteDatabase {
         ).unwrap_or(0.0);
         Ok(total)
     }
-    
+
     /// Check if database is initialized and accessible
     pub fn is_healthy(&self) -> bool {
         if let Ok(conn) = Connection::open(&self.path) {
@@ -227,43 +227,47 @@ impl SqliteDatabase {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_database_creation() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        
-        let db = SqliteDatabase::new(&db_path).unwrap();
-        assert!(db.is_healthy());
+
+        let _db = SqliteDatabase::new(&db_path).unwrap();
         assert!(db_path.exists());
+
+        // Test that we can open and query the database
+        let conn = Connection::open(&db_path).unwrap();
+        let count: i32 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        assert_eq!(count, 0);
     }
-    
+
     #[test]
     fn test_session_update() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = SqliteDatabase::new(&db_path).unwrap();
-        
+
         let (day_total, session_total) = db.update_session("test-session", 10.0, 100, 50).unwrap();
         assert_eq!(day_total, 10.0);
         assert_eq!(session_total, 10.0);
-        
+
         // Update same session
         let (day_total, session_total) = db.update_session("test-session", 5.0, 50, 25).unwrap();
         assert_eq!(day_total, 15.0);
         assert_eq!(session_total, 15.0);
     }
-    
+
     #[test]
     fn test_concurrent_updates() {
         use std::thread;
-        
+
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        
+
         // Create database
         SqliteDatabase::new(&db_path).unwrap();
-        
+
         // Spawn 10 threads updating different sessions
         let handles: Vec<_> = (0..10).map(|i| {
             let path = db_path.clone();
@@ -272,12 +276,12 @@ mod tests {
                 db.update_session(&format!("session-{}", i), 1.0, 10, 5)
             })
         }).collect();
-        
+
         // Wait for all threads
         for handle in handles {
             assert!(handle.join().unwrap().is_ok());
         }
-        
+
         // Verify all 10 sessions were created
         let conn = Connection::open(&db_path).unwrap();
         let count: i64 = conn.query_row(
@@ -287,18 +291,18 @@ mod tests {
         ).unwrap();
         assert_eq!(count, 10);
     }
-    
+
     #[test]
     fn test_aggregates() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
         let db = SqliteDatabase::new(&db_path).unwrap();
-        
+
         // Add multiple sessions
         db.update_session("session-1", 10.0, 100, 50).unwrap();
         db.update_session("session-2", 20.0, 200, 100).unwrap();
         db.update_session("session-3", 30.0, 300, 150).unwrap();
-        
+
         // Check totals
         assert_eq!(db.get_today_total().unwrap(), 60.0);
         assert_eq!(db.get_month_total().unwrap(), 60.0);

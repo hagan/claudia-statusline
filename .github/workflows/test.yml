@@ -139,32 +139,32 @@ jobs:
         # Create test data directory
         export XDG_DATA_HOME=/tmp/test-data
         mkdir -p $XDG_DATA_HOME/claudia-statusline
-        
+
         # Run statusline with cost data to trigger dual-write
         echo '{"workspace":{"current_dir":"/tmp"},"session_id":"test-sqlite-ci","cost":{"total_cost_usd":10.50,"total_lines_added":500,"total_lines_removed":100}}' | ./target/release/statusline
-        
+
         # Verify both files exist
         test -f $XDG_DATA_HOME/claudia-statusline/stats.json
         test -f $XDG_DATA_HOME/claudia-statusline/stats.db
-        
+
         # Verify JSON contains the session
         grep -q "test-sqlite-ci" $XDG_DATA_HOME/claudia-statusline/stats.json
-        
+
         # Verify SQLite database is valid
         sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions WHERE session_id='test-sqlite-ci';" | grep -q "1"
 
     - name: Test concurrent SQLite access
       run: |
         export XDG_DATA_HOME=/tmp/test-data
-        
+
         # Run 5 concurrent statusline processes
         for i in {1..5}; do
           echo '{"workspace":{"current_dir":"/tmp"},"session_id":"concurrent-'$i'","cost":{"total_cost_usd":'$i'.50}}' | ./target/release/statusline &
         done
-        
+
         # Wait for all to complete
         wait
-        
+
         # Verify all sessions were written
         for i in {1..5}; do
           sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions WHERE session_id='concurrent-$i';" | grep -q "1"
@@ -174,7 +174,7 @@ jobs:
       run: |
         export XDG_DATA_HOME=/tmp/test-migration
         mkdir -p $XDG_DATA_HOME/claudia-statusline
-        
+
         # Create a pre-existing JSON stats file
         cat > $XDG_DATA_HOME/claudia-statusline/stats.json << 'EOF'
         {
@@ -199,13 +199,13 @@ jobs:
           }
         }
         EOF
-        
+
         # Run statusline to trigger migration
         echo '{"workspace":{"current_dir":"/tmp"},"session_id":"new-session","cost":{"total_cost_usd":5.0}}' | ./target/release/statusline
-        
+
         # Verify SQLite database was created
         test -f $XDG_DATA_HOME/claudia-statusline/stats.db
-        
+
         # Verify both sessions exist in SQLite
         sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions;" | grep -q "2"
 

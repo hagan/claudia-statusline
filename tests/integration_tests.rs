@@ -357,25 +357,25 @@ fn test_concurrent_stats_updates() {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
     use tempfile::TempDir;
-    
+
     // Create temp directory for stats
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path().to_str().unwrap().to_string();
-    
+
     let completed = Arc::new(AtomicU32::new(0));
     let mut handles = vec![];
-    
+
     // Run 5 concurrent statusline processes
     for i in 0..5 {
         let completed_clone = completed.clone();
         let temp_path_clone = temp_path.clone();
-        
+
         let handle = thread::spawn(move || {
             let json = format!(
                 r#"{{"workspace":{{"current_dir":"/tmp"}},"session_id":"concurrent-{}","cost":{{"total_cost_usd":1.0}}}}"#,
                 i
             );
-            
+
             let output = Command::new("cargo")
                 .args(&["run", "--quiet", "--", "--"])
                 .env("XDG_DATA_HOME", temp_path_clone)
@@ -388,20 +388,20 @@ fn test_concurrent_stats_updates() {
                     child.wait_with_output()
                 })
                 .expect("Failed to execute binary");
-            
+
             if output.status.success() {
                 completed_clone.fetch_add(1, Ordering::SeqCst);
             }
         });
-        
+
         handles.push(handle);
     }
-    
+
     // Wait for all threads
     for handle in handles {
         handle.join().unwrap();
     }
-    
+
     // All 5 should complete successfully
     assert_eq!(completed.load(Ordering::SeqCst), 5, "Not all concurrent updates succeeded");
 }

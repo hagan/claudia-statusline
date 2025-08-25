@@ -101,7 +101,7 @@ pub fn format_output(
                     // Fallback to parsing transcript if available
                     transcript_path.and_then(|t| parse_duration(t))
                 });
-            
+
             let burn_rate = duration.and_then(|d| {
                 if d > 60 {  // Only show burn rate for sessions > 1 minute
                     Some((total_cost * 3600.0) / d as f64)
@@ -263,17 +263,17 @@ mod tests {
         let bar = format_context_bar(&high);
         assert!(bar.contains("95%"));
     }
-    
+
     #[test]
     fn test_burn_rate_calculation() {
         use std::io::Write;
         use tempfile::NamedTempFile;
-        
+
         // Create a temporary transcript file with 10-minute duration
         let mut file = NamedTempFile::new().unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"Start"}},"timestamp":"2025-08-25T10:00:00.000Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"End"}},"timestamp":"2025-08-25T10:10:00.000Z"}}"#).unwrap();
-        
+
         // Test that burn rate is calculated correctly
         // $0.50 over 10 minutes (600 seconds) = $3.00/hour
         let cost = Cost {
@@ -281,20 +281,20 @@ mod tests {
             total_lines_added: None,
             total_lines_removed: None,
         };
-        
+
         // The burn rate calculation happens in format_output
         // We can verify the math directly here
         let duration = 600u64; // 10 minutes in seconds
         let total_cost = 0.50;
         let burn_rate = (total_cost * 3600.0) / duration as f64;
         assert_eq!(burn_rate, 3.0); // $3.00 per hour
-        
+
         // Test with 5-minute session (the problematic case)
         let duration_5min = 300u64; // 5 minutes
         let cost_high = 33.28; // The cost from the user's example
         let burn_rate_5min = (cost_high * 3600.0) / duration_5min as f64;
         assert_eq!(burn_rate_5min, 399.36); // This WAS the problem - now fixed
-        
+
         // With proper timestamp parsing, 5 minutes should give correct rate
         let realistic_cost = 0.25; // More realistic for 5 minutes
         let realistic_burn = (realistic_cost * 3600.0) / 300.0;

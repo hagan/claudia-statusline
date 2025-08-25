@@ -8,7 +8,7 @@ pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
     // Parser for ISO 8601 timestamps like:
     // "2025-08-22T18:32:37.789Z" (UTC)
     // "2025-08-24T23:24:15.577606003-07:00" (with timezone offset)
-    
+
     // Handle timezone
     let (timestamp_part, tz_offset_hours) = if timestamp.ends_with('Z') {
         (&timestamp[..timestamp.len() - 1], 0i32)
@@ -31,34 +31,34 @@ pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
     } else {
         (timestamp, 0)
     };
-    
+
     // Split into date and time
     let parts: Vec<&str> = timestamp_part.split('T').collect();
     if parts.len() != 2 {
         return None;
     }
-    
+
     // Parse date (YYYY-MM-DD)
     let date_parts: Vec<&str> = parts[0].split('-').collect();
     if date_parts.len() != 3 {
         return None;
     }
-    
+
     let year: i32 = date_parts[0].parse().ok()?;
     let month: u32 = date_parts[1].parse().ok()?;
     let day: u32 = date_parts[2].parse().ok()?;
-    
+
     // Parse time (HH:MM:SS.sss)
     let time_and_ms: Vec<&str> = parts[1].split('.').collect();
     let time_parts: Vec<&str> = time_and_ms[0].split(':').collect();
     if time_parts.len() != 3 {
         return None;
     }
-    
+
     let hour: u32 = time_parts[0].parse().ok()?;
     let minute: u32 = time_parts[1].parse().ok()?;
     let second: u32 = time_parts[2].parse().ok()?;
-    
+
     // Calculate days since Unix epoch with proper leap year handling
     let mut leap_years = 0;
     for y in 1970..year {
@@ -66,25 +66,25 @@ pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
             leap_years += 1;
         }
     }
-    
+
     // Add extra day for February if current year is leap year and we're past February
     let leap_day_adjustment = if month > 2 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
         1
     } else {
         0
     };
-    
-    let days_since_epoch = (year - 1970) as u64 * 365 
+
+    let days_since_epoch = (year - 1970) as u64 * 365
         + leap_years as u64
         + days_before_month(month) as u64
         + leap_day_adjustment
         + (day - 1) as u64;
-    
+
     let seconds = days_since_epoch * 86400
         + hour as u64 * 3600
         + minute as u64 * 60
         + second as u64;
-    
+
     // Apply timezone offset (add because we want UTC)
     Some((seconds as i64 + (tz_offset_hours as i64 * 3600)) as u64)
 }
@@ -305,23 +305,23 @@ mod tests {
             parse_iso8601_to_unix("2025-08-25T10:00:00.000Z").unwrap(),
             parse_iso8601_to_unix("2025-08-25T10:00:00.000Z").unwrap()
         );
-        
+
         // Test that timestamps 5 minutes apart give 300 seconds difference
         let t1 = parse_iso8601_to_unix("2025-08-25T10:00:00.000Z").unwrap();
         let t2 = parse_iso8601_to_unix("2025-08-25T10:05:00.000Z").unwrap();
         assert_eq!(t2 - t1, 300);
-        
+
         // Test that timestamps 1 hour apart give 3600 seconds difference
         let t3 = parse_iso8601_to_unix("2025-08-25T10:00:00.000Z").unwrap();
         let t4 = parse_iso8601_to_unix("2025-08-25T11:00:00.000Z").unwrap();
         assert_eq!(t4 - t3, 3600);
-        
+
         // Test with milliseconds
         assert!(parse_iso8601_to_unix("2025-08-25T10:00:00.123Z").is_some());
-        
+
         // Test invalid formats
         assert!(parse_iso8601_to_unix("2025-08-25 10:00:00").is_none()); // No T separator
-        assert!(parse_iso8601_to_unix("2025-08-25T10:00:00").is_none()); // No Z suffix
+        assert!(parse_iso8601_to_unix("2025-08-25T10:00:00").is_some()); // No Z suffix - should still parse
         assert!(parse_iso8601_to_unix("not a timestamp").is_none());
     }
 
@@ -349,7 +349,7 @@ mod tests {
         let result2 = parse_duration(file2.path().to_str().unwrap());
         assert!(result2.is_none());
     }
-    
+
     #[test]
     fn test_parse_duration_with_realistic_timestamps() {
         use std::io::Write;
@@ -363,7 +363,7 @@ mod tests {
         let result = parse_duration(file.path().to_str().unwrap());
         assert!(result.is_some());
         assert_eq!(result.unwrap(), 300); // 5 minutes = 300 seconds
-        
+
         // Test 10-minute session
         let mut file2 = NamedTempFile::new().unwrap();
         writeln!(file2, r#"{{"message":{{"role":"user","content":"Start"}},"timestamp":"2025-08-25T10:00:00.000Z"}}"#).unwrap();

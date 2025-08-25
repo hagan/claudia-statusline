@@ -102,12 +102,12 @@ log_test "Checking stats directory..."
 STATS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/claudia-statusline"
 if [ -d "$STATS_DIR" ]; then
     log_pass "Stats directory exists: $STATS_DIR"
-    
+
     # Check for stats files
     if [ -f "$STATS_DIR/stats.json" ]; then
         log_info "JSON stats file found"
     fi
-    
+
     if [ -f "$STATS_DIR/stats.db" ]; then
         log_info "SQLite database found (v2.2.0+ feature)"
     fi
@@ -118,7 +118,7 @@ fi
 # Test 8: Test SQLite functionality (if sqlite3 is available)
 if command -v sqlite3 &> /dev/null && [ -f "$STATS_DIR/stats.db" ]; then
     log_test "Testing SQLite database..."
-    
+
     # Check if we can query the database
     if SESSION_COUNT=$(sqlite3 "$STATS_DIR/stats.db" "SELECT COUNT(*) FROM sessions;" 2>/dev/null); then
         log_pass "SQLite database is valid, sessions: $SESSION_COUNT"
@@ -135,12 +135,12 @@ TEST_SESSION="test-$(date +%s)"
 echo "{\"workspace\":{\"current_dir\":\"/tmp\"},\"session_id\":\"$TEST_SESSION\",\"cost\":{\"total_cost_usd\":0.01}}" | statusline &> /dev/null
 if [ $? -eq 0 ]; then
     log_pass "Stats tracking works"
-    
+
     # Verify the session was recorded
     if [ -f "$STATS_DIR/stats.json" ] && grep -q "$TEST_SESSION" "$STATS_DIR/stats.json" 2>/dev/null; then
         log_info "Session recorded in JSON stats"
     fi
-    
+
     if [ -f "$STATS_DIR/stats.db" ] && command -v sqlite3 &> /dev/null; then
         if sqlite3 "$STATS_DIR/stats.db" "SELECT session_id FROM sessions WHERE session_id='$TEST_SESSION';" 2>/dev/null | grep -q "$TEST_SESSION"; then
             log_info "Session recorded in SQLite database"

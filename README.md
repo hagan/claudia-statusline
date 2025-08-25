@@ -488,7 +488,7 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ### v2.1.1 (2025-08-25)
 - **Fixed Context Progress Bar** - Now displays correctly with all token types
-- **Fixed Day Charge Display** - Shows correctly even with empty cost objects  
+- **Fixed Day Charge Display** - Shows correctly even with empty cost objects
 - **Added Cache Token Support** - Includes cache_read_input_tokens and cache_creation_input_tokens
 - **Fixed Transcript Field** - Uses correct `transcript` field name (not `transcript_path`)
 - **Enhanced Content Parsing** - Handles both string and array content types

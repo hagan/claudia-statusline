@@ -8,13 +8,13 @@ use crate::database::SqliteDatabase;
 pub trait Migration {
     /// Unique version number (must be sequential)
     fn version(&self) -> u32;
-    
+
     /// Human-readable description
     fn description(&self) -> &str;
-    
+
     /// Apply the migration (forward)
     fn up(&self, tx: &Transaction) -> Result<()>;
-    
+
     /// Rollback the migration (backward)
     fn down(&self, tx: &Transaction) -> Result<()>;
 }
@@ -29,14 +29,14 @@ impl MigrationRunner {
     pub fn new(db_path: &Path) -> Result<Self> {
         // Initialize database
         let _db = SqliteDatabase::new(db_path)?;
-        
+
         // Open connection for migrations
         let conn = Connection::open(db_path)?;
-        
+
         // Enable WAL for concurrent access
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 10000)?;
-        
+
         // Create migrations table
         conn.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -48,20 +48,20 @@ impl MigrationRunner {
             )",
             [],
         )?;
-        
+
         Ok(Self {
             conn,
             migrations: Self::load_all_migrations(),
         })
     }
-    
+
     /// Load all migration definitions
     fn load_all_migrations() -> Vec<Box<dyn Migration>> {
         vec![
             Box::new(InitialJsonToSqlite),
         ]
     }
-    
+
     /// Get current schema version
     pub fn current_version(&self) -> Result<u32> {
         let version: Option<u32> = self.conn.query_row(
@@ -69,21 +69,21 @@ impl MigrationRunner {
             [],
             |row| row.get(0),
         ).unwrap_or(None);
-        
+
         Ok(version.unwrap_or(0))
     }
-    
+
     /// Run all pending migrations
     pub fn migrate(&mut self) -> Result<()> {
         let current = self.current_version()?;
-        
+
         // Collect versions to run
         let versions_to_run: Vec<u32> = self.migrations
             .iter()
             .filter(|m| m.version() > current)
             .map(|m| m.version())
             .collect();
-        
+
         // Run each migration by version
         for version in versions_to_run {
             // Find the migration with this version
@@ -91,14 +91,14 @@ impl MigrationRunner {
                 .iter()
                 .find(|m| m.version() == version)
                 .expect("Migration should exist");
-            
+
             // Run the migration directly instead of calling run_migration
             let start = std::time::Instant::now();
             let tx = self.conn.transaction()?;
-            
+
             // Apply migration
             migration.up(&tx)?;
-            
+
             // Record migration
             tx.execute(
                 "INSERT INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
@@ -111,10 +111,10 @@ impl MigrationRunner {
                     start.elapsed().as_millis() as i64,
                 ],
             )?;
-            
+
             tx.commit()?;
         }
-        
+
         Ok(())
     }
 }
@@ -124,15 +124,15 @@ pub struct InitialJsonToSqlite;
 
 impl Migration for InitialJsonToSqlite {
     fn version(&self) -> u32 { 1 }
-    
+
     fn description(&self) -> &str {
         "Import existing JSON stats data to SQLite"
     }
-    
+
     fn up(&self, tx: &Transaction) -> Result<()> {
         // Load existing JSON data
         let stats_data = StatsData::load();
-        
+
         // Import sessions
         for (session_id, session) in &stats_data.sessions {
             tx.execute(
@@ -148,7 +148,7 @@ impl Migration for InitialJsonToSqlite {
                 ],
             )?;
         }
-        
+
         // Import daily stats
         for (date, daily) in &stats_data.daily {
             tx.execute(
@@ -163,7 +163,7 @@ impl Migration for InitialJsonToSqlite {
                 ],
             )?;
         }
-        
+
         // Import monthly stats
         for (month, monthly) in &stats_data.monthly {
             tx.execute(
@@ -178,10 +178,10 @@ impl Migration for InitialJsonToSqlite {
                 ],
             )?;
         }
-        
+
         Ok(())
     }
-    
+
     fn down(&self, tx: &Transaction) -> Result<()> {
         // Clear all imported data
         tx.execute("DELETE FROM sessions", [])?;
@@ -204,15 +204,15 @@ pub fn run_migrations() {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_migration_runner() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = temp_dir.path().join("test.db");
-        
+
         let mut runner = MigrationRunner::new(&db_path).unwrap();
         assert_eq!(runner.current_version().unwrap(), 0);
-        
+
         runner.migrate().unwrap();
         assert_eq!(runner.current_version().unwrap(), 1);
     }
