@@ -8,13 +8,15 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 
 ## Technical Highlights
 
-- **Modular Architecture** - Clean separation across 7 focused modules (~200 lines each)
-- **Comprehensive Testing** - 56 tests (38 unit + 18 integration), 54 passing
-- **Multi-Console Safe** - Process-safe file locking for concurrent Claude sessions
+- **Modular Architecture** - Clean separation across 8 focused modules (~200 lines each)
+- **Comprehensive Testing** - 75 tests (57 unit + 18 integration), all passing in CI
+- **Dual Storage Backend** - SQLite with JSON fallback for maximum reliability (v2.2.0)
+- **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations
 - **Atomic Operations** - Safe file writes prevent data corruption
 - **Data Integrity** - No stats loss even with 10+ concurrent sessions
 - **Type Safety** - Strong typing with zero unsafe code
+- **Cross-Platform** - Automated CI/CD builds for Linux (x86_64, ARM64), macOS, and Windows
 
 ## Features
 

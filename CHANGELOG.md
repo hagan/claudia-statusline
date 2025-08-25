@@ -14,12 +14,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Concurrent Access Support**: Multiple Claude consoles can safely update stats simultaneously
 - **Automatic Migration**: JSON data automatically migrated to SQLite on first run
 - **Integration Tests**: 9 new tests for SQLite functionality including concurrency tests
+- **Multi-platform CI/CD**: Automated builds for Linux (x86_64, ARM64), macOS, and Windows
+- **GitHub Actions Workflows**: Comprehensive testing and release automation
 - New dependencies: rusqlite with bundled SQLite engine
 
 ### Changed
 - Stats module now performs dual-writes to both JSON and SQLite
-- Binary size increased to ~2.6MB (includes bundled SQLite)
+- Binary size increased to ~2.7MB (includes bundled SQLite)
 - Database stored at `~/.local/share/claudia-statusline/stats.db`
+
+### Fixed
+- SQLite migration now correctly imports existing JSON sessions on first database creation
+- Prevented double-counting of current session during migration
+- GitHub Actions deprecated artifact actions updated from v3 to v4
+- CI tests now properly skip timing-sensitive tests with environment detection
 
 ### Technical Details
 - Phase 1 implementation: JSON remains primary, SQLite as secondary
@@ -27,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 10-second busy timeout for database operations
 - UPSERT operations for accumulating session values
 - Transaction support with automatic rollback on errors
+- Migration filters out current session to avoid double-counting
 
 ### Known Issues
 - 5 tests are skipped in CI environment due to timing and path differences (production code works correctly)

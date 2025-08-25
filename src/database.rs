@@ -221,6 +221,48 @@ impl SqliteDatabase {
             false
         }
     }
+
+    /// Check if the database has any sessions
+    pub fn has_sessions(&self) -> bool {
+        if let Ok(conn) = Connection::open(&self.path) {
+            if let Ok(count) = conn.query_row::<i64, _, _>(
+                "SELECT COUNT(*) FROM sessions",
+                [],
+                |row| row.get(0),
+            ) {
+                return count > 0;
+            }
+        }
+        false
+    }
+
+    /// Import sessions from JSON stats data (for migration)
+    pub fn import_sessions(
+        &self,
+        sessions: &std::collections::HashMap<String, crate::stats::SessionStats>,
+    ) -> Result<()> {
+        let mut conn = Connection::open(&self.path)?;
+        let tx = conn.transaction()?;
+
+        for (session_id, session) in sessions.iter() {
+            // Insert session (don't use UPSERT, just INSERT as this is initial import)
+            tx.execute(
+                "INSERT OR IGNORE INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    session_id,
+                    session.start_time.as_deref().unwrap_or(""),
+                    &session.last_updated,
+                    session.cost,
+                    session.lines_added as i64,
+                    session.lines_removed as i64,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

@@ -290,7 +290,34 @@ where
     if let Ok(db_path) = StatsData::get_sqlite_path() {
         match SqliteDatabase::new(&db_path) {
             Ok(db) => {
-                // Find the most recently updated session to write to SQLite
+                // Find the most recently updated session to write to SQLite first
+                let current_session = stats_data.sessions.iter()
+                    .max_by_key(|(_, s)| &s.last_updated)
+                    .map(|(id, _)| id.clone());
+
+                // Check if this is a fresh SQLite database that needs migration
+                if !db.has_sessions() && !stats_data.sessions.is_empty() {
+                    // Migrate all existing sessions from JSON to SQLite
+                    // Note: We'll handle the current session separately to avoid double-counting
+                    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> =
+                        stats_data.sessions.iter()
+                            .filter(|(id, _)| current_session.as_ref() != Some(id))
+                            .map(|(id, session)| (id.clone(), session.clone()))
+                            .collect();
+
+                    if !sessions_to_migrate.is_empty() {
+                        match db.import_sessions(&sessions_to_migrate) {
+                            Ok(_) => {
+                                eprintln!("Migrated {} existing sessions from JSON to SQLite", sessions_to_migrate.len());
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to migrate sessions to SQLite: {}", e);
+                            }
+                        }
+                    }
+                }
+
+                // Write the current session (will be an insert or update)
                 if let Some((session_id, session)) = stats_data.sessions.iter()
                     .max_by_key(|(_, s)| &s.last_updated)
                 {
