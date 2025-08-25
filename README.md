@@ -40,7 +40,17 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 
 ## Quick Start
 
-### One-Line Install (Claude Code)
+### One-Line Install (Pre-built Binary) - Recommended
+```bash
+curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+```
+
+Or with wget:
+```bash
+wget -qO- https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+```
+
+### Build from Source
 ```bash
 git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline && ./install-statusline.sh
 ```
@@ -63,23 +73,24 @@ git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline &
 
 #### Option 1: Pre-built Binaries (Fastest)
 
+**Automatic Installation** (detects your OS and architecture):
+```bash
+curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+```
+
+**Manual Download**
+
 Download the latest release for your platform:
 
 | Platform | Architecture | Download |
 |----------|-------------|----------|
 | Linux | x86_64 | [statusline-linux-amd64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz) |
 | Linux | ARM64 | [statusline-linux-arm64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-arm64.tar.gz) |
-| Linux | musl (Alpine/Docker) | [statusline-linux-musl.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-musl.tar.gz) |
 | macOS | Intel | [statusline-darwin-amd64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-darwin-amd64.tar.gz) |
 | macOS | Apple Silicon | [statusline-darwin-arm64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-darwin-arm64.tar.gz) |
 | Windows | x86_64 | [statusline-windows-amd64.zip](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-windows-amd64.zip) |
 
-**Quick Install Script** (automatically detects your OS and architecture):
-```bash
-curl -sSL https://github.com/hagan/claudia-statusline/releases/latest/download/install.sh | bash
-```
-
-**Manual Download** (example for Linux x86_64):
+Example for Linux x86_64:
 ```bash
 curl -L https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz | tar xz
 chmod +x statusline
