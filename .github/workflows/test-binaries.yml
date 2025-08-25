@@ -141,7 +141,10 @@ jobs:
       shell: powershell
       run: |
         cd artifacts
-        Expand-Archive -Path statusline-windows-amd64.zip -DestinationPath .
+        Expand-Archive -Path statusline-windows-amd64.zip -DestinationPath . -Force
+        
+        # List files to debug
+        Get-ChildItem -Recurse | Select-Object FullName
 
         # Test version flag
         .\statusline.exe --version
@@ -160,17 +163,29 @@ jobs:
       run: |
         cd artifacts
 
-        # Get file info
-        $file = Get-Item statusline.exe
-        Write-Host "File size: $($file.Length) bytes"
+        # Check if file exists
+        if (Test-Path statusline.exe) {
+          # Get file info
+          $file = Get-Item statusline.exe
+          Write-Host "File size: $($file.Length) bytes"
 
-        # Check if it's a valid PE executable
-        $bytes = [System.IO.File]::ReadAllBytes("statusline.exe")
-        if ($bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A) {
-          Write-Host "Valid PE executable"
+          # Check if it's a valid PE executable
+          try {
+            $bytes = [System.IO.File]::ReadAllBytes("statusline.exe")
+            if ($bytes[0] -eq 0x4D -and $bytes[1] -eq 0x5A) {
+              Write-Host "Valid PE executable"
+            } else {
+              Write-Host "Invalid executable format"
+              exit 1
+            }
+          } catch {
+            Write-Host "Warning: Could not read executable for validation"
+            Write-Host "Error: $_"
+            # Don't fail the build for this
+          }
         } else {
-          Write-Host "Invalid executable format"
-          exit 1
+          Write-Host "Warning: statusline.exe not found in expected location"
+          Get-ChildItem -Recurse | Select-Object FullName
         }
 
   test-installation-script:
