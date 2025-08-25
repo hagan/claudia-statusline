@@ -7,6 +7,8 @@ mod stats;
 mod display;
 mod utils;
 mod version;
+mod database;
+mod migrations;
 
 use models::StatuslineInput;
 use stats::{get_or_load_stats_data, update_stats_data};

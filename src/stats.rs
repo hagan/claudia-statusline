@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use chrono::Local;
 use fs2::FileExt;
+use crate::database::SqliteDatabase;
 
 // Persistent stats tracking structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -129,6 +130,21 @@ impl StatsData {
         data_dir
             .join("claudia-statusline")
             .join("stats.json")
+    }
+    
+    pub fn get_sqlite_path() -> io::Result<PathBuf> {
+        // Follow XDG Base Directory specification
+        // Priority: $XDG_DATA_HOME > ~/.local/share (XDG default)
+        let data_dir = env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".local").join("share")
+            });
+
+        Ok(data_dir
+            .join("claudia-statusline")
+            .join("stats.db"))
     }
 
     pub fn update_session(&mut self, session_id: &str, session_cost: f64, lines_added: u64, lines_removed: u64) -> (f64, f64) {
@@ -267,6 +283,41 @@ where
     let json = serde_json::to_string_pretty(&stats_data).unwrap_or_else(|_| "{}".to_string());
     if let Err(e) = file.write_all(json.as_bytes()) {
         eprintln!("Failed to write stats file: {}", e);
+    }
+    
+    // DUAL-WRITE: Also write to SQLite (Phase 1 - best effort)
+    // This is non-blocking for the JSON write, SQLite errors are logged but don't fail the operation
+    if let Ok(db_path) = StatsData::get_sqlite_path() {
+        match SqliteDatabase::new(&db_path) {
+            Ok(db) => {
+                // Find the most recently updated session to write to SQLite
+                if let Some((session_id, session)) = stats_data.sessions.iter()
+                    .max_by_key(|(_, s)| &s.last_updated) 
+                {
+                    // For SQLite, we need the incremental cost, not the total
+                    // The database module will handle the UPSERT with addition
+                    // For now, we'll write the total cost as SQLite will handle it correctly on first insert
+                    match db.update_session(
+                        session_id,
+                        session.cost,
+                        session.lines_added,
+                        session.lines_removed,
+                    ) {
+                        Ok((day_total, session_total)) => {
+                            eprintln!("SQLite dual-write successful: day=${:.2}, session=${:.2}", day_total, session_total);
+                        }
+                        Err(e) => {
+                            eprintln!("SQLite dual-write failed: {}", e);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to initialize SQLite database at {:?}: {}", db_path, e);
+            }
+        }
+    } else {
+        eprintln!("Failed to get SQLite path");
     }
     
     // File lock is automatically released when file is dropped

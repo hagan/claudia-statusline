@@ -24,14 +24,16 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 - **Model Detection** - Shows current Claude model (Opus/Sonnet/Haiku)
 - **Session Duration** - Tracks conversation length from transcript
 - **Cost Tracking** - Displays session cost in USD with burn rate ($/hour)
-- **Persistent Stats Tracking** - Accumulates costs and usage stats across sessions in XDG-compliant location (`~/.local/share/claudia-statusline/stats.json`)
+- **Persistent Stats Tracking** - Accumulates costs and usage stats across sessions in XDG-compliant location
+- **Dual Storage Backend** (v2.2.0+) - SQLite database with JSON fallback for reliable concurrent access
 - **Lines Changed** - Shows added/removed lines count from session
 - **Progress Bars** - Visual indicators for context usage (10-char bar)
 - **Burn Rate** - Shows cost per hour for active sessions
+- **Concurrent Access** - Multiple Claude consoles can safely update stats simultaneously
 - **Theme-Aware Colors** - Automatically adapts to dark/light terminal themes
 - **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
-- **High Performance** - Written in Rust for minimal overhead
-- **Source Integrity** - SHA256 hash validation ensures authentic source
+- **High Performance** - Written in Rust for minimal overhead (~5ms execution)
+- **Migration Support** - Automatic migration from JSON to SQLite with rollback capability
 - **Full Source** - Complete Rust implementation with proper attribution
 
 ## Quick Start

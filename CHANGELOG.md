@@ -5,6 +5,29 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2025-08-25
+
+### Added
+- **Dual Storage Backend**: SQLite database alongside JSON for better concurrent access
+- **SQLite Integration**: Full CRUD operations with WAL mode for concurrent read/write
+- **Migration Framework**: Schema versioning system with up/down migrations
+- **Concurrent Access Support**: Multiple Claude consoles can safely update stats simultaneously
+- **Automatic Migration**: JSON data automatically migrated to SQLite on first run
+- **Integration Tests**: 9 new tests for SQLite functionality including concurrency tests
+- New dependencies: rusqlite with bundled SQLite engine
+
+### Changed
+- Stats module now performs dual-writes to both JSON and SQLite
+- Binary size increased to ~2.6MB (includes bundled SQLite)
+- Database stored at `~/.local/share/claudia-statusline/stats.db`
+
+### Technical Details
+- Phase 1 implementation: JSON remains primary, SQLite as secondary
+- WAL (Write-Ahead Logging) mode enabled for better concurrency
+- 10-second busy timeout for database operations
+- UPSERT operations for accumulating session values
+- Transaction support with automatic rollback on errors
+
 ## [2.1.3] - 2025-08-25
 
 ### Added
@@ -87,6 +110,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+[2.2.0]: https://github.com/hagan/claudia-statusline/compare/v2.1.3...v2.2.0
 [2.1.3]: https://github.com/hagan/claudia-statusline/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/hagan/claudia-statusline/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/hagan/claudia-statusline/compare/v2.1.0...v2.1.1

@@ -10,16 +10,19 @@ The codebase follows a modular architecture with clear separation of concerns:
 
 ```
 src/
-├── main.rs       (110 lines)  - Application entry point, CLI args, orchestration
-├── models.rs     (128 lines)  - Data structures and type definitions
-├── git.rs        (153 lines)  - Git repository operations
-├── stats.rs      (295 lines)  - Persistent statistics tracking
-├── display.rs    (261 lines)  - Output formatting and presentation
-├── utils.rs      (121 lines)  - Utility functions and helpers
-└── version.rs    (102 lines)  - Version information and build metadata
+├── main.rs          (123 lines)  - Application entry point, CLI args, orchestration
+├── models.rs        (128 lines)  - Data structures and type definitions
+├── git.rs           (153 lines)  - Git repository operations
+├── stats.rs         (401 lines)  - Persistent statistics tracking with dual-write
+├── display.rs       (261 lines)  - Output formatting and presentation
+├── utils.rs         (121 lines)  - Utility functions and helpers
+├── version.rs       (102 lines)  - Version information and build metadata
+├── database.rs      (420 lines)  - SQLite database operations and schema
+└── migrations/
+    └── mod.rs       (178 lines)  - Database migration framework
 ```
 
-Total: ~1,170 lines of well-organized, maintainable code
+Total: ~1,887 lines of well-organized, maintainable code
 
 ## Module Responsibilities
 
@@ -53,15 +56,17 @@ Total: ~1,170 lines of well-organized, maintainable code
   - `format_git_info()` - Formats status for display
 
 ### `stats.rs` - Statistics Management
-- Manages persistent stats storage
+- Manages persistent stats storage with dual-write capability
 - Tracks costs across sessions
 - Implements XDG-compliant file storage
 - Provides atomic file operations
+- Performs dual-write to both JSON and SQLite (v2.2.0+)
 - **Key Components:**
   - `StatsData` - Main stats structure
   - `SessionStats`, `DailyStats`, `MonthlyStats` - Aggregation levels
-  - Smart caching with write thresholds
+  - Process-safe file locking with fs2
   - Thread-safe global state management
+  - Dual-write to SQLite for concurrent access
 
 ### `display.rs` - Output Formatting
 - Handles all visual formatting
@@ -95,6 +100,29 @@ Total: ~1,170 lines of well-organized, maintainable code
   - `short_version()` - Compact version format
   - Build-time environment variables
 
+### `database.rs` - SQLite Database Layer
+- Manages SQLite database operations
+- Implements schema creation and management
+- Provides CRUD operations for stats data
+- Enables WAL mode for concurrent access
+- **Key Features:**
+  - Atomic transactions
+  - UPSERT operations for accumulating values
+  - 10-second busy timeout for concurrent access
+  - Session duration tracking
+  - Daily and monthly aggregations
+
+### `migrations/mod.rs` - Migration Framework
+- Handles database schema versioning
+- Provides up/down migration support
+- Tracks applied migrations
+- Supports automatic JSON to SQLite migration
+- **Key Components:**
+  - `Migration` trait for defining migrations
+  - `MigrationRunner` for executing migrations
+  - Version tracking and checksums
+  - Rollback capability
+
 ## Data Flow
 
 ```mermaid
@@ -103,10 +131,13 @@ graph TD
     B --> C[models.rs - Parse Input]
     C --> D{Has Cost Data?}
     D -->|Yes| E[stats.rs - Update Stats]
+    E --> E1[Write to JSON]
+    E --> E2[Write to SQLite]
     D -->|No| F[stats.rs - Load Stats]
     B --> G[git.rs - Get Status]
     B --> H[utils.rs - Process Paths]
-    E --> I[display.rs - Format Output]
+    E1 --> I[display.rs - Format Output]
+    E2 --> I
     F --> I
     G --> I
     H --> I
@@ -121,14 +152,18 @@ graph TD
 - **Benefits:** Easier navigation, parallel development, clear responsibilities
 
 ### 2. XDG Compliance
-- **Decision:** Store stats in `$XDG_DATA_HOME/claudia-statusline/stats.json`
+- **Decision:** Store stats in `$XDG_DATA_HOME/claudia-statusline/`
 - **Rationale:** Follow Linux desktop standards
-- **Fallback:** `~/.local/share/claudia-statusline/stats.json`
+- **Files:**
+  - `stats.json` - Primary stats storage (backward compatible)
+  - `stats.db` - SQLite database for concurrent access (v2.2.0+)
+- **Fallback:** `~/.local/share/claudia-statusline/`
 
 ### 3. Smart Persistence
-- **Decision:** Only save stats on significant changes (>$0.10 or 10 minutes)
-- **Rationale:** Minimize disk I/O while maintaining data integrity
-- **Implementation:** In-memory caching with conditional writes
+- **Decision:** Save all stats updates immediately (v2.1.3+)
+- **Rationale:** Ensure data integrity for concurrent access
+- **Implementation:** Dual-write to JSON and SQLite
+- **Concurrency:** Process-safe file locking (fs2) and SQLite WAL mode
 
 ### 4. Direct Binary Execution
 - **Decision:** No wrapper scripts needed (except debug mode)
@@ -140,32 +175,43 @@ graph TD
 - **Rationale:** Prevent data corruption during writes
 - **Implementation:** `stats.rs` - save() method
 
+### 6. Dual Storage Backend (v2.2.0+)
+- **Decision:** Write to both JSON and SQLite databases
+- **Rationale:** Maintain backward compatibility while adding robust concurrent access
+- **Phase 1:** JSON primary, SQLite secondary (current)
+- **Phase 2:** SQLite primary, JSON secondary (planned)
+- **Phase 3:** SQLite only with migration tool (future)
+
 ## Testing Strategy
 
-### Unit Tests (27 tests)
+### Unit Tests (39 tests)
 Each module contains its own unit tests:
 - `models.rs` - JSON parsing, type detection
 - `git.rs` - Status parsing, formatting
-- `stats.rs` - Persistence, aggregation
+- `stats.rs` - Persistence, aggregation, file locking
 - `display.rs` - Formatting, color selection
 - `utils.rs` - Path handling, context calculation
 - `version.rs` - Version info creation, formatting
+- `database.rs` - SQLite operations, transactions
+- `migrations/mod.rs` - Migration execution
 
-### Integration Tests (14 tests)
-Located in `tests/integration_tests.rs`:
-- End-to-end binary execution
-- JSON input handling
-- Error scenarios
-- Unicode support
-- CLI arguments (--version, -v, --help, -h)
-- ANSI color output verification
+### Integration Tests (17 tests)
+Located in:
+- `tests/integration_tests.rs` - Binary execution, JSON handling
+- `tests/sqlite_integration_tests.rs` - SQLite concurrency, dual-write
+  - Concurrent access testing
+  - WAL mode verification
+  - Transaction rollback
+  - UPSERT behavior
+  - Migration testing
 
 ## Performance Characteristics
 
-- **Binary Size:** ~702KB (release optimized)
-- **Execution Time:** ~5ms average
-- **Memory Usage:** ~2MB resident
-- **Test Execution:** <1 second for all tests
+- **Binary Size:** ~2.6MB (includes bundled SQLite)
+- **Execution Time:** ~5-10ms average
+- **Memory Usage:** ~3MB resident
+- **Test Execution:** <2 seconds for all tests (56 total)
+- **Database Overhead:** <5ms per operation
 
 ### Optimization Flags
 ```toml
@@ -264,4 +310,4 @@ main.rs
 
 ---
 
-*Last Updated: August 24, 2025*
+*Last Updated: August 25, 2025 (v2.2.0)*
