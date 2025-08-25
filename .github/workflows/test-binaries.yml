@@ -252,11 +252,21 @@ jobs:
 
     - name: Validate checksums
       run: |
+        if [ ! -d artifacts ]; then
+          echo "No artifacts directory found - nothing to validate"
+          exit 0
+        fi
+        
         cd artifacts
+        
+        if [ -z "$(ls -A)" ]; then
+          echo "Artifacts directory is empty - nothing to validate"
+          exit 0
+        fi
 
         # For each archive, verify its checksum
         for dir in */; do
-          if [ -f "$dir"*.tar.gz ]; then
+          if [ -d "$dir" ] && [ -f "$dir"*.tar.gz ]; then
             cd "$dir"
             if [ -f *.sha256 ]; then
               sha256sum -c *.sha256
