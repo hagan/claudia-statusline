@@ -19,7 +19,7 @@ jobs:
     
     - name: Download artifacts from build
       if: github.event.workflow_run
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         name: statusline-linux-${{ matrix.arch }}
         path: ./artifacts
@@ -231,7 +231,7 @@ jobs:
     
     steps:
     - name: Download all artifacts
-      uses: actions/download-artifact@v3
+      uses: actions/download-artifact@v4
       with:
         path: ./artifacts
     
