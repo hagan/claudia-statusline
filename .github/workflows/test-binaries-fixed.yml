@@ -165,19 +165,37 @@ jobs:
       run: |
         cd artifacts
 
-        # Check binary exists and size
-        $file = Get-Item statusline.exe
-        Write-Output "Binary size: $($file.Length) bytes"
-        
-        if ($file.Length -gt 10485760) {  # 10MB limit
-          Write-Error "Binary too large!"
-          exit 1
-        }
+        # Check binary exists first
+        if (Test-Path statusline.exe) {
+          # Get file info
+          $file = Get-Item statusline.exe
+          Write-Output "Binary size: $($file.Length) bytes"
 
-        # Check it's a valid PE executable
-        $bytes = [System.IO.File]::ReadAllBytes("statusline.exe")
-        if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-          Write-Error "Not a valid Windows executable!"
+          if ($file.Length -gt 10485760) {  # 10MB limit
+            Write-Error "Binary too large!"
+            exit 1
+          }
+
+          # Check it's a valid PE executable using full path
+          $fullPath = (Get-Item statusline.exe).FullName
+          Write-Output "Validating binary at: $fullPath"
+
+          try {
+            $bytes = [System.IO.File]::ReadAllBytes($fullPath)
+            if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+              Write-Error "Not a valid Windows executable!"
+              exit 1
+            }
+            Write-Output "✓ Binary validation passed"
+          } catch {
+            Write-Error "Failed to read binary: $_"
+            exit 1
+          }
+        } else {
+          Write-Error "statusline.exe not found in artifacts directory"
+          Write-Output "Current directory: $(Get-Location)"
+          Write-Output "Directory contents:"
+          Get-ChildItem -Recurse | Select-Object FullName
           exit 1
         }
 

@@ -45,12 +45,12 @@ fn main() -> Result<()> {
     if args.len() > 1 && args[1] == "--generate-config" {
         let config_path = config::Config::default_config_path()?;
         println!("Generating example config file at: {:?}", config_path);
-        
+
         // Create parent directories
         if let Some(parent) = config_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        
+
         // Write example config
         std::fs::write(&config_path, config::Config::example_toml())?;
         println!("Config file generated successfully!");

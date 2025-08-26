@@ -76,7 +76,7 @@ impl SqliteDatabase {
 
         // Get configuration
         let config = config::get_config();
-        
+
         // Create connection pool
         let manager = SqliteConnectionManager::file(db_path)
             .with_init(move |conn| {

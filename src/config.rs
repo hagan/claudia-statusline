@@ -9,19 +9,19 @@ use crate::error::{Result, StatuslineError};
 pub struct Config {
     /// Display configuration
     pub display: DisplayConfig,
-    
+
     /// Context window configuration
     pub context: ContextConfig,
-    
+
     /// Cost thresholds configuration
     pub cost: CostConfig,
-    
+
     /// Database configuration
     pub database: DatabaseConfig,
-    
+
     /// Retry configuration
     pub retry: RetryConfig,
-    
+
     /// Transcript processing configuration
     pub transcript: TranscriptConfig,
 }
@@ -32,16 +32,16 @@ pub struct Config {
 pub struct DisplayConfig {
     /// Progress bar width in characters
     pub progress_bar_width: usize,
-    
+
     /// Context usage warning threshold (percentage)
     pub context_warning_threshold: f64,
-    
+
     /// Context usage critical threshold (percentage)
     pub context_critical_threshold: f64,
-    
+
     /// Context usage caution threshold (percentage)
     pub context_caution_threshold: f64,
-    
+
     /// Theme (dark or light)
     pub theme: String,
 }
@@ -52,7 +52,7 @@ pub struct DisplayConfig {
 pub struct ContextConfig {
     /// Default context window size in tokens
     pub window_size: usize,
-    
+
     /// Context window sizes for specific models (model name -> size)
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub model_windows: std::collections::HashMap<String, usize>,
@@ -64,7 +64,7 @@ pub struct ContextConfig {
 pub struct CostConfig {
     /// Low cost threshold (below this is green)
     pub low_threshold: f64,
-    
+
     /// Medium cost threshold (below this is yellow, above is red)
     pub medium_threshold: f64,
 }
@@ -75,10 +75,10 @@ pub struct CostConfig {
 pub struct DatabaseConfig {
     /// Maximum connection pool size
     pub max_connections: u32,
-    
+
     /// Busy timeout in milliseconds
     pub busy_timeout_ms: u32,
-    
+
     /// Path to database file (relative to data directory)
     pub path: String,
 }
@@ -89,13 +89,13 @@ pub struct DatabaseConfig {
 pub struct RetryConfig {
     /// File operation retry configuration
     pub file_ops: RetrySettings,
-    
+
     /// Database operation retry configuration
     pub db_ops: RetrySettings,
-    
+
     /// Git operation retry configuration
     pub git_ops: RetrySettings,
-    
+
     /// Network operation retry configuration
     pub network_ops: RetrySettings,
 }
@@ -106,13 +106,13 @@ pub struct RetryConfig {
 pub struct RetrySettings {
     /// Maximum number of retry attempts
     pub max_attempts: u32,
-    
+
     /// Initial delay in milliseconds
     pub initial_delay_ms: u64,
-    
+
     /// Maximum delay in milliseconds
     pub max_delay_ms: u64,
-    
+
     /// Backoff factor (multiplier for each retry)
     pub backoff_factor: f32,
 }
@@ -241,36 +241,36 @@ impl Config {
             Ok(Config::default())
         }
     }
-    
+
     /// Load configuration from a specific file
     pub fn load_from_file(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path)
             .map_err(|e| StatuslineError::Config(format!("Failed to read config file: {}", e)))?;
-        
+
         let config: Config = toml::from_str(&contents)
             .map_err(|e| StatuslineError::Config(format!("Failed to parse config file: {}", e)))?;
-        
+
         Ok(config)
     }
-    
+
     /// Save configuration to file
     #[allow(dead_code)]
     pub fn save(&self, path: &Path) -> Result<()> {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| StatuslineError::Config(format!("Failed to serialize config: {}", e)))?;
-        
+
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|e| StatuslineError::Config(format!("Failed to create config directory: {}", e)))?;
         }
-        
+
         fs::write(path, toml_string)
             .map_err(|e| StatuslineError::Config(format!("Failed to write config file: {}", e)))?;
-        
+
         Ok(())
     }
-    
+
     /// Find config file in standard locations
     fn find_config_file() -> Option<PathBuf> {
         // Check in order of priority:
@@ -281,7 +281,7 @@ impl Config {
                 return Some(path);
             }
         }
-        
+
         // 2. XDG config directory
         if let Some(config_dir) = dirs::config_dir() {
             let path = config_dir.join("claudia-statusline").join("config.toml");
@@ -289,7 +289,7 @@ impl Config {
                 return Some(path);
             }
         }
-        
+
         // 3. Home directory
         if let Some(home_dir) = dirs::home_dir() {
             let path = home_dir.join(".claudia-statusline.toml");
@@ -297,10 +297,10 @@ impl Config {
                 return Some(path);
             }
         }
-        
+
         None
     }
-    
+
     /// Get default config file path (for creating new config)
     pub fn default_config_path() -> Result<PathBuf> {
         if let Some(config_dir) = dirs::config_dir() {
@@ -309,11 +309,11 @@ impl Config {
             Err(StatuslineError::Config("Could not determine config directory".into()))
         }
     }
-    
+
     /// Generate example config file content
     pub fn example_toml() -> &'static str {
         r#"# Claudia Statusline Configuration File
-# 
+#
 # This file configures various aspects of the statusline behavior.
 # All values shown are the defaults - you can override only what you need.
 
@@ -403,7 +403,7 @@ pub fn get_config() -> &'static Config {
 mod tests {
     use super::*;
     use tempfile::TempDir;
-    
+
     #[test]
     fn test_default_config() {
         let config = Config::default();
@@ -411,19 +411,19 @@ mod tests {
         assert_eq!(config.context.window_size, 160_000);
         assert_eq!(config.cost.low_threshold, 5.0);
     }
-    
+
     #[test]
     fn test_save_and_load_config() {
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config.toml");
-        
+
         let config = Config::default();
         config.save(&config_path).unwrap();
-        
+
         let loaded_config = Config::load_from_file(&config_path).unwrap();
         assert_eq!(loaded_config.display.progress_bar_width, config.display.progress_bar_width);
     }
-    
+
     #[test]
     fn test_example_config() {
         let example = Config::example_toml();

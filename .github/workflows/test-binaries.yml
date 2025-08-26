@@ -38,7 +38,7 @@ jobs:
           });
           const fs = require('fs');
           fs.writeFileSync('artifacts.zip', Buffer.from(download.data));
-          
+
     - name: Extract downloaded artifacts
       if: github.event.workflow_run
       run: |

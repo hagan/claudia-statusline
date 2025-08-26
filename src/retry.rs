@@ -64,7 +64,7 @@ impl RetryConfig {
             backoff_factor: settings.backoff_factor,
         }
     }
-    
+
     /// Quick configuration for network operations (from config)
     #[allow(dead_code)]
     pub fn for_network_ops() -> Self {
