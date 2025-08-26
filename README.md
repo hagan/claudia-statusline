@@ -8,8 +8,8 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 
 ## Technical Highlights
 
-- **Modular Architecture** - Clean separation across 8 focused modules (~200 lines each)
-- **Comprehensive Testing** - 75 tests (57 unit + 18 integration), all passing in CI
+- **Modular Architecture** - Clean separation across 9 focused modules (~200 lines each)
+- **Comprehensive Testing** - 75 tests (48 unit + 27 integration), all passing in CI
 - **Dual Storage Backend** - SQLite with JSON fallback for maximum reliability (v2.2.0)
 - **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations
@@ -42,17 +42,17 @@ A high-performance, customizable statusline for Claude Code written in Rust. Dis
 
 ### One-Line Install (Pre-built Binary) - Recommended
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 ```
 
 Or with wget:
 ```bash
-wget -qO- https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+wget -qO- https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 ```
 
 ### Build from Source
 ```bash
-git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline && ./install-statusline.sh
+git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline && ./scripts/install-statusline.sh
 ```
 
 ### System Requirements
@@ -61,13 +61,16 @@ git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline &
 **Terminal**: Any terminal with ANSI color support
 
 ### Prerequisites
+
+For **pre-built binary installation**:
+- **curl** or **wget** (for downloading the installer)
+- **jq** (for Claude Code configuration) - [Install jq](https://stedolan.github.io/jq/download/)
+
+For **building from source**:
 - **Rust toolchain** with Cargo (1.70+) - [Install Rust](https://www.rust-lang.org/tools/install)
-- **curl** or wget (for downloading original source)
-- **jq** (for JSON processing)
-- **sha256sum** (for source verification)
-- **Git** (optional, for repository status)
-- **jq** (required for installer) - [Install jq](https://stedolan.github.io/jq/download/)
+- **jq** (for installer script) - [Install jq](https://stedolan.github.io/jq/download/)
 - **Make** (optional, but recommended for easy building)
+- **Git** (optional, for repository status features)
 
 ### Installation
 
@@ -75,7 +78,7 @@ git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline &
 
 **Automatic Installation** (detects your OS and architecture):
 ```bash
-curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 ```
 
 **Manual Download**
@@ -104,16 +107,16 @@ git clone https://github.com/hagan/claudia-statusline
 cd claudia-statusline
 
 # Run the automated installer
-./install-statusline.sh
+./scripts/install-statusline.sh
 
 # Or with options:
-./install-statusline.sh --help           # Show all options
-./install-statusline.sh --dry-run        # Preview what will be done
-./install-statusline.sh --verbose        # Detailed output
-./install-statusline.sh --with-debug-logging  # Enable debug logging
-./install-statusline.sh --with-stats  # Enable persistent stats tracking
+./scripts/install-statusline.sh --help           # Show all options
+./scripts/install-statusline.sh --dry-run        # Preview what will be done
+./scripts/install-statusline.sh --verbose        # Detailed output
+./scripts/install-statusline.sh --with-debug-logging  # Enable debug logging
+./scripts/install-statusline.sh --with-stats  # Enable persistent stats tracking
 # Stats saved to: ~/.local/share/claudia-statusline/stats.json (or $XDG_DATA_HOME/claudia-statusline/stats.json)
-./install-statusline.sh --prefix /usr/local/bin  # Custom install location
+./scripts/install-statusline.sh --prefix /usr/local/bin  # Custom install location
 ```
 
 The installer will:
@@ -293,35 +296,49 @@ The project includes a comprehensive Makefile with these targets:
 
 | Target | Description |
 |--------|-------------|
-| `make` or `make all` | Default: fetch source and build |
-| `make verify-source` | Verify SHA256 hash of source |
-| `make build` | Build release binary |
-| `make debug` | Build debug binary |
-| `make release-optimized` | Build with maximum optimizations |
-| `make install` | Install to ~/.local/bin |
-| `make test` | Run test suite |
-| `make bench` | Run performance benchmarks |
-| `make dev` | Clean, build, and test |
-| `make size` | Compare binary sizes |
-| `make clean` | Remove all artifacts and source |
-| `make clean-whitespace` | Remove trailing whitespace from all project files |
-| `make clean-whitespace` | Remove trailing whitespace from all files |
+| `make` or `make build` | Build the release binary |
+| `make debug` | Build debug binary with symbols |
+| `make release` | Build optimized release binary |
+| `make install` | Build and install to ~/.local/bin |
+| `make uninstall` | Remove installed binary |
+| `make test` | Run unit and integration tests |
+| `make test-sqlite` | Run SQLite integration tests |
+| `make test-install` | Run installation verification |
+| `make test-all` | Run all tests |
+| `make bench` | Run performance benchmark |
+| `make dev` | Build and run with test input |
+| `make clean` | Remove build artifacts |
+| `make clean-whitespace` | Remove trailing whitespace from files |
+| `make version` | Show version information |
+| `make tag` | Create git tag for release |
+| `make release-build` | Build release with version tag |
 | `make help` | Show all available targets |
 
 ### Project Structure
 ```
 claudia-statusline/
-├── src/                     # Source code modules
-├── LICENSE                  # MIT License (our contributions only)
-├── NOTICE                   # Attribution to original author
+├── src/                     # Source code modules (9 files)
+│   ├── main.rs             # Entry point and CLI
+│   ├── models.rs           # Data structures
+│   ├── git.rs              # Git operations
+│   ├── stats.rs            # Statistics tracking
+│   ├── database.rs         # SQLite backend
+│   ├── display.rs          # Output formatting
+│   ├── utils.rs            # Utility functions
+│   ├── version.rs          # Version management
+│   └── migrations/         # Database migrations
+├── tests/                   # Integration tests
+├── target/                  # Build artifacts (generated)
 ├── Cargo.toml              # Rust dependencies
-├── Makefile                # Build automation with SHA256 validation
-├── install-statusline.sh   # Automated installer
-├── uninstall-statusline.sh # Safe uninstaller
-├── toggle-debug.sh         # Toggle debug mode on/off
-├── claude-settings-example.json # Example Claude Code config
+├── Makefile                # Build automation
 ├── README.md               # This file
-└── .gitignore              # Excludes generated files
+├── CHANGELOG.md            # Version history
+├── LICENSE                 # MIT License
+└── scripts/                # Utility scripts
+    ├── install-statusline.sh   # Build from source installer
+    ├── quick-install.sh        # Binary installer (curl | bash)
+    ├── uninstall-statusline.sh # Safe uninstaller
+    └── toggle-debug.sh         # Toggle debug mode
 ```
 
 ### Building from Source
@@ -330,9 +347,8 @@ claudia-statusline/
 make debug
 
 # Release build with optimizations
-make build        # or
-make release      # Standard release
-make release-optimized  # Maximum optimizations
+make build        # Standard build
+make release      # Optimized release build
 
 # Development workflow (clean, build, test)
 make dev
@@ -343,8 +359,8 @@ make test
 # Clean build artifacts AND source file
 make clean
 
-# Compare binary sizes
-make size
+# Check binary size
+ls -lh target/release/statusline
 ```
 
 ### Testing
@@ -513,7 +529,7 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 - **Fixed Context Progress Bar** - Now correctly parses Claude's actual JSONL transcript format
 - **Fixed Burn Rate Calculation** - Properly calculates hourly cost based on session duration
 - **Updated Transcript Parsing** - Matches Claude's `message` (singular) with `usage` data structure
-- **Added Unit Tests** - Added tests for transcript parsing functions (53 tests total)
+- **Added Unit Tests** - Added tests for transcript parsing functions (75 tests total)
 - **Removed Legacy Wrapper References** - Cleaned up documentation and scripts
 
 ### v2.0.0 (2025-08-25)
@@ -576,10 +592,9 @@ make version
 # Check binary version
 statusline --version
 
-# Bump version numbers
-make bump-major  # 2.0.0 -> 3.0.0
-make bump-minor  # 2.0.0 -> 2.1.0
-make bump-patch  # 2.0.0 -> 2.0.1
+# Version management
+# Edit VERSION file manually, then:
+make version      # Show current version
 
 # Create release
 make release-build  # Build optimized binary with version info
@@ -776,10 +791,6 @@ tail -f ~/.cache/statusline-debug.log
   echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}' | ~/.local/bin/statusline
   ```
 
-**Build fails with "Hash mismatch!"**
-- The original gist may have been updated
-- Check the expected SHA256 hash in the Makefile
-- Report an issue if the gist has changed
 
 **Statusline not displaying at all**
 - Ensure binary is in PATH: `export PATH="$HOME/.local/bin:$PATH"`
@@ -805,7 +816,7 @@ tail -f ~/.cache/statusline-debug.log
 **Cost tracking not showing**
 - Ensure you're using the latest binary (v2.0.0+)
 - Check if cost data is being sent: Enable debug mode to see JSON input
-- Update binary: `./install-statusline.sh`
+- Update binary: `./scripts/install-statusline.sh`
 - Cost only appears if Claude Code sends cost data in the JSON
 
 ## How It Works
@@ -813,11 +824,11 @@ tail -f ~/.cache/statusline-debug.log
 This project was inspired by [Peter Steinberger's statusline.rs gist](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e), but has evolved into a complete rewrite with modular architecture, persistent stats tracking, and enhanced features.
 
 Our implementation:
-- ✅ Complete modular rewrite with 7 focused modules
+- ✅ Complete modular rewrite with 9 focused modules
 - ✅ Persistent stats tracking with XDG compliance
 - ✅ Enhanced git integration and context tracking
 - ✅ Professional versioning and release system
-- ✅ Comprehensive test coverage (53 tests)
+- ✅ Comprehensive test coverage (75 tests)
 
 ## License
 
@@ -830,7 +841,7 @@ This project's modifications and build system are licensed under the MIT License
 - **Original Author**: [Peter Steinberger (@steipete)](https://github.com/steipete)
 - **Original Source**: [statusline.rs gist](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e)
 - **Implementation**: Complete Rust rewrite for [Claude Code](https://claude.ai/code) integration
-- **Build System**: Custom Makefile with SHA256 validation
+- **Build System**: Custom Makefile for Rust projects
 - **License**: Our modifications are MIT licensed; original code retains author's rights
 
 ## FAQ
