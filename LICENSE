@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2024 Claudia Statusline Contributors
+Copyright (c) 2024-2025 Claudia Statusline Contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -21,25 +21,32 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-IMPORTANT NOTICE:
+ATTRIBUTION AND ACKNOWLEDGMENTS:
 ================================================================================
 
-This license applies ONLY to:
-- The patch file (statusline.patch) containing our modifications
-- Build configuration files (Makefile, Cargo.toml)
-- Integration scripts in scripts/ directory
-- Documentation files (README.md, *.md files)
-- Any other original work in this repository
+Claudia Statusline is a complete Rust implementation of a statusline for 
+Claude Code. While this is now an independent implementation, we acknowledge
+and credit the original inspiration:
 
-This license DOES NOT apply to:
-- The original statusline.rs code by Peter Steinberger (@steipete)
-- Any code fetched from https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e
-- The base functionality that our patches modify
+**Original Inspiration**: Peter Steinberger's statusline.rs gist
+- Source: https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e
+- Author: Peter Steinberger (@steipete)
+- The original gist provided the initial concept for a Claude Code statusline
 
-The original statusline.rs remains the property of its author and is used here
-under the principle of modification for personal/educational use. Users of this
-project must fetch the original code directly from its source, ensuring proper
-attribution to the original author.
+**Current Implementation**: 
+- This is a complete rewrite and enhancement in Rust
+- Includes extensive features not present in the original:
+  - Persistent statistics tracking with SQLite backend
+  - Multi-console support with file locking
+  - Security hardening with input validation
+  - Progress bars and burn rate calculations
+  - XDG compliance and atomic operations
+  - Comprehensive test suite (79+ tests)
+  - Cross-platform CI/CD automation
 
-Our modifications are distributed separately as patches, not as a complete work,
-to respect the original author's rights.
+**Contributors**:
+- See GitHub contributors list for all who have helped improve this project
+
+This MIT License applies to the entire Claudia Statusline codebase as it exists
+in this repository. We maintain proper attribution to acknowledge the original
+inspiration while clarifying that this is now an independent work.

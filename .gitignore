@@ -26,3 +26,6 @@ CLAUDE.md
 # OS files
 .DS_Store
 Thumbs.db
+
+# workspaces
+*.code-workspace

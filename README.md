@@ -2,14 +2,17 @@
 
 *Community project for Claude Code users - "Claudia" is our unofficial companion to Claude!*
 
-A high-performance, customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
+A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
+
+**Version 2.2.1** - Security hardened with comprehensive input validation
 
 ![Claudia Statusline Screenshot](statusline.png)
 
 ## Technical Highlights
 
+- **Security Hardened** - All user inputs validated, prevents path injection attacks (v2.2.1)
 - **Modular Architecture** - Clean separation across 9 focused modules (~200 lines each)
-- **Comprehensive Testing** - 75 tests (48 unit + 27 integration), all passing in CI
+- **Comprehensive Testing** - 79 tests (52 unit + 18 integration + 9 SQLite), including security tests
 - **Dual Storage Backend** - SQLite with JSON fallback for maximum reliability (v2.2.0)
 - **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations

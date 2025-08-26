@@ -142,7 +142,7 @@ jobs:
       run: |
         cd artifacts
         Expand-Archive -Path statusline-windows-amd64.zip -DestinationPath . -Force
-        
+
         # List files to debug
         Get-ChildItem -Recurse | Select-Object FullName
 
@@ -256,9 +256,9 @@ jobs:
           echo "No artifacts directory found - nothing to validate"
           exit 0
         fi
-        
+
         cd artifacts
-        
+
         if [ -z "$(ls -A)" ]; then
           echo "Artifacts directory is empty - nothing to validate"
           exit 0

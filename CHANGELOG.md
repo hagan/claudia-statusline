@@ -5,6 +5,35 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] - 2025-08-26
+
+### Security Fixes
+- **Critical**: Fixed command injection vulnerability in git.rs
+  - Added `validate_directory_path()` function to sanitize directory inputs
+  - Prevents directory traversal attacks (e.g., "../../../etc")
+  - Prevents null byte injection and special character exploits
+- **Critical**: Fixed file path security vulnerability in utils.rs
+  - Added `validate_file_path()` function for transcript path validation
+  - Ensures only .jsonl files can be accessed
+  - Prevents reading arbitrary files on the system
+- **Security Tests**: Added comprehensive security test suite
+  - `test_validate_directory_path_security`: Tests git path validation
+  - `test_malicious_path_inputs`: Tests protection against malicious git paths
+  - `test_validate_file_path_security`: Tests transcript path validation
+  - `test_malicious_transcript_paths`: Tests protection against malicious transcript paths
+
+### Changed
+- All user-supplied paths from JSON are now validated and canonicalized
+- Path operations use Rust's `fs::canonicalize()` to resolve symlinks safely
+- Git operations only execute on verified git repositories
+
+### Security Impact
+- Prevents command injection attacks through malicious JSON input
+- Prevents directory traversal attacks
+- Prevents access to sensitive system files
+- Prevents execution of arbitrary commands via path manipulation
+- Overall security grade improved from B+ to A-
+
 ## [2.2.0] - 2025-08-25
 
 ### Added

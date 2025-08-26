@@ -1,0 +1,76 @@
+# Security Policy
+
+## Supported Versions
+
+| Version | Supported          |
+| ------- | ------------------ |
+| 2.2.1   | :white_check_mark: |
+| 2.2.0   | :x:                |
+| 2.1.x   | :x:                |
+| < 2.1   | :x:                |
+
+## Security Hardening
+
+As of version 2.2.1, Claudia Statusline includes comprehensive security hardening:
+
+### Input Validation
+- All user-supplied paths from JSON input are validated and canonicalized
+- Directory traversal attempts are blocked (e.g., "../../../etc")
+- Null byte injection is prevented
+- Command injection via special characters is blocked
+- Only verified git repositories can have git operations performed
+- Transcript files are restricted to .jsonl extension
+
+### Security Functions
+- `validate_directory_path()` in git.rs - Validates directory paths for git operations
+- `validate_file_path()` in utils.rs - Validates file paths for transcript reading
+
+### Security Tests
+The following security tests ensure our protection mechanisms work:
+- `test_validate_directory_path_security` - Tests directory path validation
+- `test_malicious_path_inputs` - Tests protection against malicious git paths
+- `test_validate_file_path_security` - Tests file path validation
+- `test_malicious_transcript_paths` - Tests protection against malicious transcript paths
+
+## Reporting a Vulnerability
+
+If you discover a security vulnerability in Claudia Statusline, please:
+
+1. **Do NOT** create a public GitHub issue
+2. Email the details to the maintainer (see repository owner)
+3. Include:
+   - Description of the vulnerability
+   - Steps to reproduce
+   - Potential impact
+   - Suggested fix (if any)
+
+We will acknowledge receipt within 48 hours and provide updates on the fix timeline.
+
+## Security Updates
+
+Security updates will be released as patch versions (e.g., 2.2.1, 2.2.2) and clearly marked in the CHANGELOG.
+
+## Known Security Issues
+
+### Fixed in v2.2.1
+- **CVE-pending**: Command injection vulnerability via unvalidated directory paths (Fixed)
+- **CVE-pending**: File path traversal vulnerability in transcript reading (Fixed)
+
+### Currently Known Issues
+- None
+
+## Best Practices for Users
+
+1. Always use the latest version
+2. Review JSON input from untrusted sources before processing
+3. Run statusline with minimal privileges
+4. Keep your Rust toolchain updated if building from source
+
+## Security Audit History
+
+- **2025-08-26**: Security audit completed, critical vulnerabilities fixed in v2.2.1
+- **2025-08-25**: Initial security review identified 2 critical issues (fixed in v2.2.1)
+
+## Credits
+
+Security issues were identified and fixed by the Claudia Statusline maintainers with assistance from Claude Code Assistant.

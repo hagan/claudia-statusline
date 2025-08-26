@@ -88,12 +88,12 @@ install_binary() {
     local platform="$1"
     local version="$2"
     local temp_dir
-    
+
     temp_dir=$(mktemp -d)
     trap "rm -rf $temp_dir" EXIT
 
     info "Downloading Claudia Statusline ${version} for ${platform}..."
-    
+
     local asset_name ext
     if [[ "$platform" == "windows-"* ]]; then
         asset_name="statusline-${platform}.zip"
@@ -104,7 +104,7 @@ install_binary() {
     fi
 
     local download_url="https://github.com/${REPO}/releases/download/${version}/${asset_name}"
-    
+
     # Download the archive
     if ! curl -fsSL "$download_url" -o "$temp_dir/statusline.${ext}"; then
         error "Failed to download binary from ${download_url}"
@@ -172,7 +172,7 @@ configure_claude() {
         info "Adding statusLine configuration..."
         local temp_config
         temp_config=$(mktemp)
-        
+
         jq '. + {
             "statusLine": {
                 "type": "command",
@@ -180,7 +180,7 @@ configure_claude() {
                 "padding": 0
             }
         }' "$config_file" > "$temp_config" && mv "$temp_config" "$config_file"
-        
+
         success "Claude Code configured successfully!"
     fi
 }

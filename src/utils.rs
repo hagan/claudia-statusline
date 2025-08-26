@@ -1,7 +1,7 @@
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use crate::models::{ContextUsage, TranscriptEntry};
 
 pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
@@ -123,13 +123,44 @@ pub fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
-pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
-    if !Path::new(transcript_path).exists() {
+/// Validates a file path to prevent security vulnerabilities
+fn validate_file_path(path: &str) -> Option<PathBuf> {
+    // Reject paths with null bytes (command injection)
+    if path.contains('\0') {
         return None;
     }
 
+    // Convert to PathBuf and canonicalize to resolve symlinks and relative paths
+    let path_buf = Path::new(path);
+
+    // Get the canonical path, which resolves all symlinks and relative components
+    let canonical_path = match fs::canonicalize(path_buf) {
+        Ok(p) => p,
+        Err(_) => return None,
+    };
+
+    // Ensure the path is a file (not a directory)
+    if !canonical_path.is_file() {
+        return None;
+    }
+
+    // Optional: Check file extension if needed
+    if let Some(ext) = canonical_path.extension() {
+        // Only allow jsonl files for transcripts
+        if ext != "jsonl" {
+            return None;
+        }
+    }
+
+    Some(canonical_path)
+}
+
+pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
+    // Validate and canonicalize the file path
+    let safe_path = validate_file_path(transcript_path)?;
+
     // Read all lines then take the last 50 for performance
-    let file = File::open(transcript_path).ok()?;
+    let file = File::open(&safe_path).ok()?;
     let reader = BufReader::new(file);
     let all_lines: Vec<String> = reader
         .lines()
@@ -173,12 +204,11 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
 }
 
 pub fn parse_duration(transcript_path: &str) -> Option<u64> {
-    if !Path::new(transcript_path).exists() {
-        return None;
-    }
+    // Validate and canonicalize the file path
+    let safe_path = validate_file_path(transcript_path)?;
 
     // Read first and last timestamps from transcript
-    let file = File::open(transcript_path).ok()?;
+    let file = File::open(&safe_path).ok()?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader
         .lines()
@@ -215,6 +245,49 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    #[test]
+    fn test_validate_file_path_security() {
+        // Test null byte injection
+        assert!(validate_file_path("/tmp/test\0.jsonl").is_none());
+        assert!(validate_file_path("/tmp\0/test.jsonl").is_none());
+
+        // Test non-existent files
+        assert!(validate_file_path("/definitely/does/not/exist.jsonl").is_none());
+
+        // Test directory instead of file
+        let temp_dir = std::env::temp_dir();
+        assert!(validate_file_path(temp_dir.to_str().unwrap()).is_none());
+
+        // Test non-jsonl file
+        let temp_file = std::env::temp_dir().join("test.txt");
+        fs::write(&temp_file, "test").ok();
+        assert!(validate_file_path(temp_file.to_str().unwrap()).is_none());
+        fs::remove_file(temp_file).ok();
+    }
+
+    #[test]
+    fn test_malicious_transcript_paths() {
+        // Directory traversal attempts
+        assert!(calculate_context_usage("../../../etc/passwd").is_none());
+        assert!(parse_duration("../../../../../../etc/shadow").is_none());
+
+        // Command injection attempts
+        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /").is_none());
+        assert!(parse_duration("/tmp/test.jsonl && echo hacked").is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd").is_none());
+        assert!(parse_duration("/tmp/test.jsonl`whoami`").is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)").is_none());
+
+        // Null byte injection
+        assert!(calculate_context_usage("/tmp/test\0.jsonl").is_none());
+        assert!(parse_duration("/tmp\0/test.jsonl").is_none());
+
+        // Special characters that might cause issues
+        assert!(calculate_context_usage("/tmp/test\n.jsonl").is_none());
+        assert!(parse_duration("/tmp/test\r.jsonl").is_none());
+    }
 
     #[test]
     fn test_shorten_path() {
