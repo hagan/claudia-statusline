@@ -106,6 +106,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      packages: write
+      actions: read
 
     steps:
       - uses: actions/checkout@v4
@@ -135,7 +137,10 @@ jobs:
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ steps.version.outputs.version }}
           name: Claudia Statusline ${{ steps.version.outputs.version }}
           body: |
