@@ -1,9 +1,10 @@
 use chrono::Local;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Connection, Result, Transaction};
+use rusqlite::{params, Result, Transaction};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use crate::retry::{retry_if_retryable, RetryConfig};
 
 const SCHEMA: &str = r#"
 -- Sessions table
@@ -117,21 +118,44 @@ impl SqliteDatabase {
         lines_added: u64,
         lines_removed: u64,
     ) -> Result<(f64, f64)> {
-        let mut conn = self.get_connection()?;
-        let tx = conn.transaction()?;
+        let retry_config = RetryConfig::for_db_ops();
 
-        let result = self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
+        // Wrap the entire transaction in retry logic
+        retry_if_retryable(&retry_config, || {
+            let mut conn = self.get_connection()?;
+            let tx = conn.transaction()?;
 
-        tx.commit()?;
-        Ok(result)
+            let result = self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
+
+            tx.commit()?;
+            Ok(result)
+        }).map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(e.to_string()),
+            ),
+        })
     }
 
     fn get_connection(&self) -> Result<DbConnection> {
-        self.pool.get().map_err(|e| {
-            rusqlite::Error::SqliteFailure(
+        // Use retry logic for getting database connections
+        let retry_config = RetryConfig::for_db_ops();
+
+        retry_if_retryable(&retry_config, || {
+            self.pool.get().map_err(|e| {
+                let error = rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some(format!("Failed to get connection from pool: {}", e)),
+                );
+                crate::error::StatuslineError::Database(error)
+            })
+        }).map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                Some(format!("Failed to get connection from pool: {}", e)),
-            )
+                Some(e.to_string()),
+            ),
         })
     }
 
@@ -312,6 +336,7 @@ impl SqliteDatabase {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::Connection;
     use tempfile::TempDir;
 
     #[test]

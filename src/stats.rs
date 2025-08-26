@@ -2,12 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write, Seek};
+use std::io::{Read, Write, Seek};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use chrono::Local;
 use fs2::FileExt;
 use crate::database::SqliteDatabase;
+use crate::error::{StatuslineError, Result};
+use crate::retry::{retry_if_retryable, RetryConfig};
 
 // Persistent stats tracking structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,19 +101,11 @@ impl StatsData {
         default_data
     }
 
-    pub fn save(&self) -> io::Result<()> {
+    pub fn save(&self) -> Result<()> {
         let path = Self::get_stats_file_path();
 
-        // Acquire and lock the file
-        let mut file = match acquire_stats_file(&path) {
-            Some(f) => f,
-            None => {
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Failed to acquire stats file lock"
-                ));
-            }
-        };
+        // Acquire and lock the file with retry
+        let mut file = acquire_stats_file(&path)?;
 
         // Save the data using our helper
         save_stats_data(&mut file, self);
@@ -137,7 +131,7 @@ impl StatsData {
             .join("stats.json")
     }
 
-    pub fn get_sqlite_path() -> io::Result<PathBuf> {
+    pub fn get_sqlite_path() -> Result<PathBuf> {
         // Follow XDG Base Directory specification
         // Priority: $XDG_DATA_HOME > ~/.local/share (XDG default)
         let data_dir = env::var("XDG_DATA_HOME")
@@ -233,7 +227,7 @@ pub fn get_or_load_stats_data() -> StatsData {
     StatsData::load()
 }
 
-fn get_stats_backup_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+fn get_stats_backup_path() -> Result<PathBuf> {
     let data_dir = env::var("XDG_DATA_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| {
@@ -247,35 +241,34 @@ fn get_stats_backup_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .join(format!("stats_backup_{}.json", timestamp)))
 }
 
-// Helper function to acquire and lock the stats file
-fn acquire_stats_file(path: &Path) -> Option<File> {
+// Helper function to acquire and lock the stats file with retry
+fn acquire_stats_file(path: &Path) -> Result<File> {
     // Ensure directory exists
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent)?;
     }
 
-    // Open or create the file with exclusive lock
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(path);
+    // Use retry configuration for file operations
+    let retry_config = RetryConfig::for_file_ops();
 
-    let mut file = match file {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("Failed to open stats file: {}", e);
-            return None;
-        }
-    };
+    // Try to open the file with retry
+    let file = retry_if_retryable(&retry_config, || {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(path)
+            .map_err(StatuslineError::from)
+    })?;
 
-    // Acquire exclusive lock (blocks until available)
-    if let Err(e) = file.lock_exclusive() {
-        eprintln!("Failed to lock stats file: {}", e);
-        return None;
-    }
+    // Try to acquire exclusive lock with retry
+    retry_if_retryable(&retry_config, || {
+        file.lock_exclusive()
+            .map_err(|e| StatuslineError::lock(format!("Failed to lock stats file: {}", e)))?;
+        Ok(())
+    })?;
 
-    Some(file)
+    Ok(file)
 }
 
 // Helper function to load stats data from file
@@ -405,10 +398,13 @@ where
 {
     let path = StatsData::get_stats_file_path();
 
-    // Acquire and lock the file
+    // Acquire and lock the file with retry
     let mut file = match acquire_stats_file(&path) {
-        Some(f) => f,
-        None => return (0.0, 0.0),
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to acquire stats file after retries: {}", e);
+            return (0.0, 0.0);
+        }
     };
 
     // Load existing stats data

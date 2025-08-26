@@ -1,6 +1,6 @@
 [package]
 name = "statusline"
-version = "2.3.0"
+version = "2.5.0"
 edition = "2021"
 license = "MIT"
 description = "Claudia Statusline - A feature-rich statusline for Claude Code, inspired by Peter Steinberger's statusline.rs"
@@ -19,6 +19,7 @@ fs2 = "0.4"  # For file locking across processes
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }  # SQLite for concurrent stats
 r2d2 = "0.8"  # Connection pooling
 r2d2_sqlite = "0.24"  # SQLite adapter for r2d2
+thiserror = "1.0"  # Unified error handling
 
 [build-dependencies]
 chrono = "0.4"

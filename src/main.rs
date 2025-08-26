@@ -1,6 +1,8 @@
 use std::env;
 use std::io::{self, Read};
 
+mod error;
+mod retry;
 mod models;
 mod git;
 mod stats;
@@ -10,12 +12,13 @@ mod version;
 mod database;
 mod migrations;
 
+use error::Result;
 use models::StatuslineInput;
 use stats::{get_or_load_stats_data, update_stats_data};
 use display::{Colors, format_output};
 use version::version_string;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() -> Result<()> {
     // Check for --version or -v argument
     let args: Vec<String> = env::args().collect();
     if args.len() > 1 && (args[1] == "--version" || args[1] == "-v" || args[1] == "version") {
