@@ -228,6 +228,20 @@ pub fn get_or_load_stats_data() -> StatsData {
     StatsData::load()
 }
 
+fn get_stats_backup_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let data_dir = env::var("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+            PathBuf::from(home).join(".local").join("share")
+        });
+
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    Ok(data_dir
+        .join("claudia-statusline")
+        .join(format!("stats_backup_{}.json", timestamp)))
+}
+
 pub fn update_stats_data<F>(updater: F) -> (f64, f64)
 where
     F: FnOnce(&mut StatsData) -> (f64, f64),
@@ -264,7 +278,21 @@ where
     // Read current data
     let mut contents = String::new();
     let mut stats_data = if file.read_to_string(&mut contents).is_ok() && !contents.is_empty() {
-        serde_json::from_str(&contents).unwrap_or_else(|_| StatsData::default())
+        match serde_json::from_str(&contents) {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("Warning: Stats file corrupted: {}. Creating backup and starting fresh.", e);
+                // Try to create a backup of the corrupted file
+                if let Ok(backup_path) = get_stats_backup_path() {
+                    if let Err(e) = std::fs::copy(&path, &backup_path) {
+                        eprintln!("Failed to backup corrupted stats file: {}", e);
+                    } else {
+                        eprintln!("Corrupted stats backed up to: {:?}", backup_path);
+                    }
+                }
+                StatsData::default()
+            }
+        }
     } else {
         StatsData::default()
     };

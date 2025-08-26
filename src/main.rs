@@ -41,7 +41,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     io::stdin().read_to_string(&mut buffer)?;
 
     // Parse input
-    let input: StatuslineInput = serde_json::from_str(&buffer).unwrap_or_default();
+    let input: StatuslineInput = match serde_json::from_str(&buffer) {
+        Ok(input) => input,
+        Err(e) => {
+            // Log parse error to stderr (won't interfere with statusline output)
+            eprintln!("Warning: Failed to parse JSON input: {}. Using defaults.", e);
+            StatuslineInput::default()
+        }
+    };
 
     // Get current directory
     let current_dir = input

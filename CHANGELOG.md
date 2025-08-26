@@ -5,6 +5,28 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.2] - 2025-08-26
+
+### Improved
+- **Better Error Handling**: No more silent failures
+  - JSON parse errors now log warnings to stderr
+  - Corrupted stats files create timestamped backups before reset
+  - Clear error messages for debugging issues
+- **Enhanced Reliability**: Graceful degradation with informative logging
+  - Stats corruption no longer causes data loss silently
+  - Backup files preserved for recovery
+  - All errors properly reported to stderr
+
+### Fixed
+- Fixed silent JSON parsing failures that made debugging difficult
+- Fixed silent stats file corruption that could cause data loss
+- Improved error messages throughout the application
+
+### Technical Details
+- Added `get_stats_backup_path()` function for automatic backups
+- Parse errors now use `eprintln!` for stderr output
+- Stats corruption creates backups with format: `stats_backup_YYYYMMDD_HHMMSS.json`
+
 ## [2.2.1] - 2025-08-26
 
 ### Security Fixes
