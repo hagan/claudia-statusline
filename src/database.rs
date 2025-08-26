@@ -5,6 +5,7 @@ use rusqlite::{params, Result, Transaction};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use crate::retry::{retry_if_retryable, RetryConfig};
+use crate::config;
 
 const SCHEMA: &str = r#"
 -- Sessions table
@@ -73,18 +74,21 @@ impl SqliteDatabase {
             })?;
         }
 
+        // Get configuration
+        let config = config::get_config();
+        
         // Create connection pool
         let manager = SqliteConnectionManager::file(db_path)
-            .with_init(|conn| {
+            .with_init(move |conn| {
                 // Enable WAL mode for concurrent access
                 conn.pragma_update(None, "journal_mode", "WAL")?;
-                conn.pragma_update(None, "busy_timeout", 10000)?; // 10 second timeout
+                conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms)?;
                 conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
                 Ok(())
             });
 
         let pool = Pool::builder()
-            .max_size(5) // Maximum 5 connections in the pool
+            .max_size(config.database.max_connections)
             .build(manager)
             .map_err(|e| {
                 rusqlite::Error::SqliteFailure(

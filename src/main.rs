@@ -11,6 +11,7 @@ mod utils;
 mod version;
 mod database;
 mod migrations;
+mod config;
 
 use error::Result;
 use models::StatuslineInput;
@@ -31,11 +32,29 @@ fn main() -> Result<()> {
         println!("Claudia Statusline v{}", env!("CLAUDIA_VERSION"));
         println!("\nUsage: statusline [OPTIONS]");
         println!("\nOptions:");
-        println!("  -v, --version    Show version information");
-        println!("  -h, --help       Show this help message");
+        println!("  -v, --version         Show version information");
+        println!("  -h, --help            Show this help message");
+        println!("      --generate-config Generate example config file");
         println!("\nInput: Reads JSON from stdin");
         println!("\nExample:");
         println!("  echo '{{\"workspace\":{{\"current_dir\":\"/path\"}}}}' | statusline");
+        return Ok(());
+    }
+
+    // Check for --generate-config argument
+    if args.len() > 1 && args[1] == "--generate-config" {
+        let config_path = config::Config::default_config_path()?;
+        println!("Generating example config file at: {:?}", config_path);
+        
+        // Create parent directories
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        
+        // Write example config
+        std::fs::write(&config_path, config::Config::example_toml())?;
+        println!("Config file generated successfully!");
+        println!("Edit {} to customize settings", config_path.display());
         return Ok(());
     }
 

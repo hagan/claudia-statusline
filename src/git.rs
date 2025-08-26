@@ -2,7 +2,7 @@ use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::fs;
 use crate::error::{StatuslineError, Result};
-use crate::retry::{retry_simple, RetryConfig};
+use crate::retry::retry_simple;
 
 #[derive(Debug)]
 pub struct GitStatus {

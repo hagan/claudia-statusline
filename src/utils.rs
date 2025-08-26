@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use chrono::DateTime;
 use crate::models::{ContextUsage, TranscriptEntry};
 use crate::error::{StatuslineError, Result};
+use crate::config;
 
 pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
     // Use chrono to parse ISO 8601 timestamps
@@ -80,10 +81,12 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
     let file = File::open(&safe_path).ok()?;
     let reader = BufReader::new(file);
 
-    // Use a circular buffer to keep only the last 50 lines in memory
-    let mut circular_buffer = std::collections::VecDeque::with_capacity(50);
+    // Use a circular buffer to keep only the configured number of lines in memory
+    let config = config::get_config();
+    let buffer_size = config.transcript.buffer_lines;
+    let mut circular_buffer = std::collections::VecDeque::with_capacity(buffer_size);
     for line in reader.lines().filter_map(|l| l.ok()) {
-        if circular_buffer.len() == 50 {
+        if circular_buffer.len() == buffer_size {
             circular_buffer.pop_front();
         }
         circular_buffer.push_back(line);
@@ -111,8 +114,9 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
     }
 
     if total_tokens > 0 {
-        // Context window (160K for most Claude models)
-        let context_window = 160_000;
+        // Get context window size from config
+        let config = config::get_config();
+        let context_window = config.context.window_size;
         let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
 
         return Some(ContextUsage {

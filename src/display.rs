@@ -1,6 +1,7 @@
 use crate::models::{Cost, ModelType, ContextUsage};
 use crate::git::{get_git_status, format_git_info};
 use crate::utils::{shorten_path, calculate_context_usage, parse_duration};
+use crate::config;
 
 pub struct Colors;
 
@@ -172,28 +173,31 @@ pub fn format_output(
 
 fn format_context_bar(context: &ContextUsage) -> String {
     let percentage = context.percentage;
+    let config = config::get_config();
 
-    // Choose color based on percentage
-    let (color, percentage_color) = if percentage > 90.0 {
+    // Choose color based on configured thresholds
+    let (color, percentage_color) = if percentage > config.display.context_critical_threshold {
         (Colors::RED, Colors::RED)
-    } else if percentage > 70.0 {
+    } else if percentage > config.display.context_warning_threshold {
         (Colors::ORANGE, Colors::ORANGE)
-    } else if percentage > 50.0 {
+    } else if percentage > config.display.context_caution_threshold {
         (Colors::YELLOW, Colors::YELLOW)
     } else {
         (Colors::GREEN, Colors::WHITE)
     };
 
-    // Create progress bar (10 characters)
-    let filled = (percentage / 10.0).round() as usize;
-    let filled = filled.min(10);
-    let empty = 10 - filled;
+    // Create progress bar with configured width
+    let bar_width = config.display.progress_bar_width;
+    let filled_ratio = percentage / 100.0;
+    let filled = (filled_ratio * bar_width as f64).round() as usize;
+    let filled = filled.min(bar_width);
+    let empty = bar_width - filled;
 
     let bar = format!(
         "{}{}{}",
         "=".repeat(filled),
-        if filled < 10 { ">" } else { "" },
-        "-".repeat(empty.saturating_sub(if filled < 10 { 1 } else { 0 }))
+        if filled < bar_width { ">" } else { "" },
+        "-".repeat(empty.saturating_sub(if filled < bar_width { 1 } else { 0 }))
     );
 
     format!(
@@ -209,9 +213,10 @@ fn format_context_bar(context: &ContextUsage) -> String {
 }
 
 fn get_cost_color(cost: f64) -> &'static str {
-    if cost >= 20.0 {
+    let config = config::get_config();
+    if cost >= config.cost.medium_threshold {
         Colors::RED
-    } else if cost >= 5.0 {
+    } else if cost >= config.cost.low_threshold {
         Colors::YELLOW
     } else {
         Colors::GREEN
