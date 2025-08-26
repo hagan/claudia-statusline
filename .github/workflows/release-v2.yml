@@ -135,18 +135,25 @@ jobs:
           # List all files for debugging
           ls -la *.tar.gz *.zip *.sha256 || true
 
-      - name: Create Release
+      - name: Create Release with Assets
         uses: softprops/action-gh-release@v1
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
           tag_name: ${{ steps.version.outputs.version }}
           name: Claudia Statusline ${{ steps.version.outputs.version }}
+          files: |
+            *.tar.gz
+            *.zip
+            *.sha256
           body: |
             ## Claudia Statusline ${{ steps.version.outputs.version }}
 
-            High-performance statusline for Claude Code with SQLite dual-storage backend.
+            High-performance, secure statusline for Claude Code with SQLite dual-storage backend.
+            
+            ### ⚠️ Security Notice (v2.2.1)
+            This release contains critical security fixes. All users should upgrade immediately.
 
             ### Installation
 
@@ -176,7 +183,7 @@ jobs:
 
             ### Changes
 
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md#220---2025-08-25) for details.
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for complete details.
 
             Key features in v2.2.0:
             - SQLite dual-storage backend for better concurrent access
