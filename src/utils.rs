@@ -1,110 +1,29 @@
+use std::collections::VecDeque;
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use chrono::DateTime;
 use crate::models::{ContextUsage, TranscriptEntry};
 
 pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
-    // Parser for ISO 8601 timestamps like:
-    // "2025-08-22T18:32:37.789Z" (UTC)
-    // "2025-08-24T23:24:15.577606003-07:00" (with timezone offset)
-
-    // Handle timezone
-    let (timestamp_part, tz_offset_hours) = if timestamp.ends_with('Z') {
-        (&timestamp[..timestamp.len() - 1], 0i32)
-    } else if let Some(plus_pos) = timestamp.rfind('+') {
-        if plus_pos > 10 {  // Make sure it's not in the date part
-            let tz_str = &timestamp[plus_pos + 1..];
-            let tz_hours = tz_str.split(':').next()?.parse::<i32>().ok()?;
-            (&timestamp[..plus_pos], -tz_hours)  // Subtract for positive offset
-        } else {
-            (timestamp, 0)
-        }
-    } else if let Some(minus_pos) = timestamp.rfind('-') {
-        if minus_pos > 10 {  // Make sure it's not in the date part
-            let tz_str = &timestamp[minus_pos + 1..];
-            let tz_hours = tz_str.split(':').next()?.parse::<i32>().ok()?;
-            (&timestamp[..minus_pos], tz_hours)  // Add for negative offset
-        } else {
-            (timestamp, 0)
-        }
-    } else {
-        (timestamp, 0)
-    };
-
-    // Split into date and time
-    let parts: Vec<&str> = timestamp_part.split('T').collect();
-    if parts.len() != 2 {
-        return None;
+    // Use chrono to parse ISO 8601 timestamps
+    // First try parsing as RFC3339 (with timezone)
+    if let Ok(dt) = DateTime::parse_from_rfc3339(timestamp) {
+        return Some(dt.timestamp() as u64);
     }
 
-    // Parse date (YYYY-MM-DD)
-    let date_parts: Vec<&str> = parts[0].split('-').collect();
-    if date_parts.len() != 3 {
-        return None;
+    // If no timezone, try parsing as naive datetime and assume UTC
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S%.f") {
+        return Some(dt.and_utc().timestamp() as u64);
     }
 
-    let year: i32 = date_parts[0].parse().ok()?;
-    let month: u32 = date_parts[1].parse().ok()?;
-    let day: u32 = date_parts[2].parse().ok()?;
-
-    // Parse time (HH:MM:SS.sss)
-    let time_and_ms: Vec<&str> = parts[1].split('.').collect();
-    let time_parts: Vec<&str> = time_and_ms[0].split(':').collect();
-    if time_parts.len() != 3 {
-        return None;
+    // Try without fractional seconds
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_utc().timestamp() as u64);
     }
 
-    let hour: u32 = time_parts[0].parse().ok()?;
-    let minute: u32 = time_parts[1].parse().ok()?;
-    let second: u32 = time_parts[2].parse().ok()?;
-
-    // Calculate days since Unix epoch with proper leap year handling
-    let mut leap_years = 0;
-    for y in 1970..year {
-        if (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0) {
-            leap_years += 1;
-        }
-    }
-
-    // Add extra day for February if current year is leap year and we're past February
-    let leap_day_adjustment = if month > 2 && ((year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)) {
-        1
-    } else {
-        0
-    };
-
-    let days_since_epoch = (year - 1970) as u64 * 365
-        + leap_years as u64
-        + days_before_month(month) as u64
-        + leap_day_adjustment
-        + (day - 1) as u64;
-
-    let seconds = days_since_epoch * 86400
-        + hour as u64 * 3600
-        + minute as u64 * 60
-        + second as u64;
-
-    // Apply timezone offset (add because we want UTC)
-    Some((seconds as i64 + (tz_offset_hours as i64 * 3600)) as u64)
-}
-
-fn days_before_month(month: u32) -> u32 {
-    match month {
-        1 => 0,
-        2 => 31,
-        3 => 59,
-        4 => 90,
-        5 => 120,
-        6 => 151,
-        7 => 181,
-        8 => 212,
-        9 => 243,
-        10 => 273,
-        11 => 304,
-        12 => 334,
-        _ => 0,
-    }
+    None
 }
 
 pub fn shorten_path(path: &str) -> String {
@@ -159,23 +78,26 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
     // Validate and canonicalize the file path
     let safe_path = validate_file_path(transcript_path)?;
 
-    // Read all lines then take the last 50 for performance
+    // Efficiently read only the last 50 lines using a circular buffer
     let file = File::open(&safe_path).ok()?;
     let reader = BufReader::new(file);
-    let all_lines: Vec<String> = reader
-        .lines()
-        .filter_map(|l| l.ok())
-        .collect();
 
-    // Take last 50 lines
-    let start = all_lines.len().saturating_sub(50);
-    let lines = &all_lines[start..];
+    // Use a circular buffer to keep only the last 50 lines in memory
+    let mut circular_buffer = std::collections::VecDeque::with_capacity(50);
+    for line in reader.lines().filter_map(|l| l.ok()) {
+        if circular_buffer.len() == 50 {
+            circular_buffer.pop_front();
+        }
+        circular_buffer.push_back(line);
+    }
+
+    let lines: Vec<String> = circular_buffer.into_iter().collect();
 
     // Find the most recent assistant message with usage data
     let mut total_tokens = 0u32;
 
     for line in lines {
-        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) {
+        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if entry.message.role == "assistant" {
                 if let Some(usage) = entry.message.usage {
                     // Add up all token types
@@ -207,30 +129,32 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
     // Validate and canonicalize the file path
     let safe_path = validate_file_path(transcript_path)?;
 
-    // Read first and last timestamps from transcript
+    // Read first and last timestamps from transcript efficiently
     let file = File::open(&safe_path).ok()?;
     let reader = BufReader::new(file);
-    let lines: Vec<String> = reader
-        .lines()
-        .filter_map(|l| l.ok())
-        .collect();
 
-    if lines.len() < 2 {
-        return None;
-    }
-
-    // Get first and last timestamps
     let mut first_timestamp = None;
     let mut last_timestamp = None;
+    let mut first_line = None;
 
-    // Parse first line
-    if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&lines[0]) {
-        first_timestamp = parse_iso8601_to_unix(&entry.timestamp);
+    // Read lines one at a time, keeping track of first and updating last
+    for line in reader.lines().filter_map(|l| l.ok()) {
+        if first_line.is_none() {
+            first_line = Some(line.clone());
+            // Parse first line
+            if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
+                first_timestamp = parse_iso8601_to_unix(&entry.timestamp);
+            }
+        }
+
+        // Always try to parse the current line as the last one
+        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
+            last_timestamp = parse_iso8601_to_unix(&entry.timestamp);
+        }
     }
 
-    // Parse last line
-    if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(lines.last()?) {
-        last_timestamp = parse_iso8601_to_unix(&entry.timestamp);
+    if first_timestamp.is_none() || last_timestamp.is_none() {
+        return None;
     }
 
     // Calculate duration in seconds

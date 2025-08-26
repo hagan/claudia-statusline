@@ -70,6 +70,7 @@ pub struct TranscriptEntry {
 pub struct TranscriptMessage {
     pub role: String,
     #[serde(default)]
+    #[allow(dead_code)]
     pub content: Option<serde_json::Value>,  // Can be string or array
     #[serde(default)]
     pub usage: Option<Usage>,

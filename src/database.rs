@@ -1,6 +1,9 @@
 use chrono::Local;
+use r2d2::{Pool, PooledConnection};
+use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, Result, Transaction};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 const SCHEMA: &str = r#"
 -- Sessions table
@@ -48,8 +51,14 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 "#;
 
 pub struct SqliteDatabase {
+    #[allow(dead_code)]
     path: PathBuf,
+    pool: Arc<Pool<SqliteConnectionManager>>,
 }
+
+#[allow(dead_code)]
+type DbPool = Pool<SqliteConnectionManager>;
+type DbConnection = PooledConnection<SqliteConnectionManager>;
 
 impl SqliteDatabase {
     pub fn new(db_path: &Path) -> Result<Self> {
@@ -63,19 +72,40 @@ impl SqliteDatabase {
             })?;
         }
 
-        // Initialize database with schema
-        let conn = Connection::open(db_path)?;
+        // Create connection pool
+        let manager = SqliteConnectionManager::file(db_path)
+            .with_init(|conn| {
+                // Enable WAL mode for concurrent access
+                conn.pragma_update(None, "journal_mode", "WAL")?;
+                conn.pragma_update(None, "busy_timeout", 10000)?; // 10 second timeout
+                conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
+                Ok(())
+            });
 
-        // Enable WAL mode for concurrent access
-        conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "busy_timeout", 10000)?; // 10 second timeout
-        conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
+        let pool = Pool::builder()
+            .max_size(5) // Maximum 5 connections in the pool
+            .build(manager)
+            .map_err(|e| {
+                rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                    Some(format!("Failed to create connection pool: {}", e)),
+                )
+            })?;
+
+        // Initialize database with schema using a connection from the pool
+        let conn = pool.get().map_err(|e| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some(format!("Failed to get connection from pool: {}", e)),
+            )
+        })?;
 
         // Create tables and indexes
         conn.execute_batch(SCHEMA)?;
 
         Ok(Self {
             path: db_path.to_path_buf(),
+            pool: Arc::new(pool),
         })
     }
 
@@ -87,13 +117,22 @@ impl SqliteDatabase {
         lines_added: u64,
         lines_removed: u64,
     ) -> Result<(f64, f64)> {
-        let mut conn = Connection::open(&self.path)?;
+        let mut conn = self.get_connection()?;
         let tx = conn.transaction()?;
 
         let result = self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
 
         tx.commit()?;
         Ok(result)
+    }
+
+    fn get_connection(&self) -> Result<DbConnection> {
+        self.pool.get().map_err(|e| {
+            rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(format!("Failed to get connection from pool: {}", e)),
+            )
+        })
     }
 
     fn update_session_tx(
@@ -159,8 +198,9 @@ impl SqliteDatabase {
     }
 
     /// Get session duration in seconds
+    #[allow(dead_code)]
     pub fn get_session_duration(&self, session_id: &str) -> Option<u64> {
-        let conn = Connection::open(&self.path).ok()?;
+        let conn = self.get_connection().ok()?;
 
         let start_time: String = conn.query_row(
             "SELECT start_time FROM sessions WHERE session_id = ?1",
@@ -179,8 +219,9 @@ impl SqliteDatabase {
     }
 
     /// Get all-time total cost
+    #[allow(dead_code)]
     pub fn get_all_time_total(&self) -> Result<f64> {
-        let conn = Connection::open(&self.path)?;
+        let conn = self.get_connection()?;
         let total: f64 = conn.query_row(
             "SELECT COALESCE(SUM(cost), 0.0) FROM sessions",
             [],
@@ -190,8 +231,9 @@ impl SqliteDatabase {
     }
 
     /// Get today's total cost
+    #[allow(dead_code)]
     pub fn get_today_total(&self) -> Result<f64> {
-        let conn = Connection::open(&self.path)?;
+        let conn = self.get_connection()?;
         let today = Local::now().format("%Y-%m-%d").to_string();
         let total: f64 = conn.query_row(
             "SELECT COALESCE(total_cost, 0.0) FROM daily_stats WHERE date = ?1",
@@ -202,8 +244,9 @@ impl SqliteDatabase {
     }
 
     /// Get current month's total cost
+    #[allow(dead_code)]
     pub fn get_month_total(&self) -> Result<f64> {
-        let conn = Connection::open(&self.path)?;
+        let conn = self.get_connection()?;
         let month = Local::now().format("%Y-%m").to_string();
         let total: f64 = conn.query_row(
             "SELECT COALESCE(total_cost, 0.0) FROM monthly_stats WHERE month = ?1",
@@ -214,8 +257,9 @@ impl SqliteDatabase {
     }
 
     /// Check if database is initialized and accessible
+    #[allow(dead_code)]
     pub fn is_healthy(&self) -> bool {
-        if let Ok(conn) = Connection::open(&self.path) {
+        if let Ok(conn) = self.get_connection() {
             conn.execute("SELECT 1", []).is_ok()
         } else {
             false
@@ -224,7 +268,7 @@ impl SqliteDatabase {
 
     /// Check if the database has any sessions
     pub fn has_sessions(&self) -> bool {
-        if let Ok(conn) = Connection::open(&self.path) {
+        if let Ok(conn) = self.get_connection() {
             if let Ok(count) = conn.query_row::<i64, _, _>(
                 "SELECT COUNT(*) FROM sessions",
                 [],
@@ -241,7 +285,7 @@ impl SqliteDatabase {
         &self,
         sessions: &std::collections::HashMap<String, crate::stats::SessionStats>,
     ) -> Result<()> {
-        let mut conn = Connection::open(&self.path)?;
+        let mut conn = self.get_connection()?;
         let tx = conn.transaction()?;
 
         for (session_id, session) in sessions.iter() {

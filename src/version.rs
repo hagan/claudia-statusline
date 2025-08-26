@@ -9,6 +9,7 @@ pub struct VersionInfo {
     pub git_hash: &'static str,
     pub git_branch: &'static str,
     pub git_dirty: bool,
+    #[allow(dead_code)]
     pub git_describe: &'static str,
     pub build_date: &'static str,
     pub build_profile: &'static str,
@@ -40,17 +41,20 @@ impl VersionInfo {
     }
 
     /// Get the full semantic version with git information
+    #[allow(dead_code)]
     pub fn full(&self) -> String {
         let dirty = if self.git_dirty { "+dirty" } else { "" };
         format!("v{}-{}{}", self.version, self.git_hash, dirty)
     }
 
     /// Check if this is a release build
+    #[allow(dead_code)]
     pub fn is_release(&self) -> bool {
         self.build_profile == "release"
     }
 
     /// Check if the working directory was clean during build
+    #[allow(dead_code)]
     pub fn is_clean(&self) -> bool {
         !self.git_dirty
     }
@@ -77,6 +81,7 @@ pub fn version_string() -> String {
 }
 
 /// Get a short version string for logs or debug output
+#[allow(dead_code)]
 pub fn short_version() -> String {
     let info = VersionInfo::current();
     info.short()

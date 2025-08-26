@@ -5,6 +5,7 @@ use crate::stats::StatsData;
 use crate::database::SqliteDatabase;
 
 /// Migration trait for database schema changes
+#[allow(dead_code)]
 pub trait Migration {
     /// Unique version number (must be sequential)
     fn version(&self) -> u32;
@@ -20,11 +21,13 @@ pub trait Migration {
 }
 
 /// Migration runner for managing database migrations
+#[allow(dead_code)]
 pub struct MigrationRunner {
     conn: Connection,
     migrations: Vec<Box<dyn Migration>>,
 }
 
+#[allow(dead_code)]
 impl MigrationRunner {
     pub fn new(db_path: &Path) -> Result<Self> {
         // Initialize database
@@ -192,6 +195,7 @@ impl Migration for InitialJsonToSqlite {
 }
 
 /// Run migrations on startup (best effort)
+#[allow(dead_code)]
 pub fn run_migrations() {
     if let Ok(db_path) = StatsData::get_sqlite_path() {
         if let Ok(mut runner) = MigrationRunner::new(&db_path) {

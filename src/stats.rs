@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write, Seek};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use chrono::Local;
 use fs2::FileExt;
@@ -102,18 +102,23 @@ impl StatsData {
     pub fn save(&self) -> io::Result<()> {
         let path = Self::get_stats_file_path();
 
-        // Ensure directory exists
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
+        // Acquire and lock the file
+        let mut file = match acquire_stats_file(&path) {
+            Some(f) => f,
+            None => {
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Failed to acquire stats file lock"
+                ));
+            }
+        };
 
-        // Write to temp file first (atomic operation)
-        let temp_path = path.with_extension("tmp");
-        let file = File::create(&temp_path)?;
-        serde_json::to_writer_pretty(file, self)?;
+        // Save the data using our helper
+        save_stats_data(&mut file, self);
 
-        // Atomic rename
-        fs::rename(temp_path, path)?;
+        // Also perform SQLite dual-write
+        perform_sqlite_dual_write(self);
+
         Ok(())
     }
 
@@ -242,12 +247,8 @@ fn get_stats_backup_path() -> Result<PathBuf, Box<dyn std::error::Error>> {
         .join(format!("stats_backup_{}.json", timestamp)))
 }
 
-pub fn update_stats_data<F>(updater: F) -> (f64, f64)
-where
-    F: FnOnce(&mut StatsData) -> (f64, f64),
-{
-    let path = StatsData::get_stats_file_path();
-
+// Helper function to acquire and lock the stats file
+fn acquire_stats_file(path: &Path) -> Option<File> {
     // Ensure directory exists
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -258,33 +259,36 @@ where
         .read(true)
         .write(true)
         .create(true)
-        .open(&path);
+        .open(path);
 
     let mut file = match file {
         Ok(f) => f,
         Err(e) => {
             eprintln!("Failed to open stats file: {}", e);
-            // Return zero totals on error
-            return (0.0, 0.0);
+            return None;
         }
     };
 
     // Acquire exclusive lock (blocks until available)
     if let Err(e) = file.lock_exclusive() {
         eprintln!("Failed to lock stats file: {}", e);
-        return (0.0, 0.0);
+        return None;
     }
 
-    // Read current data
+    Some(file)
+}
+
+// Helper function to load stats data from file
+fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
     let mut contents = String::new();
-    let mut stats_data = if file.read_to_string(&mut contents).is_ok() && !contents.is_empty() {
+    if file.read_to_string(&mut contents).is_ok() && !contents.is_empty() {
         match serde_json::from_str(&contents) {
             Ok(data) => data,
             Err(e) => {
                 eprintln!("Warning: Stats file corrupted: {}. Creating backup and starting fresh.", e);
                 // Try to create a backup of the corrupted file
                 if let Ok(backup_path) = get_stats_backup_path() {
-                    if let Err(e) = std::fs::copy(&path, &backup_path) {
+                    if let Err(e) = std::fs::copy(path, &backup_path) {
                         eprintln!("Failed to backup corrupted stats file: {}", e);
                     } else {
                         eprintln!("Corrupted stats backed up to: {:?}", backup_path);
@@ -295,11 +299,11 @@ where
         }
     } else {
         StatsData::default()
-    };
+    }
+}
 
-    // Apply the update
-    let result = updater(&mut stats_data);
-
+// Helper function to save stats data to file
+fn save_stats_data(file: &mut File, stats_data: &StatsData) {
     // Write back to file (truncate and write)
     if let Err(e) = file.set_len(0) {
         eprintln!("Failed to truncate stats file: {}", e);
@@ -308,75 +312,118 @@ where
         eprintln!("Failed to seek stats file: {}", e);
     }
 
-    let json = serde_json::to_string_pretty(&stats_data).unwrap_or_else(|_| "{}".to_string());
+    let json = serde_json::to_string_pretty(stats_data).unwrap_or_else(|_| "{}".to_string());
     if let Err(e) = file.write_all(json.as_bytes()) {
         eprintln!("Failed to write stats file: {}", e);
     }
+}
 
-    // DUAL-WRITE: Also write to SQLite (Phase 1 - best effort)
-    // This is non-blocking for the JSON write, SQLite errors are logged but don't fail the operation
-    if let Ok(db_path) = StatsData::get_sqlite_path() {
-        match SqliteDatabase::new(&db_path) {
-            Ok(db) => {
-                // Find the most recently updated session to write to SQLite first
-                let current_session = stats_data.sessions.iter()
-                    .max_by_key(|(_, s)| &s.last_updated)
-                    .map(|(id, _)| id.clone());
+// Check if we should migrate sessions from JSON to SQLite
+fn should_migrate_sessions(db: &SqliteDatabase, stats_data: &StatsData) -> bool {
+    !db.has_sessions() && !stats_data.sessions.is_empty()
+}
 
-                // Check if this is a fresh SQLite database that needs migration
-                if !db.has_sessions() && !stats_data.sessions.is_empty() {
-                    // Migrate all existing sessions from JSON to SQLite
-                    // Note: We'll handle the current session separately to avoid double-counting
-                    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> =
-                        stats_data.sessions.iter()
-                            .filter(|(id, _)| current_session.as_ref() != Some(id))
-                            .map(|(id, session)| (id.clone(), session.clone()))
-                            .collect();
+// Migrate existing sessions from JSON to SQLite
+fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
+    // Find the most recently updated session to exclude from migration
+    let current_session = stats_data.sessions.iter()
+        .max_by_key(|(_, s)| &s.last_updated)
+        .map(|(id, _)| id.clone());
 
-                    if !sessions_to_migrate.is_empty() {
-                        match db.import_sessions(&sessions_to_migrate) {
-                            Ok(_) => {
-                                eprintln!("Migrated {} existing sessions from JSON to SQLite", sessions_to_migrate.len());
-                            }
-                            Err(e) => {
-                                eprintln!("Failed to migrate sessions to SQLite: {}", e);
-                            }
-                        }
-                    }
-                }
+    // Collect sessions to migrate (excluding current session)
+    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> =
+        stats_data.sessions.iter()
+            .filter(|(id, _)| current_session.as_ref() != Some(id))
+            .map(|(id, session)| (id.clone(), session.clone()))
+            .collect();
 
-                // Write the current session (will be an insert or update)
-                if let Some((session_id, session)) = stats_data.sessions.iter()
-                    .max_by_key(|(_, s)| &s.last_updated)
-                {
-                    // For SQLite, we need the incremental cost, not the total
-                    // The database module will handle the UPSERT with addition
-                    // For now, we'll write the total cost as SQLite will handle it correctly on first insert
-                    match db.update_session(
-                        session_id,
-                        session.cost,
-                        session.lines_added,
-                        session.lines_removed,
-                    ) {
-                        Ok((day_total, session_total)) => {
-                            eprintln!("SQLite dual-write successful: day=${:.2}, session=${:.2}", day_total, session_total);
-                        }
-                        Err(e) => {
-                            eprintln!("SQLite dual-write failed: {}", e);
-                        }
-                    }
-                }
+    if !sessions_to_migrate.is_empty() {
+        match db.import_sessions(&sessions_to_migrate) {
+            Ok(_) => {
+                eprintln!("Migrated {} existing sessions from JSON to SQLite", sessions_to_migrate.len());
             }
             Err(e) => {
-                eprintln!("Failed to initialize SQLite database at {:?}: {}", db_path, e);
+                eprintln!("Failed to migrate sessions to SQLite: {}", e);
             }
         }
-    } else {
-        eprintln!("Failed to get SQLite path");
+    }
+}
+
+// Write the current session to SQLite
+fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
+    if let Some((session_id, session)) = stats_data.sessions.iter()
+        .max_by_key(|(_, s)| &s.last_updated)
+    {
+        match db.update_session(
+            session_id,
+            session.cost,
+            session.lines_added,
+            session.lines_removed,
+        ) {
+            Ok((day_total, session_total)) => {
+                eprintln!("SQLite dual-write successful: day=${:.2}, session=${:.2}", day_total, session_total);
+            }
+            Err(e) => {
+                eprintln!("SQLite dual-write failed: {}", e);
+            }
+        }
+    }
+}
+
+// Helper function to perform SQLite dual-write
+fn perform_sqlite_dual_write(stats_data: &StatsData) {
+    // DUAL-WRITE: Also write to SQLite (Phase 1 - best effort)
+    // This is non-blocking for the JSON write, SQLite errors are logged but don't fail the operation
+    let db_path = match StatsData::get_sqlite_path() {
+        Ok(p) => p,
+        Err(_) => {
+            eprintln!("Failed to get SQLite database path");
+            return;
+        }
+    };
+
+    let db = match SqliteDatabase::new(&db_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Failed to initialize SQLite database at {:?}: {}", db_path, e);
+            return;
+        }
+    };
+
+    // Check if we need to migrate existing sessions
+    if should_migrate_sessions(&db, stats_data) {
+        migrate_sessions_to_sqlite(&db, stats_data);
     }
 
-    // File lock is automatically released when file is dropped
+    // Write the current session
+    write_current_session_to_sqlite(&db, stats_data);
+}
 
+pub fn update_stats_data<F>(updater: F) -> (f64, f64)
+where
+    F: FnOnce(&mut StatsData) -> (f64, f64),
+{
+    let path = StatsData::get_stats_file_path();
+
+    // Acquire and lock the file
+    let mut file = match acquire_stats_file(&path) {
+        Some(f) => f,
+        None => return (0.0, 0.0),
+    };
+
+    // Load existing stats data
+    let mut stats_data = load_stats_data(&mut file, &path);
+
+    // Apply the update
+    let result = updater(&mut stats_data);
+
+    // Save updated stats data
+    save_stats_data(&mut file, &stats_data);
+
+    // Perform SQLite dual-write
+    perform_sqlite_dual_write(&stats_data);
+
+    // File lock is automatically released when file is dropped
     result
 }
 

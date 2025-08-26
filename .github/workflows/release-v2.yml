@@ -151,7 +151,7 @@ jobs:
             ## Claudia Statusline ${{ steps.version.outputs.version }}
 
             High-performance, secure statusline for Claude Code with SQLite dual-storage backend.
-            
+
             ### ⚠️ Security Notice (v2.2.1)
             This release contains critical security fixes. All users should upgrade immediately.
 
