@@ -4,8 +4,8 @@
 # Downloads and installs the latest pre-built binary
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
-#   wget -qO- https://raw.githubusercontent.com/hagan/claudia-statusline/main/quick-install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
+#   wget -qO- https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 #
 
 set -e

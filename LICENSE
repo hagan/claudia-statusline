@@ -27,7 +27,7 @@ IMPORTANT NOTICE:
 This license applies ONLY to:
 - The patch file (statusline.patch) containing our modifications
 - Build configuration files (Makefile, Cargo.toml)
-- Integration scripts (install-statusline.sh, uninstall-statusline.sh, statusline-wrapper.sh)
+- Integration scripts in scripts/ directory
 - Documentation files (README.md, *.md files)
 - Any other original work in this repository
 

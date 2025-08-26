@@ -157,7 +157,7 @@ test-sqlite: debug
 .PHONY: test-install
 test-install: install
 	@echo "$(BLUE)Running installation tests...$(NC)"
-	@./test-installation.sh
+	@./scripts/test-installation.sh
 
 # Run all tests
 .PHONY: test-all

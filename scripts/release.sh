@@ -93,7 +93,7 @@ cat > "$RELEASE_NOTES" << EOF
 \`\`\`bash
 git clone https://github.com/hagan/claudia-statusline
 cd claudia-statusline
-./install-statusline.sh
+./scripts/install-statusline.sh
 \`\`\`
 
 ### Manual Install
@@ -137,7 +137,7 @@ cp target/release/statusline "${RELEASE_DIR}/"
 cp README.md "${RELEASE_DIR}/"
 cp LICENSE "${RELEASE_DIR}/"
 cp NOTICE "${RELEASE_DIR}/"
-cp install-statusline.sh "${RELEASE_DIR}/"
+cp scripts/install-statusline.sh "${RELEASE_DIR}/"
 
 cd /tmp
 tar czf "${RELEASE_NAME}.tar.gz" "${RELEASE_NAME}"

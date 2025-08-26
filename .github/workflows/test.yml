@@ -25,13 +25,13 @@ jobs:
         override: true
 
     - name: Test install script help
-      run: ./install-statusline.sh --help
+      run: ./scripts/install-statusline.sh --help
 
     - name: Test uninstall script help
-      run: ./uninstall-statusline.sh --help
+      run: ./scripts/uninstall-statusline.sh --help
 
     - name: Test dry-run installation
-      run: ./install-statusline.sh --dry-run --verbose
+      run: ./scripts/install-statusline.sh --dry-run --verbose
 
     - name: Build the binary first
       run: cargo build --release
@@ -39,7 +39,7 @@ jobs:
     - name: Test installation with custom prefix
       run: |
         mkdir -p /tmp/test-install /tmp/test-config
-        ./install-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config --skip-build
+        ./scripts/install-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config --skip-build
 
     - name: Verify installation
       run: |
@@ -54,7 +54,7 @@ jobs:
 
     - name: Test uninstallation
       run: |
-        ./uninstall-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config
+        ./scripts/uninstall-statusline.sh --test --prefix /tmp/test-install --config-dir /tmp/test-config
 
     - name: Verify uninstallation
       run: |

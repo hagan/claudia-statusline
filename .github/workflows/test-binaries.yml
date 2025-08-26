@@ -196,17 +196,17 @@ jobs:
 
     - name: Test installation script syntax
       run: |
-        bash -n install-statusline.sh
-        bash -n uninstall-statusline.sh
+        bash -n scripts/install-statusline.sh
+        bash -n scripts/uninstall-statusline.sh
 
     - name: Test dry-run mode
       run: |
-        ./install-statusline.sh --dry-run --skip-build
+        ./scripts/install-statusline.sh --dry-run --skip-build
 
     - name: Test help output
       run: |
-        ./install-statusline.sh --help
-        ./uninstall-statusline.sh --help
+        ./scripts/install-statusline.sh --help
+        ./scripts/uninstall-statusline.sh --help
 
     - name: Create mock universal installer
       run: |

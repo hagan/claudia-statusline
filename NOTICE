@@ -24,7 +24,7 @@ Our Contributions
 The following components are our original work and are licensed under MIT:
 - statusline.patch (modifications to original)
 - Build system (Makefile, Cargo.toml)
-- Integration scripts (install-statusline.sh, uninstall-statusline.sh, statusline-wrapper.sh)
+- Integration scripts in scripts/ directory
 - Documentation (all *.md files except this NOTICE)
 - Claude Code integration components
 

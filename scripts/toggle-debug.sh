@@ -116,7 +116,7 @@ detect_config_file() {
         log_verbose "Found settings.json"
     else
         log_error "No Claude configuration file found"
-        log "Please run the installer first: ./install-statusline.sh"
+        log "Please run the installer first: ./scripts/install-statusline.sh"
         exit 1
     fi
 
@@ -152,14 +152,14 @@ check_prerequisites() {
     # Check if binary exists
     if [ ! -f "$INSTALL_DIR/statusline" ]; then
         log_error "Statusline binary not found at $INSTALL_DIR/statusline"
-        log "Please run the installer first: ./install-statusline.sh"
+        log "Please run the installer first: ./scripts/install-statusline.sh"
         exit 1
     fi
 
     # Debug wrapper is optional, create it if needed
     if [ ! -f "$INSTALL_DIR/statusline-wrapper-debug.sh" ] && [ "$current_mode" != "debug" ]; then
         log "Creating debug wrapper..."
-        ./install-statusline.sh --with-debug-logging --skip-config
+        ./scripts/install-statusline.sh --with-debug-logging --skip-config
     fi
 }
 
@@ -214,11 +214,11 @@ show_status() {
             ;;
         not-configured)
             log_warning "Statusline is not configured in Claude settings"
-            log "Run the installer: ./install-statusline.sh"
+            log "Run the installer: ./scripts/install-statusline.sh"
             ;;
         not-installed)
             log_error "Claude configuration not found"
-            log "Run the installer first: ./install-statusline.sh"
+            log "Run the installer first: ./scripts/install-statusline.sh"
             ;;
         *)
             log_error "Unknown mode: $mode"

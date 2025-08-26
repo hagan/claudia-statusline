@@ -599,7 +599,7 @@ make version      # Show current version
 # Create release
 make release-build  # Build optimized binary with version info
 make tag           # Create git tag for current version
-./release.sh       # Automated release process
+./scripts/release.sh       # Automated release process
 ```
 
 ### Release Process
@@ -626,16 +626,16 @@ The install and uninstall scripts support testing modes:
 
 ```bash
 # Test installation without making changes
-./install-statusline.sh --dry-run --verbose
+./scripts/install-statusline.sh --dry-run --verbose
 
 # Run in CI/CD test mode
-./install-statusline.sh --test --prefix /tmp/test
+./scripts/install-statusline.sh --test --prefix /tmp/test
 
 # Test uninstallation
-./uninstall-statusline.sh --dry-run
+./scripts/uninstall-statusline.sh --dry-run
 
 # Force mode (no prompts)
-./uninstall-statusline.sh --force
+./scripts/uninstall-statusline.sh --force
 ```
 
 ### CI/CD Integration
@@ -652,11 +652,11 @@ To run tests locally:
 make test
 
 # Test installation
-./install-statusline.sh --test --prefix /tmp/test-install
+./scripts/install-statusline.sh --test --prefix /tmp/test-install
 
 # Verify and clean up
 ls -la /tmp/test-install/
-./uninstall-statusline.sh --test --prefix /tmp/test-install
+./scripts/uninstall-statusline.sh --test --prefix /tmp/test-install
 ```
 
 ## Performance
@@ -677,10 +677,10 @@ The statusline can track costs persistently across Claude Code sessions:
 ### Installation
 ```bash
 # Install with cost tracking enabled
-./install-statusline.sh --with-stats
+./scripts/install-statusline.sh --with-stats
 
 # Or enable on existing installation
-./install-statusline.sh --skip-build --with-cost-tracking
+./scripts/install-statusline.sh --skip-build --with-cost-tracking
 ```
 
 ### Usage
@@ -735,16 +735,16 @@ The statusline includes a comprehensive debug mode for troubleshooting:
 
 ```bash
 # Install with debug logging enabled
-./install-statusline.sh --with-debug-logging
+./scripts/install-statusline.sh --with-debug-logging
 
 # Install with persistent cost tracking
-./install-statusline.sh --with-stats
+./scripts/install-statusline.sh --with-stats
 
 # Toggle debug mode on/off after installation
-./toggle-debug.sh
+./scripts/toggle-debug.sh
 
 # Check current debug status
-./toggle-debug.sh --status
+./scripts/toggle-debug.sh --status
 
 # View debug logs in real-time
 tail -f ~/.cache/statusline-debug.log
@@ -776,12 +776,12 @@ tail -f ~/.cache/statusline-debug.log
 - This means Claude Code is sending JSON but the binary isn't receiving it correctly
 - **Quick Fix**: Re-run the installer to update configuration:
   ```bash
-  git pull && ./install-statusline.sh
+  git pull && ./scripts/install-statusline.sh
   ```
 - **Debug Mode** (to see what Claude is sending):
   ```bash
   # Enable debug mode
-  ./toggle-debug.sh
+  ./scripts/toggle-debug.sh
 
   # Restart Claude Code, then check the log
   tail -f ~/.cache/statusline-debug.log
@@ -881,14 +881,14 @@ A: Minimal impact - uses <0.1% CPU and updates only every 300ms.
 
 ### Automated (Recommended)
 ```bash
-./uninstall-statusline.sh
+./scripts/uninstall-statusline.sh
 
 # Or with options:
-./uninstall-statusline.sh --help         # Show all options
-./uninstall-statusline.sh --dry-run      # Preview what will be removed
-./uninstall-statusline.sh --force        # Skip all prompts
-./uninstall-statusline.sh --keep-logs    # Keep debug logs
-./uninstall-statusline.sh --skip-config  # Keep Claude settings intact
+./scripts/uninstall-statusline.sh --help         # Show all options
+./scripts/uninstall-statusline.sh --dry-run      # Preview what will be removed
+./scripts/uninstall-statusline.sh --force        # Skip all prompts
+./scripts/uninstall-statusline.sh --keep-logs    # Keep debug logs
+./scripts/uninstall-statusline.sh --skip-config  # Keep Claude settings intact
 ```
 
 The uninstaller will:

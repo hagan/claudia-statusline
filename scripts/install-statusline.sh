@@ -531,7 +531,7 @@ print_summary() {
         fi
         echo ""
         log "${BLUE}To uninstall:${NC}"
-        log "  ./uninstall-statusline.sh"
+        log "  ./scripts/uninstall-statusline.sh"
     fi
 }
 
