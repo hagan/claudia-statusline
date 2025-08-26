@@ -197,10 +197,5 @@ jobs:
             ```bash
             sha256sum -c statusline-linux-amd64.tar.gz.sha256
             ```
-          files: |
-            statusline-*.tar.gz
-            statusline-*.tar.gz.sha256
-            statusline-*.zip
-            statusline-*.zip.sha256
           draft: false
           prerelease: false
