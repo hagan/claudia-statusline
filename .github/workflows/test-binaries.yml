@@ -15,7 +15,7 @@ jobs:
         arch: [amd64]  # GitHub Actions doesn't easily support ARM64 runners
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Download artifacts from build
       if: github.event.workflow_run
@@ -77,14 +77,12 @@ jobs:
         arch: [amd64, arm64]
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: stable
-        target: ${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
-        override: true
+        targets: ${{ matrix.arch == 'amd64' && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
 
     - name: Build binary
       run: |
@@ -122,14 +120,12 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Install Rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@stable
       with:
-        toolchain: stable
-        target: x86_64-pc-windows-msvc
-        override: true
+        targets: x86_64-pc-windows-msvc
 
     - name: Build binary
       run: |
@@ -192,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
 
     - name: Test installation script syntax
       run: |
