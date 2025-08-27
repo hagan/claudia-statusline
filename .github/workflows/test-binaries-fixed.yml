@@ -189,10 +189,15 @@ jobs:
 
   test-installation-script:
     runs-on: ubuntu-latest
-    needs: [test-linux-binary, test-macos-binary, test-windows-binary]
 
     steps:
     - uses: actions/checkout@v4
+
+    - name: Build statusline binary
+      run: |
+        cargo build --release
+        sudo cp target/release/statusline /usr/local/bin/
+        chmod +x /usr/local/bin/statusline
 
     - name: Make installation script executable
       run: chmod +x scripts/test-installation.sh
