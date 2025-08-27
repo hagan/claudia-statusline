@@ -188,13 +188,14 @@ jobs:
             }
             Write-Output "✓ Binary validation passed"
           } catch {
-            Write-Error "Failed to read binary: $_"
+            Write-Error ("Failed to read binary: " + $_.Exception.Message)
             exit 1
           }
         } else {
           Write-Error "statusline.exe not found in artifacts directory"
-          Write-Output "Current directory: $(Get-Location)"
-          Write-Output "Directory contents:"
+          $currentDir = Get-Location
+          Write-Output "Current directory: $currentDir"
+          Write-Output "Directory contents below:"
           Get-ChildItem -Recurse | Select-Object FullName
           exit 1
         }
