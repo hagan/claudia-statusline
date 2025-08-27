@@ -63,6 +63,7 @@ impl StatuslineError {
     }
 
     /// Create a stats file error
+    #[allow(dead_code)]
     pub fn stats(msg: impl Into<String>) -> Self {
         StatuslineError::StatsFile(msg.into())
     }

@@ -193,11 +193,10 @@ jobs:
     steps:
     - uses: actions/checkout@v4
 
-    - name: Build statusline binary
+    - name: Build and install statusline binary
       run: |
         cargo build --release
-        sudo cp target/release/statusline /usr/local/bin/
-        chmod +x /usr/local/bin/statusline
+        sudo cp target/release/statusline /usr/local/bin/statusline
 
     - name: Make installation script executable
       run: chmod +x scripts/test-installation.sh
