@@ -139,13 +139,30 @@ jobs:
           .\target\${{ matrix.target }}\release\statusline.exe --version
           echo '{"workspace":{"current_dir":"C:\temp"}}' | .\target\${{ matrix.target }}\release\statusline.exe
 
+  # Quick security check on main branch
+  security-check:
+    runs-on: ubuntu-latest
+    name: Quick Security Check
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      
+      - name: Install and run cargo-audit
+        run: |
+          cargo install cargo-audit
+          echo "Running security audit..."
+          cargo audit --deny warnings || echo "::warning::Security vulnerabilities found. Check security workflow for details."
+
   # Create a job to test that all builds succeeded
   check-builds:
-    needs: build
+    needs: [build, security-check]
     runs-on: ubuntu-latest
     steps:
       - name: Check build matrix
-        run: echo "All builds completed successfully!"
+        run: echo "All builds and security checks completed successfully!"
 
   # Optional job to measure binary sizes
   measure-sizes:

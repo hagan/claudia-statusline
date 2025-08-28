@@ -7,6 +7,10 @@ description = "Claudia Statusline - A feature-rich statusline for Claude Code, i
 repository = "https://github.com/hagan/claudia-statusline"
 build = "build.rs"
 
+[features]
+default = []
+async = ["tokio"]
+
 [lib]
 name = "statusline"
 path = "src/lib.rs"
@@ -26,6 +30,7 @@ r2d2 = "0.8"  # Connection pooling
 r2d2_sqlite = "0.24"  # SQLite adapter for r2d2
 thiserror = "1.0"  # Unified error handling
 dirs = "5.0"  # For finding config directories
+tokio = { version = "1.35", features = ["rt", "rt-multi-thread", "process", "macros", "fs"], optional = true }  # Async runtime
 
 [build-dependencies]
 chrono = "0.4"

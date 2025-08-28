@@ -4,10 +4,20 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.2.1   | :white_check_mark: |
-| 2.2.0   | :x:                |
-| 2.1.x   | :x:                |
-| < 2.1   | :x:                |
+| 2.6.x   | :white_check_mark: |
+| 2.5.x   | :white_check_mark: |
+| 2.4.x   | :white_check_mark: |
+| < 2.4   | :x:                |
+
+## Automated Security Scanning
+
+As of version 2.6.0, Claudia Statusline includes automated security scanning in CI/CD:
+
+### Continuous Security Monitoring
+- **cargo-audit**: Scans for known vulnerabilities on every push and daily
+- **cargo-deny**: Checks supply chain security, licenses, and advisories  
+- **Dependency Review**: Automatic review of dependency changes in PRs
+- **License Compliance**: Ensures all dependencies have compatible licenses
 
 ## Security Hardening
 

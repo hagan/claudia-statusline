@@ -34,6 +34,8 @@
 pub mod error;
 pub mod models;
 pub mod git;
+#[cfg(feature = "async")]
+pub mod git_async;
 pub mod stats;
 pub mod display;
 pub mod utils;

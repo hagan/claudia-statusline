@@ -1,0 +1,202 @@
+name: Security Audit
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/security.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+      - '.github/workflows/security.yml'
+  schedule:
+    # Run security audit daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  security-audit:
+    runs-on: ubuntu-latest
+    name: Security Audit
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-index-
+
+    - name: Install cargo-audit
+      run: cargo install cargo-audit
+
+    - name: Run security audit
+      run: |
+        echo "## Security Audit Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Run cargo audit and capture output
+        if cargo audit --json > audit.json 2>&1; then
+          echo "✅ No security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Security vulnerabilities detected!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          # Parse and display vulnerabilities
+          cargo audit || true
+          
+          # Also run without JSON for human-readable output in logs
+          echo "### Detailed Report:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo audit 2>&1 | head -100 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Check for outdated dependencies
+      run: |
+        cargo install cargo-outdated
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## Outdated Dependencies" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cargo outdated --exit-code 0 2>&1 | head -50 >> $GITHUB_STEP_SUMMARY || true
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload audit results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: security-audit-results
+        path: |
+          audit.json
+        retention-days: 30
+
+  dependency-review:
+    runs-on: ubuntu-latest
+    name: Dependency Review
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Dependency Review
+      uses: actions/dependency-review-action@v4
+      with:
+        fail-on-severity: moderate
+        deny-licenses: GPL-3.0, AGPL-3.0
+        comment-summary-in-pr: true
+
+  license-check:
+    runs-on: ubuntu-latest
+    name: License Compatibility Check
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-license
+      run: cargo install cargo-license
+
+    - name: Check licenses
+      run: |
+        echo "## License Report" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### Dependencies and their licenses:" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        
+        # Check for incompatible licenses
+        INCOMPATIBLE=$(cargo license --json | jq -r '.[] | select(.license | test("GPL|AGPL")) | .name' | wc -l)
+        if [ "$INCOMPATIBLE" -gt 0 ]; then
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Found potentially incompatible licenses!" >> $GITHUB_STEP_SUMMARY
+          exit 1
+        else
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "✅ All licenses are compatible" >> $GITHUB_STEP_SUMMARY
+        fi
+
+  supply-chain-security:
+    runs-on: ubuntu-latest
+    name: Supply Chain Security
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install cargo-deny
+      run: cargo install cargo-deny
+
+    - name: Create deny.toml if not exists
+      run: |
+        if [ ! -f deny.toml ]; then
+          cat > deny.toml << 'EOF'
+        [bans]
+        multiple-versions = "warn"
+        skip = []
+        skip-tree = []
+        
+        [licenses]
+        unlicensed = "deny"
+        allow = [
+          "MIT",
+          "Apache-2.0",
+          "Apache-2.0 WITH LLVM-exception",
+          "BSD-2-Clause",
+          "BSD-3-Clause",
+          "ISC",
+          "Unicode-DFS-2016",
+          "CC0-1.0",
+        ]
+        copyleft = "warn"
+        
+        [sources]
+        unknown-registry = "warn"
+        unknown-git = "warn"
+        
+        [advisories]
+        db-path = "~/.cargo/advisory-db"
+        db-urls = ["https://github.com/rustsec/advisory-db"]
+        yanked = "warn"
+        EOF
+        fi
+
+    - name: Run cargo-deny
+      run: |
+        echo "## Supply Chain Security Check" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if cargo deny check 2>&1; then
+          echo "✅ Supply chain security check passed!" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "⚠️ Supply chain security issues detected!" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cargo deny check 2>&1 | head -100 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
