@@ -22,11 +22,14 @@
 
 use std::env;
 use std::io::{self, Read};
+use clap::{Parser, Subcommand};
 
+mod common;
 mod error;
 mod retry;
 mod models;
 mod git;
+mod git_utils;
 mod stats;
 mod display;
 mod utils;
@@ -41,43 +44,55 @@ use stats::{get_or_load_stats_data, update_stats_data};
 use display::{Colors, format_output};
 use version::version_string;
 
+/// Claudia Statusline - A high-performance statusline for Claude Code
+#[derive(Parser)]
+#[command(name = "statusline")]
+#[command(version = env!("CLAUDIA_VERSION"))]
+#[command(about = "A high-performance statusline for Claude Code", long_about = None)]
+#[command(after_help = "Input: Reads JSON from stdin\n\nExample:\n  echo '{\"workspace\":{\"current_dir\":\"/path\"}}' | statusline")]
+struct Cli {
+    /// Show detailed version information
+    #[arg(long = "version-full")]
+    version_full: bool,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Generate example config file
+    GenerateConfig,
+}
+
 fn main() -> Result<()> {
-    // Check for --version or -v argument
-    let args: Vec<String> = env::args().collect();
-    if args.len() > 1 && (args[1] == "--version" || args[1] == "-v" || args[1] == "version") {
+    let cli = Cli::parse();
+
+    // Handle version-full flag
+    if cli.version_full {
         print!("{}", version_string());
         return Ok(());
     }
 
-    // Check for --help or -h argument
-    if args.len() > 1 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help") {
-        println!("Claudia Statusline v{}", env!("CLAUDIA_VERSION"));
-        println!("\nUsage: statusline [OPTIONS]");
-        println!("\nOptions:");
-        println!("  -v, --version         Show version information");
-        println!("  -h, --help            Show this help message");
-        println!("      --generate-config Generate example config file");
-        println!("\nInput: Reads JSON from stdin");
-        println!("\nExample:");
-        println!("  echo '{{\"workspace\":{{\"current_dir\":\"/path\"}}}}' | statusline");
-        return Ok(());
-    }
+    // Handle subcommands
+    if let Some(command) = cli.command {
+        match command {
+            Commands::GenerateConfig => {
+                let config_path = config::Config::default_config_path()?;
+                println!("Generating example config file at: {:?}", config_path);
 
-    // Check for --generate-config argument
-    if args.len() > 1 && args[1] == "--generate-config" {
-        let config_path = config::Config::default_config_path()?;
-        println!("Generating example config file at: {:?}", config_path);
+                // Create parent directories
+                if let Some(parent) = config_path.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
 
-        // Create parent directories
-        if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
+                // Write example config
+                std::fs::write(&config_path, config::Config::example_toml())?;
+                println!("Config file generated successfully!");
+                println!("Edit {} to customize settings", config_path.display());
+                return Ok(());
+            }
         }
-
-        // Write example config
-        std::fs::write(&config_path, config::Config::example_toml())?;
-        println!("Config file generated successfully!");
-        println!("Edit {} to customize settings", config_path.display());
-        return Ok(());
     }
 
     // Read JSON from stdin

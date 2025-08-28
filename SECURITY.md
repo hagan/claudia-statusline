@@ -15,7 +15,7 @@ As of version 2.6.0, Claudia Statusline includes automated security scanning in 
 
 ### Continuous Security Monitoring
 - **cargo-audit**: Scans for known vulnerabilities on every push and daily
-- **cargo-deny**: Checks supply chain security, licenses, and advisories  
+- **cargo-deny**: Checks supply chain security, licenses, and advisories
 - **Dependency Review**: Automatic review of dependency changes in PRs
 - **License Compliance**: Ensures all dependencies have compatible licenses
 

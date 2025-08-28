@@ -13,7 +13,7 @@
 //! ## Quick Start
 //!
 //! ```rust,no_run
-//! use statusline::{models::StatuslineInput, display::format_output};
+//! use statusline::models::StatuslineInput;
 //!
 //! // Parse input from JSON
 //! let input: StatuslineInput = serde_json::from_str(r#"
@@ -23,19 +23,18 @@
 //!     }
 //! "#).unwrap();
 //!
-//! // Format and display the statusline
-//! let output = format_output(&input);
-//! println!("{}", output);
+//! // The statusline processes this input and generates formatted output
+//! // See the display module for formatting functions
 //! ```
 
 #![warn(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/statusline/2.6.0")]
 
+pub mod common;
 pub mod error;
 pub mod models;
 pub mod git;
-#[cfg(feature = "async")]
-pub mod git_async;
+pub mod git_utils;
 pub mod stats;
 pub mod display;
 pub mod utils;

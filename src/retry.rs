@@ -32,11 +32,8 @@ impl Default for RetryConfig {
     }
 }
 
-impl RetryConfig {
-    /// Quick configuration for file operations (from config)
-    pub fn for_file_ops() -> Self {
-        let app_config = config::get_config();
-        let settings = &app_config.retry.file_ops;
+impl From<&config::RetrySettings> for RetryConfig {
+    fn from(settings: &config::RetrySettings) -> Self {
         RetryConfig {
             max_attempts: settings.max_attempts,
             initial_delay_ms: settings.initial_delay_ms,
@@ -44,43 +41,44 @@ impl RetryConfig {
             backoff_factor: settings.backoff_factor,
         }
     }
+}
 
-    /// Quick configuration for database operations (from config)
-    pub fn for_db_ops() -> Self {
-        let app_config = config::get_config();
-        let settings = &app_config.retry.db_ops;
+impl From<config::RetrySettings> for RetryConfig {
+    fn from(settings: config::RetrySettings) -> Self {
         RetryConfig {
             max_attempts: settings.max_attempts,
             initial_delay_ms: settings.initial_delay_ms,
             max_delay_ms: settings.max_delay_ms,
             backoff_factor: settings.backoff_factor,
         }
+    }
+}
+
+impl RetryConfig {
+    /// Quick configuration for file operations (from config)
+    pub fn for_file_ops() -> Self {
+        let app_config = config::get_config();
+        Self::from(&app_config.retry.file_ops)
+    }
+
+    /// Quick configuration for database operations (from config)
+    pub fn for_db_ops() -> Self {
+        let app_config = config::get_config();
+        Self::from(&app_config.retry.db_ops)
     }
 
     /// Quick configuration for git operations (from config)
     #[allow(dead_code)]
     pub fn for_git_ops() -> Self {
         let app_config = config::get_config();
-        let settings = &app_config.retry.git_ops;
-        RetryConfig {
-            max_attempts: settings.max_attempts,
-            initial_delay_ms: settings.initial_delay_ms,
-            max_delay_ms: settings.max_delay_ms,
-            backoff_factor: settings.backoff_factor,
-        }
+        Self::from(&app_config.retry.git_ops)
     }
 
     /// Quick configuration for network operations (from config)
     #[allow(dead_code)]
     pub fn for_network_ops() -> Self {
         let app_config = config::get_config();
-        let settings = &app_config.retry.network_ops;
-        RetryConfig {
-            max_attempts: settings.max_attempts,
-            initial_delay_ms: settings.initial_delay_ms,
-            max_delay_ms: settings.max_delay_ms,
-            backoff_factor: settings.backoff_factor,
-        }
+        Self::from(&app_config.retry.network_ops)
     }
 }
 

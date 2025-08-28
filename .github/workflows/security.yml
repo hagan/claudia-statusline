@@ -22,7 +22,7 @@ jobs:
   security-audit:
     runs-on: ubuntu-latest
     name: Security Audit
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -53,17 +53,17 @@ jobs:
       run: |
         echo "## Security Audit Report" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
+
         # Run cargo audit and capture output
         if cargo audit --json > audit.json 2>&1; then
           echo "✅ No security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
         else
           echo "⚠️ Security vulnerabilities detected!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          
+
           # Parse and display vulnerabilities
           cargo audit || true
-          
+
           # Also run without JSON for human-readable output in logs
           echo "### Detailed Report:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-latest
     name: Dependency Review
     if: github.event_name == 'pull_request'
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -108,7 +108,7 @@ jobs:
   license-check:
     runs-on: ubuntu-latest
     name: License Compatibility Check
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -127,7 +127,7 @@ jobs:
         echo '```' >> $GITHUB_STEP_SUMMARY
         cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        
+
         # Check for incompatible licenses
         INCOMPATIBLE=$(cargo license --json | jq -r '.[] | select(.license | test("GPL|AGPL")) | .name' | wc -l)
         if [ "$INCOMPATIBLE" -gt 0 ]; then
@@ -142,7 +142,7 @@ jobs:
   supply-chain-security:
     runs-on: ubuntu-latest
     name: Supply Chain Security
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -161,7 +161,7 @@ jobs:
         multiple-versions = "warn"
         skip = []
         skip-tree = []
-        
+
         [licenses]
         unlicensed = "deny"
         allow = [
@@ -175,11 +175,11 @@ jobs:
           "CC0-1.0",
         ]
         copyleft = "warn"
-        
+
         [sources]
         unknown-registry = "warn"
         unknown-git = "warn"
-        
+
         [advisories]
         db-path = "~/.cargo/advisory-db"
         db-urls = ["https://github.com/rustsec/advisory-db"]
@@ -191,7 +191,7 @@ jobs:
       run: |
         echo "## Supply Chain Security Check" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
-        
+
         if cargo deny check 2>&1; then
           echo "✅ Supply chain security check passed!" >> $GITHUB_STEP_SUMMARY
         else

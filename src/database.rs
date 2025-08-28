@@ -4,6 +4,7 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Result, Transaction};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use crate::common::{current_timestamp, current_date, current_month};
 use crate::retry::{retry_if_retryable, RetryConfig};
 use crate::config;
 
@@ -171,9 +172,9 @@ impl SqliteDatabase {
         lines_added: u64,
         lines_removed: u64,
     ) -> Result<(f64, f64)> {
-        let now = Local::now().to_rfc3339();
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        let month = Local::now().format("%Y-%m").to_string();
+        let now = current_timestamp();
+        let today = current_date();
+        let month = current_month();
 
         // UPSERT session (atomic operation)
         tx.execute(
@@ -262,7 +263,7 @@ impl SqliteDatabase {
     #[allow(dead_code)]
     pub fn get_today_total(&self) -> Result<f64> {
         let conn = self.get_connection()?;
-        let today = Local::now().format("%Y-%m-%d").to_string();
+        let today = current_date();
         let total: f64 = conn.query_row(
             "SELECT COALESCE(total_cost, 0.0) FROM daily_stats WHERE date = ?1",
             params![&today],
@@ -275,7 +276,7 @@ impl SqliteDatabase {
     #[allow(dead_code)]
     pub fn get_month_total(&self) -> Result<f64> {
         let conn = self.get_connection()?;
-        let month = Local::now().format("%Y-%m").to_string();
+        let month = current_month();
         let total: f64 = conn.query_row(
             "SELECT COALESCE(total_cost, 0.0) FROM monthly_stats WHERE month = ?1",
             params![&month],

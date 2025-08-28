@@ -3,11 +3,10 @@
 //! This module provides functionality to detect git repositories and retrieve
 //! their status information, including branch name and file change counts.
 
-use std::process::Command;
-use std::path::{Path, PathBuf};
-use std::fs;
+use std::path::PathBuf;
+use crate::common::validate_path_security;
 use crate::error::{StatuslineError, Result};
-use crate::retry::retry_simple;
+use crate::git_utils;
 
 /// Git repository status information.
 ///
@@ -33,19 +32,10 @@ impl Default for GitStatus {
     }
 }
 
-/// Validates a directory path to prevent security vulnerabilities
-fn validate_directory_path(dir: &str) -> Result<PathBuf> {
-    // Reject paths with null bytes (command injection)
-    if dir.contains('\0') {
-        return Err(StatuslineError::invalid_path("Path contains null bytes"));
-    }
-
-    // Convert to PathBuf and canonicalize to resolve symlinks and relative paths
-    let path = Path::new(dir);
-
-    // Get the canonical path, which resolves all symlinks and relative components
-    let canonical_path = fs::canonicalize(path)
-        .map_err(|_| StatuslineError::invalid_path(format!("Cannot canonicalize path: {}", dir)))?;
+/// Validates that a path is a git repository directory
+fn validate_git_directory(dir: &str) -> Result<PathBuf> {
+    // Use common validation first
+    let canonical_path = validate_path_security(dir)?;
 
     // Ensure the path is a directory
     if !canonical_path.is_dir() {
@@ -83,25 +73,10 @@ fn validate_directory_path(dir: &str) -> Result<PathBuf> {
 /// ```
 pub fn get_git_status(dir: &str) -> Option<GitStatus> {
     // Validate and canonicalize the directory path
-    let safe_dir = validate_directory_path(dir).ok()?;
+    let safe_dir = validate_git_directory(dir).ok()?;
 
-    // Run git status command with validated path and retry on failure
-    // Git operations can fail due to lock files or temporary issues
-    let output = retry_simple(2, 100, || {
-        Command::new("git")
-            .arg("status")
-            .arg("--porcelain=v1")
-            .arg("--branch")
-            .current_dir(&safe_dir)
-            .output()
-            .map_err(|e| StatuslineError::git(format!("Git command failed: {}", e)))
-    }).ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let status_text = String::from_utf8_lossy(&output.stdout);
+    // Get git status using the utility function
+    let status_text = git_utils::get_status_porcelain(&safe_dir)?;
     parse_git_status(&status_text)
 }
 
@@ -167,23 +142,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_directory_path_security() {
+    fn test_validate_git_directory_security() {
         // Test null byte injection
-        assert!(validate_directory_path("/tmp\0/evil").is_err());
-        assert!(validate_directory_path("/tmp\0").is_err());
+        assert!(validate_git_directory("/tmp\0/evil").is_err());
+        assert!(validate_git_directory("/tmp\0").is_err());
 
         // Test non-existent paths
-        assert!(validate_directory_path("/definitely/does/not/exist").is_err());
+        assert!(validate_git_directory("/definitely/does/not/exist").is_err());
 
         // Test file instead of directory
         let temp_file = std::env::temp_dir().join("test_file.txt");
         std::fs::write(&temp_file, "test").ok();
-        assert!(validate_directory_path(temp_file.to_str().unwrap()).is_err());
+        assert!(validate_git_directory(temp_file.to_str().unwrap()).is_err());
         std::fs::remove_file(temp_file).ok();
 
         // Test non-git directory (temp dir usually isn't a git repo)
         let temp_dir = std::env::temp_dir();
-        assert!(validate_directory_path(temp_dir.to_str().unwrap()).is_err());
+        assert!(validate_git_directory(temp_dir.to_str().unwrap()).is_err());
     }
 
     #[test]

@@ -229,6 +229,31 @@ impl Default for TranscriptConfig {
     }
 }
 
+// From trait implementations for better ergonomics
+impl From<PathBuf> for Config {
+    fn from(path: PathBuf) -> Self {
+        Config::load_from_file(&path).unwrap_or_default()
+    }
+}
+
+impl From<&Path> for Config {
+    fn from(path: &Path) -> Self {
+        Config::load_from_file(path).unwrap_or_default()
+    }
+}
+
+impl From<String> for Config {
+    fn from(path: String) -> Self {
+        Config::load_from_file(Path::new(&path)).unwrap_or_default()
+    }
+}
+
+impl From<&str> for Config {
+    fn from(path: &str) -> Self {
+        Config::load_from_file(Path::new(path)).unwrap_or_default()
+    }
+}
+
 // Configuration loading
 impl Config {
     /// Load configuration from file, or use defaults

@@ -146,10 +146,10 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-      
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-      
+
       - name: Install and run cargo-audit
         run: |
           cargo install cargo-audit

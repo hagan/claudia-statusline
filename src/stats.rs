@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use chrono::Local;
 use fs2::FileExt;
+use crate::common::{get_data_dir, current_timestamp, current_date, current_month};
 use crate::database::SqliteDatabase;
 use crate::error::{StatuslineError, Result};
 use crate::retry::{retry_if_retryable, RetryConfig};
@@ -64,7 +65,7 @@ pub struct AllTimeStats {
 
 impl Default for StatsData {
     fn default() -> Self {
-        let now = Local::now().to_rfc3339();
+        let now = current_timestamp();
         StatsData {
             version: "1.0".to_string(),
             created: now.clone(),
@@ -123,39 +124,17 @@ impl StatsData {
     }
 
     pub fn get_stats_file_path() -> PathBuf {
-        // Follow XDG Base Directory specification
-        // Priority: $XDG_DATA_HOME > ~/.local/share (XDG default)
-        let data_dir = env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".local").join("share")
-            });
-
-        data_dir
-            .join("claudia-statusline")
-            .join("stats.json")
+        get_data_dir().join("stats.json")
     }
 
     pub fn get_sqlite_path() -> Result<PathBuf> {
-        // Follow XDG Base Directory specification
-        // Priority: $XDG_DATA_HOME > ~/.local/share (XDG default)
-        let data_dir = env::var("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-                PathBuf::from(home).join(".local").join("share")
-            });
-
-        Ok(data_dir
-            .join("claudia-statusline")
-            .join("stats.db"))
+        Ok(get_data_dir().join("stats.db"))
     }
 
     pub fn update_session(&mut self, session_id: &str, session_cost: f64, lines_added: u64, lines_removed: u64) -> (f64, f64) {
-        let today = Local::now().format("%Y-%m-%d").to_string();
-        let month = Local::now().format("%Y-%m").to_string();
-        let now = Local::now().to_rfc3339();
+        let today = current_date();
+        let month = current_month();
+        let now = current_timestamp();
 
         // Calculate delta from last known session cost
         let last_cost = self.sessions
@@ -240,17 +219,8 @@ pub fn get_or_load_stats_data() -> StatsData {
 }
 
 fn get_stats_backup_path() -> Result<PathBuf> {
-    let data_dir = env::var("XDG_DATA_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            PathBuf::from(home).join(".local").join("share")
-        });
-
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    Ok(data_dir
-        .join("claudia-statusline")
-        .join(format!("stats_backup_{}.json", timestamp)))
+    Ok(get_data_dir().join(format!("stats_backup_{}.json", timestamp)))
 }
 
 // Helper function to acquire and lock the stats file with retry

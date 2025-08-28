@@ -8,6 +8,7 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use chrono::DateTime;
+use crate::common::validate_path_security;
 use crate::models::{ContextUsage, TranscriptEntry};
 use crate::error::{StatuslineError, Result};
 use crate::config;
@@ -57,26 +58,17 @@ pub fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
-/// Validates a file path to prevent security vulnerabilities
-fn validate_file_path(path: &str) -> Result<PathBuf> {
-    // Reject paths with null bytes (command injection)
-    if path.contains('\0') {
-        return Err(StatuslineError::invalid_path("Path contains null bytes"));
-    }
-
-    // Convert to PathBuf and canonicalize to resolve symlinks and relative paths
-    let path_buf = Path::new(path);
-
-    // Get the canonical path, which resolves all symlinks and relative components
-    let canonical_path = fs::canonicalize(path_buf)
-        .map_err(|_| StatuslineError::invalid_path(format!("Cannot canonicalize path: {}", path)))?;
+/// Validates that a path is a valid transcript file
+fn validate_transcript_file(path: &str) -> Result<PathBuf> {
+    // Use common validation first
+    let canonical_path = validate_path_security(path)?;
 
     // Ensure the path is a file (not a directory)
     if !canonical_path.is_file() {
         return Err(StatuslineError::invalid_path(format!("Path is not a file: {}", path)));
     }
 
-    // Optional: Check file extension if needed
+    // Check file extension
     if let Some(ext) = canonical_path.extension() {
         // Only allow jsonl files for transcripts
         if ext != "jsonl" {
@@ -89,7 +81,7 @@ fn validate_file_path(path: &str) -> Result<PathBuf> {
 
 pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
     // Validate and canonicalize the file path
-    let safe_path = validate_file_path(transcript_path).ok()?;
+    let safe_path = validate_transcript_file(transcript_path).ok()?;
 
     // Efficiently read only the last 50 lines using a circular buffer
     let file = File::open(&safe_path).ok()?;
@@ -143,7 +135,7 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
 
 pub fn parse_duration(transcript_path: &str) -> Option<u64> {
     // Validate and canonicalize the file path
-    let safe_path = validate_file_path(transcript_path).ok()?;
+    let safe_path = validate_transcript_file(transcript_path).ok()?;
 
     // Read first and last timestamps from transcript efficiently
     let file = File::open(&safe_path).ok()?;
@@ -188,22 +180,22 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn test_validate_file_path_security() {
+    fn test_validate_transcript_file_security() {
         // Test null byte injection
-        assert!(validate_file_path("/tmp/test\0.jsonl").is_err());
-        assert!(validate_file_path("/tmp\0/test.jsonl").is_err());
+        assert!(validate_transcript_file("/tmp/test\0.jsonl").is_err());
+        assert!(validate_transcript_file("/tmp\0/test.jsonl").is_err());
 
         // Test non-existent files
-        assert!(validate_file_path("/definitely/does/not/exist.jsonl").is_err());
+        assert!(validate_transcript_file("/definitely/does/not/exist.jsonl").is_err());
 
         // Test directory instead of file
         let temp_dir = std::env::temp_dir();
-        assert!(validate_file_path(temp_dir.to_str().unwrap()).is_err());
+        assert!(validate_transcript_file(temp_dir.to_str().unwrap()).is_err());
 
         // Test non-jsonl file
         let temp_file = std::env::temp_dir().join("test.txt");
         fs::write(&temp_file, "test").ok();
-        assert!(validate_file_path(temp_file.to_str().unwrap()).is_err());
+        assert!(validate_transcript_file(temp_file.to_str().unwrap()).is_err());
         fs::remove_file(temp_file).ok();
     }
 

@@ -209,6 +209,22 @@ fn test_version_flag() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Clap's --version now shows simple version
+    assert!(stdout.contains("statusline"));
+    assert!(stdout.contains("2.6.0"));
+}
+
+#[test]
+fn test_version_full_flag() {
+    let output = Command::new("cargo")
+        .args(&["run", "--", "--version-full"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Claudia Statusline"));
     assert!(stdout.contains("Git:"));
     assert!(stdout.contains("Built:"));
@@ -218,7 +234,7 @@ fn test_version_flag() {
 #[test]
 fn test_version_flag_short() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "-v"])
+        .args(&["run", "--", "-V"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -226,7 +242,8 @@ fn test_version_flag_short() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Claudia Statusline"));
+    // Clap uses -V for version (not -v)
+    assert!(stdout.contains("statusline"));
 }
 
 #[test]
