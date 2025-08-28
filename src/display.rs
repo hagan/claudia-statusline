@@ -284,7 +284,7 @@ mod tests {
 
         // Test that burn rate is calculated correctly
         // $0.50 over 10 minutes (600 seconds) = $3.00/hour
-        let cost = Cost {
+        let _cost = Cost {
             total_cost_usd: Some(0.50),
             total_lines_added: None,
             total_lines_removed: None,

@@ -4,15 +4,18 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.2.2** - Enhanced error handling, reliability improvements, and performance optimizations
+**Version 2.6.0** - Complete configuration system, retry logic, and enterprise-grade reliability
 
 ![Claudia Statusline Screenshot](statusline.png)
 
 ## Technical Highlights
 
 - **Security Hardened** - All user inputs validated, prevents path injection attacks (v2.2.1)
-- **Modular Architecture** - Clean separation across 9 focused modules (~200 lines each)
+- **Modular Architecture** - Clean separation across 11 focused modules (~200 lines each)
 - **Comprehensive Testing** - 79 tests (52 unit + 18 integration + 9 SQLite), including security tests
+- **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
+- **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
+- **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
 - **Dual Storage Backend** - SQLite with JSON fallback for maximum reliability (v2.2.0)
 - **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations

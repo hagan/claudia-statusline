@@ -449,6 +449,7 @@ mod tests {
     use std::env;
     use std::path::Path;
     use tempfile::TempDir;
+    use serial_test::serial;
 
     #[test]
     fn test_stats_data_default() {
@@ -473,6 +474,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_stats_file_path_xdg() {
         // Set XDG_DATA_HOME for testing
         env::set_var("XDG_DATA_HOME", "/tmp/xdg_test");
@@ -482,6 +484,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_stats_save_and_load() {
         let temp_dir = TempDir::new().unwrap();
         env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
@@ -506,6 +509,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_session_start_time_tracking() {
         let mut stats = StatsData::default();
 
@@ -526,6 +530,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_concurrent_update_safety() {
         // Skip this test in CI due to thread synchronization timing issues
         if env::var("CI").is_ok() {
@@ -596,6 +601,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_session_duration() {
         // Skip this test in CI due to timing issues
         if env::var("CI").is_ok() {
@@ -630,8 +636,7 @@ mod tests {
         assert!(duration.is_some(), "Duration should exist for valid session");
 
         let duration = duration.unwrap();
-        // Duration might be 0 if timestamps are too close, just check it's not negative
-        assert!(duration >= 0, "Duration should be non-negative");
+        // Duration is u64, so it's always non-negative
         assert!(duration < 3600, "Duration should be less than 1 hour for a test");
 
         // Non-existent session should return None
@@ -641,6 +646,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_file_corruption_recovery() {
         // Skip this test in CI due to file system timing issues
         if env::var("CI").is_ok() {
