@@ -1,8 +1,14 @@
+//! Display formatting module.
+//!
+//! This module handles the visual formatting of the statusline output,
+//! including colors, progress bars, and layout.
+
 use crate::models::{Cost, ModelType, ContextUsage};
 use crate::git::{get_git_status, format_git_info};
 use crate::utils::{shorten_path, calculate_context_usage, parse_duration};
 use crate::config;
 
+/// ANSI color codes for terminal output.
 pub struct Colors;
 
 impl Colors {

@@ -1,9 +1,17 @@
+//! Git repository integration module.
+//!
+//! This module provides functionality to detect git repositories and retrieve
+//! their status information, including branch name and file change counts.
+
 use std::process::Command;
 use std::path::{Path, PathBuf};
 use std::fs;
 use crate::error::{StatuslineError, Result};
 use crate::retry::retry_simple;
 
+/// Git repository status information.
+///
+/// Contains the current branch name and counts of different types of file changes.
 #[derive(Debug)]
 pub struct GitStatus {
     pub branch: String,
@@ -52,6 +60,27 @@ fn validate_directory_path(dir: &str) -> Result<PathBuf> {
     Ok(canonical_path)
 }
 
+/// Gets the git status for the specified directory.
+///
+/// # Arguments
+///
+/// * `dir` - The directory path to check
+///
+/// # Returns
+///
+/// Returns `Some(GitStatus)` if the directory is a git repository,
+/// or `None` if it's not a git repository or an error occurs.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use statusline::git::get_git_status;
+///
+/// if let Some(status) = get_git_status("/path/to/repo") {
+///     println!("Branch: {}", status.branch);
+///     println!("Modified files: {}", status.modified);
+/// }
+/// ```
 pub fn get_git_status(dir: &str) -> Option<GitStatus> {
     // Validate and canonicalize the directory path
     let safe_dir = validate_directory_path(dir).ok()?;

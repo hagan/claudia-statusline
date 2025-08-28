@@ -1,3 +1,25 @@
+//! # Claudia Statusline
+//!
+//! A high-performance statusline for Claude Code with persistent stats tracking,
+//! progress bars, and enhanced features.
+//!
+//! ## Features
+//!
+//! - Git repository status integration
+//! - Persistent statistics tracking (XDG-compliant)
+//! - Context usage visualization with progress bars
+//! - Cost tracking with burn rate calculation
+//! - Configurable via TOML files
+//! - SQLite dual-write for better concurrent access
+//!
+//! ## Usage
+//!
+//! The statusline reads JSON from stdin and outputs a formatted statusline:
+//!
+//! ```bash
+//! echo '{"workspace":{"current_dir":"/path"}}' | statusline
+//! ```
+
 use std::env;
 use std::io::{self, Read};
 

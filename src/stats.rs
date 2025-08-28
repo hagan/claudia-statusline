@@ -1,3 +1,9 @@
+//! Statistics tracking module.
+//!
+//! This module provides persistent statistics tracking for Claude Code sessions,
+//! including costs, line changes, and usage metrics. Statistics are stored in
+//! both JSON and SQLite formats for reliability and concurrent access.
+
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -11,7 +17,7 @@ use crate::database::SqliteDatabase;
 use crate::error::{StatuslineError, Result};
 use crate::retry::{retry_if_retryable, RetryConfig};
 
-// Persistent stats tracking structures
+/// Persistent stats tracking structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatsData {
     pub version: String,
@@ -222,7 +228,13 @@ impl StatsData {
     }
 }
 
-// Process-safe stats update with file locking
+/// Loads or retrieves the current statistics data.
+///
+/// This function is process-safe and loads the stats from disk.
+///
+/// # Returns
+///
+/// Returns the current `StatsData`, either loaded from disk or a new default instance.
 pub fn get_or_load_stats_data() -> StatsData {
     StatsData::load()
 }
@@ -392,6 +404,30 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
     write_current_session_to_sqlite(&db, stats_data);
 }
 
+/// Updates the statistics data with process-safe file locking.
+///
+/// This function acquires an exclusive lock on the stats file, loads the current data,
+/// applies the update function, and saves the result. It also performs a dual-write
+/// to SQLite for better concurrent access.
+///
+/// # Arguments
+///
+/// * `updater` - A closure that takes a mutable reference to `StatsData` and returns
+///               the daily and monthly totals as a tuple
+///
+/// # Returns
+///
+/// Returns a tuple of (daily_total, monthly_total) costs.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use statusline::stats::update_stats_data;
+///
+/// let (daily, monthly) = update_stats_data(|stats| {
+///     stats.update_session("session-123", 1.50, 100, 50)
+/// });
+/// ```
 pub fn update_stats_data<F>(updater: F) -> (f64, f64)
 where
     F: FnOnce(&mut StatsData) -> (f64, f64),

@@ -1,9 +1,14 @@
+//! Retry logic module.
+//!
+//! This module provides retry functionality with exponential backoff
+//! for handling transient failures in various operations.
+
 use std::thread;
 use std::time::Duration;
 use crate::error::{StatuslineError, Result};
 use crate::config;
 
-/// Configuration for retry behavior
+/// Configuration for retry behavior with exponential backoff.
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts

@@ -1,3 +1,8 @@
+//! Utility functions for the statusline.
+//!
+//! This module provides various helper functions for path manipulation,
+//! time parsing, and context usage calculations.
+
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
@@ -7,6 +12,15 @@ use crate::models::{ContextUsage, TranscriptEntry};
 use crate::error::{StatuslineError, Result};
 use crate::config;
 
+/// Parses an ISO 8601 timestamp to Unix epoch seconds.
+///
+/// # Arguments
+///
+/// * `timestamp` - An ISO 8601 formatted timestamp string
+///
+/// # Returns
+///
+/// Returns `Some(u64)` with the Unix timestamp, or `None` if parsing fails.
 pub fn parse_iso8601_to_unix(timestamp: &str) -> Option<u64> {
     // Use chrono to parse ISO 8601 timestamps
     // First try parsing as RFC3339 (with timezone)

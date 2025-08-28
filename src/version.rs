@@ -1,9 +1,11 @@
-// Version information module
-// This module provides version and build information for the statusline
+//! Version information module.
+//!
+//! This module provides version and build information for the statusline,
+//! including git commit details and build metadata.
 
 use std::fmt;
 
-/// Version information structure
+/// Version information structure containing build metadata.
 pub struct VersionInfo {
     pub version: &'static str,
     pub git_hash: &'static str,

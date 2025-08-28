@@ -1,5 +1,14 @@
+//! Data models for the Claudia Statusline.
+//!
+//! This module defines the core data structures used throughout the application,
+//! including the input format from Claude Code and various status representations.
+
 use serde::Deserialize;
 
+/// Main input structure from Claude Code.
+///
+/// This structure represents the JSON input received from stdin,
+/// containing workspace information, model details, costs, and other metadata.
 #[derive(Debug, Default, Deserialize)]
 pub struct StatuslineInput {
     pub workspace: Option<Workspace>,
@@ -10,16 +19,25 @@ pub struct StatuslineInput {
     pub cost: Option<Cost>,
 }
 
+/// Workspace information from Claude Code.
+///
+/// Contains the current working directory path.
 #[derive(Debug, Deserialize)]
 pub struct Workspace {
     pub current_dir: Option<String>,
 }
 
+/// Model information from Claude Code.
+///
+/// Contains the display name of the current Claude model being used.
 #[derive(Debug, Deserialize)]
 pub struct Model {
     pub display_name: Option<String>,
 }
 
+/// Cost and metrics information.
+///
+/// Tracks the total cost in USD and code change metrics for the current session.
 #[derive(Debug, Deserialize)]
 pub struct Cost {
     pub total_cost_usd: Option<f64>,

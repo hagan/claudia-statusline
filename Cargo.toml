@@ -7,6 +7,10 @@ description = "Claudia Statusline - A feature-rich statusline for Claude Code, i
 repository = "https://github.com/hagan/claudia-statusline"
 build = "build.rs"
 
+[lib]
+name = "statusline"
+path = "src/lib.rs"
+
 [[bin]]
 name = "statusline"
 path = "src/main.rs"

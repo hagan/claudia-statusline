@@ -1,7 +1,15 @@
+//! Error handling module for Claudia Statusline.
+//!
+//! This module provides a unified error type using the `thiserror` crate,
+//! consolidating all error types from various operations into a single enum.
+
 use thiserror::Error;
 use std::io;
 
-/// Unified error type for the Claudia Statusline application
+/// Unified error type for the Claudia Statusline application.
+///
+/// This enum represents all possible errors that can occur in the application,
+/// providing automatic conversions from underlying error types.
 #[derive(Error, Debug)]
 pub enum StatuslineError {
     /// I/O operation errors
