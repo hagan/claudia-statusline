@@ -4,9 +4,9 @@
 //! time parsing, and context usage calculations.
 
 use std::env;
-use std::fs::{self, File};
+use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use chrono::DateTime;
 use crate::common::validate_path_security;
 use crate::models::{ContextUsage, TranscriptEntry};

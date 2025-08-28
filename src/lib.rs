@@ -27,7 +27,6 @@
 //! // See the display module for formatting functions
 //! ```
 
-#![warn(missing_docs)]
 #![doc(html_root_url = "https://docs.rs/statusline/2.6.0")]
 
 pub mod common;
@@ -39,9 +38,13 @@ pub mod stats;
 pub mod display;
 pub mod utils;
 pub mod version;
+/// Configuration management module for loading and saving settings
 pub mod config;
+/// Retry logic with exponential backoff for transient failures
 pub mod retry;
+/// SQLite database backend for persistent statistics
 pub mod database;
+/// Database schema migration system
 pub mod migrations;
 
 pub use error::{StatuslineError, Result};

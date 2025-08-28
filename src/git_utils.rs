@@ -45,7 +45,7 @@ fn execute_git_command<P: AsRef<Path>>(dir: P, args: &[&str]) -> Option<Output> 
 /// Returns the porcelain status output if successful.
 pub fn get_status_porcelain<P: AsRef<Path>>(dir: P) -> Option<String> {
     let output = execute_git_command(dir, &["status", "--porcelain=v1", "--branch"])?;
-    
+
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).to_string())
     } else {

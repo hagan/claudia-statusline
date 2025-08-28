@@ -11,11 +11,16 @@ use serde::Deserialize;
 /// containing workspace information, model details, costs, and other metadata.
 #[derive(Debug, Default, Deserialize)]
 pub struct StatuslineInput {
+    /// Workspace information including current directory
     pub workspace: Option<Workspace>,
+    /// Model information including display name
     pub model: Option<Model>,
+    /// Unique session identifier
     pub session_id: Option<String>,
+    /// Path to the transcript file
     #[serde(alias = "transcript_path")]
     pub transcript: Option<String>,
+    /// Cost and metrics information
     pub cost: Option<Cost>,
 }
 
@@ -24,6 +29,7 @@ pub struct StatuslineInput {
 /// Contains the current working directory path.
 #[derive(Debug, Deserialize)]
 pub struct Workspace {
+    /// Current working directory path
     pub current_dir: Option<String>,
 }
 
@@ -32,6 +38,7 @@ pub struct Workspace {
 /// Contains the display name of the current Claude model being used.
 #[derive(Debug, Deserialize)]
 pub struct Model {
+    /// Display name of the Claude model (e.g., "Claude 3.5 Sonnet")
     pub display_name: Option<String>,
 }
 
@@ -40,16 +47,24 @@ pub struct Model {
 /// Tracks the total cost in USD and code change metrics for the current session.
 #[derive(Debug, Deserialize)]
 pub struct Cost {
+    /// Total cost in USD for the session
     pub total_cost_usd: Option<f64>,
+    /// Total lines of code added
     pub total_lines_added: Option<u64>,
+    /// Total lines of code removed
     pub total_lines_removed: Option<u64>,
 }
 
+/// Claude model type enumeration
 #[derive(Debug, PartialEq)]
 pub enum ModelType {
+    /// Claude 3 Opus model
     Opus,
+    /// Claude 3.5 Sonnet model
     Sonnet,
+    /// Claude 3 Haiku model
     Haiku,
+    /// Unknown or unrecognized model
     Unknown,
 }
 
@@ -67,6 +82,7 @@ impl ModelType {
         }
     }
 
+    /// Returns the abbreviated display name for the model
     pub fn abbreviation(&self) -> &str {
         match self {
             ModelType::Opus => "Opus",
@@ -77,33 +93,46 @@ impl ModelType {
     }
 }
 
-// For transcript parsing - matches actual Claude JSONL format
+/// Entry in the Claude transcript file (JSONL format)
 #[derive(Debug, Deserialize)]
 pub struct TranscriptEntry {
+    /// The message content and metadata
     pub message: TranscriptMessage,
-    pub timestamp: String,  // ISO 8601 format
+    /// ISO 8601 formatted timestamp
+    pub timestamp: String,
 }
 
+/// Message within a transcript entry
 #[derive(Debug, Deserialize)]
 pub struct TranscriptMessage {
+    /// Role of the message sender (user, assistant, etc.)
     pub role: String,
+    /// Message content (can be string or array)
     #[serde(default)]
     #[allow(dead_code)]
-    pub content: Option<serde_json::Value>,  // Can be string or array
+    pub content: Option<serde_json::Value>,
+    /// Token usage information
     #[serde(default)]
     pub usage: Option<Usage>,
 }
 
+/// Token usage information from Claude
 #[derive(Debug, Deserialize)]
 pub struct Usage {
+    /// Number of input tokens
     pub input_tokens: Option<u32>,
+    /// Number of output tokens generated
     pub output_tokens: Option<u32>,
+    /// Number of tokens read from cache
     pub cache_read_input_tokens: Option<u32>,
+    /// Number of tokens used to create cache
     pub cache_creation_input_tokens: Option<u32>,
 }
 
+/// Context window usage information
 #[derive(Debug)]
 pub struct ContextUsage {
+    /// Percentage of context window used (0-100)
     pub percentage: f64,
 }
 
