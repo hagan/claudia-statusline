@@ -82,12 +82,22 @@ impl Default for StatsData {
 
 impl StatsData {
     pub fn load() -> Self {
+        // Phase 2: Try SQLite first, then fall back to JSON
+        if let Ok(data) = Self::load_from_sqlite() {
+            return data;
+        }
+        
+        // Fall back to JSON if SQLite fails
         let path = Self::get_stats_file_path();
 
         if path.exists() {
             if let Ok(contents) = fs::read_to_string(&path) {
                 match serde_json::from_str(&contents) {
-                    Ok(data) => return data,
+                    Ok(data) => {
+                        // Migrate JSON data to SQLite if needed
+                        let _ = Self::migrate_to_sqlite(&data);
+                        return data;
+                    },
                     Err(e) => {
                         // File exists but can't be parsed - backup and warn
                         eprintln!("Warning: Failed to parse stats file: {}", e);
@@ -104,6 +114,52 @@ impl StatsData {
         // Try to save the default, but don't fail if we can't
         let _ = default_data.save();
         default_data
+    }
+    
+    /// Load stats data from SQLite database (Phase 2)
+    fn load_from_sqlite() -> Result<Self> {
+        let db_path = Self::get_sqlite_path()?;
+        
+        // Check if database exists
+        if !db_path.exists() {
+            return Err(StatuslineError::Database(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                Some("SQLite database not found".to_string()),
+            )));
+        }
+        
+        let db = SqliteDatabase::new(&db_path)?;
+        
+        // Load all data from SQLite
+        let mut data = Self::default();
+        
+        // Load sessions
+        data.sessions = db.get_all_sessions()?;
+        
+        // Load daily stats
+        data.daily = db.get_all_daily_stats()?;
+        
+        // Load monthly stats
+        data.monthly = db.get_all_monthly_stats()?;
+        
+        // Calculate all-time stats
+        data.all_time.total_cost = db.get_all_time_total()?;
+        
+        Ok(data)
+    }
+    
+    /// Migrate JSON data to SQLite if not already done
+    fn migrate_to_sqlite(data: &Self) -> Result<()> {
+        let db_path = Self::get_sqlite_path()?;
+        let db = SqliteDatabase::new(&db_path)?;
+        
+        // Check if we've already migrated by looking for existing sessions
+        if !db.has_sessions() {
+            // Perform migration
+            db.import_sessions(&data.sessions)?;
+        }
+        
+        Ok(())
     }
 
     pub fn save(&self) -> Result<()> {
