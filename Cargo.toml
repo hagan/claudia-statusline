@@ -40,10 +40,11 @@ serial_test = "3.1"
 proptest = "1.4"
 
 [profile.release]
-opt-level = 3
+opt-level = "z"  # Optimize for size
 lto = true
 codegen-units = 1
 strip = true
+panic = "abort"  # Smaller panic handler
 
 [profile.dev]
 opt-level = 0

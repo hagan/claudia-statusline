@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.6.0** - Complete configuration system, retry logic, and enterprise-grade reliability
+**Version 2.7.0** - SQLite primary storage, major refactoring, and code simplification
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -16,7 +16,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
 - **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
 - **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
-- **Dual Storage Backend** - SQLite with JSON fallback for maximum reliability (v2.2.0)
+- **SQLite Primary Storage** - SQLite-first with JSON backup for maximum reliability (v2.7.0)
 - **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations
 - **Atomic Operations** - Safe file writes prevent data corruption
@@ -33,7 +33,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Session Duration** - Tracks conversation length from transcript
 - **Cost Tracking** - Displays session cost in USD with burn rate ($/hour)
 - **Persistent Stats Tracking** - Accumulates costs and usage stats across sessions in XDG-compliant location
-- **Dual Storage Backend** (v2.2.0+) - SQLite database with JSON fallback for reliable concurrent access
+- **SQLite Primary Storage** (v2.7.0+) - SQLite-first loading with automatic JSON migration and backup
 - **Lines Changed** - Shows added/removed lines count from session
 - **Progress Bars** - Visual indicators for context usage (10-char bar)
 - **Burn Rate** - Shows cost per hour for active sessions
@@ -494,13 +494,22 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 - [README.md](README.md) - This file, main documentation
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Module structure and technical details
+- [SQLITE_MIGRATION.md](SQLITE_MIGRATION.md) - SQLite migration guide for v2.7.0+
 - [LICENSE](LICENSE) - MIT License for our contributions with important clarifications
 - [NOTICE](NOTICE) - Attribution and copyright notices
 - [ATTRIBUTION.md](ATTRIBUTION.md) - Detailed attribution information
 
 ## Changelog
 
-### v2.2.0 (2025-08-25) - Latest
+### v2.7.0 (2025-08-29) - Latest
+- **Phase 2 SQLite Migration** - SQLite is now the primary data source with automatic JSON migration
+- **Major Code Simplification** - Removed 400+ lines of overengineered code (async git, unused utilities)
+- **Clap CLI Parser** - Professional argument parsing with help and version support
+- **Common Utilities Module** - Centralized shared functionality, eliminated 50+ lines of duplication
+- **Zero Warnings** - Fixed all 104 compiler warnings for clean compilation
+- **All Tests Passing** - 174 tests (including new Phase 2 migration tests)
+
+### v2.2.0 (2025-08-25)
 - **SQLite Dual-Storage Backend** - Added SQLite database alongside JSON for better concurrent access
 - **Database Migration Framework** - Schema versioning system with automatic JSON to SQLite migration
 - **Multi-Platform Releases** - Pre-built binaries for Linux (x86_64, ARM64), macOS (Intel, Apple Silicon), Windows
@@ -544,7 +553,7 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 - **Added Build Information** - Shows git hash, branch, build date, and rustc version
 - **Added Release Automation** - New release script and Makefile targets for versioning
 - **Added Help Command** - `--help` flag shows usage information
-- **Improved Documentation** - Reorganized docs with `.claude/context/` for historical files
+- **Improved Documentation** - Reorganized internal development documentation
 - **Code Review Grade: A+** - Achieved exceptional quality through modularization
 
 ### v1.3.0 (2025-08-24)

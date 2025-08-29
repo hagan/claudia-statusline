@@ -5,11 +5,18 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.7.0] - 2025-08-28
+## [2.7.0] - 2025-08-29
 
-### Major Refactoring & Code Quality Improvements
+### Phase 2 SQLite Migration & Major Refactoring
 
 #### Added
+- **Phase 2 SQLite Migration**: SQLite is now the primary data source
+  - SQLite-first loading with JSON fallback
+  - Automatic migration from existing JSON data
+  - Zero-downtime migration for existing users
+  - Maintains dual-write for backward compatibility
+  - Added `load_from_sqlite()` and `migrate_to_sqlite()` methods
+  - Enhanced database methods: `get_all_sessions()`, `get_all_daily_stats()`, `get_all_monthly_stats()`
 - **Clap CLI Parser**: Replaced 35+ lines of manual argument parsing with clap
   - Professional CLI with proper help and version handling
   - Subcommand support for better extensibility
