@@ -116,10 +116,19 @@ jobs:
     - name: Install Rust
       uses: dtolnay/rust-toolchain@stable
 
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Build project dependencies
+      run: cargo build
+
     - name: Install cargo-license
-      run: |
-        cargo install cargo-license --locked
-        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      run: cargo install cargo-license --locked
 
     - name: Check licenses
       run: |
@@ -130,12 +139,13 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Dependencies and their licenses:" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY || echo "cargo-license not found or failed" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-
-        # Check for incompatible licenses (only if cargo-license succeeded)
-        if command -v cargo-license &> /dev/null; then
-          INCOMPATIBLE=$(cargo license --json | jq -r '.[] | select(.license | test("GPL|AGPL")) | .name' | wc -l)
+        
+        # Try to run cargo-license and capture the result
+        if cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY 2>/dev/null; then
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          # Check for incompatible licenses
+          INCOMPATIBLE=$(cargo license --json 2>/dev/null | jq -r '.[] | select(.license | test("GPL|AGPL")) | .name' | wc -l || echo "0")
           if [ "$INCOMPATIBLE" -gt 0 ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "⚠️ Found potentially incompatible licenses!" >> $GITHUB_STEP_SUMMARY
@@ -145,8 +155,12 @@ jobs:
             echo "✅ All licenses are compatible" >> $GITHUB_STEP_SUMMARY
           fi
         else
+          echo "cargo-license not available or failed to run" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "⚠️ cargo-license not available, skipping license check" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️ Could not check licenses - cargo-license failed" >> $GITHUB_STEP_SUMMARY
+          # Don't fail the build if cargo-license isn't working
+          echo "Continuing without license check..." >> $GITHUB_STEP_SUMMARY
         fi
 
   supply-chain-security:
