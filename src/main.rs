@@ -109,12 +109,17 @@ fn main() -> Result<()> {
                 println!("Edit {} to customize settings", config_path.display());
                 return Ok(());
             }
-            Commands::Migrate { finalize, delete_json } => {
+            Commands::Migrate {
+                finalize,
+                delete_json,
+            } => {
                 if finalize {
                     return finalize_migration(delete_json);
                 } else {
                     println!("Usage: statusline migrate --finalize [--delete-json]");
-                    println!("\nThis command finalizes the migration from JSON to SQLite-only mode.");
+                    println!(
+                        "\nThis command finalizes the migration from JSON to SQLite-only mode."
+                    );
                     println!("Options:");
                     println!("  --finalize     Complete the migration and disable JSON backup");
                     println!("  --delete-json  Delete the JSON file instead of archiving it");
@@ -227,7 +232,8 @@ fn check_migration_status() {
         if json_path.exists() {
             // Check file size to see if it has meaningful data
             if let Ok(metadata) = std::fs::metadata(&json_path) {
-                if metadata.len() > 100 {  // More than just empty JSON
+                if metadata.len() > 100 {
+                    // More than just empty JSON
                     warn!(
                         "JSON stats file exists at {}. Consider running 'statusline migrate --finalize' to complete migration to SQLite-only mode for better performance.",
                         json_path.display()

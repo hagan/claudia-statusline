@@ -169,7 +169,7 @@ impl Default for DatabaseConfig {
             max_connections: 5,
             busy_timeout_ms: 10000,
             path: "stats.db".to_string(),
-            json_backup: true,  // Default to true for backward compatibility
+            json_backup: true, // Default to true for backward compatibility
         }
     }
 }
