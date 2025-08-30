@@ -5,6 +5,7 @@
 
 use std::thread;
 use std::time::Duration;
+use log::debug;
 use crate::error::{StatuslineError, Result};
 use crate::config;
 
@@ -99,7 +100,7 @@ where
                 // Don't sleep after the last attempt
                 if attempt < config.max_attempts {
                     // Log the retry attempt
-                    eprintln!(
+                    debug!(
                         "Attempt {}/{} failed, retrying in {}ms...",
                         attempt, config.max_attempts, current_delay
                     );
@@ -183,7 +184,7 @@ where
 
                 // Don't sleep after the last attempt
                 if attempt < config.max_attempts {
-                    eprintln!(
+                    debug!(
                         "Retryable error on attempt {}/{}, retrying in {}ms...",
                         attempt, config.max_attempts, current_delay
                     );

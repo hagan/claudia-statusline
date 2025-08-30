@@ -21,12 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Professional CLI with proper help and version handling
   - Subcommand support for better extensibility
   - Improved user experience with standard CLI conventions
-
 - **Common Utilities Module** (`src/common.rs`): Centralized shared functionality
   - `get_data_dir()` - Unified XDG path resolution
   - `validate_path_security()` - Shared security validation
   - `current_timestamp()`, `current_date()`, `current_month()` - Timestamp utilities
   - Eliminated ~50 lines of duplicated code
+- **Structured Logging**: Replaced all `eprintln!` with proper log levels
+  - Added `log` and `env_logger` dependencies
+  - Debug, warn, and error levels for appropriate messages
+  - Default WARN level to reduce stderr noise
+  - Configurable via RUST_LOG environment variable
+- **Theme Support**: Added environment variable theme configuration
+  - Supports `CLAUDE_THEME` and `STATUSLINE_THEME` variables
+  - Theme-aware text and separator colors
+  - Light theme uses darker grays for better readability
+- **File Security Hardening**: Enhanced transcript file validation
+  - Case-insensitive `.jsonl` extension checking
+  - 10MB file size limit to prevent memory exhaustion
+  - Proper validation before processing
 
 - **Comprehensive Documentation**: Added missing documentation throughout
   - Module documentation for all public modules

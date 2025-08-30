@@ -49,9 +49,9 @@ fn test_dual_write_creates_both_files() {
 
     // Debug output if test fails
     if !json_path.exists() {
-        eprintln!("Expected JSON path: {:?}", json_path);
-        eprintln!("Data dir contents: {:?}", fs::read_dir(&data_dir).ok());
-        eprintln!("Process exited with: {:?}", status);
+        println!("Expected JSON path: {:?}", json_path);
+        println!("Data dir contents: {:?}", fs::read_dir(&data_dir).ok());
+        println!("Process exited with: {:?}", status);
     }
 
     // Both files should exist
@@ -314,7 +314,7 @@ fn test_sqlite_upsert_behavior() {
 fn test_database_corruption_recovery() {
     // Skip this test in CI due to file system timing issues
     if std::env::var("CI").is_ok() {
-        eprintln!("Skipping test_database_corruption_recovery in CI environment");
+        println!("Skipping test_database_corruption_recovery in CI environment");
         return;
     }
 
@@ -360,7 +360,7 @@ fn test_database_corruption_recovery() {
 fn test_sqlite_busy_timeout() {
     // Skip this test in CI due to timing issues
     if std::env::var("CI").is_ok() {
-        eprintln!("Skipping test_sqlite_busy_timeout in CI environment");
+        println!("Skipping test_sqlite_busy_timeout in CI environment");
         return;
     }
 

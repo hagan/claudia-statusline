@@ -23,6 +23,7 @@
 use std::env;
 use std::io::{self, Read};
 use clap::{Parser, Subcommand};
+use log::warn;
 
 mod common;
 mod error;
@@ -66,6 +67,9 @@ enum Commands {
 }
 
 fn main() -> Result<()> {
+    // Initialize logging with WARN level by default (can be overridden with RUST_LOG env var)
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
+
     let cli = Cli::parse();
 
     // Handle version-full flag
@@ -104,7 +108,7 @@ fn main() -> Result<()> {
         Ok(input) => input,
         Err(e) => {
             // Log parse error to stderr (won't interfere with statusline output)
-            eprintln!("Warning: Failed to parse JSON input: {}. Using defaults.", e);
+            warn!("Failed to parse JSON input: {}. Using defaults.", e);
             StatuslineInput::default()
         }
     };

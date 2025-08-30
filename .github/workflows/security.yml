@@ -133,21 +133,21 @@ jobs:
     - name: Check licenses
       run: |
         set +e  # Don't exit on error
-        
+
         # Ensure cargo-license is in PATH
         export PATH="$HOME/.cargo/bin:$PATH"
-        
+
         echo "## License Report" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "### Dependencies and their licenses:" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
-        
+
         # Try to run cargo-license and capture the result
         cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY 2>/dev/null
         LICENSE_EXIT_CODE=$?
-        
+
         echo '```' >> $GITHUB_STEP_SUMMARY
-        
+
         if [ $LICENSE_EXIT_CODE -eq 0 ]; then
           # cargo-license succeeded, check for incompatible licenses
           cargo license --json 2>/dev/null > /tmp/licenses.json
@@ -170,7 +170,7 @@ jobs:
           echo "⚠️ cargo-license is not available or failed to run (exit code: $LICENSE_EXIT_CODE)" >> $GITHUB_STEP_SUMMARY
           echo "This is not a critical error - continuing build" >> $GITHUB_STEP_SUMMARY
         fi
-        
+
         # Always exit successfully unless we found incompatible licenses
         exit 0
 

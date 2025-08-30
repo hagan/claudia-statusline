@@ -58,6 +58,9 @@ pub fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Maximum size for transcript files (10MB)
+const MAX_TRANSCRIPT_SIZE: u64 = 10 * 1024 * 1024;
+
 /// Validates that a path is a valid transcript file
 fn validate_transcript_file(path: &str) -> Result<PathBuf> {
     // Use common validation first
@@ -68,11 +71,25 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
         return Err(StatuslineError::invalid_path(format!("Path is not a file: {}", path)));
     }
 
-    // Check file extension
+    // Check file extension (case-insensitive)
     if let Some(ext) = canonical_path.extension() {
-        // Only allow jsonl files for transcripts
-        if ext != "jsonl" {
+        // Case-insensitive check for jsonl extension
+        if !ext.to_str()
+            .map(|s| s.eq_ignore_ascii_case("jsonl"))
+            .unwrap_or(false)
+        {
             return Err(StatuslineError::invalid_path("Only .jsonl files are allowed for transcripts"));
+        }
+    } else {
+        return Err(StatuslineError::invalid_path("File must have .jsonl extension"));
+    }
+
+    // Check file size to prevent DoS
+    if let Ok(metadata) = canonical_path.metadata() {
+        if metadata.len() > MAX_TRANSCRIPT_SIZE {
+            return Err(StatuslineError::invalid_path(
+                format!("Transcript file too large (max {}MB)", MAX_TRANSCRIPT_SIZE / 1024 / 1024)
+            ));
         }
     }
 
@@ -197,6 +214,14 @@ mod tests {
         fs::write(&temp_file, "test").ok();
         assert!(validate_transcript_file(temp_file.to_str().unwrap()).is_err());
         fs::remove_file(temp_file).ok();
+
+        // Test case-insensitive extension (should accept .JSONL, .JsonL, etc.)
+        use tempfile::NamedTempFile;
+        let temp_file = NamedTempFile::new().unwrap();
+        let path_upper = temp_file.path().with_extension("JSONL");
+        fs::write(&path_upper, "test").ok();
+        assert!(validate_transcript_file(path_upper.to_str().unwrap()).is_ok());
+        fs::remove_file(path_upper).ok();
     }
 
     #[test]
@@ -262,7 +287,7 @@ mod tests {
         assert!(calculate_context_usage("/tmp/nonexistent.jsonl").is_none());
 
         // Test with valid transcript (string timestamp and string content)
-        let mut file = NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":120000,"output_tokens":5000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"question"}},"timestamp":"2025-08-22T18:33:00.000Z"}}"#).unwrap();
 
@@ -278,7 +303,7 @@ mod tests {
         use tempfile::NamedTempFile;
 
         // Test with cache tokens
-        let mut file = NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100,"cache_read_input_tokens":30000,"cache_creation_input_tokens":200,"output_tokens":500}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
         let result = calculate_context_usage(file.path().to_str().unwrap());
@@ -294,7 +319,7 @@ mod tests {
         use tempfile::NamedTempFile;
 
         // Test with array content (assistant messages often have this)
-        let mut file = NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":[{{"type":"text","text":"response"}}],"usage":{{"input_tokens":50000,"output_tokens":1000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
         let result = calculate_context_usage(file.path().to_str().unwrap());
@@ -339,7 +364,7 @@ mod tests {
         assert!(parse_duration("/tmp/nonexistent.jsonl").is_none());
 
         // Test with valid transcript (using string timestamps)
-        let mut file = NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test"}},"timestamp":"2025-08-22T18:00:00.000Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"question"}},"timestamp":"2025-08-22T19:00:00.000Z"}}"#).unwrap();
 
@@ -348,7 +373,7 @@ mod tests {
         assert_eq!(result.unwrap(), 3600); // 1 hour between 18:00:00 and 19:00:00
 
         // Test with single line (should return None)
-        let mut file2 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file2, r#"{{"message":{{"role":"assistant","content":"test"}},"timestamp":"2025-08-22T18:00:00.000Z"}}"#).unwrap();
 
         let result2 = parse_duration(file2.path().to_str().unwrap());
@@ -361,7 +386,7 @@ mod tests {
         use tempfile::NamedTempFile;
 
         // Test 5-minute session (the case that was showing $399/hr)
-        let mut file = NamedTempFile::new().unwrap();
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"Hello"}},"timestamp":"2025-08-25T10:00:00.000Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"Hi","usage":{{"input_tokens":100,"output_tokens":50}}}},"timestamp":"2025-08-25T10:05:00.000Z"}}"#).unwrap();
 
@@ -370,7 +395,7 @@ mod tests {
         assert_eq!(result.unwrap(), 300); // 5 minutes = 300 seconds
 
         // Test 10-minute session
-        let mut file2 = NamedTempFile::new().unwrap();
+        let mut file2 = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file2, r#"{{"message":{{"role":"user","content":"Start"}},"timestamp":"2025-08-25T10:00:00.000Z"}}"#).unwrap();
         writeln!(file2, r#"{{"message":{{"role":"assistant","content":"Working"}},"timestamp":"2025-08-25T10:10:00.000Z"}}"#).unwrap();
 

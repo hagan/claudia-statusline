@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::env;
+use log::warn;
 use crate::error::{Result, StatuslineError};
 
 /// Main configuration structure for the statusline
@@ -417,11 +419,27 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// Get the global configuration instance
 pub fn get_config() -> &'static Config {
     CONFIG.get_or_init(|| {
-        Config::load().unwrap_or_else(|e| {
-            eprintln!("Warning: Failed to load config: {}. Using defaults.", e);
+        let mut config = Config::load().unwrap_or_else(|e| {
+            warn!("Failed to load config: {}. Using defaults.", e);
             Config::default()
-        })
+        });
+
+        // Override theme from environment if set
+        if let Ok(theme) = env::var("CLAUDE_THEME") {
+            config.display.theme = theme;
+        } else if let Ok(theme) = env::var("STATUSLINE_THEME") {
+            config.display.theme = theme;
+        }
+
+        config
     })
+}
+
+/// Get the current theme (with environment override support)
+pub fn get_theme() -> String {
+    env::var("CLAUDE_THEME")
+        .or_else(|_| env::var("STATUSLINE_THEME"))
+        .unwrap_or_else(|_| get_config().display.theme.clone())
 }
 
 #[cfg(test)]

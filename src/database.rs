@@ -308,18 +308,18 @@ impl SqliteDatabase {
         }
         false
     }
-    
+
     /// Get all sessions from the database
     pub fn get_all_sessions(&self) -> Result<std::collections::HashMap<String, crate::stats::SessionStats>> {
         use crate::stats::SessionStats;
         use std::collections::HashMap;
-        
+
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed 
+            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed
              FROM sessions"
         )?;
-        
+
         let session_iter = stmt.query_map([], |row| {
             let session_id: String = row.get(0)?;
             let start_time: Option<String> = row.get(1).ok();
@@ -327,7 +327,7 @@ impl SqliteDatabase {
             let cost: f64 = row.get(3)?;
             let lines_added: i64 = row.get(4)?;
             let lines_removed: i64 = row.get(5)?;
-            
+
             Ok((session_id.clone(), SessionStats {
                 cost,
                 lines_added: lines_added as u64,
@@ -336,33 +336,33 @@ impl SqliteDatabase {
                 start_time,
             }))
         })?;
-        
+
         let mut sessions = HashMap::new();
         for session in session_iter {
             let (id, stats) = session?;
             sessions.insert(id, stats);
         }
-        
+
         Ok(sessions)
     }
-    
+
     /// Get all daily stats from the database
     pub fn get_all_daily_stats(&self) -> Result<std::collections::HashMap<String, crate::stats::DailyStats>> {
         use crate::stats::DailyStats;
         use std::collections::HashMap;
-        
+
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT date, total_cost, total_lines_added, total_lines_removed 
+            "SELECT date, total_cost, total_lines_added, total_lines_removed
              FROM daily_stats"
         )?;
-        
+
         let daily_iter = stmt.query_map([], |row| {
             let date: String = row.get(0)?;
             let total_cost: f64 = row.get(1)?;
             let lines_added: i64 = row.get(2)?;
             let lines_removed: i64 = row.get(3)?;
-            
+
             Ok((date.clone(), DailyStats {
                 total_cost,
                 lines_added: lines_added as u64,
@@ -370,34 +370,34 @@ impl SqliteDatabase {
                 sessions: Vec::new(), // We don't track session IDs in daily_stats table
             }))
         })?;
-        
+
         let mut daily = HashMap::new();
         for day in daily_iter {
             let (date, stats) = day?;
             daily.insert(date, stats);
         }
-        
+
         Ok(daily)
     }
-    
+
     /// Get all monthly stats from the database
     pub fn get_all_monthly_stats(&self) -> Result<std::collections::HashMap<String, crate::stats::MonthlyStats>> {
         use crate::stats::MonthlyStats;
         use std::collections::HashMap;
-        
+
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT month, total_cost, total_lines_added, total_lines_removed, session_count 
+            "SELECT month, total_cost, total_lines_added, total_lines_removed, session_count
              FROM monthly_stats"
         )?;
-        
+
         let monthly_iter = stmt.query_map([], |row| {
             let month: String = row.get(0)?;
             let total_cost: f64 = row.get(1)?;
             let lines_added: i64 = row.get(2)?;
             let lines_removed: i64 = row.get(3)?;
             let session_count: i64 = row.get(4)?;
-            
+
             Ok((month.clone(), MonthlyStats {
                 total_cost,
                 lines_added: lines_added as u64,
@@ -405,13 +405,13 @@ impl SqliteDatabase {
                 sessions: session_count as usize,
             }))
         })?;
-        
+
         let mut monthly = HashMap::new();
         for month in monthly_iter {
             let (date, stats) = month?;
             monthly.insert(date, stats);
         }
-        
+
         Ok(monthly)
     }
 

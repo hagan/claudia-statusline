@@ -10,19 +10,25 @@ The codebase follows a modular architecture with clear separation of concerns:
 
 ```
 src/
-├── main.rs          (123 lines)  - Application entry point, CLI args, orchestration
-├── models.rs        (128 lines)  - Data structures and type definitions
-├── git.rs           (153 lines)  - Git repository operations
-├── stats.rs         (401 lines)  - Persistent statistics tracking with dual-write
-├── display.rs       (261 lines)  - Output formatting and presentation
-├── utils.rs         (121 lines)  - Utility functions and helpers
-├── version.rs       (102 lines)  - Version information and build metadata
-├── database.rs      (420 lines)  - SQLite database operations and schema
-└── migrations/
-    └── mod.rs       (178 lines)  - Database migration framework
+├── main.rs          (188 lines)  - Application entry point, Clap CLI parser
+├── models.rs        (293 lines)  - Data structures and type definitions
+├── git.rs           (230 lines)  - Git repository operations
+├── git_utils.rs     (53 lines)   - Simple git status utility
+├── stats.rs         (738 lines)  - SQLite-primary persistence with JSON fallback
+├── display.rs       (316 lines)  - Output formatting and presentation
+├── utils.rs         (380 lines)  - Utility functions and helpers
+├── version.rs       (169 lines)  - Version information and build metadata
+├── database.rs      (532 lines)  - SQLite operations with connection pooling
+├── migrations/
+│   └── mod.rs       (222 lines)  - Database migration framework
+├── error.rs         (100 lines)  - Unified error handling with thiserror
+├── retry.rs         (314 lines)  - Retry logic with exponential backoff
+├── config.rs        (458 lines)  - TOML configuration system
+├── common.rs        (144 lines)  - Shared utilities (timestamps, paths)
+└── lib.rs           (55 lines)   - Public API surface
 ```
 
-Total: ~1,887 lines of well-organized, maintainable code
+Total: 4,192 lines across 14 focused modules (average ~300 lines each)
 
 ## Module Responsibilities
 
@@ -60,7 +66,7 @@ Total: ~1,887 lines of well-organized, maintainable code
 - Tracks costs across sessions
 - Implements XDG-compliant file storage
 - Provides atomic file operations
-- Performs dual-write to both JSON and SQLite (v2.2.0+)
+- Performs dual-write to both SQLite (primary) and JSON (backup) (v2.7.0)
 - **Key Components:**
   - `StatsData` - Main stats structure
   - `SessionStats`, `DailyStats`, `MonthlyStats` - Aggregation levels
@@ -155,8 +161,8 @@ graph TD
 - **Decision:** Store stats in `$XDG_DATA_HOME/claudia-statusline/`
 - **Rationale:** Follow Linux desktop standards
 - **Files:**
-  - `stats.json` - Primary stats storage (backward compatible)
-  - `stats.db` - SQLite database for concurrent access (v2.2.0+)
+  - `stats.db` - SQLite database (primary storage) with WAL mode
+  - `stats.json` - JSON backup for compatibility (will be removed in v3.0.0)
 - **Fallback:** `~/.local/share/claudia-statusline/`
 
 ### 3. Smart Persistence
@@ -175,12 +181,12 @@ graph TD
 - **Rationale:** Prevent data corruption during writes
 - **Implementation:** `stats.rs` - save() method
 
-### 6. Dual Storage Backend (v2.2.0+)
-- **Decision:** Write to both JSON and SQLite databases
-- **Rationale:** Maintain backward compatibility while adding robust concurrent access
-- **Phase 1:** JSON primary, SQLite secondary (current)
-- **Phase 2:** SQLite primary, JSON secondary (planned)
-- **Phase 3:** SQLite only with migration tool (future)
+### 6. SQLite-Primary Storage (v2.7.0)
+- **Decision:** SQLite as primary data source with JSON backup
+- **Rationale:** Better concurrent access, ACID transactions, performance
+- **Phase 1:** Dual-write to both (v2.2.0) ✅
+- **Phase 2:** SQLite primary, JSON backup (v2.7.0) ✅ CURRENT
+- **Phase 3:** SQLite only, remove JSON (v3.0.0) 🔜 PLANNED
 
 ## Testing Strategy
 
@@ -310,4 +316,4 @@ main.rs
 
 ---
 
-*Last Updated: August 25, 2025 (v2.2.0)*
+*Last Updated: August 29, 2025 (v2.7.0)*

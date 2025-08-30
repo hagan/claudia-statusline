@@ -27,6 +27,26 @@ impl Colors {
     pub const GRAY: &'static str = "\x1b[90m";
     pub const ORANGE: &'static str = "\x1b[38;5;208m";
     pub const LIGHT_GRAY: &'static str = "\x1b[38;5;245m";
+
+    /// Get the appropriate text color based on theme
+    pub fn text_color() -> &'static str {
+        let theme = config::get_theme();
+        if theme == "light" {
+            Colors::GRAY  // Darker for light backgrounds
+        } else {
+            Colors::WHITE  // Brighter for dark backgrounds
+        }
+    }
+
+    /// Get the appropriate separator color based on theme
+    pub fn separator_color() -> &'static str {
+        let theme = config::get_theme();
+        if theme == "light" {
+            Colors::GRAY
+        } else {
+            Colors::LIGHT_GRAY
+        }
+    }
 }
 
 pub fn format_output(
@@ -49,7 +69,7 @@ pub fn format_output(
     if let Some(git_status) = get_git_status(current_dir) {
         let git_info = format_git_info(&git_status);
         if !git_info.is_empty() {
-            output.push_str(&format!(" {}•{}", Colors::GRAY, Colors::RESET));
+            output.push_str(&format!(" {}•{}", Colors::separator_color(), Colors::RESET));
             output.push_str(&git_info);
         }
     }
@@ -189,7 +209,7 @@ fn format_context_bar(context: &ContextUsage) -> String {
     } else if percentage > config.display.context_caution_threshold {
         (Colors::YELLOW, Colors::YELLOW)
     } else {
-        (Colors::GREEN, Colors::WHITE)
+        (Colors::GREEN, Colors::text_color())
     };
 
     // Create progress bar with configured width
@@ -208,7 +228,7 @@ fn format_context_bar(context: &ContextUsage) -> String {
 
     format!(
         " {}• {}{}%{} {}[{}]{}",
-        Colors::LIGHT_GRAY,
+        Colors::separator_color(),
         percentage_color,
         percentage.round() as u32,
         Colors::RESET,

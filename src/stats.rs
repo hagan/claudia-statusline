@@ -11,6 +11,7 @@ use std::io::{Read, Write, Seek};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 use fs2::FileExt;
+use log::{warn, error, debug};
 use crate::common::{get_data_dir, current_timestamp, current_date, current_month};
 use crate::database::SqliteDatabase;
 use crate::error::{StatuslineError, Result};
@@ -86,7 +87,7 @@ impl StatsData {
         if let Ok(data) = Self::load_from_sqlite() {
             return data;
         }
-        
+
         // Fall back to JSON if SQLite fails
         let path = Self::get_stats_file_path();
 
@@ -100,10 +101,10 @@ impl StatsData {
                     },
                     Err(e) => {
                         // File exists but can't be parsed - backup and warn
-                        eprintln!("Warning: Failed to parse stats file: {}", e);
+                        warn!("Failed to parse stats file: {}", e);
                         let backup_path = path.with_extension("backup");
                         let _ = fs::copy(&path, &backup_path);
-                        eprintln!("Backed up corrupted stats to: {:?}", backup_path);
+                        warn!("Backed up corrupted stats to: {:?}", backup_path);
                     }
                 }
             }
@@ -115,11 +116,11 @@ impl StatsData {
         let _ = default_data.save();
         default_data
     }
-    
+
     /// Load stats data from SQLite database (Phase 2)
     fn load_from_sqlite() -> Result<Self> {
         let db_path = Self::get_sqlite_path()?;
-        
+
         // Check if database exists
         if !db_path.exists() {
             return Err(StatuslineError::Database(rusqlite::Error::SqliteFailure(
@@ -127,38 +128,38 @@ impl StatsData {
                 Some("SQLite database not found".to_string()),
             )));
         }
-        
+
         let db = SqliteDatabase::new(&db_path)?;
-        
+
         // Load all data from SQLite
         let mut data = Self::default();
-        
+
         // Load sessions
         data.sessions = db.get_all_sessions()?;
-        
+
         // Load daily stats
         data.daily = db.get_all_daily_stats()?;
-        
+
         // Load monthly stats
         data.monthly = db.get_all_monthly_stats()?;
-        
+
         // Calculate all-time stats
         data.all_time.total_cost = db.get_all_time_total()?;
-        
+
         Ok(data)
     }
-    
+
     /// Migrate JSON data to SQLite if not already done
     fn migrate_to_sqlite(data: &Self) -> Result<()> {
         let db_path = Self::get_sqlite_path()?;
         let db = SqliteDatabase::new(&db_path)?;
-        
+
         // Check if we've already migrated by looking for existing sessions
         if !db.has_sessions() {
             // Perform migration
             db.import_sessions(&data.sessions)?;
         }
-        
+
         Ok(())
     }
 
@@ -314,13 +315,13 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
         match serde_json::from_str(&contents) {
             Ok(data) => data,
             Err(e) => {
-                eprintln!("Warning: Stats file corrupted: {}. Creating backup and starting fresh.", e);
+                warn!("Stats file corrupted: {}. Creating backup and starting fresh.", e);
                 // Try to create a backup of the corrupted file
                 if let Ok(backup_path) = get_stats_backup_path() {
                     if let Err(e) = std::fs::copy(path, &backup_path) {
-                        eprintln!("Failed to backup corrupted stats file: {}", e);
+                        error!("Failed to backup corrupted stats file: {}", e);
                     } else {
-                        eprintln!("Corrupted stats backed up to: {:?}", backup_path);
+                        warn!("Corrupted stats backed up to: {:?}", backup_path);
                     }
                 }
                 StatsData::default()
@@ -335,15 +336,15 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
 fn save_stats_data(file: &mut File, stats_data: &StatsData) {
     // Write back to file (truncate and write)
     if let Err(e) = file.set_len(0) {
-        eprintln!("Failed to truncate stats file: {}", e);
+        error!("Failed to truncate stats file: {}", e);
     }
     if let Err(e) = file.seek(std::io::SeekFrom::Start(0)) {
-        eprintln!("Failed to seek stats file: {}", e);
+        error!("Failed to seek stats file: {}", e);
     }
 
     let json = serde_json::to_string_pretty(stats_data).unwrap_or_else(|_| "{}".to_string());
     if let Err(e) = file.write_all(json.as_bytes()) {
-        eprintln!("Failed to write stats file: {}", e);
+        error!("Failed to write stats file: {}", e);
     }
 }
 
@@ -369,10 +370,10 @@ fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
     if !sessions_to_migrate.is_empty() {
         match db.import_sessions(&sessions_to_migrate) {
             Ok(_) => {
-                eprintln!("Migrated {} existing sessions from JSON to SQLite", sessions_to_migrate.len());
+                debug!("Migrated {} existing sessions from JSON to SQLite", sessions_to_migrate.len());
             }
             Err(e) => {
-                eprintln!("Failed to migrate sessions to SQLite: {}", e);
+                warn!("Failed to migrate sessions to SQLite: {}", e);
             }
         }
     }
@@ -390,10 +391,10 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
             session.lines_removed,
         ) {
             Ok((day_total, session_total)) => {
-                eprintln!("SQLite dual-write successful: day=${:.2}, session=${:.2}", day_total, session_total);
+                debug!("SQLite dual-write successful: day=${:.2}, session=${:.2}", day_total, session_total);
             }
             Err(e) => {
-                eprintln!("SQLite dual-write failed: {}", e);
+                warn!("SQLite dual-write failed: {}", e);
             }
         }
     }
@@ -406,7 +407,7 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
     let db_path = match StatsData::get_sqlite_path() {
         Ok(p) => p,
         Err(_) => {
-            eprintln!("Failed to get SQLite database path");
+            error!("Failed to get SQLite database path");
             return;
         }
     };
@@ -414,7 +415,7 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
     let db = match SqliteDatabase::new(&db_path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("Failed to initialize SQLite database at {:?}: {}", db_path, e);
+            error!("Failed to initialize SQLite database at {:?}: {}", db_path, e);
             return;
         }
     };
@@ -462,7 +463,7 @@ where
     let mut file = match acquire_stats_file(&path) {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("Failed to acquire stats file after retries: {}", e);
+            error!("Failed to acquire stats file after retries: {}", e);
             return (0.0, 0.0);
         }
     };
@@ -594,7 +595,7 @@ mod tests {
     fn test_concurrent_update_safety() {
         // Skip this test in CI due to thread synchronization timing issues
         if env::var("CI").is_ok() {
-            eprintln!("Skipping test_concurrent_update_safety in CI environment");
+            println!("Skipping test_concurrent_update_safety in CI environment");
             return;
         }
         use std::thread;
@@ -665,7 +666,7 @@ mod tests {
     fn test_get_session_duration() {
         // Skip this test in CI due to timing issues
         if env::var("CI").is_ok() {
-            eprintln!("Skipping test_get_session_duration in CI environment");
+            println!("Skipping test_get_session_duration in CI environment");
             return;
         }
         use std::thread;
@@ -710,7 +711,7 @@ mod tests {
     fn test_file_corruption_recovery() {
         // Skip this test in CI due to file system timing issues
         if env::var("CI").is_ok() {
-            eprintln!("Skipping test_file_corruption_recovery in CI environment");
+            println!("Skipping test_file_corruption_recovery in CI environment");
             return;
         }
         let temp_dir = TempDir::new().unwrap();

@@ -131,7 +131,7 @@ clean-whitespace:
 	@echo "$(BLUE)Removing trailing whitespace from project files...$(NC)"
 	@find . -type f \( -name "*.md" -o -name "*.sh" -o -name "*.rs" -o -name "*.toml" -o -name "*.yml" -o -name "*.yaml" -o -name "Makefile" \) \
 		-not -path "./target/*" -not -path "./.git/*" \
-		-exec sed -i 's/[[:space:]]*$$//' {} \; 2>/dev/null || true
+		-exec $(SED_INPLACE) 's/[[:space:]]*$$//' {} \; 2>/dev/null || true
 	@echo "$(GREEN)✓$(NC) Trailing whitespace removed"
 
 # Development build and test
@@ -260,6 +260,14 @@ release-build: clean
 	@echo "  3. Push to GitHub: git push --tags"
 	@echo "  4. Create GitHub release with binary"
 
+# Platform-specific sed command
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    SED_INPLACE := sed -i ''
+else
+    SED_INPLACE := sed -i
+endif
+
 # Bump version number
 .PHONY: bump-major
 bump-major:
@@ -267,7 +275,7 @@ bump-major:
 	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
 	NEW_VERSION=$$((MAJOR + 1)).0.0; \
 	echo $$NEW_VERSION > VERSION; \
-	sed -i 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
+	$(SED_INPLACE) 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
 	echo "$(GREEN)✓$(NC) Bumped version to $$NEW_VERSION"
 
 .PHONY: bump-minor
@@ -277,7 +285,7 @@ bump-minor:
 	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
 	NEW_VERSION=$$MAJOR.$$((MINOR + 1)).0; \
 	echo $$NEW_VERSION > VERSION; \
-	sed -i 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
+	$(SED_INPLACE) 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
 	echo "$(GREEN)✓$(NC) Bumped version to $$NEW_VERSION"
 
 .PHONY: bump-patch
@@ -288,7 +296,7 @@ bump-patch:
 	PATCH=$$(echo $$CURRENT | cut -d. -f3); \
 	NEW_VERSION=$$MAJOR.$$MINOR.$$((PATCH + 1)); \
 	echo $$NEW_VERSION > VERSION; \
-	sed -i 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
+	$(SED_INPLACE) 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
 	echo "$(GREEN)✓$(NC) Bumped version to $$NEW_VERSION"
 
 .DEFAULT_GOAL := help

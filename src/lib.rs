@@ -27,7 +27,7 @@
 //! // See the display module for formatting functions
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/statusline/2.6.0")]
+#![doc(html_root_url = "https://docs.rs/statusline/2.7.0")]
 
 pub mod common;
 pub mod error;
