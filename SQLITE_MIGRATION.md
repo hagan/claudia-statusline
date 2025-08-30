@@ -12,17 +12,39 @@ Claudia Statusline is migrating from JSON to SQLite for improved performance and
 - All writes go to both storage backends
 - No user action required
 
-### Phase 2: SQLite-First (v2.7.0) ✅ CURRENT
+### Phase 2: SQLite-First (v2.7.0+) ✅ CURRENT
 - **SQLite-first reads with JSON backup writes**
 - Automatic migration from JSON on first run
 - JSON maintained as backup/compatibility layer
 - Zero configuration needed - fully automatic
 
-### Phase 3: SQLite Only (v3.0.0) 🔜 PLANNED
-- JSON writing will be removed
+### Phase 3: SQLite Only (v3.0.0) ✅ READY
+- JSON backup can now be disabled with config option
+- Use `statusline migrate --finalize` to complete migration
 - SQLite becomes the only storage backend
 - Smaller binary, faster performance
 - Breaking change for tools reading JSON directly
+
+## Finalizing Migration (NEW in v2.7.2)
+
+You can now complete the migration to SQLite-only mode:
+
+```bash
+# Check current migration status
+statusline migrate
+
+# Finalize migration (archives JSON file)
+statusline migrate --finalize
+
+# Finalize and delete JSON file
+statusline migrate --finalize --delete-json
+```
+
+This command will:
+1. Verify data parity between JSON and SQLite
+2. Archive or delete the JSON file
+3. Update configuration to disable JSON backup
+4. Enable SQLite-only mode for better performance
 
 ## What Happens in v2.7.0
 

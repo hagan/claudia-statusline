@@ -83,6 +83,9 @@ pub struct DatabaseConfig {
 
     /// Path to database file (relative to data directory)
     pub path: String,
+
+    /// Whether to maintain JSON backup alongside SQLite (default: true for compatibility)
+    pub json_backup: bool,
 }
 
 /// Retry configuration
@@ -166,6 +169,7 @@ impl Default for DatabaseConfig {
             max_connections: 5,
             busy_timeout_ms: 10000,
             path: "stats.db".to_string(),
+            json_backup: true,  // Default to true for backward compatibility
         }
     }
 }
@@ -365,6 +369,7 @@ medium_threshold = 20.0  # Yellow between low and medium, red above
 max_connections = 5
 busy_timeout_ms = 10000
 path = "stats.db"  # Relative to data directory
+json_backup = true  # Maintain JSON backup alongside SQLite (set to false for SQLite-only mode)
 
 [transcript]
 # Number of transcript lines to keep in memory

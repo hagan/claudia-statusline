@@ -5,6 +5,7 @@
 //! both JSON and SQLite formats for reliability and concurrent access.
 
 use crate::common::{current_date, current_month, current_timestamp, get_data_dir};
+use crate::config::get_config;
 use crate::database::SqliteDatabase;
 use crate::error::{Result, StatuslineError};
 use crate::retry::{retry_if_retryable, RetryConfig};
@@ -118,7 +119,7 @@ impl StatsData {
     }
 
     /// Load stats data from SQLite database (Phase 2)
-    fn load_from_sqlite() -> Result<Self> {
+    pub fn load_from_sqlite() -> Result<Self> {
         let db_path = Self::get_sqlite_path()?;
 
         // Check if database exists
@@ -167,15 +168,22 @@ impl StatsData {
     }
 
     pub fn save(&self) -> Result<()> {
-        let path = Self::get_stats_file_path();
+        let config = get_config();
 
-        // Acquire and lock the file with retry
-        let mut file = acquire_stats_file(&path)?;
+        // Save to JSON if backup is enabled
+        if config.database.json_backup {
+            let path = Self::get_stats_file_path();
 
-        // Save the data using our helper
-        save_stats_data(&mut file, self);
+            // Acquire and lock the file with retry
+            let mut file = acquire_stats_file(&path)?;
 
-        // Also perform SQLite dual-write
+            // Save the data using our helper
+            save_stats_data(&mut file, self);
+        } else {
+            log::info!("Skipping JSON backup (json_backup=false, SQLite-only mode)");
+        }
+
+        // Always save to SQLite (it's now the primary storage)
         perform_sqlite_dual_write(self);
 
         Ok(())
@@ -434,10 +442,9 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
     }
 }
 
-// Helper function to perform SQLite dual-write
+// Helper function to write to SQLite (primary storage)
 fn perform_sqlite_dual_write(stats_data: &StatsData) {
-    // DUAL-WRITE: Also write to SQLite (Phase 1 - best effort)
-    // This is non-blocking for the JSON write, SQLite errors are logged but don't fail the operation
+    // Write to SQLite (primary storage as of Phase 2)
     let db_path = match StatsData::get_sqlite_path() {
         Ok(p) => p,
         Err(_) => {
@@ -494,30 +501,48 @@ pub fn update_stats_data<F>(updater: F) -> (f64, f64)
 where
     F: FnOnce(&mut StatsData) -> (f64, f64),
 {
+    let config = get_config();
     let path = StatsData::get_stats_file_path();
 
-    // Acquire and lock the file with retry
-    let mut file = match acquire_stats_file(&path) {
-        Ok(f) => f,
-        Err(e) => {
-            error!("Failed to acquire stats file after retries: {}", e);
-            return (0.0, 0.0);
-        }
-    };
-
     // Load existing stats data
-    let mut stats_data = load_stats_data(&mut file, &path);
+    let mut stats_data = if config.database.json_backup {
+        // Acquire and lock the file with retry
+        let mut file = match acquire_stats_file(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Failed to acquire stats file after retries: {}", e);
+                return (0.0, 0.0);
+            }
+        };
+
+        let mut data = load_stats_data(&mut file, &path);
+
+        // Apply the update
+        let result = updater(&mut data);
+
+        // Save updated stats data to JSON
+        save_stats_data(&mut file, &data);
+
+        // Perform SQLite write
+        perform_sqlite_dual_write(&data);
+
+        // File lock is automatically released when file is dropped
+        return result;
+    } else {
+        // SQLite-only mode: load from SQLite
+        debug!("Operating in SQLite-only mode (json_backup=false)");
+        StatsData::load_from_sqlite().unwrap_or_else(|e| {
+            warn!("Failed to load from SQLite: {}", e);
+            StatsData::default()
+        })
+    };
 
     // Apply the update
     let result = updater(&mut stats_data);
 
-    // Save updated stats data
-    save_stats_data(&mut file, &stats_data);
-
-    // Perform SQLite dual-write
+    // Save to SQLite (primary storage)
     perform_sqlite_dual_write(&stats_data);
 
-    // File lock is automatically released when file is dropped
     result
 }
 

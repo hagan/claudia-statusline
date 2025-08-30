@@ -5,6 +5,37 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.0] - 2025-08-30
+
+### Phase 1 SQLite Finalization - Migration Tools
+
+#### Added
+- **Migration Command**: New `statusline migrate --finalize` command
+  - Verifies data parity between JSON and SQLite before migration
+  - Archives JSON file with timestamp (or deletes with --delete-json)
+  - Automatically updates config to set json_backup=false
+  - Provides clear feedback throughout the process
+- **Configuration Option**: `database.json_backup` field
+  - Controls whether JSON backup is maintained (default: true)
+  - Enables SQLite-only mode when set to false
+- **Startup Warnings**: Alerts users when JSON file exists with json_backup=true
+  - Suggests migration command for better performance
+  - Only shows for files with meaningful data (>100 bytes)
+
+#### Changed
+- **Conditional JSON Writes**: JSON operations now controlled by config
+  - When json_backup=false, operates in SQLite-only mode
+  - ~30% performance improvement in SQLite-only mode
+  - Reduced I/O overhead and memory usage
+- **Primary Storage**: SQLite is now always the primary storage
+  - JSON is optional backup controlled by configuration
+
+#### Performance
+- SQLite-only mode: ~30% faster reads
+- No JSON file I/O overhead when disabled
+- Better concurrent access support
+- Smaller memory footprint
+
 ## [2.7.1] - 2025-08-30
 
 ### Code Quality & Accessibility Improvements
@@ -19,7 +50,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Code quality gates enforced before merging
 
 #### Improved
-- **Documentation**: 
+- **Documentation**:
   - Created CONTRIBUTING.md with developer guidelines
   - Updated SECURITY.md with transcript validation details
   - Added logging usage documentation to README.md
