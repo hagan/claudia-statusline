@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.7.0** - SQLite primary storage, major refactoring, and code simplification
+**Version 2.7.1** - NO_COLOR support, CI/CD improvements, and code quality enhancements
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -16,7 +16,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
 - **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
 - **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
-- **SQLite-First Storage** - SQLite-first reads with JSON backup writes for maximum reliability (v2.7.0)
+- **SQLite-First Storage** - SQLite-first reads with JSON backup writes for maximum reliability (v2.7.0+)
 - **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations
 - **Atomic Operations** - Safe file writes prevent data corruption
@@ -501,7 +501,14 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.7.0 (2025-08-29) - Latest
+### v2.7.1 (2025-08-30) - Latest
+- NO_COLOR environment variable support for accessibility
+- CI/CD improvements with fmt and clippy checks
+- Fixed all clippy warnings
+- Enhanced documentation (CONTRIBUTING.md, SECURITY.md)
+- 176 total tests (up from 174)
+
+### v2.7.0 (2025-08-29)
 - **Phase 2 SQLite Migration** - SQLite is now the primary data source with automatic JSON migration
 - **Major Code Simplification** - Removed 400+ lines of overengineered code (async git, unused utilities)
 - **Clap CLI Parser** - Professional argument parsing with help and version support

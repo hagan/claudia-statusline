@@ -5,6 +5,35 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2025-08-30
+
+### Code Quality & Accessibility Improvements
+
+#### Added
+- **NO_COLOR Support**: Full support for NO_COLOR environment variable for accessibility
+  - All color methods converted from constants to functions
+  - Colors automatically disabled when NO_COLOR=1 is set
+  - Added test coverage for NO_COLOR functionality
+- **CI/CD Enhancements**: fmt and clippy checks in all workflows
+  - Workflows fail fast on formatting or lint issues
+  - Code quality gates enforced before merging
+
+#### Improved
+- **Documentation**: 
+  - Created CONTRIBUTING.md with developer guidelines
+  - Updated SECURITY.md with transcript validation details
+  - Added logging usage documentation to README.md
+  - Clarified SQLite-first architecture throughout docs
+- **Code Quality**:
+  - Fixed all clippy warnings in proptest_tests.rs
+  - Removed unnecessary u64 >= 0 comparisons
+  - Consistent error handling patterns
+
+#### Testing
+- Total test count: 176 (up from 174)
+- Added NO_COLOR environment variable tests
+- All tests passing with enhanced coverage
+
 ## [2.7.0] - 2025-08-29
 
 ### Phase 2 SQLite Migration & Major Refactoring

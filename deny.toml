@@ -13,7 +13,7 @@ skip-tree = []
 [licenses]
 # Deny crates with no license
 unlicensed = "deny"
-# Allow only these licenses
+# Allow only these licenses (permissive)
 allow = [
     "MIT",
     "Apache-2.0",
@@ -25,8 +25,8 @@ allow = [
     "CC0-1.0",
     "Unlicense",
 ]
-# Warn about copyleft licenses
-copyleft = "warn"
+# Deny copyleft licenses (e.g., GPL/AGPL)
+copyleft = "deny"
 # Confidence threshold for license detection
 confidence-threshold = 0.8
 

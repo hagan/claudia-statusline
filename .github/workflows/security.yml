@@ -160,21 +160,25 @@ jobs:
         echo "### Dependencies and their licenses:" >> $GITHUB_STEP_SUMMARY
         echo '```' >> $GITHUB_STEP_SUMMARY
 
-        # Try to run cargo-license and capture the result
+        # Try to run cargo-license and capture the result (informational table)
         cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY 2>/dev/null
         LICENSE_EXIT_CODE=$?
 
         echo '```' >> $GITHUB_STEP_SUMMARY
 
         if [ $LICENSE_EXIT_CODE -eq 0 ]; then
-          # cargo-license succeeded, check for incompatible licenses
-          cargo license --json 2>/dev/null > /tmp/licenses.json
+          # cargo-license succeeded, check for incompatible licenses (exclude dev-deps)
+          cargo license --json --avoid-dev-deps 2>/dev/null > /tmp/licenses.json
           if [ $? -eq 0 ]; then
-            INCOMPATIBLE=$(jq -r '.[] | select(.license | test("GPL|AGPL")) | .name' /tmp/licenses.json 2>/dev/null | wc -l || echo "0")
+            # Match only AGPL-*, GPL-* (not LGPL), using non-word boundary before the token
+            INCOMPATIBLE=$(jq '[.[] | select(.license | test("(^|\\W)(AGPL|GPL)-"))] | length' /tmp/licenses.json 2>/dev/null || echo "0")
             if [ "$INCOMPATIBLE" -gt 0 ]; then
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "⚠️ Found potentially incompatible licenses!" >> $GITHUB_STEP_SUMMARY
-              exit 1
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              jq -r '.[] | select(.license | test("(^|\\W)(AGPL|GPL)-")) | "\(.name) \(.license)"' /tmp/licenses.json 2>/dev/null >> $GITHUB_STEP_SUMMARY
+              echo '```' >> $GITHUB_STEP_SUMMARY
+              echo "(warning-only; build continues)" >> $GITHUB_STEP_SUMMARY
             else
               echo "" >> $GITHUB_STEP_SUMMARY
               echo "✅ All licenses are compatible" >> $GITHUB_STEP_SUMMARY
@@ -245,11 +249,27 @@ jobs:
         echo "## Supply Chain Security Check" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        if cargo deny check 2>&1; then
+        # Run cargo-deny and capture JSON report for summary
+        set +e
+        cargo deny check --format json > /tmp/deny.json 2>&1
+        EXIT=$?
+        set -e
+
+        if [ $EXIT -eq 0 ]; then
           echo "✅ Supply chain security check passed!" >> $GITHUB_STEP_SUMMARY
         else
           echo "⚠️ Supply chain security issues detected!" >> $GITHUB_STEP_SUMMARY
+          # Ensure jq is available
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y jq >/dev/null 2>&1 || true
+          fi
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cargo deny check 2>&1 | head -100 >> $GITHUB_STEP_SUMMARY || true
+          if command -v jq >/dev/null 2>&1; then
+            # Summarize each report with error/warning counts
+            jq -r '.reports[] | .title + ": " + ( (.errors | length) | tostring ) + " errors, " + ( (.warnings | length) | tostring ) + " warnings"' /tmp/deny.json 2>/dev/null >> $GITHUB_STEP_SUMMARY || cat /tmp/deny.json >> $GITHUB_STEP_SUMMARY
+          else
+            cat /tmp/deny.json >> $GITHUB_STEP_SUMMARY
+          fi
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
+        exit $EXIT
