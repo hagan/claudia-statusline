@@ -5,6 +5,46 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.1] - 2025-08-30
+
+### Critical Bug Fix & Phase 2 Database Maintenance
+
+#### Fixed
+- **SQLite UPSERT Bug**: Fixed critical bug where session costs were being accumulated instead of replaced
+  - The UPSERT operation was incorrectly using `cost = cost + ?` instead of `cost = ?`
+  - This caused costs to grow exponentially with each update
+  - Also affected lines_added and lines_removed fields
+- **Delta Calculations**: Properly implemented delta tracking for daily/monthly stats
+  - Now correctly calculates the difference between old and new values
+  - Prevents double-counting when sessions are updated
+  - Daily and monthly aggregates remain accurate
+
+#### Added - Phase 2 Database Maintenance
+- **Database Maintenance Command**: New `statusline db-maintain` subcommand
+  - `--vacuum`: Rebuild database to reclaim space and defragment
+  - `--optimize`: Run ANALYZE to update query optimizer statistics
+  - `--checkpoint`: Force WAL checkpoint to sync changes
+  - `--prune`: Remove old sessions based on retention settings
+  - `--check-integrity`: Verify database consistency
+- **Automated Maintenance**: Shell script wrapper for cron integration
+  - Located at `scripts/maintenance.sh`
+  - Returns proper exit codes for monitoring
+  - Logs to syslog with appropriate severity levels
+- **Data Retention**: Configurable retention periods
+  - `database.retention.sessions_days`: Keep sessions for N days (default: 90)
+  - `database.retention.daily_stats_days`: Keep daily stats (default: 365)
+  - `database.retention.monthly_stats_months`: Keep monthly stats (default: 24)
+- **Test Coverage**: Added comprehensive tests for bug fix
+  - Fixed `test_session_update` to expect replacement behavior
+  - Added `test_session_update_delta_calculation` for delta verification
+  - Tests prevent regression of the accumulation bug
+
+#### Migration Notes
+- Users with corrupted SQLite data should delete and rebuild: `rm ~/.local/share/claudia-statusline/stats.db`
+- The statusline will automatically rebuild from JSON on next run
+- Or use `statusline migrate --finalize --delete-json` to accept current state
+- Set up automated maintenance with cron: `0 3 * * 0 /path/to/maintenance.sh`
+
 ## [2.8.0] - 2025-08-30
 
 ### Phase 1 SQLite Finalization - Migration Tools

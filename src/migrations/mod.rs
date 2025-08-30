@@ -60,7 +60,10 @@ impl MigrationRunner {
 
     /// Load all migration definitions
     fn load_all_migrations() -> Vec<Box<dyn Migration>> {
-        vec![Box::new(InitialJsonToSqlite)]
+        vec![
+            Box::new(InitialJsonToSqlite),
+            Box::new(AddMetaTable),
+        ]
     }
 
     /// Get current schema version
@@ -197,6 +200,44 @@ impl Migration for InitialJsonToSqlite {
     }
 }
 
+/// Migration to add meta table for storing maintenance metadata
+pub struct AddMetaTable;
+
+impl Migration for AddMetaTable {
+    fn version(&self) -> u32 {
+        2
+    }
+
+    fn description(&self) -> &str {
+        "Add meta table for database maintenance metadata"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Create meta table
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Add initial values
+        let now = Local::now().to_rfc3339();
+        tx.execute(
+            "INSERT OR IGNORE INTO meta (key, value) VALUES ('created_at', ?1)",
+            params![now],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        tx.execute("DROP TABLE IF EXISTS meta", [])?;
+        Ok(())
+    }
+}
+
 /// Run migrations on startup (best effort)
 #[allow(dead_code)]
 pub fn run_migrations() {
@@ -221,6 +262,7 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        assert_eq!(runner.current_version().unwrap(), 1);
+        // We now have 2 migrations: InitialSchema (v1) and AddMetaTable (v2)
+        assert_eq!(runner.current_version().unwrap(), 2);
     }
 }

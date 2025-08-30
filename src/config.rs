@@ -86,6 +86,15 @@ pub struct DatabaseConfig {
 
     /// Whether to maintain JSON backup alongside SQLite (default: true for compatibility)
     pub json_backup: bool,
+
+    /// Retention period for session data in days (0 = keep forever)
+    pub retention_days_sessions: Option<u32>,
+
+    /// Retention period for daily stats in days (0 = keep forever)
+    pub retention_days_daily: Option<u32>,
+
+    /// Retention period for monthly stats in days (0 = keep forever)
+    pub retention_days_monthly: Option<u32>,
 }
 
 /// Retry configuration
@@ -170,6 +179,9 @@ impl Default for DatabaseConfig {
             busy_timeout_ms: 10000,
             path: "stats.db".to_string(),
             json_backup: true, // Default to true for backward compatibility
+            retention_days_sessions: None, // None means use default (90 days)
+            retention_days_daily: None,    // None means use default (30 days)
+            retention_days_monthly: None,  // None means use default (365 days)
         }
     }
 }

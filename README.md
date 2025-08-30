@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.8.0** - SQLite finalization with migration tools and configurable JSON backup
+**Version 2.8.1** - Critical SQLite bug fix and database maintenance features
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -210,6 +210,71 @@ The migration command will:
 2. Archive or delete the JSON file
 3. Update configuration to disable JSON backup
 4. Enable SQLite-only mode automatically
+
+## Database Maintenance
+
+The statusline includes built-in database maintenance operations to keep your SQLite database optimized and manage data retention. This can be run manually or scheduled via cron.
+
+### Manual Maintenance
+
+```bash
+# Run standard maintenance (vacuum, optimize, prune old data)
+statusline db-maintain
+
+# Run in quiet mode (only show errors)
+statusline db-maintain --quiet
+
+# Force vacuum even if not needed
+statusline db-maintain --force-vacuum
+
+# Skip data pruning
+statusline db-maintain --no-prune
+```
+
+### Automated Maintenance with Cron
+
+Add one of these entries to your crontab (`crontab -e`):
+
+```bash
+# Daily maintenance at 3 AM (recommended)
+0 3 * * * /path/to/statusline db-maintain --quiet
+
+# Weekly maintenance on Sunday at 2 AM
+0 2 * * 0 /path/to/statusline db-maintain --quiet
+
+# Using the maintenance script with logging
+0 3 * * * /path/to/scripts/maintenance.sh --quiet --log ~/.local/share/claudia-statusline/maintenance.log
+
+# With custom statusline binary location
+0 3 * * * STATUSLINE_BIN=/usr/local/bin/statusline /path/to/scripts/maintenance.sh --quiet
+```
+
+### Data Retention Configuration
+
+Configure retention periods in `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[database]
+# Retention periods in days (0 or omit to keep forever)
+retention_days_sessions = 90    # Keep session data for 90 days
+retention_days_daily = 365      # Keep daily stats for 1 year
+retention_days_monthly = 0      # Keep monthly stats forever
+```
+
+### Maintenance Operations
+
+The `db-maintain` command performs these operations:
+
+1. **WAL Checkpoint**: Commits write-ahead log to main database
+2. **Optimization**: Analyzes tables and updates query planner statistics
+3. **Vacuum**: Reclaims unused space (runs when database >10MB or weekly)
+4. **Data Pruning**: Removes old data based on retention settings
+5. **Integrity Check**: Verifies database consistency
+
+Exit codes for scripting:
+- `0`: Success
+- `1`: Integrity check failed (database corruption)
+- `2`: Other error
 
 ## Configuration
 
