@@ -30,27 +30,27 @@
 #![doc(html_root_url = "https://docs.rs/statusline/2.7.0")]
 
 pub mod common;
-pub mod error;
-pub mod models;
-pub mod git;
-pub mod git_utils;
-pub mod stats;
-pub mod display;
-pub mod utils;
-pub mod version;
 /// Configuration management module for loading and saving settings
 pub mod config;
-/// Retry logic with exponential backoff for transient failures
-pub mod retry;
 /// SQLite database backend for persistent statistics
 pub mod database;
+pub mod display;
+pub mod error;
+pub mod git;
+pub mod git_utils;
 /// Database schema migration system
 pub mod migrations;
+pub mod models;
+/// Retry logic with exponential backoff for transient failures
+pub mod retry;
+pub mod stats;
+pub mod utils;
+pub mod version;
 
-pub use error::{StatuslineError, Result};
-pub use models::StatuslineInput;
-pub use display::format_output;
-pub use stats::{StatsData, get_or_load_stats_data, update_stats_data};
-pub use git::get_git_status;
-pub use version::{version_string, short_version};
 pub use config::Config;
+pub use display::format_output;
+pub use error::{Result, StatuslineError};
+pub use git::get_git_status;
+pub use models::StatuslineInput;
+pub use stats::{get_or_load_stats_data, update_stats_data, StatsData};
+pub use version::{short_version, version_string};

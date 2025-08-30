@@ -16,7 +16,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
 - **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
 - **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
-- **SQLite Primary Storage** - SQLite-first with JSON backup for maximum reliability (v2.7.0)
+- **SQLite-First Storage** - SQLite-first reads with JSON backup writes for maximum reliability (v2.7.0)
 - **Multi-Console Safe** - Process-safe file locking and SQLite WAL mode for concurrent sessions
 - **XDG Compliance** - Follows desktop standards for file locations
 - **Atomic Operations** - Safe file writes prevent data corruption
@@ -33,7 +33,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Session Duration** - Tracks conversation length from transcript
 - **Cost Tracking** - Displays session cost in USD with burn rate ($/hour)
 - **Persistent Stats Tracking** - Accumulates costs and usage stats across sessions in XDG-compliant location
-- **SQLite Primary Storage** (v2.7.0+) - SQLite-first loading with automatic JSON migration and backup
+- **SQLite-First Storage** (v2.7.0+) - SQLite-first reads with JSON backup writes, automatic migration
 - **Lines Changed** - Shows added/removed lines count from session
 - **Progress Bars** - Visual indicators for context usage (10-char bar)
 - **Burn Rate** - Shows cost per hour for active sessions
@@ -784,6 +784,30 @@ tail -f ~/.cache/statusline-debug.log
 - Performance analysis
 
 ## Troubleshooting
+
+### Debugging with Logging
+
+The statusline uses structured logging for debugging. By default, only warnings are shown. You can enable more verbose logging:
+
+```bash
+# Show info-level logs (includes SQLite operations)
+RUST_LOG=info statusline
+
+# Show debug-level logs (detailed operations)
+RUST_LOG=debug statusline
+
+# Debug specific modules
+RUST_LOG=statusline::stats=debug statusline
+```
+
+### Disabling Colors
+
+If you need plain text output without ANSI escape codes:
+
+```bash
+# Disable all colors
+NO_COLOR=1 statusline
+```
 
 ### Common Issues
 

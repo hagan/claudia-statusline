@@ -38,7 +38,8 @@ fn test_dual_write_creates_both_files() {
         .spawn()
         .unwrap();
 
-    child.stdin
+    child
+        .stdin
         .as_mut()
         .unwrap()
         .write_all(input.as_bytes())
@@ -55,8 +56,16 @@ fn test_dual_write_creates_both_files() {
     }
 
     // Both files should exist
-    assert!(json_path.exists(), "JSON file should be created at {:?}", json_path);
-    assert!(db_path.exists(), "SQLite database should be created at {:?}", db_path);
+    assert!(
+        json_path.exists(),
+        "JSON file should be created at {:?}",
+        json_path
+    );
+    assert!(
+        db_path.exists(),
+        "SQLite database should be created at {:?}",
+        db_path
+    );
 }
 
 #[test]
@@ -73,8 +82,9 @@ fn test_concurrent_sqlite_access() {
             "CREATE TABLE IF NOT EXISTS test_sessions (
                 session_id TEXT PRIMARY KEY,
                 value INTEGER
-            )"
-        ).unwrap();
+            )",
+        )
+        .unwrap();
     }
 
     // Spawn 10 threads that all try to write to the database
@@ -89,8 +99,9 @@ fn test_concurrent_sqlite_access() {
                 // Each thread inserts its own row
                 conn.execute(
                     "INSERT OR REPLACE INTO test_sessions (session_id, value) VALUES (?1, ?2)",
-                    &[&format!("session-{}", i), &i.to_string()],
-                ).unwrap();
+                    [format!("session-{}", i), i.to_string()],
+                )
+                .unwrap();
             })
         })
         .collect();
@@ -102,11 +113,9 @@ fn test_concurrent_sqlite_access() {
 
     // Verify all 10 rows were inserted
     let conn = Connection::open(&*db_path).unwrap();
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM test_sessions",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM test_sessions", [], |row| row.get(0))
+        .unwrap();
 
     assert_eq!(count, 10, "All 10 concurrent writes should succeed");
 }
@@ -122,7 +131,9 @@ fn test_sqlite_wal_mode() {
     conn.pragma_update(None, "journal_mode", "WAL").unwrap();
 
     // Verify WAL mode is enabled
-    let mode: String = conn.pragma_query_value(None, "journal_mode", |row| row.get(0)).unwrap();
+    let mode: String = conn
+        .pragma_query_value(None, "journal_mode", |row| row.get(0))
+        .unwrap();
     assert_eq!(mode, "wal", "Database should be in WAL mode");
 
     // WAL file should exist after a write
@@ -201,33 +212,39 @@ fn test_json_to_sqlite_migration() {
             total_lines_added INTEGER DEFAULT 0,
             total_lines_removed INTEGER DEFAULT 0,
             session_count INTEGER DEFAULT 0
-        );"
-    ).unwrap();
+        );",
+    )
+    .unwrap();
 
     // Import data from JSON
     conn.execute(
         "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)",
-        &["session-1", "2025-08-25T00:00:00Z", "2025-08-25T01:00:00Z", "10.0", "100", "50"],
-    ).unwrap();
+        [
+            "session-1",
+            "2025-08-25T00:00:00Z",
+            "2025-08-25T01:00:00Z",
+            "10.0",
+            "100",
+            "50",
+        ],
+    )
+    .unwrap();
 
     conn.execute(
         "INSERT INTO daily_stats VALUES (?, ?, ?, ?, ?)",
-        &["2025-08-25", "10.0", "100", "50", "1"],
-    ).unwrap();
+        ["2025-08-25", "10.0", "100", "50", "1"],
+    )
+    .unwrap();
 
     // Verify migration
-    let session_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sessions",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let session_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(session_count, 1);
 
-    let daily_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM daily_stats",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let daily_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM daily_stats", [], |row| row.get(0))
+        .unwrap();
     assert_eq!(daily_count, 1);
 }
 
@@ -244,26 +261,23 @@ fn test_sqlite_transaction_rollback() {
     conn.execute(
         "CREATE TABLE test_data (id INTEGER PRIMARY KEY, value TEXT)",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Start a transaction
     let tx = conn.transaction().unwrap();
 
     // Insert data
-    tx.execute(
-        "INSERT INTO test_data (id, value) VALUES (1, 'test')",
-        [],
-    ).unwrap();
+    tx.execute("INSERT INTO test_data (id, value) VALUES (1, 'test')", [])
+        .unwrap();
 
     // Rollback instead of commit
     tx.rollback().unwrap();
 
     // Verify data was not persisted
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM test_data",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM test_data", [], |row| row.get(0))
+        .unwrap();
 
     assert_eq!(count, 0, "Transaction should have been rolled back");
 }
@@ -284,28 +298,33 @@ fn test_sqlite_upsert_behavior() {
             cost REAL DEFAULT 0.0
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // First insert
     conn.execute(
         "INSERT INTO sessions (session_id, cost) VALUES ('test', 5.0)
          ON CONFLICT(session_id) DO UPDATE SET cost = cost + 5.0",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Second insert (should update)
     conn.execute(
         "INSERT INTO sessions (session_id, cost) VALUES ('test', 3.0)
          ON CONFLICT(session_id) DO UPDATE SET cost = cost + 3.0",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Verify the cost was accumulated
-    let cost: f64 = conn.query_row(
-        "SELECT cost FROM sessions WHERE session_id = 'test'",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let cost: f64 = conn
+        .query_row(
+            "SELECT cost FROM sessions WHERE session_id = 'test'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
 
     assert_eq!(cost, 8.0, "Cost should be accumulated (5.0 + 3.0)");
 }
@@ -347,11 +366,13 @@ fn test_database_corruption_recovery() {
     conn.execute("CREATE TABLE test (id INTEGER)", []).unwrap();
 
     // Verify it's a valid database
-    let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
 
     assert!(count > 0, "Should have at least one table");
 }
@@ -399,8 +420,14 @@ fn test_sqlite_busy_timeout() {
     // Should timeout after ~100ms
     assert!(result.is_err(), "Should fail due to busy timeout");
     // Relax timing constraints for CI environments
-    assert!(duration >= Duration::from_millis(50), "Should wait at least 50ms");
-    assert!(duration < Duration::from_millis(500), "Should timeout within 500ms");
+    assert!(
+        duration >= Duration::from_millis(50),
+        "Should wait at least 50ms"
+    );
+    assert!(
+        duration < Duration::from_millis(500),
+        "Should timeout within 500ms"
+    );
 }
 
 #[test]
@@ -422,7 +449,8 @@ fn test_schema_migrations_table() {
             execution_time_ms INTEGER
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Insert a migration record
     conn.execute(
@@ -431,11 +459,11 @@ fn test_schema_migrations_table() {
     ).unwrap();
 
     // Query current version
-    let version: i64 = conn.query_row(
-        "SELECT MAX(version) FROM schema_migrations",
-        [],
-        |row| row.get(0),
-    ).unwrap();
+    let version: i64 = conn
+        .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
 
     assert_eq!(version, 1, "Current migration version should be 1");
 }

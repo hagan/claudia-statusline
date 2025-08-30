@@ -1,8 +1,8 @@
-use rusqlite::{Connection, Transaction, Result, params};
-use std::path::Path;
-use chrono::Local;
-use crate::stats::StatsData;
 use crate::database::SqliteDatabase;
+use crate::stats::StatsData;
+use chrono::Local;
+use rusqlite::{params, Connection, Result, Transaction};
+use std::path::Path;
 
 /// Migration trait for database schema changes
 #[allow(dead_code)]
@@ -60,18 +60,17 @@ impl MigrationRunner {
 
     /// Load all migration definitions
     fn load_all_migrations() -> Vec<Box<dyn Migration>> {
-        vec![
-            Box::new(InitialJsonToSqlite),
-        ]
+        vec![Box::new(InitialJsonToSqlite)]
     }
 
     /// Get current schema version
     pub fn current_version(&self) -> Result<u32> {
-        let version: Option<u32> = self.conn.query_row(
-            "SELECT MAX(version) FROM schema_migrations",
-            [],
-            |row| row.get(0),
-        ).unwrap_or(None);
+        let version: Option<u32> = self
+            .conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(None);
 
         Ok(version.unwrap_or(0))
     }
@@ -81,7 +80,8 @@ impl MigrationRunner {
         let current = self.current_version()?;
 
         // Collect versions to run
-        let versions_to_run: Vec<u32> = self.migrations
+        let versions_to_run: Vec<u32> = self
+            .migrations
             .iter()
             .filter(|m| m.version() > current)
             .map(|m| m.version())
@@ -90,7 +90,8 @@ impl MigrationRunner {
         // Run each migration by version
         for version in versions_to_run {
             // Find the migration with this version
-            let migration = self.migrations
+            let migration = self
+                .migrations
                 .iter()
                 .find(|m| m.version() == version)
                 .expect("Migration should exist");
@@ -126,7 +127,9 @@ impl MigrationRunner {
 pub struct InitialJsonToSqlite;
 
 impl Migration for InitialJsonToSqlite {
-    fn version(&self) -> u32 { 1 }
+    fn version(&self) -> u32 {
+        1
+    }
 
     fn description(&self) -> &str {
         "Import existing JSON stats data to SQLite"

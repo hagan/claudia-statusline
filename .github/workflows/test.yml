@@ -7,6 +7,23 @@ on:
     branches: [ main ]
 
 jobs:
+  lint:
+    name: Format and Lint
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Check formatting
+      run: cargo fmt --all -- --check
+
+    - name: Run clippy
+      run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args
+
   test-scripts:
     runs-on: ubuntu-latest
 

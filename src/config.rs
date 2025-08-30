@@ -1,12 +1,12 @@
+use crate::error::{Result, StatuslineError};
+use log::warn;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::env;
-use log::warn;
-use crate::error::{Result, StatuslineError};
 
 /// Main configuration structure for the statusline
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     /// Display configuration
@@ -128,18 +128,7 @@ pub struct TranscriptConfig {
 }
 
 // Default implementations
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            display: DisplayConfig::default(),
-            context: ContextConfig::default(),
-            cost: CostConfig::default(),
-            database: DatabaseConfig::default(),
-            retry: RetryConfig::default(),
-            transcript: TranscriptConfig::default(),
-        }
-    }
-}
+// Default is derived above
 
 impl Default for DisplayConfig {
     fn default() -> Self {
@@ -225,9 +214,7 @@ impl Default for RetrySettings {
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
-        TranscriptConfig {
-            buffer_lines: 50,
-        }
+        TranscriptConfig { buffer_lines: 50 }
     }
 }
 
@@ -288,8 +275,9 @@ impl Config {
 
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| StatuslineError::Config(format!("Failed to create config directory: {}", e)))?;
+            fs::create_dir_all(parent).map_err(|e| {
+                StatuslineError::Config(format!("Failed to create config directory: {}", e))
+            })?;
         }
 
         fs::write(path, toml_string)
@@ -333,7 +321,9 @@ impl Config {
         if let Some(config_dir) = dirs::config_dir() {
             Ok(config_dir.join("claudia-statusline").join("config.toml"))
         } else {
-            Err(StatuslineError::Config("Could not determine config directory".into()))
+            Err(StatuslineError::Config(
+                "Could not determine config directory".into(),
+            ))
         }
     }
 
@@ -464,7 +454,10 @@ mod tests {
         config.save(&config_path).unwrap();
 
         let loaded_config = Config::load_from_file(&config_path).unwrap();
-        assert_eq!(loaded_config.display.progress_bar_width, config.display.progress_bar_width);
+        assert_eq!(
+            loaded_config.display.progress_bar_width,
+            config.display.progress_bar_width
+        );
     }
 
     #[test]

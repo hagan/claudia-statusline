@@ -65,10 +65,16 @@ impl VersionInfo {
 impl fmt::Display for VersionInfo {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "Claudia Statusline v{}", self.version)?;
-        writeln!(f, "Git: {} ({}){}",
+        writeln!(
+            f,
+            "Git: {} ({}){}",
             self.git_hash,
             self.git_branch,
-            if self.git_dirty { " +uncommitted changes" } else { "" }
+            if self.git_dirty {
+                " +uncommitted changes"
+            } else {
+                ""
+            }
         )?;
         writeln!(f, "Built: {} ({})", self.build_date, self.build_profile)?;
         writeln!(f, "Rustc: {}", self.rustc_version)?;
@@ -106,7 +112,7 @@ mod tests {
         let info = VersionInfo::current();
         let short = info.short();
         assert!(short.starts_with("v"));
-        assert!(short.contains(&info.version));
+        assert!(short.contains(info.version));
     }
 
     #[test]
@@ -114,8 +120,8 @@ mod tests {
         let info = VersionInfo::current();
         let full = info.full();
         assert!(full.starts_with("v"));
-        assert!(full.contains(&info.version));
-        assert!(full.contains(&info.git_hash));
+        assert!(full.contains(info.version));
+        assert!(full.contains(info.git_hash));
     }
 
     #[test]

@@ -4,13 +4,13 @@
 //! without panicking or producing invalid outputs.
 
 use proptest::prelude::*;
-use statusline::{
-    models::{StatuslineInput, Workspace, Model, Cost, ContextUsage, ModelType},
-    utils::{shorten_path, parse_iso8601_to_unix},
-    git::get_git_status,
-    stats::StatsData,
-};
 use serde_json::json;
+use statusline::{
+    git::get_git_status,
+    models::{ContextUsage, Cost, ModelType, StatuslineInput},
+    stats::StatsData,
+    utils::{parse_iso8601_to_unix, shorten_path},
+};
 
 // Strategy for generating valid JSON that should parse as StatuslineInput
 fn arbitrary_statusline_json() -> impl Strategy<Value = serde_json::Value> {
@@ -21,28 +21,29 @@ fn arbitrary_statusline_json() -> impl Strategy<Value = serde_json::Value> {
         prop::option::of(0.0f64..10000.0),
         prop::option::of(0u64..100000),
         prop::option::of(0u64..100000),
-    ).prop_map(|(dir, model, session, cost, added, removed)| {
-        let mut obj = json!({});
+    )
+        .prop_map(|(dir, model, session, cost, added, removed)| {
+            let mut obj = json!({});
 
-        if dir.is_some() {
-            obj["workspace"] = json!({"current_dir": dir});
-        }
-        if model.is_some() {
-            obj["model"] = json!({"display_name": model});
-        }
-        if session.is_some() {
-            obj["session_id"] = json!(session);
-        }
-        if cost.is_some() || added.is_some() || removed.is_some() {
-            obj["cost"] = json!({
-                "total_cost_usd": cost,
-                "total_lines_added": added,
-                "total_lines_removed": removed,
-            });
-        }
+            if dir.is_some() {
+                obj["workspace"] = json!({"current_dir": dir});
+            }
+            if model.is_some() {
+                obj["model"] = json!({"display_name": model});
+            }
+            if session.is_some() {
+                obj["session_id"] = json!(session);
+            }
+            if cost.is_some() || added.is_some() || removed.is_some() {
+                obj["cost"] = json!({
+                    "total_cost_usd": cost,
+                    "total_lines_added": added,
+                    "total_lines_removed": removed,
+                });
+            }
 
-        obj
-    })
+            obj
+        })
 }
 
 // Test that arbitrary JSON inputs don't panic when parsing
@@ -170,13 +171,8 @@ proptest! {
             prop_assert!(c >= 0.0);
         }
 
-        // 2. Line counts should be non-negative
-        if let Some(added) = cost_obj.total_lines_added {
-            prop_assert!(added >= 0);
-        }
-        if let Some(removed) = cost_obj.total_lines_removed {
-            prop_assert!(removed >= 0);
-        }
+        // 2. Line counts are u64 so always non-negative by type
+        // No need to check - compiler guarantees this
     }
 }
 

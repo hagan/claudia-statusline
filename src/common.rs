@@ -3,9 +3,9 @@
 //! This module provides shared functionality to reduce code duplication
 //! and ensure consistent behavior across the application.
 
-use std::path::PathBuf;
-use chrono::Local;
 use crate::error::Result;
+use chrono::Local;
+use std::path::PathBuf;
 
 /// Gets the application data directory using XDG Base Directory specification.
 ///

@@ -49,6 +49,7 @@ help:
 	@echo "  $(YELLOW)make test-install$(NC) - Run installation verification"
 	@echo "  $(YELLOW)make test-all$(NC)     - Run all tests"
 	@echo "  $(YELLOW)make check$(NC)        - Check build environment"
+	@echo "  $(YELLOW)make check-code$(NC)   - Run rustfmt and clippy"
 	@echo "  $(YELLOW)make dev$(NC)          - Build and run with test input"
 	@echo "  $(YELLOW)make bench$(NC)        - Run performance benchmark"
 	@echo "  $(YELLOW)make version$(NC)      - Show version information"
@@ -202,6 +203,11 @@ lint:
 	@echo "$(BLUE)Running clippy linter...$(NC)"
 	@cargo clippy --all-targets --all-features -- -D warnings
 	@echo "$(GREEN)✓$(NC) Linting completed"
+
+# Format + Lint preflight
+.PHONY: check-code
+check-code: fmt lint
+	@echo "$(GREEN)✓$(NC) Code formatting and lint checks passed"
 
 # Show binary size
 .PHONY: size

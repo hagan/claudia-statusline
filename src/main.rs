@@ -20,29 +20,29 @@
 //! echo '{"workspace":{"current_dir":"/path"}}' | statusline
 //! ```
 
-use std::env;
-use std::io::{self, Read};
 use clap::{Parser, Subcommand};
 use log::warn;
+use std::env;
+use std::io::{self, Read};
 
 mod common;
+mod config;
+mod database;
+mod display;
 mod error;
-mod retry;
-mod models;
 mod git;
 mod git_utils;
+mod migrations;
+mod models;
+mod retry;
 mod stats;
-mod display;
 mod utils;
 mod version;
-mod database;
-mod migrations;
-mod config;
 
+use display::{format_output, Colors};
 use error::Result;
 use models::StatuslineInput;
 use stats::{get_or_load_stats_data, update_stats_data};
-use display::{Colors, format_output};
 use version::version_string;
 
 /// Claudia Statusline - A high-performance statusline for Claude Code
@@ -50,7 +50,9 @@ use version::version_string;
 #[command(name = "statusline")]
 #[command(version = env!("CLAUDIA_VERSION"))]
 #[command(about = "A high-performance statusline for Claude Code", long_about = None)]
-#[command(after_help = "Input: Reads JSON from stdin\n\nExample:\n  echo '{\"workspace\":{\"current_dir\":\"/path\"}}' | statusline")]
+#[command(
+    after_help = "Input: Reads JSON from stdin\n\nExample:\n  echo '{\"workspace\":{\"current_dir\":\"/path\"}}' | statusline"
+)]
 struct Cli {
     /// Show detailed version information
     #[arg(long = "version-full")]
@@ -133,37 +135,46 @@ fn main() -> Result<()> {
     }
 
     // Update stats tracking if we have session and cost data
-    let (daily_total, _monthly_total) = if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
-        if let Some(total_cost) = cost.total_cost_usd {
-            // Update stats with new cost data
-            update_stats_data(|data| {
-                data.update_session(
-                    session_id,
-                    total_cost,
-                    cost.total_lines_added.unwrap_or(0),
-                    cost.total_lines_removed.unwrap_or(0),
-                )
-            })
+    let (daily_total, _monthly_total) =
+        if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
+            if let Some(total_cost) = cost.total_cost_usd {
+                // Update stats with new cost data
+                update_stats_data(|data| {
+                    data.update_session(
+                        session_id,
+                        total_cost,
+                        cost.total_lines_added.unwrap_or(0),
+                        cost.total_lines_removed.unwrap_or(0),
+                    )
+                })
+            } else {
+                // Have session but no cost data - still load existing daily totals
+                let data = get_or_load_stats_data();
+                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+                let month = chrono::Local::now().format("%Y-%m").to_string();
+
+                let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+                let monthly_total = data
+                    .monthly
+                    .get(&month)
+                    .map(|m| m.total_cost)
+                    .unwrap_or(0.0);
+                (daily_total, monthly_total)
+            }
         } else {
-            // Have session but no cost data - still load existing daily totals
+            // No session_id - still load stats data to show accumulated totals
             let data = get_or_load_stats_data();
             let today = chrono::Local::now().format("%Y-%m-%d").to_string();
             let month = chrono::Local::now().format("%Y-%m").to_string();
 
             let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-            let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
+            let monthly_total = data
+                .monthly
+                .get(&month)
+                .map(|m| m.total_cost)
+                .unwrap_or(0.0);
             (daily_total, monthly_total)
-        }
-    } else {
-        // No session_id - still load stats data to show accumulated totals
-        let data = get_or_load_stats_data();
-        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-        let month = chrono::Local::now().format("%Y-%m").to_string();
-
-        let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-        let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
-        (daily_total, monthly_total)
-    };
+        };
 
     // Format and print output
     format_output(
@@ -181,13 +192,9 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
 
-
-
-
     #[test]
-    fn test_main_integration() {
-        // This is a placeholder for integration tests
-        // Most tests are now in their respective modules
-        assert!(true);
+    fn test_main_integration_placeholder() {
+        // Basic smoke test placeholder to ensure test module links
+        assert_eq!(1 + 1, 2);
     }
 }

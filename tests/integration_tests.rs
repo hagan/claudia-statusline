@@ -1,10 +1,10 @@
-use std::process::{Command, Stdio};
 use std::io::Write;
+use std::process::{Command, Stdio};
 
 #[test]
 fn test_binary_with_empty_input() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -25,7 +25,7 @@ fn test_binary_with_workspace() {
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -46,7 +46,7 @@ fn test_binary_with_model() {
     let json = r#"{"model":{"display_name":"Claude Opus"}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -67,7 +67,7 @@ fn test_binary_with_cost() {
     let json = r#"{"cost":{"total_cost_usd":5.50}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -97,7 +97,7 @@ fn test_binary_with_complete_input() {
     }"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -111,7 +111,7 @@ fn test_binary_with_complete_input() {
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("/home/test"));
-    assert!(stdout.contains("S3.5"));  // Sonnet is abbreviated as S3.5
+    assert!(stdout.contains("S3.5")); // Sonnet is abbreviated as S3.5
     assert!(stdout.contains("$10.00"));
 }
 
@@ -120,7 +120,7 @@ fn test_binary_handles_malformed_json() {
     let json = r#"{"workspace":{"current_dir":"/tmp"#; // Missing closing braces
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -140,7 +140,7 @@ fn test_binary_with_unicode() {
     let json = r#"{"workspace":{"current_dir":"/home/用户/文档"}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -161,7 +161,7 @@ fn test_binary_with_null_values() {
     let json = r#"{"workspace":{"current_dir":null},"model":{"display_name":null}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -181,7 +181,7 @@ fn test_binary_output_contains_ansi_colors() {
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -201,7 +201,7 @@ fn test_binary_output_contains_ansi_colors() {
 #[test]
 fn test_version_flag() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--version"])
+        .args(["run", "--", "--version"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -217,7 +217,7 @@ fn test_version_flag() {
 #[test]
 fn test_version_full_flag() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--version-full"])
+        .args(["run", "--", "--version-full"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -234,7 +234,7 @@ fn test_version_full_flag() {
 #[test]
 fn test_version_flag_short() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "-V"])
+        .args(["run", "--", "-V"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -249,7 +249,7 @@ fn test_version_flag_short() {
 #[test]
 fn test_help_flag() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "--help"])
+        .args(["run", "--", "--help"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -266,7 +266,7 @@ fn test_help_flag() {
 #[test]
 fn test_help_flag_short() {
     let output = Command::new("cargo")
-        .args(&["run", "--", "-h"])
+        .args(["run", "--", "-h"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
@@ -284,7 +284,7 @@ fn test_binary_with_home_directory() {
     let json = format!(r#"{{"workspace":{{"current_dir":"{}"}}}}"#, home);
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -308,7 +308,7 @@ fn test_session_id_with_empty_cost() {
     let json = r#"{"workspace":{"current_dir":"/test"},"session_id":"test-123","cost":{}}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -331,7 +331,7 @@ fn test_transcript_field_parsing() {
     let json = r#"{"workspace":{"current_dir":"/test"},"transcript":"/tmp/test.jsonl"}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -353,7 +353,7 @@ fn test_session_id_without_cost() {
     let json = r#"{"workspace":{"current_dir":"/test"},"session_id":"test-456"}"#;
 
     let output = Command::new("cargo")
-        .args(&["run", "--", "--"])
+        .args(["run", "--", "--"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -370,9 +370,9 @@ fn test_session_id_without_cost() {
 }
 #[test]
 fn test_concurrent_stats_updates() {
-    use std::thread;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+    use std::thread;
     use tempfile::TempDir;
 
     // Create temp directory for stats
@@ -394,7 +394,7 @@ fn test_concurrent_stats_updates() {
             );
 
             let output = Command::new("cargo")
-                .args(&["run", "--quiet", "--", "--"])
+                .args(["run", "--quiet", "--", "--"])
                 .env("XDG_DATA_HOME", temp_path_clone)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -420,5 +420,70 @@ fn test_concurrent_stats_updates() {
     }
 
     // All 5 should complete successfully
-    assert_eq!(completed.load(Ordering::SeqCst), 5, "Not all concurrent updates succeeded");
+    assert_eq!(
+        completed.load(Ordering::SeqCst),
+        5,
+        "Not all concurrent updates succeeded"
+    );
+}
+
+#[test]
+fn test_no_color_environment_variable() {
+    // Test that NO_COLOR=1 disables ANSI escape codes
+    let json = r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}}"#;
+
+    let output = Command::new("cargo")
+        .args(["run", "--", "--"])
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should not contain any ANSI escape sequences
+    assert!(
+        !stdout.contains("\x1b["),
+        "Output contains ANSI escape codes when NO_COLOR=1: {}",
+        stdout
+    );
+
+    // Should still contain the actual content
+    assert!(stdout.contains("/tmp"));
+    assert!(stdout.contains("O")); // Opus abbreviation
+}
+
+#[test]
+fn test_colors_enabled_by_default() {
+    // Test that colors are enabled by default
+    let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
+
+    let output = Command::new("cargo")
+        .args(["run", "--", "--"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain ANSI escape sequences
+    assert!(
+        stdout.contains("\x1b["),
+        "Output missing ANSI escape codes: {}",
+        stdout
+    );
 }

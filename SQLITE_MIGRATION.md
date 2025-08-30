@@ -12,8 +12,8 @@ Claudia Statusline is migrating from JSON to SQLite for improved performance and
 - All writes go to both storage backends
 - No user action required
 
-### Phase 2: SQLite Primary (v2.7.0) ✅ CURRENT
-- **SQLite is now the primary data source**
+### Phase 2: SQLite-First (v2.7.0) ✅ CURRENT
+- **SQLite-first reads with JSON backup writes**
 - Automatic migration from JSON on first run
 - JSON maintained as backup/compatibility layer
 - Zero configuration needed - fully automatic

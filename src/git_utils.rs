@@ -3,10 +3,10 @@
 //! This module provides utilities for executing git commands
 //! safely and consistently.
 
-use std::process::{Command, Output};
-use std::path::Path;
 use crate::error::StatuslineError;
 use crate::retry::retry_simple;
+use std::path::Path;
+use std::process::{Command, Output};
 
 /// Executes a git command with the given arguments in a directory.
 ///
@@ -29,7 +29,8 @@ fn execute_git_command<P: AsRef<Path>>(dir: P, args: &[&str]) -> Option<Output> 
             .current_dir(dir.as_ref())
             .output()
             .map_err(|e| StatuslineError::git(format!("Git command failed: {}", e)))
-    }).ok()
+    })
+    .ok()
 }
 
 /// Gets the git status in porcelain format.

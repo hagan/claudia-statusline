@@ -29,7 +29,8 @@ As of version 2.2.1, Claudia Statusline includes comprehensive security hardenin
 - Null byte injection is prevented
 - Command injection via special characters is blocked
 - Only verified git repositories can have git operations performed
-- Transcript files are restricted to .jsonl extension
+- Transcript files are restricted to .jsonl extension (case-insensitive)
+- Transcript files are limited to 10MB to prevent memory exhaustion
 
 ### Security Functions
 - `validate_directory_path()` in git.rs - Validates directory paths for git operations
@@ -75,6 +76,8 @@ Security updates will be released as patch versions (e.g., 2.2.1, 2.2.2) and cle
 2. Review JSON input from untrusted sources before processing
 3. Run statusline with minimal privileges
 4. Keep your Rust toolchain updated if building from source
+5. Store transcript files in a trusted directory
+6. Be aware that transcript files are limited to 10MB and must have .jsonl extension
 
 ## Security Audit History
 

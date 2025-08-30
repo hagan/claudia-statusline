@@ -3,33 +3,22 @@
 //! This module provides functionality to detect git repositories and retrieve
 //! their status information, including branch name and file change counts.
 
-use std::path::PathBuf;
 use crate::common::validate_path_security;
-use crate::error::{StatuslineError, Result};
+use crate::display::Colors;
+use crate::error::{Result, StatuslineError};
 use crate::git_utils;
+use std::path::PathBuf;
 
 /// Git repository status information.
 ///
 /// Contains the current branch name and counts of different types of file changes.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct GitStatus {
     pub branch: String,
     pub added: usize,
     pub modified: usize,
     pub deleted: usize,
     pub untracked: usize,
-}
-
-impl Default for GitStatus {
-    fn default() -> Self {
-        GitStatus {
-            branch: String::new(),
-            added: 0,
-            modified: 0,
-            deleted: 0,
-            untracked: 0,
-        }
-    }
 }
 
 /// Validates that a path is a git repository directory
@@ -39,7 +28,10 @@ fn validate_git_directory(dir: &str) -> Result<PathBuf> {
 
     // Ensure the path is a directory
     if !canonical_path.is_dir() {
-        return Err(StatuslineError::invalid_path(format!("Path is not a directory: {}", dir)));
+        return Err(StatuslineError::invalid_path(format!(
+            "Path is not a directory: {}",
+            dir
+        )));
     }
 
     // Check if it's a git repository by looking for .git directory
@@ -84,9 +76,8 @@ fn parse_git_status(status_text: &str) -> Option<GitStatus> {
     let mut status = GitStatus::default();
 
     for line in status_text.lines() {
-        if line.starts_with("## ") {
+        if let Some(branch_info) = line.strip_prefix("## ") {
             // Extract branch name
-            let branch_info = &line[3..];
             if let Some(branch_end) = branch_info.find("...") {
                 status.branch = branch_info[..branch_end].to_string();
             } else {
@@ -113,21 +104,46 @@ pub fn format_git_info(git_status: &GitStatus) -> String {
 
     // Add branch name
     if !git_status.branch.is_empty() {
-        parts.push(format!("\x1b[32m{}\x1b[0m", git_status.branch));
+        parts.push(format!(
+            "{}{}{}",
+            Colors::green(),
+            git_status.branch,
+            Colors::reset()
+        ));
     }
 
     // Add file status counts
     if git_status.added > 0 {
-        parts.push(format!("\x1b[32m+{}\x1b[0m", git_status.added));
+        parts.push(format!(
+            "{}+{}{}",
+            Colors::green(),
+            git_status.added,
+            Colors::reset()
+        ));
     }
     if git_status.modified > 0 {
-        parts.push(format!("\x1b[33m~{}\x1b[0m", git_status.modified));
+        parts.push(format!(
+            "{}~{}{}",
+            Colors::yellow(),
+            git_status.modified,
+            Colors::reset()
+        ));
     }
     if git_status.deleted > 0 {
-        parts.push(format!("\x1b[31m-{}\x1b[0m", git_status.deleted));
+        parts.push(format!(
+            "{}-{}{}",
+            Colors::red(),
+            git_status.deleted,
+            Colors::reset()
+        ));
     }
     if git_status.untracked > 0 {
-        parts.push(format!("\x1b[90m?{}\x1b[0m", git_status.untracked));
+        parts.push(format!(
+            "{}?{}{}",
+            Colors::gray(),
+            git_status.untracked,
+            Colors::reset()
+        ));
     }
 
     if parts.is_empty() {

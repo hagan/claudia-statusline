@@ -3,15 +3,15 @@
 //! This module provides various helper functions for path manipulation,
 //! time parsing, and context usage calculations.
 
+use crate::common::validate_path_security;
+use crate::config;
+use crate::error::{Result, StatuslineError};
+use crate::models::{ContextUsage, TranscriptEntry};
+use chrono::DateTime;
 use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use chrono::DateTime;
-use crate::common::validate_path_security;
-use crate::models::{ContextUsage, TranscriptEntry};
-use crate::error::{StatuslineError, Result};
-use crate::config;
 
 /// Parses an ISO 8601 timestamp to Unix epoch seconds.
 ///
@@ -68,28 +68,37 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
 
     // Ensure the path is a file (not a directory)
     if !canonical_path.is_file() {
-        return Err(StatuslineError::invalid_path(format!("Path is not a file: {}", path)));
+        return Err(StatuslineError::invalid_path(format!(
+            "Path is not a file: {}",
+            path
+        )));
     }
 
     // Check file extension (case-insensitive)
     if let Some(ext) = canonical_path.extension() {
         // Case-insensitive check for jsonl extension
-        if !ext.to_str()
+        if !ext
+            .to_str()
             .map(|s| s.eq_ignore_ascii_case("jsonl"))
             .unwrap_or(false)
         {
-            return Err(StatuslineError::invalid_path("Only .jsonl files are allowed for transcripts"));
+            return Err(StatuslineError::invalid_path(
+                "Only .jsonl files are allowed for transcripts",
+            ));
         }
     } else {
-        return Err(StatuslineError::invalid_path("File must have .jsonl extension"));
+        return Err(StatuslineError::invalid_path(
+            "File must have .jsonl extension",
+        ));
     }
 
     // Check file size to prevent DoS
     if let Ok(metadata) = canonical_path.metadata() {
         if metadata.len() > MAX_TRANSCRIPT_SIZE {
-            return Err(StatuslineError::invalid_path(
-                format!("Transcript file too large (max {}MB)", MAX_TRANSCRIPT_SIZE / 1024 / 1024)
-            ));
+            return Err(StatuslineError::invalid_path(format!(
+                "Transcript file too large (max {}MB)",
+                MAX_TRANSCRIPT_SIZE / 1024 / 1024
+            )));
         }
     }
 
@@ -108,7 +117,7 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
     let config = config::get_config();
     let buffer_size = config.transcript.buffer_lines;
     let mut circular_buffer = std::collections::VecDeque::with_capacity(buffer_size);
-    for line in reader.lines().filter_map(|l| l.ok()) {
+    for line in reader.lines().map_while(|l| l.ok()) {
         if circular_buffer.len() == buffer_size {
             circular_buffer.pop_front();
         }
@@ -163,7 +172,7 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
     let mut first_line = None;
 
     // Read lines one at a time, keeping track of first and updating last
-    for line in reader.lines().filter_map(|l| l.ok()) {
+    for line in reader.lines().map_while(|l| l.ok()) {
         if first_line.is_none() {
             first_line = Some(line.clone());
             // Parse first line
@@ -184,10 +193,8 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
 
     // Calculate duration in seconds
     match (first_timestamp, last_timestamp) {
-        (Some(first), Some(last)) if last > first => {
-            Some(last - first)
-        },
-        _ => None // Can't calculate duration without valid timestamps
+        (Some(first), Some(last)) if last > first => Some(last - first),
+        _ => None, // Can't calculate duration without valid timestamps
     }
 }
 

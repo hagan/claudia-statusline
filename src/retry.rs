@@ -3,11 +3,11 @@
 //! This module provides retry functionality with exponential backoff
 //! for handling transient failures in various operations.
 
+use crate::config;
+use crate::error::{Result, StatuslineError};
+use log::debug;
 use std::thread;
 use std::time::Duration;
-use log::debug;
-use crate::error::{StatuslineError, Result};
-use crate::config;
 
 /// Configuration for retry behavior with exponential backoff.
 #[derive(Debug, Clone)]
@@ -116,9 +116,8 @@ where
     }
 
     // All attempts failed, return the last error
-    Err(last_error.unwrap_or_else(|| {
-        StatuslineError::other("Retry failed with no error information")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| StatuslineError::other("Retry failed with no error information")))
 }
 
 /// Retry a fallible operation with simple fixed delay
@@ -144,19 +143,19 @@ pub fn is_retryable_error(error: &StatuslineError) -> bool {
         // Database busy errors are retryable
         StatuslineError::Database(e) => {
             let error_string = e.to_string().to_lowercase();
-            error_string.contains("busy") ||
-            error_string.contains("locked") ||
-            error_string.contains("timeout")
-        },
+            error_string.contains("busy")
+                || error_string.contains("locked")
+                || error_string.contains("timeout")
+        }
         // Lock failures are retryable
         StatuslineError::LockFailed(_) => true,
         // Git operations might be retryable if repository is busy
         StatuslineError::GitOperation(msg) => {
             let msg_lower = msg.to_lowercase();
-            msg_lower.contains("lock") ||
-            msg_lower.contains("busy") ||
-            msg_lower.contains("timeout")
-        },
+            msg_lower.contains("lock")
+                || msg_lower.contains("busy")
+                || msg_lower.contains("timeout")
+        }
         // Other errors are generally not retryable
         _ => false,
     }
@@ -200,9 +199,8 @@ where
     }
 
     // All attempts failed, return the last error
-    Err(last_error.unwrap_or_else(|| {
-        StatuslineError::other("Retry failed with no error information")
-    }))
+    Err(last_error
+        .unwrap_or_else(|| StatuslineError::other("Retry failed with no error information")))
 }
 
 #[cfg(test)]

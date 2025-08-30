@@ -3,48 +3,112 @@
 //! This module handles the visual formatting of the statusline output,
 //! including colors, progress bars, and layout.
 
-use crate::models::{Cost, ModelType, ContextUsage};
-use crate::git::{get_git_status, format_git_info};
-use crate::utils::{shorten_path, calculate_context_usage, parse_duration};
 use crate::config;
+use crate::git::{format_git_info, get_git_status};
+use crate::models::{ContextUsage, Cost, ModelType};
+use crate::utils::{calculate_context_usage, parse_duration, shorten_path};
 
 /// ANSI color codes for terminal output.
 pub struct Colors;
 
 impl Colors {
+    /// Check if colors are enabled (respects NO_COLOR env var)
+    pub fn enabled() -> bool {
+        std::env::var("NO_COLOR").is_err()
+    }
+
+    /// Get a color code, or empty string if colors are disabled
+    fn get(code: &'static str) -> &'static str {
+        if Self::enabled() {
+            code
+        } else {
+            ""
+        }
+    }
+
+    pub fn reset() -> &'static str {
+        Self::get("\x1b[0m")
+    }
+    #[allow(dead_code)]
+    pub fn bold() -> &'static str {
+        Self::get("\x1b[1m")
+    }
+    pub fn red() -> &'static str {
+        Self::get("\x1b[31m")
+    }
+    pub fn green() -> &'static str {
+        Self::get("\x1b[32m")
+    }
+    pub fn yellow() -> &'static str {
+        Self::get("\x1b[33m")
+    }
+    #[allow(dead_code)]
+    pub fn blue() -> &'static str {
+        Self::get("\x1b[34m")
+    }
+    #[allow(dead_code)]
+    pub fn magenta() -> &'static str {
+        Self::get("\x1b[35m")
+    }
+    pub fn cyan() -> &'static str {
+        Self::get("\x1b[36m")
+    }
+    pub fn white() -> &'static str {
+        Self::get("\x1b[37m")
+    }
+    pub fn gray() -> &'static str {
+        Self::get("\x1b[90m")
+    }
+    pub fn orange() -> &'static str {
+        Self::get("\x1b[38;5;208m")
+    }
+    pub fn light_gray() -> &'static str {
+        Self::get("\x1b[38;5;245m")
+    }
+
+    // For backwards compatibility with existing code
+    #[allow(dead_code)]
     pub const RESET: &'static str = "\x1b[0m";
     #[allow(dead_code)]
-    pub const BOLD: &'static str = "\x1b[1m";
     pub const RED: &'static str = "\x1b[31m";
+    #[allow(dead_code)]
     pub const GREEN: &'static str = "\x1b[32m";
+    #[allow(dead_code)]
     pub const YELLOW: &'static str = "\x1b[33m";
     #[allow(dead_code)]
-    pub const BLUE: &'static str = "\x1b[34m";
-    #[allow(dead_code)]
-    pub const MAGENTA: &'static str = "\x1b[35m";
     pub const CYAN: &'static str = "\x1b[36m";
+    #[allow(dead_code)]
     pub const WHITE: &'static str = "\x1b[37m";
+    #[allow(dead_code)]
     pub const GRAY: &'static str = "\x1b[90m";
+    #[allow(dead_code)]
     pub const ORANGE: &'static str = "\x1b[38;5;208m";
+    #[allow(dead_code)]
     pub const LIGHT_GRAY: &'static str = "\x1b[38;5;245m";
 
     /// Get the appropriate text color based on theme
     pub fn text_color() -> &'static str {
+        if !Self::enabled() {
+            return "";
+        }
         let theme = config::get_theme();
         if theme == "light" {
-            Colors::GRAY  // Darker for light backgrounds
+            Self::gray() // Darker for light backgrounds
         } else {
-            Colors::WHITE  // Brighter for dark backgrounds
+            Self::white() // Brighter for dark backgrounds
         }
     }
 
     /// Get the appropriate separator color based on theme
     pub fn separator_color() -> &'static str {
+        if !Self::enabled() {
+            return "";
+        }
         let theme = config::get_theme();
         if theme == "light" {
-            Colors::GRAY
+            Self::gray()
         } else {
-            Colors::LIGHT_GRAY
+            Self::light_gray()
         }
     }
 }
@@ -63,13 +127,22 @@ pub fn format_output(
     let short_dir = shorten_path(current_dir);
 
     // Directory with color
-    output.push_str(&format!("{}{}{}", Colors::CYAN, short_dir, Colors::RESET));
+    output.push_str(&format!(
+        "{}{}{}",
+        Colors::cyan(),
+        short_dir,
+        Colors::reset()
+    ));
 
     // Git status
     if let Some(git_status) = get_git_status(current_dir) {
         let git_info = format_git_info(&git_status);
         if !git_info.is_empty() {
-            output.push_str(&format!(" {}•{}", Colors::separator_color(), Colors::RESET));
+            output.push_str(&format!(
+                " {}•{}",
+                Colors::separator_color(),
+                Colors::reset()
+            ));
             output.push_str(&git_info);
         }
     }
@@ -86,9 +159,9 @@ pub fn format_output(
         let model_type = ModelType::from_name(name);
         output.push_str(&format!(
             " {}{}{}",
-            Colors::CYAN,
+            Colors::cyan(),
             model_type.abbreviation(),
-            Colors::RESET
+            Colors::reset()
         ));
     }
 
@@ -97,23 +170,35 @@ pub fn format_output(
         if let Some(duration) = parse_duration(transcript) {
             output.push_str(&format!(
                 " {}{}{}",
-                Colors::LIGHT_GRAY,
+                Colors::light_gray(),
                 format_duration(duration),
-                Colors::RESET
+                Colors::reset()
             ));
         }
     }
 
     // Lines changed
     if let Some(cost_data) = cost {
-        if let (Some(added), Some(removed)) = (cost_data.total_lines_added, cost_data.total_lines_removed) {
+        if let (Some(added), Some(removed)) =
+            (cost_data.total_lines_added, cost_data.total_lines_removed)
+        {
             if added > 0 || removed > 0 {
-                output.push_str(&format!(" {}•{}", Colors::LIGHT_GRAY, Colors::RESET));
+                output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
                 if added > 0 {
-                    output.push_str(&format!(" {}+{}{}", Colors::GREEN, added, Colors::RESET));
+                    output.push_str(&format!(
+                        " {}+{}{}",
+                        Colors::green(),
+                        added,
+                        Colors::reset()
+                    ));
                 }
                 if removed > 0 {
-                    output.push_str(&format!(" {}-{}{}", Colors::RED, removed, Colors::RESET));
+                    output.push_str(&format!(
+                        " {}-{}{}",
+                        Colors::red(),
+                        removed,
+                        Colors::reset()
+                    ));
                 }
             }
         }
@@ -126,26 +211,28 @@ pub fn format_output(
 
             // Calculate burn rate if we have duration
             // First try to get duration from our tracked session stats
-            let duration = session_id.and_then(|sid| crate::stats::get_session_duration(sid))
+            let duration = session_id
+                .and_then(crate::stats::get_session_duration)
                 .or_else(|| {
                     // Fallback to parsing transcript if available
-                    transcript_path.and_then(|t| parse_duration(t))
+                    transcript_path.and_then(parse_duration)
                 });
 
             let burn_rate = duration.and_then(|d| {
-                if d > 60 {  // Only show burn rate for sessions > 1 minute
+                if d > 60 {
+                    // Only show burn rate for sessions > 1 minute
                     Some((total_cost * 3600.0) / d as f64)
                 } else {
                     None
                 }
             });
 
-            output.push_str(&format!(" {}•{}", Colors::LIGHT_GRAY, Colors::RESET));
+            output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
             output.push_str(&format!(
                 " {}${:.2}{}",
                 cost_color,
                 total_cost,
-                Colors::RESET
+                Colors::reset()
             ));
 
             // Add burn rate if available
@@ -153,9 +240,9 @@ pub fn format_output(
                 if rate > 0.0 {
                     output.push_str(&format!(
                         " {}(${:.2}/hr){}",
-                        Colors::GRAY,
+                        Colors::gray(),
                         rate,
-                        Colors::RESET
+                        Colors::reset()
                     ));
                 }
             }
@@ -165,10 +252,10 @@ pub fn format_output(
                 let daily_color = get_cost_color(daily_total);
                 output.push_str(&format!(
                     " {}(day: {}${:.2}){}",
-                    Colors::RESET,
+                    Colors::reset(),
                     daily_color,
                     daily_total,
-                    Colors::RESET
+                    Colors::reset()
                 ));
             }
         } else if daily_total > 0.0 {
@@ -176,10 +263,10 @@ pub fn format_output(
             let daily_color = get_cost_color(daily_total);
             output.push_str(&format!(
                 " {}day: {}${:.2}{}",
-                Colors::RESET,
+                Colors::reset(),
                 daily_color,
                 daily_total,
-                Colors::RESET
+                Colors::reset()
             ));
         }
     } else if daily_total > 0.0 {
@@ -187,10 +274,10 @@ pub fn format_output(
         let daily_color = get_cost_color(daily_total);
         output.push_str(&format!(
             " {}day: {}${:.2}{}",
-            Colors::RESET,
+            Colors::reset(),
             daily_color,
             daily_total,
-            Colors::RESET
+            Colors::reset()
         ));
     }
 
@@ -203,13 +290,13 @@ fn format_context_bar(context: &ContextUsage) -> String {
 
     // Choose color based on configured thresholds
     let (color, percentage_color) = if percentage > config.display.context_critical_threshold {
-        (Colors::RED, Colors::RED)
+        (Colors::red(), Colors::red())
     } else if percentage > config.display.context_warning_threshold {
-        (Colors::ORANGE, Colors::ORANGE)
+        (Colors::orange(), Colors::orange())
     } else if percentage > config.display.context_caution_threshold {
-        (Colors::YELLOW, Colors::YELLOW)
+        (Colors::yellow(), Colors::yellow())
     } else {
-        (Colors::GREEN, Colors::text_color())
+        (Colors::green(), Colors::text_color())
     };
 
     // Create progress bar with configured width
@@ -231,21 +318,21 @@ fn format_context_bar(context: &ContextUsage) -> String {
         Colors::separator_color(),
         percentage_color,
         percentage.round() as u32,
-        Colors::RESET,
+        Colors::reset(),
         color,
         bar,
-        Colors::RESET
+        Colors::reset()
     )
 }
 
 fn get_cost_color(cost: f64) -> &'static str {
     let config = config::get_config();
     if cost >= config.cost.medium_threshold {
-        Colors::RED
+        Colors::red()
     } else if cost >= config.cost.low_threshold {
-        Colors::YELLOW
+        Colors::yellow()
     } else {
-        Colors::GREEN
+        Colors::green()
     }
 }
 
@@ -333,5 +420,24 @@ mod tests {
         let realistic_cost = 0.25; // More realistic for 5 minutes
         let realistic_burn = (realistic_cost * 3600.0) / 300.0;
         assert_eq!(realistic_burn, 3.0); // $3.00/hr is reasonable
+    }
+
+    #[test]
+    fn test_theme_affects_colors() {
+        // Ensure colors are enabled for this test
+        std::env::remove_var("NO_COLOR");
+
+        // Light theme should use gray text/separator
+        std::env::set_var("STATUSLINE_THEME", "light");
+        assert_eq!(Colors::text_color(), Colors::gray());
+        assert_eq!(Colors::separator_color(), Colors::gray());
+
+        // Dark theme should use white text and light gray separator
+        std::env::set_var("STATUSLINE_THEME", "dark");
+        assert_eq!(Colors::text_color(), Colors::white());
+        assert_eq!(Colors::separator_color(), Colors::light_gray());
+
+        // Cleanup
+        std::env::remove_var("STATUSLINE_THEME");
     }
 }

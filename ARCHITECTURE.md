@@ -10,36 +10,37 @@ The codebase follows a modular architecture with clear separation of concerns:
 
 ```
 src/
-├── main.rs          (188 lines)  - Application entry point, Clap CLI parser
+├── main.rs          (175 lines)  - Application entry, Clap CLI, logging init
 ├── models.rs        (293 lines)  - Data structures and type definitions
 ├── git.rs           (230 lines)  - Git repository operations
-├── git_utils.rs     (53 lines)   - Simple git status utility
-├── stats.rs         (738 lines)  - SQLite-primary persistence with JSON fallback
-├── display.rs       (316 lines)  - Output formatting and presentation
-├── utils.rs         (380 lines)  - Utility functions and helpers
+├── git_utils.rs     (54 lines)   - Simple git status utility
+├── stats.rs         (520 lines)  - SQLite-first reads with JSON backup writes
+├── display.rs       (337 lines)  - Output formatting with theme support
+├── utils.rs         (420 lines)  - Utilities with security validation
 ├── version.rs       (169 lines)  - Version information and build metadata
-├── database.rs      (532 lines)  - SQLite operations with connection pooling
+├── database.rs      (480 lines)  - SQLite operations with connection pooling
 ├── migrations/
 │   └── mod.rs       (222 lines)  - Database migration framework
 ├── error.rs         (100 lines)  - Unified error handling with thiserror
-├── retry.rs         (314 lines)  - Retry logic with exponential backoff
-├── config.rs        (458 lines)  - TOML configuration system
-├── common.rs        (144 lines)  - Shared utilities (timestamps, paths)
+├── retry.rs         (290 lines)  - Retry logic with exponential backoff
+├── config.rs        (475 lines)  - TOML config with theme support
+├── common.rs        (85 lines)   - Shared utilities (timestamps, paths)
 └── lib.rs           (55 lines)   - Public API surface
 ```
 
-Total: 4,192 lines across 14 focused modules (average ~300 lines each)
+Total: ~3,705 lines across 14 focused modules (average ~265 lines each)
 
 ## Module Responsibilities
 
 ### `main.rs` - Application Entry Point
-- Handles CLI arguments (--version, --help)
+- Initializes structured logging with env_logger
+- Parses CLI arguments with clap
 - Reads JSON input from stdin
 - Orchestrates data flow between modules
 - Handles early exit conditions
 - Manages stats updates
 - **Key Functions:**
-  - `main()` - Application entry point with CLI handling
+  - `main()` - Application entry point with logging and CLI handling
 
 ### `models.rs` - Data Models
 - Defines all data structures used throughout the application
@@ -66,7 +67,7 @@ Total: 4,192 lines across 14 focused modules (average ~300 lines each)
 - Tracks costs across sessions
 - Implements XDG-compliant file storage
 - Provides atomic file operations
-- Performs dual-write to both SQLite (primary) and JSON (backup) (v2.7.0)
+- SQLite-first reads with JSON backup writes (v2.7.0)
 - **Key Components:**
   - `StatsData` - Main stats structure
   - `SessionStats`, `DailyStats`, `MonthlyStats` - Aggregation levels
@@ -76,24 +77,29 @@ Total: 4,192 lines across 14 focused modules (average ~300 lines each)
 
 ### `display.rs` - Output Formatting
 - Handles all visual formatting
-- Manages ANSI color codes
+- Manages ANSI color codes with theme support
 - Creates progress bars and visual elements
 - Implements cost color coding
+- Supports light/dark themes via environment variables
 - **Key Functions:**
   - `format_output()` - Main formatting orchestrator
   - `format_context_bar()` - Progress bar generation
   - `get_cost_color()` - Cost-based color selection
   - `format_duration()` - Time formatting
+  - `Colors::text_color()` - Theme-aware text color
+  - `Colors::separator_color()` - Theme-aware separator color
 
 ### `utils.rs` - Utility Functions
 - Path manipulation and shortening
-- Context usage calculation
-- Transcript parsing
+- Context usage calculation with security validation
+- Transcript parsing with file size limits
 - Duration extraction
+- Case-insensitive extension validation
 - **Key Functions:**
   - `shorten_path()` - Home directory substitution
   - `calculate_context_usage()` - Token estimation
   - `parse_duration()` - Extract session duration
+  - `validate_transcript_file()` - Security validation (10MB limit, .jsonl only)
 
 ### `version.rs` - Version Information
 - Compile-time version injection
@@ -181,11 +187,23 @@ graph TD
 - **Rationale:** Prevent data corruption during writes
 - **Implementation:** `stats.rs` - save() method
 
-### 6. SQLite-Primary Storage (v2.7.0)
-- **Decision:** SQLite as primary data source with JSON backup
+### 6. Structured Logging
+- **Decision:** Use `log` crate with env_logger instead of eprintln!
+- **Rationale:** Professional logging with configurable levels
+- **Default:** WARN level to reduce stderr noise
+- **Configuration:** RUST_LOG environment variable
+
+### 7. Theme Support
+- **Decision:** Support CLAUDE_THEME and STATUSLINE_THEME env vars
+- **Rationale:** Better readability in different terminal themes
+- **Implementation:** Theme-aware color functions in display.rs
+- **Fallback:** Default to dark theme
+
+### 8. SQLite-First Storage (v2.7.0)
+- **Decision:** SQLite-first reads with JSON backup writes
 - **Rationale:** Better concurrent access, ACID transactions, performance
 - **Phase 1:** Dual-write to both (v2.2.0) ✅
-- **Phase 2:** SQLite primary, JSON backup (v2.7.0) ✅ CURRENT
+- **Phase 2:** SQLite-first reads, JSON backup writes (v2.7.0) ✅ CURRENT
 - **Phase 3:** SQLite only, remove JSON (v3.0.0) 🔜 PLANNED
 
 ## Testing Strategy
@@ -255,20 +273,22 @@ The application uses ANSI color codes for terminal output:
 - **Path Validation:** Checks directory existence before operations
 - **File Permissions:** Stats file created with user-only access
 - **No Unsafe Code:** Pure safe Rust throughout
+- **Transcript Validation:** Case-insensitive .jsonl extension check
+- **Size Limits:** 10MB max file size to prevent memory exhaustion
+- **Structured Logging:** Sensitive data never logged
 
 ## Future Enhancements
 
-### Planned Improvements
-1. **Async Git Operations** - Non-blocking repository checks
-2. **Configurable Context Window** - User-defined limits
-3. **Plugin System** - Extensible status components
-4. **Performance Metrics** - Built-in profiling
+### Phase 3 Migration (v3.0.0)
+1. **SQLite-only storage** - Remove JSON writing entirely
+2. **Migration cleanup** - Remove JSON fallback code
+3. **Performance optimization** - Direct database queries only
 
-### Potential Modules
-- `config.rs` - User configuration management
-- `cache.rs` - Git status caching layer
-- `metrics.rs` - Performance monitoring
-- `plugins.rs` - Extension system
+### Potential Improvements
+1. **Configurable Context Window** - User-defined limits per model
+2. **Plugin System** - Extensible status components
+3. **Git status caching** - Reduce repeated git calls
+4. **Advanced themes** - Full color customization
 
 ## Development Guidelines
 

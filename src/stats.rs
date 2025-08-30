@@ -4,18 +4,18 @@
 //! including costs, line changes, and usage metrics. Statistics are stored in
 //! both JSON and SQLite formats for reliability and concurrent access.
 
+use crate::common::{current_date, current_month, current_timestamp, get_data_dir};
+use crate::database::SqliteDatabase;
+use crate::error::{Result, StatuslineError};
+use crate::retry::{retry_if_retryable, RetryConfig};
+use fs2::FileExt;
+use log::{debug, error, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write, Seek};
+use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
-use fs2::FileExt;
-use log::{warn, error, debug};
-use crate::common::{get_data_dir, current_timestamp, current_date, current_month};
-use crate::database::SqliteDatabase;
-use crate::error::{StatuslineError, Result};
-use crate::retry::{retry_if_retryable, RetryConfig};
 
 /// Persistent stats tracking structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -36,7 +36,7 @@ pub struct SessionStats {
     pub lines_added: u64,
     pub lines_removed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub start_time: Option<String>,  // ISO 8601 timestamp of session start
+    pub start_time: Option<String>, // ISO 8601 timestamp of session start
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,7 +55,7 @@ pub struct MonthlyStats {
     pub lines_removed: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AllTimeStats {
     pub total_cost: f64,
     pub sessions: usize,
@@ -98,7 +98,7 @@ impl StatsData {
                         // Migrate JSON data to SQLite if needed
                         let _ = Self::migrate_to_sqlite(&data);
                         return data;
-                    },
+                    }
                     Err(e) => {
                         // File exists but can't be parsed - backup and warn
                         warn!("Failed to parse stats file: {}", e);
@@ -131,20 +131,23 @@ impl StatsData {
 
         let db = SqliteDatabase::new(&db_path)?;
 
-        // Load all data from SQLite
-        let mut data = Self::default();
+        // Load components
+        let sessions = db.get_all_sessions()?;
+        let daily = db.get_all_daily_stats()?;
+        let monthly = db.get_all_monthly_stats()?;
+        let all_time_total = db.get_all_time_total()?;
 
-        // Load sessions
-        data.sessions = db.get_all_sessions()?;
-
-        // Load daily stats
-        data.daily = db.get_all_daily_stats()?;
-
-        // Load monthly stats
-        data.monthly = db.get_all_monthly_stats()?;
-
-        // Calculate all-time stats
-        data.all_time.total_cost = db.get_all_time_total()?;
+        // Construct in one go to avoid field reassigns after Default
+        let data = StatsData {
+            sessions,
+            daily,
+            monthly,
+            all_time: AllTimeStats {
+                total_cost: all_time_total,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         Ok(data)
     }
@@ -186,16 +189,19 @@ impl StatsData {
         Ok(get_data_dir().join("stats.db"))
     }
 
-    pub fn update_session(&mut self, session_id: &str, session_cost: f64, lines_added: u64, lines_removed: u64) -> (f64, f64) {
+    pub fn update_session(
+        &mut self,
+        session_id: &str,
+        session_cost: f64,
+        lines_added: u64,
+        lines_removed: u64,
+    ) -> (f64, f64) {
         let today = current_date();
         let month = current_month();
         let now = current_timestamp();
 
         // Calculate delta from last known session cost
-        let last_cost = self.sessions
-            .get(session_id)
-            .map(|s| s.cost)
-            .unwrap_or(0.0);
+        let last_cost = self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0);
 
         let cost_delta = session_cost - last_cost;
 
@@ -208,23 +214,29 @@ impl StatsData {
                 session.lines_removed = lines_removed;
                 session.last_updated = now.clone();
             } else {
-                self.sessions.insert(session_id.to_string(), SessionStats {
-                    last_updated: now.clone(),
-                    cost: session_cost,
-                    lines_added,
-                    lines_removed,
-                    start_time: Some(now.clone()),  // Track when session started
-                });
+                self.sessions.insert(
+                    session_id.to_string(),
+                    SessionStats {
+                        last_updated: now.clone(),
+                        cost: session_cost,
+                        lines_added,
+                        lines_removed,
+                        start_time: Some(now.clone()), // Track when session started
+                    },
+                );
                 self.all_time.sessions += 1;
             }
 
             // Update daily stats
-            let daily = self.daily.entry(today.clone()).or_insert_with(|| DailyStats {
-                total_cost: 0.0,
-                sessions: Vec::new(),
-                lines_added: 0,
-                lines_removed: 0,
-            });
+            let daily = self
+                .daily
+                .entry(today.clone())
+                .or_insert_with(|| DailyStats {
+                    total_cost: 0.0,
+                    sessions: Vec::new(),
+                    lines_added: 0,
+                    lines_removed: 0,
+                });
 
             if !daily.sessions.contains(&session_id.to_string()) {
                 daily.sessions.push(session_id.to_string());
@@ -234,12 +246,15 @@ impl StatsData {
             daily.lines_removed += lines_removed;
 
             // Update monthly stats
-            let monthly = self.monthly.entry(month.clone()).or_insert_with(|| MonthlyStats {
-                total_cost: 0.0,
-                sessions: 0,
-                lines_added: 0,
-                lines_removed: 0,
-            });
+            let monthly = self
+                .monthly
+                .entry(month.clone())
+                .or_insert_with(|| MonthlyStats {
+                    total_cost: 0.0,
+                    sessions: 0,
+                    lines_added: 0,
+                    lines_removed: 0,
+                });
             monthly.total_cost += cost_delta;
             monthly.lines_added += lines_added;
             monthly.lines_removed += lines_removed;
@@ -256,7 +271,11 @@ impl StatsData {
 
         // Return current daily and monthly totals
         let daily_total = self.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-        let monthly_total = self.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
+        let monthly_total = self
+            .monthly
+            .get(&month)
+            .map(|m| m.total_cost)
+            .unwrap_or(0.0);
 
         (daily_total, monthly_total)
     }
@@ -294,6 +313,7 @@ fn acquire_stats_file(path: &Path) -> Result<File> {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(path)
             .map_err(StatuslineError::from)
     })?;
@@ -315,7 +335,10 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
         match serde_json::from_str(&contents) {
             Ok(data) => data,
             Err(e) => {
-                warn!("Stats file corrupted: {}. Creating backup and starting fresh.", e);
+                warn!(
+                    "Stats file corrupted: {}. Creating backup and starting fresh.",
+                    e
+                );
                 // Try to create a backup of the corrupted file
                 if let Ok(backup_path) = get_stats_backup_path() {
                     if let Err(e) = std::fs::copy(path, &backup_path) {
@@ -356,21 +379,27 @@ fn should_migrate_sessions(db: &SqliteDatabase, stats_data: &StatsData) -> bool 
 // Migrate existing sessions from JSON to SQLite
 fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
     // Find the most recently updated session to exclude from migration
-    let current_session = stats_data.sessions.iter()
+    let current_session = stats_data
+        .sessions
+        .iter()
         .max_by_key(|(_, s)| &s.last_updated)
         .map(|(id, _)| id.clone());
 
     // Collect sessions to migrate (excluding current session)
-    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> =
-        stats_data.sessions.iter()
-            .filter(|(id, _)| current_session.as_ref() != Some(id))
-            .map(|(id, session)| (id.clone(), session.clone()))
-            .collect();
+    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> = stats_data
+        .sessions
+        .iter()
+        .filter(|(id, _)| current_session.as_ref() != Some(id))
+        .map(|(id, session)| (id.clone(), session.clone()))
+        .collect();
 
     if !sessions_to_migrate.is_empty() {
         match db.import_sessions(&sessions_to_migrate) {
             Ok(_) => {
-                debug!("Migrated {} existing sessions from JSON to SQLite", sessions_to_migrate.len());
+                debug!(
+                    "Migrated {} existing sessions from JSON to SQLite",
+                    sessions_to_migrate.len()
+                );
             }
             Err(e) => {
                 warn!("Failed to migrate sessions to SQLite: {}", e);
@@ -381,7 +410,9 @@ fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
 
 // Write the current session to SQLite
 fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
-    if let Some((session_id, session)) = stats_data.sessions.iter()
+    if let Some((session_id, session)) = stats_data
+        .sessions
+        .iter()
         .max_by_key(|(_, s)| &s.last_updated)
     {
         match db.update_session(
@@ -391,7 +422,10 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
             session.lines_removed,
         ) {
             Ok((day_total, session_total)) => {
-                debug!("SQLite dual-write successful: day=${:.2}, session=${:.2}", day_total, session_total);
+                debug!(
+                    "SQLite dual-write successful: day=${:.2}, session=${:.2}",
+                    day_total, session_total
+                );
             }
             Err(e) => {
                 warn!("SQLite dual-write failed: {}", e);
@@ -415,7 +449,10 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
     let db = match SqliteDatabase::new(&db_path) {
         Ok(d) => d,
         Err(e) => {
-            error!("Failed to initialize SQLite database at {:?}: {}", db_path, e);
+            error!(
+                "Failed to initialize SQLite database at {:?}: {}",
+                db_path, e
+            );
             return;
         }
     };
@@ -438,7 +475,7 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
 /// # Arguments
 ///
 /// * `updater` - A closure that takes a mutable reference to `StatsData` and returns
-///               the daily and monthly totals as a tuple
+///   the daily and monthly totals as a tuple
 ///
 /// # Returns
 ///
@@ -507,10 +544,10 @@ pub fn get_session_duration(session_id: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use std::env;
     use std::path::Path;
     use tempfile::TempDir;
-    use serial_test::serial;
 
     #[test]
     fn test_stats_data_default() {
@@ -540,7 +577,10 @@ mod tests {
         // Set XDG_DATA_HOME for testing
         env::set_var("XDG_DATA_HOME", "/tmp/xdg_test");
         let path = StatsData::get_stats_file_path();
-        assert_eq!(path, PathBuf::from("/tmp/xdg_test/claudia-statusline/stats.json"));
+        assert_eq!(
+            path,
+            PathBuf::from("/tmp/xdg_test/claudia-statusline/stats.json")
+        );
         env::remove_var("XDG_DATA_HOME");
     }
 
@@ -558,7 +598,9 @@ mod tests {
 
         // Make sure the file was actually created
         let data_dir = env::var("XDG_DATA_HOME").unwrap();
-        let stats_path = PathBuf::from(data_dir).join("claudia-statusline").join("stats.json");
+        let stats_path = PathBuf::from(data_dir)
+            .join("claudia-statusline")
+            .join("stats.json");
         assert!(stats_path.exists());
 
         let loaded_stats = StatsData::load();
@@ -598,9 +640,9 @@ mod tests {
             println!("Skipping test_concurrent_update_safety in CI environment");
             return;
         }
-        use std::thread;
-        use std::sync::Arc;
         use std::sync::atomic::{AtomicU32, Ordering};
+        use std::sync::Arc;
+        use std::thread;
 
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
@@ -645,12 +687,18 @@ mod tests {
         let final_stats = StatsData::load();
 
         // Count the sessions created
-        let test_sessions: Vec<_> = final_stats.sessions.keys()
+        let test_sessions: Vec<_> = final_stats
+            .sessions
+            .keys()
             .filter(|k| k.starts_with("test-thread-"))
             .collect();
 
         // Should have created 10 sessions
-        assert_eq!(test_sessions.len(), 10, "Should have created 10 test sessions");
+        assert_eq!(
+            test_sessions.len(),
+            10,
+            "Should have created 10 test sessions"
+        );
 
         // Each session should have $1.00
         for session_id in test_sessions {
@@ -685,20 +733,24 @@ mod tests {
         initial_stats.save().unwrap();
 
         // Create a session with a specific start time
-        update_stats_data(|stats| {
-            stats.update_session("duration-test-session", 1.0, 10, 5)
-        });
+        update_stats_data(|stats| stats.update_session("duration-test-session", 1.0, 10, 5));
 
         // Wait a bit to ensure some time passes
         thread::sleep(Duration::from_millis(100));
 
         // Get duration - should exist
         let duration = get_session_duration("duration-test-session");
-        assert!(duration.is_some(), "Duration should exist for valid session");
+        assert!(
+            duration.is_some(),
+            "Duration should exist for valid session"
+        );
 
         let duration = duration.unwrap();
         // Duration is u64, so it's always non-negative
-        assert!(duration < 3600, "Duration should be less than 1 hour for a test");
+        assert!(
+            duration < 3600,
+            "Duration should be less than 1 hour for a test"
+        );
 
         // Non-existent session should return None
         assert!(get_session_duration("non-existent-session").is_none());

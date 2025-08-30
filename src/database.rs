@@ -1,12 +1,12 @@
+use crate::common::{current_date, current_month, current_timestamp};
+use crate::config;
+use crate::retry::{retry_if_retryable, RetryConfig};
 use chrono::Local;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Result, Transaction};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use crate::common::{current_timestamp, current_date, current_month};
-use crate::retry::{retry_if_retryable, RetryConfig};
-use crate::config;
 
 const SCHEMA: &str = r#"
 -- Sessions table
@@ -79,14 +79,13 @@ impl SqliteDatabase {
         let config = config::get_config();
 
         // Create connection pool
-        let manager = SqliteConnectionManager::file(db_path)
-            .with_init(move |conn| {
-                // Enable WAL mode for concurrent access
-                conn.pragma_update(None, "journal_mode", "WAL")?;
-                conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms)?;
-                conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
-                Ok(())
-            });
+        let manager = SqliteConnectionManager::file(db_path).with_init(move |conn| {
+            // Enable WAL mode for concurrent access
+            conn.pragma_update(None, "journal_mode", "WAL")?;
+            conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms)?;
+            conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
+            Ok(())
+        });
 
         let pool = Pool::builder()
             .max_size(config.database.max_connections)
@@ -130,11 +129,13 @@ impl SqliteDatabase {
             let mut conn = self.get_connection()?;
             let tx = conn.transaction()?;
 
-            let result = self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
+            let result =
+                self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
 
             tx.commit()?;
             Ok(result)
-        }).map_err(|e| match e {
+        })
+        .map_err(|e| match e {
             crate::error::StatuslineError::Database(db_err) => db_err,
             _ => rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
@@ -155,7 +156,8 @@ impl SqliteDatabase {
                 );
                 crate::error::StatuslineError::Database(error)
             })
-        }).map_err(|e| match e {
+        })
+        .map_err(|e| match e {
             crate::error::StatuslineError::Database(db_err) => db_err,
             _ => rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
@@ -211,17 +213,21 @@ impl SqliteDatabase {
         )?;
 
         // Get totals for return
-        let day_total: f64 = tx.query_row(
-            "SELECT total_cost FROM daily_stats WHERE date = ?1",
-            params![&today],
-            |row| row.get(0),
-        ).unwrap_or(0.0);
+        let day_total: f64 = tx
+            .query_row(
+                "SELECT total_cost FROM daily_stats WHERE date = ?1",
+                params![&today],
+                |row| row.get(0),
+            )
+            .unwrap_or(0.0);
 
-        let session_total: f64 = tx.query_row(
-            "SELECT cost FROM sessions WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        ).unwrap_or(0.0);
+        let session_total: f64 = tx
+            .query_row(
+                "SELECT cost FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(0.0);
 
         Ok((day_total, session_total))
     }
@@ -231,11 +237,13 @@ impl SqliteDatabase {
     pub fn get_session_duration(&self, session_id: &str) -> Option<u64> {
         let conn = self.get_connection().ok()?;
 
-        let start_time: String = conn.query_row(
-            "SELECT start_time FROM sessions WHERE session_id = ?1",
-            params![session_id],
-            |row| row.get(0),
-        ).ok()?;
+        let start_time: String = conn
+            .query_row(
+                "SELECT start_time FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .ok()?;
 
         // Parse ISO 8601 timestamp
         if let Ok(start) = chrono::DateTime::parse_from_rfc3339(&start_time) {
@@ -251,11 +259,10 @@ impl SqliteDatabase {
     #[allow(dead_code)]
     pub fn get_all_time_total(&self) -> Result<f64> {
         let conn = self.get_connection()?;
-        let total: f64 = conn.query_row(
-            "SELECT COALESCE(SUM(cost), 0.0) FROM sessions",
-            [],
-            |row| row.get(0),
-        )?;
+        let total: f64 =
+            conn.query_row("SELECT COALESCE(SUM(cost), 0.0) FROM sessions", [], |row| {
+                row.get(0)
+            })?;
         Ok(total)
     }
 
@@ -264,11 +271,13 @@ impl SqliteDatabase {
     pub fn get_today_total(&self) -> Result<f64> {
         let conn = self.get_connection()?;
         let today = current_date();
-        let total: f64 = conn.query_row(
-            "SELECT COALESCE(total_cost, 0.0) FROM daily_stats WHERE date = ?1",
-            params![&today],
-            |row| row.get(0),
-        ).unwrap_or(0.0);
+        let total: f64 = conn
+            .query_row(
+                "SELECT COALESCE(total_cost, 0.0) FROM daily_stats WHERE date = ?1",
+                params![&today],
+                |row| row.get(0),
+            )
+            .unwrap_or(0.0);
         Ok(total)
     }
 
@@ -277,11 +286,13 @@ impl SqliteDatabase {
     pub fn get_month_total(&self) -> Result<f64> {
         let conn = self.get_connection()?;
         let month = current_month();
-        let total: f64 = conn.query_row(
-            "SELECT COALESCE(total_cost, 0.0) FROM monthly_stats WHERE month = ?1",
-            params![&month],
-            |row| row.get(0),
-        ).unwrap_or(0.0);
+        let total: f64 = conn
+            .query_row(
+                "SELECT COALESCE(total_cost, 0.0) FROM monthly_stats WHERE month = ?1",
+                params![&month],
+                |row| row.get(0),
+            )
+            .unwrap_or(0.0);
         Ok(total)
     }
 
@@ -298,11 +309,9 @@ impl SqliteDatabase {
     /// Check if the database has any sessions
     pub fn has_sessions(&self) -> bool {
         if let Ok(conn) = self.get_connection() {
-            if let Ok(count) = conn.query_row::<i64, _, _>(
-                "SELECT COUNT(*) FROM sessions",
-                [],
-                |row| row.get(0),
-            ) {
+            if let Ok(count) =
+                conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            {
                 return count > 0;
             }
         }
@@ -310,14 +319,16 @@ impl SqliteDatabase {
     }
 
     /// Get all sessions from the database
-    pub fn get_all_sessions(&self) -> Result<std::collections::HashMap<String, crate::stats::SessionStats>> {
+    pub fn get_all_sessions(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::stats::SessionStats>> {
         use crate::stats::SessionStats;
         use std::collections::HashMap;
 
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed
-             FROM sessions"
+             FROM sessions",
         )?;
 
         let session_iter = stmt.query_map([], |row| {
@@ -328,13 +339,16 @@ impl SqliteDatabase {
             let lines_added: i64 = row.get(4)?;
             let lines_removed: i64 = row.get(5)?;
 
-            Ok((session_id.clone(), SessionStats {
-                cost,
-                lines_added: lines_added as u64,
-                lines_removed: lines_removed as u64,
-                last_updated,
-                start_time,
-            }))
+            Ok((
+                session_id.clone(),
+                SessionStats {
+                    cost,
+                    lines_added: lines_added as u64,
+                    lines_removed: lines_removed as u64,
+                    last_updated,
+                    start_time,
+                },
+            ))
         })?;
 
         let mut sessions = HashMap::new();
@@ -347,14 +361,16 @@ impl SqliteDatabase {
     }
 
     /// Get all daily stats from the database
-    pub fn get_all_daily_stats(&self) -> Result<std::collections::HashMap<String, crate::stats::DailyStats>> {
+    pub fn get_all_daily_stats(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::stats::DailyStats>> {
         use crate::stats::DailyStats;
         use std::collections::HashMap;
 
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT date, total_cost, total_lines_added, total_lines_removed
-             FROM daily_stats"
+             FROM daily_stats",
         )?;
 
         let daily_iter = stmt.query_map([], |row| {
@@ -363,12 +379,15 @@ impl SqliteDatabase {
             let lines_added: i64 = row.get(2)?;
             let lines_removed: i64 = row.get(3)?;
 
-            Ok((date.clone(), DailyStats {
-                total_cost,
-                lines_added: lines_added as u64,
-                lines_removed: lines_removed as u64,
-                sessions: Vec::new(), // We don't track session IDs in daily_stats table
-            }))
+            Ok((
+                date.clone(),
+                DailyStats {
+                    total_cost,
+                    lines_added: lines_added as u64,
+                    lines_removed: lines_removed as u64,
+                    sessions: Vec::new(), // We don't track session IDs in daily_stats table
+                },
+            ))
         })?;
 
         let mut daily = HashMap::new();
@@ -381,14 +400,16 @@ impl SqliteDatabase {
     }
 
     /// Get all monthly stats from the database
-    pub fn get_all_monthly_stats(&self) -> Result<std::collections::HashMap<String, crate::stats::MonthlyStats>> {
+    pub fn get_all_monthly_stats(
+        &self,
+    ) -> Result<std::collections::HashMap<String, crate::stats::MonthlyStats>> {
         use crate::stats::MonthlyStats;
         use std::collections::HashMap;
 
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT month, total_cost, total_lines_added, total_lines_removed, session_count
-             FROM monthly_stats"
+             FROM monthly_stats",
         )?;
 
         let monthly_iter = stmt.query_map([], |row| {
@@ -398,12 +419,15 @@ impl SqliteDatabase {
             let lines_removed: i64 = row.get(3)?;
             let session_count: i64 = row.get(4)?;
 
-            Ok((month.clone(), MonthlyStats {
-                total_cost,
-                lines_added: lines_added as u64,
-                lines_removed: lines_removed as u64,
-                sessions: session_count as usize,
-            }))
+            Ok((
+                month.clone(),
+                MonthlyStats {
+                    total_cost,
+                    lines_added: lines_added as u64,
+                    lines_removed: lines_removed as u64,
+                    sessions: session_count as usize,
+                },
+            ))
         })?;
 
         let mut monthly = HashMap::new();
@@ -460,7 +484,9 @@ mod tests {
 
         // Test that we can open and query the database
         let conn = Connection::open(&db_path).unwrap();
-        let count: i32 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0)).unwrap();
+        let count: i32 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 0);
     }
 
@@ -491,13 +517,15 @@ mod tests {
         SqliteDatabase::new(&db_path).unwrap();
 
         // Spawn 10 threads updating different sessions
-        let handles: Vec<_> = (0..10).map(|i| {
-            let path = db_path.clone();
-            thread::spawn(move || {
-                let db = SqliteDatabase::new(&path).unwrap();
-                db.update_session(&format!("session-{}", i), 1.0, 10, 5)
+        let handles: Vec<_> = (0..10)
+            .map(|i| {
+                let path = db_path.clone();
+                thread::spawn(move || {
+                    let db = SqliteDatabase::new(&path).unwrap();
+                    db.update_session(&format!("session-{}", i), 1.0, 10, 5)
+                })
             })
-        }).collect();
+            .collect();
 
         // Wait for all threads
         for handle in handles {
@@ -506,11 +534,9 @@ mod tests {
 
         // Verify all 10 sessions were created
         let conn = Connection::open(&db_path).unwrap();
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM sessions",
-            [],
-            |row| row.get(0),
-        ).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+            .unwrap();
         assert_eq!(count, 10);
     }
 

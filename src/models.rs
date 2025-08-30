@@ -175,7 +175,10 @@ mod tests {
     #[test]
     fn test_model_type_detection() {
         assert_eq!(ModelType::from_name("Claude Opus"), ModelType::Opus);
-        assert_eq!(ModelType::from_name("claude-3-opus-20240229"), ModelType::Opus);
+        assert_eq!(
+            ModelType::from_name("claude-3-opus-20240229"),
+            ModelType::Opus
+        );
         assert_eq!(ModelType::from_name("Claude 3.5 Sonnet"), ModelType::Sonnet);
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
     }

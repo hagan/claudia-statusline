@@ -3,8 +3,8 @@
 //! This module provides a unified error type using the `thiserror` crate,
 //! consolidating all error types from various operations into a single enum.
 
-use thiserror::Error;
 use std::io;
+use thiserror::Error;
 
 /// Unified error type for the Claudia Statusline application.
 ///

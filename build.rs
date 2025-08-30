@@ -66,7 +66,9 @@ fn main() {
         .to_string();
 
     // Get build timestamp
-    let build_date = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC").to_string();
+    let build_date = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S UTC")
+        .to_string();
 
     // Get build profile (debug/release)
     let profile = env::var("PROFILE").unwrap_or_else(|_| "unknown".to_string());
