@@ -30,6 +30,12 @@ jobs:
           const matchArtifact = artifacts.data.artifacts.filter((artifact) => {
             return artifact.name == "statusline-linux-${{ matrix.arch }}"
           })[0];
+
+          if (!matchArtifact) {
+            core.setFailed(`No artifact found with name: statusline-linux-${{ matrix.arch }}`);
+            return;
+          }
+
           const download = await github.rest.actions.downloadArtifact({
             owner: context.repo.owner,
             repo: context.repo.repo,
