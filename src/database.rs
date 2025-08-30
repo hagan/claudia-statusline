@@ -194,13 +194,18 @@ impl SqliteDatabase {
             .optional()?;
 
         // Calculate the delta (difference between new and old values)
-        let (cost_delta, lines_added_delta, lines_removed_delta) = if let Some((old_cost, old_lines_added, old_lines_removed)) = old_values {
-            // Session exists, calculate delta
-            (cost - old_cost, lines_added as i64 - old_lines_added, lines_removed as i64 - old_lines_removed)
-        } else {
-            // New session, delta is the full value
-            (cost, lines_added as i64, lines_removed as i64)
-        };
+        let (cost_delta, lines_added_delta, lines_removed_delta) =
+            if let Some((old_cost, old_lines_added, old_lines_removed)) = old_values {
+                // Session exists, calculate delta
+                (
+                    cost - old_cost,
+                    lines_added as i64 - old_lines_added,
+                    lines_removed as i64 - old_lines_removed,
+                )
+            } else {
+                // New session, delta is the full value
+                (cost, lines_added as i64, lines_removed as i64)
+            };
 
         // UPSERT session (atomic operation)
         // Note: On conflict, we REPLACE the values, not accumulate them
@@ -509,7 +514,7 @@ pub fn perform_maintenance(
     no_prune: bool,
     quiet: bool,
 ) -> Result<MaintenanceResult> {
-    use chrono::{Utc, Duration};
+    use chrono::{Duration, Utc};
     use log::info;
 
     let config = crate::config::get_config();
@@ -522,11 +527,8 @@ pub fn perform_maintenance(
     if !quiet {
         info!("Performing WAL checkpoint...");
     }
-    let checkpoint_result: i32 = conn.query_row(
-        "PRAGMA wal_checkpoint(TRUNCATE)",
-        [],
-        |row| row.get(0),
-    )?;
+    let checkpoint_result: i32 =
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))?;
     let checkpoint_done = checkpoint_result == 0;
 
     // 2. Optimize
@@ -609,11 +611,8 @@ pub fn perform_maintenance(
     if !quiet {
         info!("Running integrity check...");
     }
-    let integrity_result: String = conn.query_row(
-        "PRAGMA integrity_check",
-        [],
-        |row| row.get(0),
-    )?;
+    let integrity_result: String =
+        conn.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
     let integrity_ok = integrity_result == "ok";
 
     Ok(MaintenanceResult {
@@ -705,8 +704,14 @@ mod tests {
 
         // Update same session - should REPLACE not accumulate
         let (day_total, session_total) = db.update_session("test-session", 5.0, 50, 25).unwrap();
-        assert_eq!(day_total, 5.0, "Day total should be replaced, not accumulated");
-        assert_eq!(session_total, 5.0, "Session total should be replaced, not accumulated");
+        assert_eq!(
+            day_total, 5.0,
+            "Day total should be replaced, not accumulated"
+        );
+        assert_eq!(
+            session_total, 5.0,
+            "Session total should be replaced, not accumulated"
+        );
     }
 
     #[test]
@@ -731,17 +736,26 @@ mod tests {
         // Update first session with LOWER value - should decrease day total
         let (day_total, session_total) = db.update_session("session1", 8.0, 80, 40).unwrap();
         assert_eq!(session_total, 8.0, "Session should have new value");
-        assert_eq!(day_total, 28.0, "Day total should decrease by 2 (30 - 2 = 28)");
+        assert_eq!(
+            day_total, 28.0,
+            "Day total should decrease by 2 (30 - 2 = 28)"
+        );
 
         // Update first session with HIGHER value - should increase day total
         let (day_total, session_total) = db.update_session("session1", 15.0, 150, 75).unwrap();
         assert_eq!(session_total, 15.0, "Session should have new value");
-        assert_eq!(day_total, 35.0, "Day total should increase by 7 (28 + 7 = 35)");
+        assert_eq!(
+            day_total, 35.0,
+            "Day total should increase by 7 (28 + 7 = 35)"
+        );
 
         // Update second session to zero - should decrease day total
         let (day_total, session_total) = db.update_session("session2", 0.0, 0, 0).unwrap();
         assert_eq!(session_total, 0.0, "Session should be zero");
-        assert_eq!(day_total, 15.0, "Day total should be just session1 (35 - 20 = 15)");
+        assert_eq!(
+            day_total, 15.0,
+            "Day total should be just session1 (35 - 20 = 15)"
+        );
     }
 
     #[test]

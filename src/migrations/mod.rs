@@ -60,10 +60,7 @@ impl MigrationRunner {
 
     /// Load all migration definitions
     fn load_all_migrations() -> Vec<Box<dyn Migration>> {
-        vec![
-            Box::new(InitialJsonToSqlite),
-            Box::new(AddMetaTable),
-        ]
+        vec![Box::new(InitialJsonToSqlite), Box::new(AddMetaTable)]
     }
 
     /// Get current schema version

@@ -372,7 +372,6 @@ fn finalize_migration(delete_json: bool) -> Result<()> {
 
 /// Perform database maintenance operations
 fn perform_database_maintenance(force_vacuum: bool, no_prune: bool, quiet: bool) -> Result<()> {
-
     if !quiet {
         println!("🔧 Starting database maintenance...\n");
     }
@@ -396,11 +395,7 @@ fn perform_database_maintenance(force_vacuum: bool, no_prune: bool, quiet: bool)
     }
 
     // Perform maintenance operations
-    let maintenance_result = database::perform_maintenance(
-        force_vacuum,
-        no_prune,
-        quiet,
-    )?;
+    let maintenance_result = database::perform_maintenance(force_vacuum, no_prune, quiet)?;
 
     // Get final size
     let final_size = std::fs::metadata(&db_path)?.len() as f64 / (1024.0 * 1024.0);
@@ -415,17 +410,48 @@ fn perform_database_maintenance(force_vacuum: bool, no_prune: bool, quiet: bool)
         }
 
         println!("\n📋 Maintenance summary:");
-        println!("  ✅ WAL checkpoint: {}", if maintenance_result.checkpoint_done { "completed" } else { "not needed" });
-        println!("  ✅ Optimization: {}", if maintenance_result.optimize_done { "completed" } else { "not needed" });
-        println!("  ✅ Vacuum: {}", if maintenance_result.vacuum_done { "completed" } else { "not needed" });
-        println!("  ✅ Pruning: {}", if maintenance_result.prune_done {
-            format!("removed {} old records", maintenance_result.records_pruned)
-        } else if no_prune {
-            "skipped".to_string()
-        } else {
-            "not needed".to_string()
-        });
-        println!("  ✅ Integrity check: {}", if maintenance_result.integrity_ok { "passed" } else { "FAILED" });
+        println!(
+            "  ✅ WAL checkpoint: {}",
+            if maintenance_result.checkpoint_done {
+                "completed"
+            } else {
+                "not needed"
+            }
+        );
+        println!(
+            "  ✅ Optimization: {}",
+            if maintenance_result.optimize_done {
+                "completed"
+            } else {
+                "not needed"
+            }
+        );
+        println!(
+            "  ✅ Vacuum: {}",
+            if maintenance_result.vacuum_done {
+                "completed"
+            } else {
+                "not needed"
+            }
+        );
+        println!(
+            "  ✅ Pruning: {}",
+            if maintenance_result.prune_done {
+                format!("removed {} old records", maintenance_result.records_pruned)
+            } else if no_prune {
+                "skipped".to_string()
+            } else {
+                "not needed".to_string()
+            }
+        );
+        println!(
+            "  ✅ Integrity check: {}",
+            if maintenance_result.integrity_ok {
+                "passed"
+            } else {
+                "FAILED"
+            }
+        );
 
         if maintenance_result.integrity_ok {
             println!("\n✅ Database maintenance completed successfully!");

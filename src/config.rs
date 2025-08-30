@@ -180,8 +180,8 @@ impl Default for DatabaseConfig {
             path: "stats.db".to_string(),
             json_backup: true, // Default to true for backward compatibility
             retention_days_sessions: None, // None means use default (90 days)
-            retention_days_daily: None,    // None means use default (30 days)
-            retention_days_monthly: None,  // None means use default (365 days)
+            retention_days_daily: None, // None means use default (30 days)
+            retention_days_monthly: None, // None means use default (365 days)
         }
     }
 }
