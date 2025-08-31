@@ -4,10 +4,10 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.7.x   | :white_check_mark: |
-| 2.6.x   | :white_check_mark: |
-| 2.5.x   | :white_check_mark: |
-| < 2.5   | :x:                |
+| 2.10.x  | :white_check_mark: |
+| 2.9.x   | :white_check_mark: |
+| 2.8.x   | :white_check_mark: |
+| < 2.8   | :x:                |
 
 ## Automated Security Scanning
 
@@ -21,16 +21,16 @@ As of version 2.6.0, Claudia Statusline includes automated security scanning in 
 
 ## Security Hardening
 
-As of version 2.9.3, Claudia Statusline includes comprehensive security hardening:
+As of version 2.10.0, Claudia Statusline includes comprehensive security hardening:
 
-### Terminal Output Sanitization (v2.9.3)
+### Terminal Output Sanitization (v2.10.0)
 - All untrusted user input is sanitized before terminal display
 - ANSI escape sequences are stripped to prevent injection attacks
 - Control characters are removed (except tab, newline, carriage return)
 - Applied to: Git branch names, model names, directory paths
 - Function: `sanitize_for_terminal()` in utils.rs
 
-### Git Operation Resilience (v2.9.3)
+### Git Operation Resilience (v2.10.0)
 - Git operations enforce a soft timeout (default 200ms)
 - Configurable via `config.git.timeout_ms` or `STATUSLINE_GIT_TIMEOUT_MS` env var
 - Processes are killed if timeout exceeded with INFO logging

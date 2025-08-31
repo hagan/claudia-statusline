@@ -2,6 +2,21 @@
 
 Thank you for your interest in contributing to Claudia Statusline! This guide will help you get started with development.
 
+## Project Status
+
+**Current Version**: v2.10.0 (Phase 3 Security Hardening Complete)
+
+### Completed Phases
+- ✅ Phase 1: SQLite Finalization (v2.8.0)
+- ✅ Phase 2: Database Maintenance (v2.9.0)
+- ✅ Phase 3: Security Hardening (v2.10.0)
+
+### Upcoming Phases
+- 🔜 Phase 4: CLI UX & Diagnostics
+- 🔜 Phase 5: Robustness & Performance
+- 🔜 Phase 6: Reuse for Other Agents
+- 🔜 Phase 7: CI/CD Security
+
 ## Development Planning
 
 For structured development work, please refer to the **[Planning Pack](.claude/planning/README.md)** which provides:

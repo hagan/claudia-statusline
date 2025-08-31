@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.9.2** - Fixed GitHub Actions security workflow and organized documentation
+**Version 2.10.0** - Security hardening with terminal sanitization and Git timeouts
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -16,9 +16,9 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 
 ## Technical Highlights
 
-- **Security Hardened** - All user inputs validated, prevents path injection attacks (v2.2.1)
+- **Security Hardened** - Terminal output sanitization, Git timeouts, input validation (v2.10.0)
 - **Modular Architecture** - Clean separation across 11 focused modules (~200 lines each)
-- **Comprehensive Testing** - 79 tests (52 unit + 18 integration + 9 SQLite), including security tests
+- **Comprehensive Testing** - 201 tests including security validation and timeout behavior
 - **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
 - **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
 - **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
@@ -268,6 +268,11 @@ json_backup = true               # Maintain JSON backup alongside SQLite
 retention_days_sessions = 90    # Keep session data for 90 days
 retention_days_daily = 365      # Keep daily stats for 1 year
 retention_days_monthly = 0      # Keep monthly stats forever
+
+[git]
+# Git operation timeout in milliseconds
+timeout_ms = 200                # Default timeout for git operations
+# Can also be overridden with STATUSLINE_GIT_TIMEOUT_MS environment variable
 ```
 
 ### Maintenance Operations
@@ -612,7 +617,7 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
   - [Overview](.claude/planning/00_overview.md) - High-level roadmap
   - [Phase 1: SQLite Finalization](.claude/planning/01_sqlite_finalization.md) ✅
   - [Phase 2: DB Maintenance](.claude/planning/02_db_maintenance.md) ✅
-  - [Phase 3: Security Hardening](.claude/planning/03_security_hardening.md) 🔜
+  - [Phase 3: Security Hardening](.claude/planning/03_security_hardening.md) ✅
   - [Phase 4: CLI UX](.claude/planning/04_cli_ux_health.md) 🔜
   - [Phase 5: Git Performance](.claude/planning/05_git_parsing_perf.md) 🔜
   - [Phase 6: Reusability](.claude/planning/06_reuse_codex.md) 🔜
@@ -629,7 +634,16 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.9.2 (2025-08-31) - Latest
+### v2.10.0 (2025-08-31) - Latest
+- **Terminal Output Sanitization** - Strips ANSI escape sequences and control characters from untrusted inputs
+- **Git Operation Timeouts** - Configurable soft timeout (default 200ms) with `GIT_OPTIONAL_LOCKS=0`
+- **AllTimeStats Population** - Sessions count and earliest date now populated from SQLite
+- **Makefile Improvement** - No longer deletes `Cargo.lock` on clean
+- **Configuration** - New `git.timeout_ms` config option and `STATUSLINE_GIT_TIMEOUT_MS` env override
+- **Documentation** - Updated Claude Code link to public docs, fixed broken links
+- **Test Coverage** - 201 tests passing with comprehensive security feature coverage
+
+### v2.9.2 (2025-08-31)
 - **Fixed GitHub Actions Security Workflow** - Resolved cargo-deny configuration errors
 - **Enhanced CI/CD Error Handling** - Smart detection of dev-dependency vs production issues
 - **Documentation Organization** - Added comprehensive documentation index

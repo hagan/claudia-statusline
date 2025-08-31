@@ -1,6 +1,6 @@
 [package]
 name = "statusline"
-version = "2.9.2"
+version = "2.10.0"
 edition = "2021"
 license = "MIT"
 description = "Claudia Statusline - A feature-rich statusline for Claude Code, inspired by Peter Steinberger's statusline.rs"

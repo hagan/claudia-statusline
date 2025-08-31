@@ -5,6 +5,48 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] - 2025-08-31
+
+### Phase 3: Security Hardening Complete
+
+#### Added
+- **Terminal Output Sanitization**: New `sanitize_for_terminal()` function
+  - Strips ANSI escape sequences to prevent injection attacks
+  - Removes control characters (0x00-0x1F, 0x7F-0x9F) except tab/newline/CR
+  - Applied to all untrusted inputs: git branch names, model names, directory paths
+  - Comprehensive test coverage for sanitization logic
+
+- **Git Operation Resilience**: Proper timeout implementation
+  - Non-blocking process execution with `spawn()` and `try_wait()` loop
+  - Configurable timeout (default 200ms) via `config.git.timeout_ms`
+  - Environment override support: `STATUSLINE_GIT_TIMEOUT_MS`
+  - Process termination on timeout with INFO level logging
+  - `GIT_OPTIONAL_LOCKS=0` environment variable prevents lock conflicts
+  - Automatic retry mechanism (2 attempts with 100ms backoff)
+  - Full test coverage with 3 new timeout behavior tests
+
+- **AllTimeStats SQLite Support**: Enhanced statistics from database
+  - `get_all_time_sessions_count()` - Returns total session count
+  - `get_earliest_session_date()` - Returns earliest session date
+  - AllTimeStats now populated with sessions count and "since" date
+  - Complete test coverage for new database methods
+
+#### Changed
+- **Makefile Clean Target**: Removed `Cargo.lock` deletion
+  - Lock file now preserved during `make clean` operations
+  - Better for reproducible builds and dependency management
+
+#### Security
+- **Input Sanitization**: All user input now sanitized before terminal display
+- **Process Safety**: Git operations can't hang indefinitely
+- **Defense in Depth**: Multiple layers of security validation
+
+#### Technical
+- **Dependencies**: Added `regex = "1.10"` for sanitization patterns
+- **Configuration**: New `GitConfig` struct with timeout settings
+- **Test Coverage**: 201 total tests (added 6 new tests)
+- **Code Quality**: All clippy warnings resolved, formatting standardized
+
 ## [2.9.2] - 2025-08-31
 
 ### Fixed GitHub Actions Security Workflow
