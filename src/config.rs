@@ -180,8 +180,8 @@ impl Default for DatabaseConfig {
             path: "stats.db".to_string(),
             json_backup: true, // Default to true for backward compatibility
             retention_days_sessions: None, // None means use default (90 days)
-            retention_days_daily: None, // None means use default (30 days)
-            retention_days_monthly: None, // None means use default (365 days)
+            retention_days_daily: None, // None means use default (365 days)
+            retention_days_monthly: None, // None means use default (0 = forever)
         }
     }
 }
@@ -382,6 +382,11 @@ max_connections = 5
 busy_timeout_ms = 10000
 path = "stats.db"  # Relative to data directory
 json_backup = true  # Maintain JSON backup alongside SQLite (set to false for SQLite-only mode)
+
+# Data retention settings (for db-maintain command)
+retention_days_sessions = 90    # Keep session data for N days
+retention_days_daily = 365      # Keep daily aggregates for N days
+retention_days_monthly = 0      # Keep monthly aggregates for N days (0 = forever)
 
 [transcript]
 # Number of transcript lines to keep in memory

@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.8.1** - Critical SQLite bug fix and database maintenance features
+**Version 2.8.1** - Critical SQLite UPSERT bug fix and database maintenance features
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -255,6 +255,9 @@ Configure retention periods in `~/.config/claudia-statusline/config.toml`:
 
 ```toml
 [database]
+# JSON backup mode (set to false for SQLite-only mode for better performance)
+json_backup = true               # Maintain JSON backup alongside SQLite
+
 # Retention periods in days (0 or omit to keep forever)
 retention_days_sessions = 90    # Keep session data for 90 days
 retention_days_daily = 365      # Keep daily stats for 1 year
@@ -593,7 +596,23 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.8.0 (2025-08-30) - Latest
+### v2.9.0 (2025-08-31) - Latest
+- **Phase 2 Database Maintenance Complete** - All features fully implemented and tested
+- **Configuration Alignment** - Fixed retention defaults between code and documentation
+- **Test Infrastructure** - Dynamic binary path detection for CI/CD compatibility
+- **Documentation Updates** - Full synchronization across CLAUDE.md, README.md, config.rs
+- **All 190 tests passing** - Comprehensive coverage including database maintenance
+
+### v2.8.1 (2025-08-30)
+- **Critical SQLite Bug Fix** - Fixed UPSERT operations incorrectly accumulating values
+- **Database Maintenance** - New `statusline db-maintain` command for SQLite optimization
+- **Data Retention Policies** - Configurable retention periods for sessions and stats
+- **WAL Checkpoint** - Automatic write-ahead log checkpoint for better performance
+- **VACUUM Support** - Reclaim unused space when database exceeds 10MB
+- **Integrity Checks** - Built-in database consistency verification
+- **Cron Support** - Automated maintenance scheduling with exit codes for scripting
+
+### v2.8.0 (2025-08-30)
 - **Phase 1 SQLite Finalization** - Complete migration path to SQLite-only mode
 - **Migration Command** - New `statusline migrate --finalize` to complete migration
 - **Configurable JSON Backup** - Added `database.json_backup` config option

@@ -547,8 +547,8 @@ pub fn perform_maintenance(
 
         // Get retention settings from config (with defaults)
         let days_sessions = config.database.retention_days_sessions.unwrap_or(90);
-        let days_daily = config.database.retention_days_daily.unwrap_or(30);
-        let days_monthly = config.database.retention_days_monthly.unwrap_or(365);
+        let days_daily = config.database.retention_days_daily.unwrap_or(365);
+        let days_monthly = config.database.retention_days_monthly.unwrap_or(0);
 
         let now = Utc::now();
 

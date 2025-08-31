@@ -5,6 +5,29 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2025-08-31
+
+### Phase 2 Database Maintenance Complete
+
+#### Added
+- **Configuration Alignment**: Fixed retention defaults between code and documentation
+  - DatabaseConfig comments now reflect actual defaults (90/365/0 days)
+  - Example TOML includes complete retention settings documentation
+  - JSON backup mode clearly documented in README
+- **Test Infrastructure**: Dynamic binary path detection for CI/CD compatibility
+  - Tests support both debug and release builds
+  - Automatic binary building if neither exists
+  - Manual SQLite schema creation for test reliability
+- **Documentation Updates**: Full synchronization across all documentation
+  - CLAUDE.md, README.md, and config.rs fully aligned
+  - Planning documents updated to reflect Phase 2 completion
+  - Version bumped to 2.9.0 for minor release
+
+#### Fixed
+- Retention default values in `perform_maintenance()` now match documentation
+- Test database creation now handles cases where statusline doesn't create DB
+- All 190 tests now passing with comprehensive db-maintain coverage
+
 ## [2.8.1] - 2025-08-30
 
 ### Critical Bug Fix & Phase 2 Database Maintenance
@@ -19,21 +42,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Prevents double-counting when sessions are updated
   - Daily and monthly aggregates remain accurate
 
-#### Added - Phase 2 Database Maintenance
+#### Added - Phase 2 Database Maintenance (COMPLETE)
 - **Database Maintenance Command**: New `statusline db-maintain` subcommand
-  - `--vacuum`: Rebuild database to reclaim space and defragment
-  - `--optimize`: Run ANALYZE to update query optimizer statistics
-  - `--checkpoint`: Force WAL checkpoint to sync changes
-  - `--prune`: Remove old sessions based on retention settings
-  - `--check-integrity`: Verify database consistency
-- **Automated Maintenance**: Shell script wrapper for cron integration
-  - Located at `scripts/maintenance.sh`
-  - Returns proper exit codes for monitoring
-  - Logs to syslog with appropriate severity levels
-- **Data Retention**: Configurable retention periods
-  - `database.retention.sessions_days`: Keep sessions for N days (default: 90)
-  - `database.retention.daily_stats_days`: Keep daily stats (default: 365)
-  - `database.retention.monthly_stats_months`: Keep monthly stats (default: 24)
+  - `--force-vacuum`: Force VACUUM even if not needed (normally runs when DB > 10MB or > 7 days since last vacuum)
+  - `--no-prune`: Skip data retention pruning
+  - `--quiet`: Run in quiet mode (errors only)
+  - Performs WAL checkpoint (TRUNCATE mode)
+  - Runs PRAGMA optimize for query planner
+  - Conditional VACUUM based on size/time thresholds
+  - Data pruning based on retention configuration
+  - Integrity check with proper exit codes (exit 1 on failure)
+- **Automated Maintenance**: Shell script wrapper at `scripts/maintenance.sh`
+  - Supports cron integration with proper exit codes
+  - `--log FILE` option for logging output
+  - Exit codes: 0=success, 1=integrity failure, 2=other error
+- **Data Retention Configuration**: In config.toml
+  - `database.retention_days_sessions`: Keep sessions for N days (default: 90)
+  - `database.retention_days_daily`: Keep daily stats for N days (default: 365)
+  - `database.retention_days_monthly`: Keep monthly stats for N days (0 = forever)
+- **Meta Table**: Tracks maintenance state (last_vacuum timestamp)
 - **Test Coverage**: Added comprehensive tests for bug fix
   - Fixed `test_session_update` to expect replacement behavior
   - Added `test_session_update_delta_calculation` for delta verification
