@@ -8,6 +8,12 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 
 ![Claudia Statusline Screenshot](statusline.png)
 
+## For Contributors
+
+- Planning Pack (primary entrypoint): `.claude/planning/README.md`
+- Roadmap and phase status: `.claude/planning/00_overview.md`
+- Contribution guide: `CONTRIBUTING.md`
+
 ## Technical Highlights
 
 - **Security Hardened** - All user inputs validated, prevents path injection attacks (v2.2.1)
@@ -1047,7 +1053,7 @@ This project's modifications and build system are licensed under the MIT License
 
 - **Original Author**: [Peter Steinberger (@steipete)](https://github.com/steipete)
 - **Original Source**: [statusline.rs gist](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e)
-- **Implementation**: Complete Rust rewrite for [Claude Code](https://claude.ai/code) integration
+- **Implementation**: Complete Rust rewrite for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) integration
 - **Build System**: Custom Makefile for Rust projects
 - **License**: Our modifications are MIT licensed; original code retains author's rights
 

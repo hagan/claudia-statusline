@@ -27,7 +27,8 @@
 //! // See the display module for formatting functions
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/statusline/2.7.0")]
+// TODO: Re-enable html_root_url once the crate is published on docs.rs
+// #![doc(html_root_url = "https://docs.rs/statusline/2.7.0")]
 
 pub mod common;
 /// Configuration management module for loading and saving settings
