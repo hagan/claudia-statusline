@@ -49,17 +49,19 @@ fn setup_test_database() -> (TempDir, PathBuf) {
     // Write JSON input with session_id and significant cost data
     if let Some(stdin) = child.stdin.as_mut() {
         use std::io::Write;
-        writeln!(stdin, r#"{{
+        writeln!(
+            stdin,
+            r#"{{
             "workspace":{{"current_dir":"~"}},
             "session_id":"test-maintenance-session",
             "cost":{{"cost":1.50,"input_tokens":10000,"output_tokens":5000}},
             "model":{{"display_name":"Claude"}}
-        }}"#)
-            .expect("Failed to write to stdin");
+        }}"#
+        )
+        .expect("Failed to write to stdin");
     }
 
-    let _output = child.wait_with_output()
-        .expect("Failed to wait for output");
+    let _output = child.wait_with_output().expect("Failed to wait for output");
 
     // If database still doesn't exist, create it manually
     if !db_path.exists() {
@@ -116,11 +118,16 @@ fn setup_test_database() -> (TempDir, PathBuf) {
 
             INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1');
             INSERT OR REPLACE INTO meta (key, value) VALUES ('created_at', datetime('now'));
-            "
-        ).expect("Failed to create schema");
+            ",
+        )
+        .expect("Failed to create schema");
     }
 
-    assert!(db_path.exists(), "Database should be created at {:?}", db_path);
+    assert!(
+        db_path.exists(),
+        "Database should be created at {:?}",
+        db_path
+    );
 
     (temp_dir, db_path)
 }
@@ -222,7 +229,10 @@ fn test_db_maintain_missing_database() {
         .output()
         .expect("Failed to execute command");
 
-    assert!(!output.status.success(), "Should fail with missing database");
+    assert!(
+        !output.status.success(),
+        "Should fail with missing database"
+    );
 }
 
 #[test]
@@ -236,7 +246,10 @@ fn test_maintenance_script_exists() {
     {
         use std::os::unix::fs::PermissionsExt;
         let permissions = metadata.permissions();
-        assert!(permissions.mode() & 0o111 != 0, "Script should be executable");
+        assert!(
+            permissions.mode() & 0o111 != 0,
+            "Script should be executable"
+        );
     }
 }
 
@@ -278,8 +291,8 @@ fn test_db_maintain_pruning() {
 
     // Add some old data directly to the database for testing pruning
     {
+        use chrono::{Duration, Utc};
         use rusqlite::Connection;
-        use chrono::{Utc, Duration};
 
         let conn = Connection::open(&db_path).expect("Failed to open database");
 

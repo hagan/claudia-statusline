@@ -53,6 +53,9 @@ help:
 	@echo "  $(YELLOW)make dev$(NC)          - Build and run with test input"
 	@echo "  $(YELLOW)make bench$(NC)        - Run performance benchmark"
 	@echo "  $(YELLOW)make version$(NC)      - Show version information"
+	@echo "  $(YELLOW)make bump-major$(NC)   - Bump major version (X.0.0)"
+	@echo "  $(YELLOW)make bump-minor$(NC)   - Bump minor version (0.X.0)"
+	@echo "  $(YELLOW)make bump-patch$(NC)   - Bump patch version (0.0.X)"
 	@echo "  $(YELLOW)make tag$(NC)          - Create git tag for release"
 	@echo "  $(YELLOW)make release-build$(NC) - Build release with version tag"
 	@echo ""
@@ -229,6 +232,27 @@ version:
 		$(TARGET_DIR)/release/$(BINARY_NAME) --version 2>/dev/null || echo "  Binary not found or error"; \
 	fi
 
+# Bump major version (X.0.0)
+.PHONY: bump-major
+bump-major:
+	@echo "$(BLUE)Bumping major version...$(NC)"
+	@./scripts/bump-version.sh major
+	@echo "$(GREEN)✓$(NC) Major version bumped"
+
+# Bump minor version (0.X.0)
+.PHONY: bump-minor
+bump-minor:
+	@echo "$(BLUE)Bumping minor version...$(NC)"
+	@./scripts/bump-version.sh minor
+	@echo "$(GREEN)✓$(NC) Minor version bumped"
+
+# Bump patch version (0.0.X)
+.PHONY: bump-patch
+bump-patch:
+	@echo "$(BLUE)Bumping patch version...$(NC)"
+	@./scripts/bump-version.sh patch
+	@echo "$(GREEN)✓$(NC) Patch version bumped"
+
 # Create a git tag for release
 .PHONY: tag
 tag:
@@ -274,35 +298,5 @@ else
     SED_INPLACE := sed -i
 endif
 
-# Bump version number
-.PHONY: bump-major
-bump-major:
-	@CURRENT=$$(cat VERSION); \
-	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
-	NEW_VERSION=$$((MAJOR + 1)).0.0; \
-	echo $$NEW_VERSION > VERSION; \
-	$(SED_INPLACE) 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
-	echo "$(GREEN)✓$(NC) Bumped version to $$NEW_VERSION"
-
-.PHONY: bump-minor
-bump-minor:
-	@CURRENT=$$(cat VERSION); \
-	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
-	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
-	NEW_VERSION=$$MAJOR.$$((MINOR + 1)).0; \
-	echo $$NEW_VERSION > VERSION; \
-	$(SED_INPLACE) 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
-	echo "$(GREEN)✓$(NC) Bumped version to $$NEW_VERSION"
-
-.PHONY: bump-patch
-bump-patch:
-	@CURRENT=$$(cat VERSION); \
-	MAJOR=$$(echo $$CURRENT | cut -d. -f1); \
-	MINOR=$$(echo $$CURRENT | cut -d. -f2); \
-	PATCH=$$(echo $$CURRENT | cut -d. -f3); \
-	NEW_VERSION=$$MAJOR.$$MINOR.$$((PATCH + 1)); \
-	echo $$NEW_VERSION > VERSION; \
-	$(SED_INPLACE) 's/version = ".*"/version = "'$$NEW_VERSION'"/' Cargo.toml; \
-	echo "$(GREEN)✓$(NC) Bumped version to $$NEW_VERSION"
 
 .DEFAULT_GOAL := help
