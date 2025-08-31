@@ -5,8 +5,6 @@
 [bans]
 # Warn about multiple versions of the same crate
 multiple-versions = "warn"
-# Allow workspace members to use different versions
-workspace-default-features = "allow"
 # Crates to skip when checking for duplicates
 skip = []
 skip-tree = []
