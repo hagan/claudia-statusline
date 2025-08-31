@@ -220,8 +220,8 @@ jobs:
       run: |
         if [ ! -f deny.toml ]; then
           cat > deny.toml << 'EOF'
-        # cargo-deny configuration v2 format
-        version = 2
+        # cargo-deny configuration
+        # cargo-deny TOML configuration file
 
         [bans]
         multiple-versions = "warn"
