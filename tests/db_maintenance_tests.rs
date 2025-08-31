@@ -20,7 +20,7 @@ fn get_binary_path() -> PathBuf {
 
     // If neither exists, try to build release
     Command::new("cargo")
-        .args(&["build", "--release", "--quiet"])
+        .args(["build", "--release", "--quiet"])
         .output()
         .expect("Failed to build release binary");
 
@@ -301,7 +301,7 @@ fn test_db_maintain_pruning() {
         conn.execute(
             "INSERT OR REPLACE INTO sessions (id, start_time, last_updated, cost_usd, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, model, lines_added, lines_removed)
              VALUES (?1, ?2, ?3, 0.0, 0, 0, 0, 0, 'test', 0, 0)",
-            &["old_session_test", &old_date.to_rfc3339(), &old_date.to_rfc3339()],
+            ["old_session_test", &old_date.to_rfc3339(), &old_date.to_rfc3339()],
         ).ok(); // Ignore if it fails due to schema differences
     }
 

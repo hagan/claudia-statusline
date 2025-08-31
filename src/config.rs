@@ -324,7 +324,15 @@ impl Config {
     /// Find config file in standard locations
     fn find_config_file() -> Option<PathBuf> {
         // Check in order of priority:
-        // 1. Environment variable
+        // 1. Environment variable from CLI flag
+        if let Ok(path) = std::env::var("STATUSLINE_CONFIG_PATH") {
+            let path = PathBuf::from(path);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        // 2. Environment variable
         if let Ok(path) = std::env::var("STATUSLINE_CONFIG") {
             let path = PathBuf::from(path);
             if path.exists() {
@@ -332,7 +340,7 @@ impl Config {
             }
         }
 
-        // 2. XDG config directory
+        // 3. XDG config directory
         if let Some(config_dir) = dirs::config_dir() {
             let path = config_dir.join("claudia-statusline").join("config.toml");
             if path.exists() {
@@ -340,7 +348,7 @@ impl Config {
             }
         }
 
-        // 3. Home directory
+        // 4. Home directory
         if let Some(home_dir) = dirs::home_dir() {
             let path = home_dir.join(".claudia-statusline.toml");
             if path.exists() {

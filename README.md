@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.10.0** - Security hardening with terminal sanitization and Git timeouts
+**Version 2.11.0** - CLI UX flags, diagnostics health command, and security hardening
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -18,7 +18,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 
 - **Security Hardened** - Terminal output sanitization, Git timeouts, input validation (v2.10.0)
 - **Modular Architecture** - Clean separation across 11 focused modules (~200 lines each)
-- **Comprehensive Testing** - 201 tests including security validation and timeout behavior
+- **Comprehensive Testing** - 210 tests including security, CLI, and health diagnostics
 - **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
 - **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
 - **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
@@ -274,6 +274,18 @@ cargo build --release
 echo '{"workspace":{"current_dir":"'$(pwd)'"},"model":{"display_name":"Claude Sonnet"}}' | statusline
 ```
 
+### Health & Diagnostics
+- Human-readable report:
+```bash
+statusline health
+```
+- JSON for scripting:
+```bash
+statusline health --json | jq .
+```
+
+Reports include database and JSON paths and existence, whether JSON backup is enabled, and cost totals (today/month/all-time), session count, and the earliest session date.
+
 ### With Claude Code
 The statusline automatically integrates with Claude Code when installed via the installer script.
 
@@ -392,6 +404,14 @@ Exit codes for scripting:
 - `2`: Other error
 
 ## Configuration
+
+### CLI Flags & Precedence
+- `--no-color`: Disable ANSI colors (overrides `NO_COLOR`)
+- `--theme <light|dark>`: Override theme (`STATUSLINE_THEME`/`CLAUDE_THEME`)
+- `--config <path>`: Use alternate config file (`STATUSLINE_CONFIG_PATH`/`STATUSLINE_CONFIG`)
+- `--log-level <error|warn|info|debug|trace>`: Override `RUST_LOG`
+
+Precedence: CLI flags > environment variables > config file.
 
 ### Claude Code Integration
 
@@ -719,7 +739,7 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
   - [Phase 1: SQLite Finalization](.claude/planning/01_sqlite_finalization.md) ✅
   - [Phase 2: DB Maintenance](.claude/planning/02_db_maintenance.md) ✅
   - [Phase 3: Security Hardening](.claude/planning/03_security_hardening.md) ✅
-  - [Phase 4: CLI UX](.claude/planning/04_cli_ux_health.md) 🔜
+  - [Phase 4: CLI UX](.claude/planning/04_cli_ux_health.md) ✅
   - [Phase 5: Git Performance](.claude/planning/05_git_parsing_perf.md) 🔜
   - [Phase 6: Reusability](.claude/planning/06_reuse_codex.md) 🔜
 
@@ -735,14 +755,18 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.10.0 (2025-08-31) - Latest
+### v2.11.0 (2025-09-01) - Latest
+- CLI UX: `--no-color`, `--theme`, `--config`, `--log-level` with precedence (CLI > env > config)
+- Diagnostics: `statusline health` and `statusline health --json` reporting paths and statistics
+  
+### v2.10.0 (2025-08-31)
 - **Terminal Output Sanitization** - Strips ANSI escape sequences and control characters from untrusted inputs
 - **Git Operation Timeouts** - Configurable soft timeout (default 200ms) with `GIT_OPTIONAL_LOCKS=0`
 - **AllTimeStats Population** - Sessions count and earliest date now populated from SQLite
 - **Makefile Improvement** - No longer deletes `Cargo.lock` on clean
 - **Configuration** - New `git.timeout_ms` config option and `STATUSLINE_GIT_TIMEOUT_MS` env override
 - **Documentation** - Updated Claude Code link to public docs, fixed broken links
-- **Test Coverage** - 201 tests passing with comprehensive security feature coverage
+- **Test Coverage** - 210 tests passing with comprehensive security, CLI, and health coverage
 
 ### v2.9.2 (2025-08-31)
 - **Fixed GitHub Actions Security Workflow** - Resolved cargo-deny configuration errors

@@ -24,6 +24,7 @@ use clap::{Parser, Subcommand};
 use log::warn;
 use std::env;
 use std::io::{self, Read};
+use std::path::PathBuf;
 
 mod common;
 mod config;
@@ -57,6 +58,22 @@ struct Cli {
     /// Show detailed version information
     #[arg(long = "version-full")]
     version_full: bool,
+
+    /// Disable colored output
+    #[arg(long)]
+    no_color: bool,
+
+    /// Set color theme (light or dark)
+    #[arg(long, value_name = "THEME")]
+    theme: Option<String>,
+
+    /// Path to configuration file
+    #[arg(long, value_name = "PATH")]
+    config: Option<PathBuf>,
+
+    /// Set log level
+    #[arg(long, value_name = "LEVEL", value_parser = ["error", "warn", "info", "debug", "trace"])]
+    log_level: Option<String>,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -92,13 +109,43 @@ enum Commands {
         #[arg(short, long)]
         quiet: bool,
     },
+
+    /// Show diagnostic information about the statusline
+    Health {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> Result<()> {
-    // Initialize logging with WARN level by default (can be overridden with RUST_LOG env var)
+    let cli = Cli::parse();
+
+    // Handle log level with precedence: CLI > env > default
+    // When --log-level is provided, it overrides RUST_LOG environment variable
+    if let Some(ref level) = cli.log_level {
+        // Set RUST_LOG to the CLI value to ensure it takes precedence
+        env::set_var("RUST_LOG", level);
+    }
+
+    // Initialize logger with RUST_LOG env var (which may have been set above)
+    // Default to "warn" if RUST_LOG is not set
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
 
-    let cli = Cli::parse();
+    // Handle NO_COLOR with precedence: CLI > env
+    if cli.no_color {
+        env::set_var("NO_COLOR", "1");
+    }
+
+    // Handle theme with precedence: CLI > env > config
+    if let Some(ref theme) = cli.theme {
+        env::set_var("STATUSLINE_THEME", theme);
+    }
+
+    // Handle config path if provided
+    if let Some(ref config_path) = cli.config {
+        env::set_var("STATUSLINE_CONFIG_PATH", config_path.display().to_string());
+    }
 
     // Handle version-full flag
     if cli.version_full {
@@ -147,6 +194,9 @@ fn main() -> Result<()> {
                 quiet,
             } => {
                 return perform_database_maintenance(force_vacuum, no_prune, quiet);
+            }
+            Commands::Health { json } => {
+                return show_health_report(json);
             }
         }
     }
@@ -463,6 +513,87 @@ fn perform_database_maintenance(force_vacuum: bool, no_prune: bool, quiet: bool)
     // Exit with non-zero if integrity check failed
     if !maintenance_result.integrity_ok {
         std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Show diagnostic health information
+fn show_health_report(json_output: bool) -> Result<()> {
+    use serde_json::json;
+
+    // Get paths
+    let db_path = stats::StatsData::get_sqlite_path()?;
+    let json_path = stats::StatsData::get_stats_file_path();
+    let config = config::get_config();
+
+    // Check if files exist
+    let db_exists = db_path.exists();
+    let json_exists = json_path.exists();
+
+    // Get stats from database using aggregate helpers
+    let mut today_total = 0.0;
+    let mut month_total = 0.0;
+    let mut all_time_total = 0.0;
+    let mut session_count = 0;
+    let mut earliest_session: Option<String> = None;
+
+    if db_exists {
+        // Create database instance
+        let db = database::SqliteDatabase::new(&db_path)?;
+
+        // Use DB aggregate helpers for efficient retrieval
+        today_total = db.get_today_total()?;
+        month_total = db.get_month_total()?;
+        all_time_total = db.get_all_time_total()?;
+        session_count = db.get_all_time_sessions_count()?;
+        earliest_session = db.get_earliest_session_date()?;
+    }
+
+    if json_output {
+        // Output as JSON
+        let health = json!({
+            "database_path": db_path.display().to_string(),
+            "database_exists": db_exists,
+            "json_path": json_path.display().to_string(),
+            "json_exists": json_exists,
+            "json_backup": config.database.json_backup,
+            "today_total": today_total,
+            "month_total": month_total,
+            "all_time_total": all_time_total,
+            "session_count": session_count,
+            "earliest_session": earliest_session,
+        });
+        println!("{}", serde_json::to_string(&health)?);
+    } else {
+        // Output as human-readable text
+        println!("Claudia Statusline Health Report");
+        println!("================================");
+        println!();
+        println!("Configuration:");
+        println!("  Database path: {}", db_path.display());
+        println!("  Database exists: {}", if db_exists { "✅" } else { "❌" });
+        println!("  JSON path: {}", json_path.display());
+        println!("  JSON exists: {}", if json_exists { "✅" } else { "❌" });
+        println!(
+            "  JSON backup enabled: {}",
+            if config.database.json_backup {
+                "✅"
+            } else {
+                "❌"
+            }
+        );
+        println!();
+        println!("Statistics:");
+        println!("  Today's total: ${:.2}", today_total);
+        println!("  Month total: ${:.2}", month_total);
+        println!("  All-time total: ${:.2}", all_time_total);
+        println!("  Session count: {}", session_count);
+        if let Some(earliest) = earliest_session {
+            println!("  Earliest session: {}", earliest);
+        } else {
+            println!("  Earliest session: N/A");
+        }
     }
 
     Ok(())

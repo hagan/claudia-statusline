@@ -171,7 +171,7 @@ mod tests {
 
         // Initialize a git repo
         Command::new("git")
-            .args(&["init"])
+            .args(["init"])
             .current_dir(temp_dir.path())
             .output()
             .ok();

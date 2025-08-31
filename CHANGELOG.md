@@ -5,6 +5,28 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.0] - 2025-09-01
+
+### Phase 4: CLI UX & Diagnostics Complete
+
+#### Added
+- CLI flags with strict precedence (CLI > env > config):
+  - `--no-color` disables ANSI colors (overrides NO_COLOR)
+  - `--theme <light|dark>` overrides theme (overrides STATUSLINE_THEME/CLAUDE_THEME)
+  - `--config <path>` selects alternate config (overrides STATUSLINE_CONFIG_PATH/STATUSLINE_CONFIG)
+  - `--log-level <level>` overrides RUST_LOG
+- Health diagnostics command:
+  - `statusline health` human-readable report
+  - `statusline health --json` machine-readable output with database/JSON paths, json_backup flag, today/month/all-time totals, session count, earliest session date
+
+#### Changed
+- Logging initialization respects CLI log level over environment when provided
+- Documentation updated with flags, precedence, and health usage
+
+#### Testing
+- Expanded test suite to cover CLI precedence and health output
+- Total tests: 210
+
 ## [2.10.0] - 2025-08-31
 
 ### Phase 3: Security Hardening Complete
