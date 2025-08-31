@@ -5,6 +5,16 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.1] - 2025-09-01
+
+### Fixed
+- Removed unused `PathBuf` import from integration tests that was causing CI/CD lint failures
+- Fixed clippy warnings about unused imports
+
+### Changed
+- Phase 4 follow-up: Refactored health command to use database aggregate helpers for improved performance
+- Documentation polish and consistency improvements across planning files
+
 ## [2.11.0] - 2025-09-01
 
 ### Phase 4: CLI UX & Diagnostics Complete
