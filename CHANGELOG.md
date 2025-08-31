@@ -5,6 +5,29 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.1] - 2025-08-31
+
+### Automated Version Management
+
+#### Added
+- **Version Bump Script**: New `scripts/bump-version.sh` for automated version management
+  - Supports major, minor, and patch version increments
+  - Updates VERSION file, Cargo.toml, tests, and documentation
+  - Cross-platform compatible (macOS and Linux)
+- **Make Targets**: Convenient version management commands
+  - `make bump-major` - Increment major version (X.0.0)
+  - `make bump-minor` - Increment minor version (0.X.0)
+  - `make bump-patch` - Increment patch version (0.0.X)
+- **First-Match Replacement**: Script uses awk to preserve dependency versions
+  - Only updates package version in Cargo.toml
+  - Preserves all dependency version specifications
+
+#### Changed
+- **Release Process**: Simplified version management workflow
+  - No more manual editing of multiple files
+  - Consistent version updates across all project files
+- **Documentation**: Updated all docs to reflect v2.9.1 and new version system
+
 ## [2.9.0] - 2025-08-31
 
 ### Phase 2 Database Maintenance Complete

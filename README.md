@@ -596,7 +596,14 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.9.0 (2025-08-31) - Latest
+### v2.9.1 (2025-08-31) - Latest
+- **Automated Version Management** - New `scripts/bump-version.sh` for version bumping
+- **Make Targets** - Added `make bump-major`, `make bump-minor`, `make bump-patch`
+- **Version Synchronization** - Automatically updates VERSION, Cargo.toml, tests, and docs
+- **Cross-Platform Support** - Compatible with both macOS and Linux sed/awk
+- **Documentation Updates** - All documentation synchronized with v2.9.1
+
+### v2.9.0 (2025-08-31)
 - **Phase 2 Database Maintenance Complete** - All features fully implemented and tested
 - **Configuration Alignment** - Fixed retention defaults between code and documentation
 - **Test Infrastructure** - Dynamic binary path detection for CI/CD compatibility

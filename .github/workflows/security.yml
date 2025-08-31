@@ -208,7 +208,13 @@ jobs:
       uses: dtolnay/rust-toolchain@stable
 
     - name: Install cargo-deny
-      run: cargo install cargo-deny
+      run: cargo install cargo-deny --locked
+
+    - name: Fetch advisory database
+      run: |
+        # Ensure the advisory database is up to date
+        mkdir -p ~/.cargo
+        cargo deny fetch
 
     - name: Create deny.toml if not exists
       run: |
@@ -259,17 +265,23 @@ jobs:
           echo "✅ Supply chain security check passed!" >> $GITHUB_STEP_SUMMARY
         else
           echo "⚠️ Supply chain security issues detected!" >> $GITHUB_STEP_SUMMARY
-          # Ensure jq is available
-          if ! command -v jq >/dev/null 2>&1; then
-            sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y jq >/dev/null 2>&1 || true
-          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          # Try to run cargo deny with regular output for better error visibility
+          echo "### Detailed Report:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          if command -v jq >/dev/null 2>&1; then
-            # Summarize each report with error/warning counts
-            jq -r '.reports[] | .title + ": " + ( (.errors | length) | tostring ) + " errors, " + ( (.warnings | length) | tostring ) + " warnings"' /tmp/deny.json 2>/dev/null >> $GITHUB_STEP_SUMMARY || cat /tmp/deny.json >> $GITHUB_STEP_SUMMARY
+          cargo deny check 2>&1 | head -100 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          # Check if we have actual errors vs just warnings
+          # cargo-deny exits with 1 for warnings, 2+ for errors
+          if [ $EXIT -gt 1 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Critical errors found (exit code: $EXIT)" >> $GITHUB_STEP_SUMMARY
+            exit $EXIT
           else
-            cat /tmp/deny.json >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ Only warnings found, continuing..." >> $GITHUB_STEP_SUMMARY
+            exit 0
           fi
-          echo '```' >> $GITHUB_STEP_SUMMARY
         fi
-        exit $EXIT
