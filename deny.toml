@@ -50,8 +50,8 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "warn"
 # Maximum allowed severity for vulnerabilities
 vulnerability = "deny"
-# Allow unmaintained crates with a warning
-unmaintained = "warn"
+# Check unmaintained status for workspace dependencies only
+unmaintained = "workspace"
 # Security notice behavior
 notice = "warn"
 # Ignore specific advisories (use sparingly)

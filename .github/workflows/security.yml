@@ -247,6 +247,9 @@ jobs:
         db-path = "~/.cargo/advisory-db"
         db-urls = ["https://github.com/rustsec/advisory-db"]
         yanked = "warn"
+        vulnerability = "deny"
+        unmaintained = "workspace"
+        notice = "warn"
         EOF
         fi
 
