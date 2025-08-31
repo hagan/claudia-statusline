@@ -248,7 +248,7 @@ impl Default for TranscriptConfig {
 impl Default for GitConfig {
     fn default() -> Self {
         GitConfig {
-            timeout_ms: 200  // 200ms default timeout for git operations
+            timeout_ms: 200, // 200ms default timeout for git operations
         }
     }
 }

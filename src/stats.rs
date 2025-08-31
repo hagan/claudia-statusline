@@ -138,7 +138,9 @@ impl StatsData {
         let monthly = db.get_all_monthly_stats()?;
         let all_time_total = db.get_all_time_total()?;
         let sessions_count = db.get_all_time_sessions_count()?;
-        let since_date = db.get_earliest_session_date()?.unwrap_or_else(current_timestamp);
+        let since_date = db
+            .get_earliest_session_date()?
+            .unwrap_or_else(current_timestamp);
 
         // Construct in one go to avoid field reassigns after Default
         let data = StatsData {

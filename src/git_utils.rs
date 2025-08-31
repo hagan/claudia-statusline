@@ -6,10 +6,10 @@
 use crate::config;
 use crate::error::StatuslineError;
 use crate::retry::retry_simple;
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
-use std::io::Read;
 
 /// Executes a git command with the given arguments in a directory.
 ///
@@ -46,13 +46,17 @@ fn execute_git_command<P: AsRef<Path>>(dir: P, args: &[&str]) -> Option<Output> 
 /// Internal function that executes a git command with proper timeout support.
 ///
 /// Returns the command output if successful, or None if timeout/failure occurs.
-fn execute_git_with_timeout<P: AsRef<Path>>(dir: P, args: &[&str], timeout_ms: u32) -> Option<Output> {
+fn execute_git_with_timeout<P: AsRef<Path>>(
+    dir: P,
+    args: &[&str],
+    timeout_ms: u32,
+) -> Option<Output> {
     let mut cmd = Command::new("git");
     cmd.args(args)
-       .current_dir(dir.as_ref())
-       .env("GIT_OPTIONAL_LOCKS", "0")
-       .stdout(Stdio::piped())
-       .stderr(Stdio::piped());
+        .current_dir(dir.as_ref())
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     let mut child = cmd.spawn().ok()?;
 
@@ -81,7 +85,11 @@ fn execute_git_with_timeout<P: AsRef<Path>>(dir: P, args: &[&str], timeout_ms: u
         if start.elapsed() > timeout {
             // Timeout reached, kill the process
             let _ = child.kill();
-            log::info!("Git command timed out after {}ms: git {}", timeout_ms, args.join(" "));
+            log::info!(
+                "Git command timed out after {}ms: git {}",
+                timeout_ms,
+                args.join(" ")
+            );
             return None;
         }
 
@@ -182,8 +190,8 @@ mod tests {
         let start = Instant::now();
         let result = execute_git_with_timeout(
             temp_dir.path(),
-            &["--version"],  // Quick command that should succeed
-            200  // 200ms timeout
+            &["--version"], // Quick command that should succeed
+            200,            // 200ms timeout
         );
 
         // Should complete quickly and successfully

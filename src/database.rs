@@ -299,10 +299,7 @@ impl SqliteDatabase {
     /// Get all-time sessions count
     pub fn get_all_time_sessions_count(&self) -> Result<usize> {
         let conn = self.get_connection()?;
-        let count: i32 =
-            conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| {
-                row.get(0)
-            })?;
+        let count: i32 = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
         Ok(count as usize)
     }
 
@@ -310,9 +307,7 @@ impl SqliteDatabase {
     pub fn get_earliest_session_date(&self) -> Result<Option<String>> {
         let conn = self.get_connection()?;
         let result: Option<String> =
-            conn.query_row("SELECT MIN(start_time) FROM sessions", [], |row| {
-                row.get(0)
-            })?;
+            conn.query_row("SELECT MIN(start_time) FROM sessions", [], |row| row.get(0))?;
         Ok(result)
     }
 
@@ -850,7 +845,7 @@ mod tests {
         assert!(since_date.is_some());
         let date_str = since_date.unwrap();
         // Should be a valid timestamp string
-        assert!(date_str.contains('-'));  // Date separators
-        assert!(date_str.len() > 10);     // At least YYYY-MM-DD
+        assert!(date_str.contains('-')); // Date separators
+        assert!(date_str.len() > 10); // At least YYYY-MM-DD
     }
 }

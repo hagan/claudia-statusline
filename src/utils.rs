@@ -39,8 +39,8 @@ pub fn sanitize_for_terminal(input: &str) -> String {
         .filter(|c| {
             let code = *c as u32;
             // Allow printable ASCII and Unicode, tab, newline, carriage return
-            (*c == '\t' || *c == '\n' || *c == '\r') ||
-            (code >= 0x20 && code != 0x7F && (code < 0x80 || code > 0x9F))
+            (*c == '\t' || *c == '\n' || *c == '\r')
+                || (code >= 0x20 && code != 0x7F && !(0x80..=0x9F).contains(&code))
         })
         .collect();
 
@@ -290,10 +290,7 @@ mod tests {
     #[test]
     fn test_sanitize_for_terminal() {
         // Test removal of ANSI escape codes
-        assert_eq!(
-            sanitize_for_terminal("\x1b[31mRed Text\x1b[0m"),
-            "Red Text"
-        );
+        assert_eq!(sanitize_for_terminal("\x1b[31mRed Text\x1b[0m"), "Red Text");
         assert_eq!(
             sanitize_for_terminal("\x1b[1;32mBold Green\x1b[0m"),
             "Bold Green"
@@ -301,15 +298,15 @@ mod tests {
 
         // Test removal of control characters
         assert_eq!(
-            sanitize_for_terminal("Hello\x00World"),  // Null byte
+            sanitize_for_terminal("Hello\x00World"), // Null byte
             "HelloWorld"
         );
         assert_eq!(
-            sanitize_for_terminal("Text\x1bEscape"),  // Escape character alone
+            sanitize_for_terminal("Text\x1bEscape"), // Escape character alone
             "TextEscape"
         );
         assert_eq!(
-            sanitize_for_terminal("Bell\x07Sound"),  // Bell character
+            sanitize_for_terminal("Bell\x07Sound"), // Bell character
             "BellSound"
         );
 
@@ -337,7 +334,7 @@ mod tests {
 
         // Test removal of non-printable Unicode control characters
         assert_eq!(
-            sanitize_for_terminal("Text\u{0080}\u{009F}More"),  // C1 control characters
+            sanitize_for_terminal("Text\u{0080}\u{009F}More"), // C1 control characters
             "TextMore"
         );
     }
