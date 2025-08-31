@@ -32,6 +32,7 @@ dirs = "5.0"  # For finding config directories
 clap = { version = "4.5", features = ["derive"] }  # CLI argument parsing
 log = "0.4"  # Structured logging
 env_logger = "0.11"  # Environment-based log configuration
+regex = "1.10"  # For sanitizing terminal output
 
 [build-dependencies]
 chrono = "0.4"

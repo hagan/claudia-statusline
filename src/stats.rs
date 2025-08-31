@@ -137,6 +137,8 @@ impl StatsData {
         let daily = db.get_all_daily_stats()?;
         let monthly = db.get_all_monthly_stats()?;
         let all_time_total = db.get_all_time_total()?;
+        let sessions_count = db.get_all_time_sessions_count()?;
+        let since_date = db.get_earliest_session_date()?.unwrap_or_else(current_timestamp);
 
         // Construct in one go to avoid field reassigns after Default
         let data = StatsData {
@@ -145,7 +147,8 @@ impl StatsData {
             monthly,
             all_time: AllTimeStats {
                 total_cost: all_time_total,
-                ..Default::default()
+                sessions: sessions_count,
+                since: since_date,
             },
             ..Default::default()
         };

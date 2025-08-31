@@ -13,6 +13,40 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
+/// Sanitizes a string for safe terminal output by removing control characters
+/// and ANSI escape sequences. This prevents malicious strings from manipulating
+/// terminal state or executing unintended commands.
+///
+/// # Arguments
+///
+/// * `input` - The string to sanitize
+///
+/// # Returns
+///
+/// A sanitized string safe for terminal output
+pub fn sanitize_for_terminal(input: &str) -> String {
+    // Remove ANSI escape sequences (e.g., \x1b[31m for colors)
+    // Pattern matches: ESC [ ... m where ... is any sequence of digits and semicolons
+    let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let mut sanitized = ansi_regex.replace_all(input, "").to_string();
+
+    // Remove control characters (0x00-0x1F and 0x7F-0x9F) except for:
+    // - Tab (0x09)
+    // - Line feed (0x0A)
+    // - Carriage return (0x0D)
+    sanitized = sanitized
+        .chars()
+        .filter(|c| {
+            let code = *c as u32;
+            // Allow printable ASCII and Unicode, tab, newline, carriage return
+            (*c == '\t' || *c == '\n' || *c == '\r') ||
+            (code >= 0x20 && code != 0x7F && (code < 0x80 || code > 0x9F))
+        })
+        .collect();
+
+    sanitized
+}
+
 /// Parses an ISO 8601 timestamp to Unix epoch seconds.
 ///
 /// # Arguments
@@ -251,6 +285,61 @@ mod tests {
         // Special characters that might cause issues
         assert!(calculate_context_usage("/tmp/test\n.jsonl").is_none());
         assert!(parse_duration("/tmp/test\r.jsonl").is_none());
+    }
+
+    #[test]
+    fn test_sanitize_for_terminal() {
+        // Test removal of ANSI escape codes
+        assert_eq!(
+            sanitize_for_terminal("\x1b[31mRed Text\x1b[0m"),
+            "Red Text"
+        );
+        assert_eq!(
+            sanitize_for_terminal("\x1b[1;32mBold Green\x1b[0m"),
+            "Bold Green"
+        );
+
+        // Test removal of control characters
+        assert_eq!(
+            sanitize_for_terminal("Hello\x00World"),  // Null byte
+            "HelloWorld"
+        );
+        assert_eq!(
+            sanitize_for_terminal("Text\x1bEscape"),  // Escape character alone
+            "TextEscape"
+        );
+        assert_eq!(
+            sanitize_for_terminal("Bell\x07Sound"),  // Bell character
+            "BellSound"
+        );
+
+        // Test preservation of allowed control characters
+        assert_eq!(
+            sanitize_for_terminal("Line1\nLine2\tTabbed"),
+            "Line1\nLine2\tTabbed"
+        );
+        assert_eq!(
+            sanitize_for_terminal("Windows\r\nLineEnd"),
+            "Windows\r\nLineEnd"
+        );
+
+        // Test complex mixed input
+        assert_eq!(
+            sanitize_for_terminal("\x1b[31mDanger\x00\x07\x1b[0m\nSafe"),
+            "Danger\nSafe"
+        );
+
+        // Test Unicode characters are preserved
+        assert_eq!(
+            sanitize_for_terminal("Unicode: 🚀 日本語"),
+            "Unicode: 🚀 日本語"
+        );
+
+        // Test removal of non-printable Unicode control characters
+        assert_eq!(
+            sanitize_for_terminal("Text\u{0080}\u{009F}More"),  // C1 control characters
+            "TextMore"
+        );
     }
 
     #[test]

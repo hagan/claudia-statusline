@@ -997,6 +997,7 @@ dependencies = [
  "proptest",
  "r2d2",
  "r2d2_sqlite",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

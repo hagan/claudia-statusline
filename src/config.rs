@@ -26,6 +26,9 @@ pub struct Config {
 
     /// Transcript processing configuration
     pub transcript: TranscriptConfig,
+
+    /// Git configuration
+    pub git: GitConfig,
 }
 
 /// Display-related configuration
@@ -139,6 +142,14 @@ pub struct TranscriptConfig {
     pub buffer_lines: usize,
 }
 
+/// Git configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitConfig {
+    /// Timeout for git operations in milliseconds
+    pub timeout_ms: u32,
+}
+
 // Default implementations
 // Default is derived above
 
@@ -231,6 +242,14 @@ impl Default for RetrySettings {
 impl Default for TranscriptConfig {
     fn default() -> Self {
         TranscriptConfig { buffer_lines: 50 }
+    }
+}
+
+impl Default for GitConfig {
+    fn default() -> Self {
+        GitConfig {
+            timeout_ms: 200  // 200ms default timeout for git operations
+        }
     }
 }
 

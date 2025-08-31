@@ -296,6 +296,26 @@ impl SqliteDatabase {
         Ok(total)
     }
 
+    /// Get all-time sessions count
+    pub fn get_all_time_sessions_count(&self) -> Result<usize> {
+        let conn = self.get_connection()?;
+        let count: i32 =
+            conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| {
+                row.get(0)
+            })?;
+        Ok(count as usize)
+    }
+
+    /// Get earliest session date (since date)
+    pub fn get_earliest_session_date(&self) -> Result<Option<String>> {
+        let conn = self.get_connection()?;
+        let result: Option<String> =
+            conn.query_row("SELECT MIN(start_time) FROM sessions", [], |row| {
+                row.get(0)
+            })?;
+        Ok(result)
+    }
+
     /// Get today's total cost
     #[allow(dead_code)]
     pub fn get_today_total(&self) -> Result<f64> {
@@ -808,5 +828,29 @@ mod tests {
         assert_eq!(db.get_today_total().unwrap(), 60.0);
         assert_eq!(db.get_month_total().unwrap(), 60.0);
         assert_eq!(db.get_all_time_total().unwrap(), 60.0);
+    }
+
+    #[test]
+    fn test_all_time_stats_loading() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        // Add multiple sessions with different dates
+        db.update_session("session-1", 10.0, 100, 50).unwrap();
+        db.update_session("session-2", 20.0, 200, 100).unwrap();
+        db.update_session("session-3", 30.0, 300, 150).unwrap();
+
+        // Check all-time stats methods
+        assert_eq!(db.get_all_time_total().unwrap(), 60.0);
+        assert_eq!(db.get_all_time_sessions_count().unwrap(), 3);
+
+        // Check that we get a valid date string
+        let since_date = db.get_earliest_session_date().unwrap();
+        assert!(since_date.is_some());
+        let date_str = since_date.unwrap();
+        // Should be a valid timestamp string
+        assert!(date_str.contains('-'));  // Date separators
+        assert!(date_str.len() > 10);     // At least YYYY-MM-DD
     }
 }

@@ -7,6 +7,7 @@ use crate::common::validate_path_security;
 use crate::display::Colors;
 use crate::error::{Result, StatuslineError};
 use crate::git_utils;
+use crate::utils::sanitize_for_terminal;
 use std::path::PathBuf;
 
 /// Git repository status information.
@@ -102,12 +103,12 @@ fn parse_git_status(status_text: &str) -> Option<GitStatus> {
 pub fn format_git_info(git_status: &GitStatus) -> String {
     let mut parts = Vec::new();
 
-    // Add branch name
+    // Add branch name (sanitized for terminal safety)
     if !git_status.branch.is_empty() {
         parts.push(format!(
             "{}{}{}",
             Colors::green(),
-            git_status.branch,
+            sanitize_for_terminal(&git_status.branch),
             Colors::reset()
         ));
     }
@@ -243,5 +244,29 @@ mod tests {
         assert!(formatted.contains("+2"));
         assert!(formatted.contains("~1"));
         assert!(formatted.contains("?3"));
+    }
+
+    #[test]
+    fn test_format_git_info_sanitizes_branch_name() {
+        // Disable colors for this test to check sanitization only
+        std::env::set_var("NO_COLOR", "1");
+
+        // Test that malicious branch names are sanitized
+        let status = GitStatus {
+            branch: "feature/\x1b[31mdanger\x1b[0m\x00\x07".to_string(),
+            added: 0,
+            modified: 0,
+            deleted: 0,
+            untracked: 0,
+        };
+        let formatted = format_git_info(&status);
+        // Should not contain control characters (the escape codes from the malicious input)
+        assert!(!formatted.contains('\x00'));
+        assert!(!formatted.contains('\x07'));
+        // Should contain the sanitized branch name
+        assert!(formatted.contains("feature/danger"));
+
+        // Clean up
+        std::env::remove_var("NO_COLOR");
     }
 }

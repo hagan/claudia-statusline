@@ -126,7 +126,6 @@ clean:
 	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
 	@$(CARGO) clean 2>/dev/null || true
 	@rm -rf $(TARGET_DIR)
-	@rm -f Cargo.lock
 	@echo "$(GREEN)✓$(NC) Build artifacts removed"
 
 # Clean trailing whitespace from all project files

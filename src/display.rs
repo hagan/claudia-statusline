@@ -6,7 +6,7 @@
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
 use crate::models::{ContextUsage, Cost, ModelType};
-use crate::utils::{calculate_context_usage, parse_duration, shorten_path};
+use crate::utils::{calculate_context_usage, parse_duration, sanitize_for_terminal, shorten_path};
 
 /// ANSI color codes for terminal output.
 pub struct Colors;
@@ -123,8 +123,8 @@ pub fn format_output(
 ) {
     let mut output = String::new();
 
-    // Shorten the path
-    let short_dir = shorten_path(current_dir);
+    // Shorten and sanitize the path
+    let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
 
     // Directory with color
     output.push_str(&format!(
@@ -154,13 +154,14 @@ pub fn format_output(
         }
     }
 
-    // Model display
+    // Model display (sanitize untrusted model name)
     if let Some(name) = model_name {
-        let model_type = ModelType::from_name(name);
+        let sanitized_name = sanitize_for_terminal(name);
+        let model_type = ModelType::from_name(&sanitized_name);
         output.push_str(&format!(
             " {}{}{}",
             Colors::cyan(),
-            model_type.abbreviation(),
+            sanitize_for_terminal(model_type.abbreviation()),
             Colors::reset()
         ));
     }
@@ -439,5 +440,22 @@ mod tests {
 
         // Cleanup
         std::env::remove_var("STATUSLINE_THEME");
+    }
+
+    #[test]
+    fn test_sanitized_output() {
+        // Test with malicious directory path containing ANSI codes
+        let malicious_dir = "/home/user/\x1b[31mdanger\x1b[0m/project";
+        let model_with_control = "claude-\x00-opus\x07";
+
+        // Create a simple output string to test sanitization
+        let short_dir = sanitize_for_terminal(&shorten_path(malicious_dir));
+        assert!(!short_dir.contains('\x1b'));
+        assert!(!short_dir.contains('\x00'));
+        assert!(!short_dir.contains('\x07'));
+
+        // Test model name sanitization
+        let sanitized_model = sanitize_for_terminal(model_with_control);
+        assert_eq!(sanitized_model, "claude--opus");
     }
 }

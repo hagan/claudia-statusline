@@ -21,9 +21,23 @@ As of version 2.6.0, Claudia Statusline includes automated security scanning in 
 
 ## Security Hardening
 
-As of version 2.2.1, Claudia Statusline includes comprehensive security hardening:
+As of version 2.9.3, Claudia Statusline includes comprehensive security hardening:
 
-### Input Validation
+### Terminal Output Sanitization (v2.9.3)
+- All untrusted user input is sanitized before terminal display
+- ANSI escape sequences are stripped to prevent injection attacks
+- Control characters are removed (except tab, newline, carriage return)
+- Applied to: Git branch names, model names, directory paths
+- Function: `sanitize_for_terminal()` in utils.rs
+
+### Git Operation Resilience (v2.9.3)
+- Git operations enforce a soft timeout (default 200ms)
+- Configurable via `config.git.timeout_ms` or `STATUSLINE_GIT_TIMEOUT_MS` env var
+- Processes are killed if timeout exceeded with INFO logging
+- `GIT_OPTIONAL_LOCKS=0` prevents lock conflicts
+- Automatic retry on failure (2 attempts with 100ms backoff)
+
+### Input Validation (v2.2.1)
 - All user-supplied paths from JSON input are validated and canonicalized
 - Directory traversal attempts are blocked (e.g., "../../../etc")
 - Null byte injection is prevented
@@ -33,8 +47,10 @@ As of version 2.2.1, Claudia Statusline includes comprehensive security hardenin
 - Transcript files are limited to 10MB to prevent memory exhaustion
 
 ### Security Functions
+- `sanitize_for_terminal()` in utils.rs - Removes control chars and ANSI escapes
 - `validate_directory_path()` in git.rs - Validates directory paths for git operations
 - `validate_file_path()` in utils.rs - Validates file paths for transcript reading
+- `execute_git_with_timeout()` in git_utils.rs - Enforces timeout on git operations
 
 ### Security Tests
 The following security tests ensure our protection mechanisms work:
