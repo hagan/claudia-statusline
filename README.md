@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.9.1** - Enhanced CI/CD security workflows with cargo-deny integration
+**Version 2.9.2** - Fixed GitHub Actions security workflow and organized documentation
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -587,16 +587,50 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Documentation
 
-- [README.md](README.md) - This file, main documentation
+### Core Documentation
+- [README.md](README.md) - Main documentation and quick start guide
 - [ARCHITECTURE.md](ARCHITECTURE.md) - Module structure and technical details
+- [CHANGELOG.md](CHANGELOG.md) - Complete version history and release notes
+
+### Development & Contributing
+- [CONTRIBUTING.md](CONTRIBUTING.md) - Developer guidelines and debugging tips
+- [CLAUDE.md](CLAUDE.md) - Development documentation for maintainers
+- [SECURITY.md](SECURITY.md) - Security policies and vulnerability reporting
+
+### Migration & Configuration
 - [SQLITE_MIGRATION.md](SQLITE_MIGRATION.md) - SQLite migration guide for v2.7.0+
-- [LICENSE](LICENSE) - MIT License for our contributions with important clarifications
+- [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) - Detailed migration instructions
+
+### Planning & Roadmap
+- [Planning Documents](.claude/planning/) - Phase-based development roadmap
+  - [Overview](.claude/planning/00_overview.md) - High-level roadmap
+  - [Phase 1: SQLite Finalization](.claude/planning/01_sqlite_finalization.md) ✅
+  - [Phase 2: DB Maintenance](.claude/planning/02_db_maintenance.md) ✅
+  - [Phase 3: Security Hardening](.claude/planning/03_security_hardening.md) 🔜
+  - [Phase 4: CLI UX](.claude/planning/04_cli_ux_health.md) 🔜
+  - [Phase 5: Git Performance](.claude/planning/05_git_parsing_perf.md) 🔜
+  - [Phase 6: Reusability](.claude/planning/06_reuse_codex.md) 🔜
+
+### Legal & Attribution
+- [LICENSE](LICENSE) - MIT License for our contributions
 - [NOTICE](NOTICE) - Attribution and copyright notices
 - [ATTRIBUTION.md](ATTRIBUTION.md) - Detailed attribution information
+- [CREDITS.md](CREDITS.md) - Acknowledgments and credits
+
+### Other Resources
+- [AGENTS.md](AGENTS.md) - Information about AI assistant usage
+- [Context Documentation](.claude/context/) - Development context for AI assistants
 
 ## Changelog
 
-### v2.9.1 (2025-08-31) - Latest
+### v2.9.2 (2025-08-31) - Latest
+- **Fixed GitHub Actions Security Workflow** - Resolved cargo-deny configuration errors
+- **Enhanced CI/CD Error Handling** - Smart detection of dev-dependency vs production issues
+- **Documentation Organization** - Added comprehensive documentation index
+- **Context Cleanup** - Archived 23 old context files, reducing active context by 47%
+- **Improved Diagnostics** - Better error reporting with JSON parsing in workflows
+
+### v2.9.1 (2025-08-31)
 - **Automated Version Management** - New `scripts/bump-version.sh` for version bumping
 - **Make Targets** - Added `make bump-major`, `make bump-minor`, `make bump-patch`
 - **Version Synchronization** - Automatically updates VERSION, Cargo.toml, tests, and docs
