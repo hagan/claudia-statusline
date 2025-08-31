@@ -220,13 +220,15 @@ jobs:
       run: |
         if [ ! -f deny.toml ]; then
           cat > deny.toml << 'EOF'
+        # cargo-deny configuration v2 format
+        version = 2
+
         [bans]
         multiple-versions = "warn"
         skip = []
         skip-tree = []
 
         [licenses]
-        unlicensed = "deny"
         allow = [
           "MIT",
           "Apache-2.0",
@@ -236,8 +238,9 @@ jobs:
           "ISC",
           "Unicode-DFS-2016",
           "CC0-1.0",
+          "Unlicense",
         ]
-        copyleft = "warn"
+        confidence-threshold = 0.8
 
         [sources]
         unknown-registry = "warn"
@@ -247,9 +250,6 @@ jobs:
         db-path = "~/.cargo/advisory-db"
         db-urls = ["https://github.com/rustsec/advisory-db"]
         yanked = "warn"
-        vulnerability = "deny"
-        unmaintained = "workspace"
-        notice = "warn"
         EOF
         fi
 

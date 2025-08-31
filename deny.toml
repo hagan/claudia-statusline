@@ -1,5 +1,9 @@
 # cargo-deny configuration for Claudia Statusline
 # This file configures supply chain security checks
+# Updated for cargo-deny v0.14+ format
+
+# Version of cargo-deny configuration
+version = 2
 
 [bans]
 # Warn about multiple versions of the same crate
@@ -11,8 +15,6 @@ skip = []
 skip-tree = []
 
 [licenses]
-# Deny crates with no license
-unlicensed = "deny"
 # Allow only these licenses (permissive)
 allow = [
     "MIT",
@@ -25,10 +27,10 @@ allow = [
     "CC0-1.0",
     "Unlicense",
 ]
-# Deny copyleft licenses (e.g., GPL/AGPL)
-copyleft = "deny"
 # Confidence threshold for license detection
 confidence-threshold = 0.8
+# List of exceptions for specific crates
+exceptions = []
 
 [sources]
 # Warn about crates from unknown registries
@@ -48,12 +50,6 @@ db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 # Warn about yanked crates
 yanked = "warn"
-# Maximum allowed severity for vulnerabilities
-vulnerability = "deny"
-# Check unmaintained status for workspace dependencies only
-unmaintained = "workspace"
-# Security notice behavior
-notice = "warn"
 # Ignore specific advisories (use sparingly)
 ignore = [
     # Example: "RUSTSEC-2020-0001",
