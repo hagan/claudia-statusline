@@ -57,6 +57,15 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 ```
 
+Note: The quick installer installs to `~/.local/bin/statusline` by default. Ensure `~/.local/bin` is on your `PATH`:
+
+```bash
+# Add to PATH for bash/zsh (effective next shell)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc"
+# For zsh users:
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+```
+
 Or with wget:
 ```bash
 wget -qO- https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
@@ -105,11 +114,91 @@ Download the latest release for your platform:
 | macOS | Apple Silicon | [statusline-darwin-arm64.tar.gz](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-darwin-arm64.tar.gz) |
 | Windows | x86_64 | [statusline-windows-amd64.zip](https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-windows-amd64.zip) |
 
-Example for Linux x86_64:
+Example for Linux x86_64 (user-local install):
 ```bash
 curl -L https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz | tar xz
-chmod +x statusline
-sudo mv statusline /usr/local/bin/
+mkdir -p "$HOME/.local/bin"
+install -m 755 statusline "$HOME/.local/bin/statusline"
+
+# Ensure ~/.local/bin is on your PATH (bash/zsh)
+case :$PATH: in
+  *:"$HOME/.local/bin":*) ;; # already present
+  *) echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.bashrc";;
+esac
+```
+
+To install system-wide instead:
+```bash
+curl -L https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz | tar xz
+sudo install -m 755 statusline /usr/local/bin/statusline
+```
+
+#### Upgrade to Latest Binary
+
+To replace your currently installed version with the latest release:
+
+```bash
+# Linux (x86_64 example)
+tmpdir=$(mktemp -d) && cd "$tmpdir"
+curl -L https://github.com/hagan/claudia-statusline/releases/latest/download/statusline-linux-amd64.tar.gz | tar xz
+install -m 755 statusline "$HOME/.local/bin/statusline" 2>/dev/null || sudo install -m 755 statusline /usr/local/bin/statusline
+
+# Verify the version (ensure ~/.local/bin is on PATH or call with full path)
+statusline --version || "$HOME/.local/bin/statusline" --version
+```
+
+On macOS, use the `statusline-darwin-<arch>.tar.gz` asset. On Windows, download the latest `.zip` from Releases and replace your existing `statusline.exe`.
+
+Windows PATH setup:
+
+```powershell
+# Create a user-local bin directory and place the binary
+New-Item -ItemType Directory -Force "$env:USERPROFILE\bin" | Out-Null
+Expand-Archive -Force statusline-windows-amd64.zip "$env:TEMP\statusline"
+Copy-Item "$env:TEMP\statusline\statusline.exe" "$env:USERPROFILE\bin\statusline.exe" -Force
+
+# Add to user PATH (PowerShell)
+[Environment]::SetEnvironmentVariable(
+  'Path',
+  "$env:USERPROFILE\bin;" + [Environment]::GetEnvironmentVariable('Path', 'User'),
+  'User'
+)
+
+# Verify in a new terminal
+statusline --version
+```
+
+macOS Gatekeeper note:
+
+If macOS reports that the binary “cannot be opened because it is from an unidentified developer”, you can remove the quarantine attribute after installing:
+
+```bash
+# If installed to user-local path
+xattr -d com.apple.quarantine "$HOME/.local/bin/statusline" 2>/dev/null || true
+
+# If installed system-wide
+sudo xattr -d com.apple.quarantine /usr/local/bin/statusline 2>/dev/null || true
+```
+
+Alternatively, you can allow the app in System Settings → Privacy & Security after the first launch attempt.
+
+macOS PATH troubleshooting:
+
+If `statusline` is not found after installation on macOS (zsh default):
+
+```bash
+# Ensure ~/.local/bin is on PATH for login shells (Terminal/iTerm)
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zprofile"
+
+# Also add for interactive shells
+echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+
+# Start a new terminal session or source the files
+source "$HOME/.zprofile" 2>/dev/null || true
+source "$HOME/.zshrc" 2>/dev/null || true
+
+# Verify
+which statusline && statusline --version
 ```
 
 #### Option 2: Install from Source (For Claude Code Users)
@@ -129,6 +218,18 @@ cd claudia-statusline
 ./scripts/install-statusline.sh --with-stats  # Enable persistent stats tracking
 # Stats saved to: ~/.local/share/claudia-statusline/stats.json (or $XDG_DATA_HOME/claudia-statusline/stats.json)
 ./scripts/install-statusline.sh --prefix /usr/local/bin  # Custom install location
+```
+
+Note: Building from source uses the latest code on the `main` branch and may include changes ahead of the latest tagged release. If you prefer the most recent stable release, use the pre-built binaries above.
+
+#### Uninstall
+
+Use the provided uninstaller:
+
+```bash
+./scripts/uninstall-statusline.sh --help         # Show options
+./scripts/uninstall-statusline.sh --dry-run      # Preview removal
+./scripts/uninstall-statusline.sh                # Remove installed binary
 ```
 
 The installer will:
