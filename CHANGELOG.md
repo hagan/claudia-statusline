@@ -5,6 +5,25 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.2] - 2025-08-31
+
+### Fixed GitHub Actions Security Workflow
+
+#### Fixed
+- **cargo-deny Configuration**: Removed invalid `version = 2` field causing deserialization errors
+- **Invalid Field Removal**: Removed unrecognized `workspace-default-features` field from deny.toml
+- **Missing Licenses**: Added BSD-3-Clause, ISC, Unicode-DFS-2016, and CC0-1.0 to allowed licenses
+- **Workflow Error Handling**: Enhanced security.yml with smart error detection
+  - Added JSON parsing to distinguish real errors from warnings
+  - Implemented dev-dependency filtering with `--no-default-features` check
+  - Added `continue-on-error` for graceful error handling
+  - Enhanced reporting with detailed diagnostics and error codes
+
+#### Changed
+- **Supply Chain Security Check**: Now properly handles dev-only dependency issues as non-critical
+- **Error Reporting**: Provides detailed JSON summaries with diagnostic codes and messages
+- **CI/CD Status**: All security workflow jobs now pass successfully
+
 ## [2.9.1] - 2025-08-31
 
 ### Automated Version Management
