@@ -520,8 +520,8 @@ fn perform_database_maintenance(force_vacuum: bool, no_prune: bool, quiet: bool)
 
 /// Show diagnostic health information
 fn show_health_report(json_output: bool) -> Result<()> {
-    use serde_json::json;
     use rusqlite::{Connection, OpenFlags};
+    use serde_json::json;
 
     // Get paths
     let db_path = stats::StatsData::get_sqlite_path()?;
@@ -551,10 +551,9 @@ fn show_health_report(json_output: bool) -> Result<()> {
             }
             Err(_) => {
                 // Read-only fallback: open without attempting schema creation/WAL
-                if let Ok(conn) = Connection::open_with_flags(
-                    &db_path,
-                    OpenFlags::SQLITE_OPEN_READ_ONLY,
-                ) {
+                if let Ok(conn) =
+                    Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+                {
                     // Today total
                     let _ = conn
                         .query_row(
@@ -570,26 +569,24 @@ fn show_health_report(json_output: bool) -> Result<()> {
                             |row| { month_total = row.get::<_, f64>(0)?; Ok(()) },
                         );
                     // All-time total
-                    let _ = conn
-                        .query_row(
-                            "SELECT COALESCE(SUM(cost), 0.0) FROM sessions",
-                            [],
-                            |row| { all_time_total = row.get::<_, f64>(0)?; Ok(()) },
-                        );
+                    let _ = conn.query_row(
+                        "SELECT COALESCE(SUM(cost), 0.0) FROM sessions",
+                        [],
+                        |row| {
+                            all_time_total = row.get::<_, f64>(0)?;
+                            Ok(())
+                        },
+                    );
                     // Session count
-                    let _ = conn
-                        .query_row(
-                            "SELECT COUNT(*) FROM sessions",
-                            [],
-                            |row| { session_count = row.get::<_, i64>(0)? as usize; Ok(()) },
-                        );
+                    let _ = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| {
+                        session_count = row.get::<_, i64>(0)? as usize;
+                        Ok(())
+                    });
                     // Earliest session
-                    let _ = conn
-                        .query_row(
-                            "SELECT MIN(start_time) FROM sessions",
-                            [],
-                            |row| { earliest_session = row.get::<_, Option<String>>(0)?; Ok(()) },
-                        );
+                    let _ = conn.query_row("SELECT MIN(start_time) FROM sessions", [], |row| {
+                        earliest_session = row.get::<_, Option<String>>(0)?;
+                        Ok(())
+                    });
                 }
             }
         }

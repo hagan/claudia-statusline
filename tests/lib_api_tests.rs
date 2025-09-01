@@ -42,10 +42,13 @@ fn test_render_from_json_basic() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
     let home = std::env::var("HOME").unwrap_or("/tmp".to_string());
-    let json = format!(r#"{{
+    let json = format!(
+        r#"{{
         "workspace": {{"current_dir": "{}/project"}},
         "model": {{"display_name": "Claude 3.5 Sonnet"}}
-    }}"#, home);
+    }}"#,
+        home
+    );
 
     // Set NO_COLOR to get deterministic output
     std::env::set_var("NO_COLOR", "1");
@@ -198,12 +201,12 @@ fn test_no_color_environment() {
     // Test with NO_COLOR set
     std::env::set_var("NO_COLOR", "1");
     let result_no_color = render_from_json(json, false).unwrap();
-    assert!(!result_no_color.contains("\x1b["));  // No ANSI codes
+    assert!(!result_no_color.contains("\x1b[")); // No ANSI codes
 
     // Test without NO_COLOR
     std::env::remove_var("NO_COLOR");
     let result_with_color = render_from_json(json, false).unwrap();
-    assert!(result_with_color.contains("\x1b["));  // Has ANSI codes
+    assert!(result_with_color.contains("\x1b[")); // Has ANSI codes
 }
 
 #[test]
@@ -218,11 +221,14 @@ fn test_render_with_context_usage() {
     std::fs::write(&transcript_path, r#"{"message":{"role":"user","content":"Hello"},"timestamp":"2025-08-31T10:00:00.000Z"}
 {"message":{"role":"assistant","content":"World","usage":{"input_tokens":5000,"output_tokens":1000,"cache_read_input_tokens":2000}},"timestamp":"2025-08-31T10:00:01.000Z"}"#).unwrap();
 
-    let json = format!(r#"{{
+    let json = format!(
+        r#"{{
         "workspace": {{"current_dir": "/home/user/project"}},
         "model": {{"display_name": "Claude 3.5 Sonnet"}},
         "transcript": "{}"
-    }}"#, transcript_path.to_str().unwrap());
+    }}"#,
+        transcript_path.to_str().unwrap()
+    );
 
     // Set NO_COLOR to get deterministic output
     std::env::set_var("NO_COLOR", "1");

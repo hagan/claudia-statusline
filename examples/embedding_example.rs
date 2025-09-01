@@ -3,7 +3,7 @@
 //! This demonstrates how to use the public API functions to integrate
 //! the statusline functionality into your own applications.
 
-use statusline::{render_from_json, render_statusline, StatuslineInput, Workspace, Model, Cost};
+use statusline::{render_from_json, render_statusline, Cost, Model, StatuslineInput, Workspace};
 
 // Get version from VERSION file at compile time
 const VERSION: &str = include_str!("../VERSION");
@@ -83,9 +83,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("\n=== Integration Guide ===");
     println!("To integrate this library into your application:");
-    println!("1. Add 'statusline = \"{}\"' to your Cargo.toml", VERSION.trim());
+    println!(
+        "1. Add 'statusline = \"{}\"' to your Cargo.toml",
+        VERSION.trim()
+    );
     println!("2. Import the functions: use statusline::{{render_from_json, render_statusline}};");
-    println!("3. Call render_from_json() for JSON input or render_statusline() for structured input");
+    println!(
+        "3. Call render_from_json() for JSON input or render_statusline() for structured input"
+    );
     println!("4. Set update_stats=true when you want persistent stats tracking");
     println!("5. Set update_stats=false for preview/testing without affecting persistent data");
 

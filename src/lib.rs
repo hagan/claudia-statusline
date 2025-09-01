@@ -52,7 +52,7 @@ pub use config::Config;
 pub use display::{format_output, format_output_to_string};
 pub use error::{Result, StatuslineError};
 pub use git::get_git_status;
-pub use models::{Cost, StatuslineInput, Model, Workspace};
+pub use models::{Cost, Model, StatuslineInput, Workspace};
 pub use stats::{get_daily_total, get_or_load_stats_data, update_stats_data, StatsData};
 pub use version::{short_version, version_string};
 
@@ -94,7 +94,6 @@ pub use version::{short_version, version_string};
 /// println!("{}", output);
 /// ```
 pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<String> {
-
     // Get workspace directory
     let current_dir = input
         .workspace
