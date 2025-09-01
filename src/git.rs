@@ -99,7 +99,7 @@ pub fn get_git_status(dir: &str) -> Option<GitStatus> {
 /// ### Standard Status Mappings
 /// - **Added**: `A` in X position (staged add)
 /// - **Modified**: `M` in either X or Y position
-/// - **Deleted**: `D` in either X or Y position  
+/// - **Deleted**: `D` in either X or Y position
 /// - **Renamed**: `R` in X position (counts as modified)
 /// - **Copied**: `C` in X position (counts as modified)
 /// - **Type changed**: `T` in either position (counts as modified)

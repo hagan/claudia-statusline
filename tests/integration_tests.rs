@@ -6,7 +6,18 @@ fn get_test_binary() -> String {
     // Use CARGO_BIN_EXE_statusline environment variable set by cargo test
     // This points to the binary built for testing
     std::env::var("CARGO_BIN_EXE_statusline")
-        .unwrap_or_else(|_| "./target/debug/statusline".to_string())
+        .or_else(|_| -> Result<String, std::env::VarError> {
+            // Try to find the binary in common locations
+            if std::path::Path::new("./target/debug/statusline").exists() {
+                Ok("./target/debug/statusline".to_string())
+            } else if std::path::Path::new("./target/release/statusline").exists() {
+                Ok("./target/release/statusline".to_string())
+            } else {
+                // Fallback to debug location
+                Ok("./target/debug/statusline".to_string())
+            }
+        })
+        .unwrap()
 }
 
 #[test]
@@ -210,7 +221,7 @@ fn test_version_flag() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Clap's --version now shows simple version
     assert!(stdout.contains("statusline"));
-    assert!(stdout.contains("2.12.2"));
+    assert!(stdout.contains("2.13.0"));
 }
 
 #[test]

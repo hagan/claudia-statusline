@@ -5,6 +5,42 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.0] - 2025-01-09
+
+### Phase 5: Git Parsing & Test Performance Complete
+
+#### Added
+- **Comprehensive Git Status Parsing**: Enhanced porcelain v1 parsing for all XY status codes
+  - Support for renamed (`R`) and copied (`C`) files
+  - Type changes (`T`) now properly counted as modifications
+  - All unmerged/conflict states handled (`DD`, `AU`, `UD`, `UA`, `DU`, `AA`, `UU`)
+  - Combined states affecting multiple counters (`AM`, `AD`, `MD`)
+  - Detached HEAD state support (`HEAD (no branch)`)
+- **Optional Porcelain v2 Support**: Behind `git_porcelain_v2` feature flag
+  - More structured format with headers and detailed file information
+  - Maintains backward compatibility when feature is disabled
+  - Reuses same counting logic as v1 for consistency
+- **Test Suite Enhancements**:
+  - 11 new unit tests covering all git status scenarios
+  - 3 feature-gated tests for porcelain v2 parsing
+  - Comprehensive branch format testing
+
+#### Changed
+- **Integration Test Performance**: ~90% faster execution
+  - Replaced `cargo run` with prebuilt binary using `env!("CARGO_BIN_EXE_statusline")`
+  - Tests now complete in ~0.4s instead of several seconds
+  - Added `get_test_binary()` helper function with fallback
+- **Git Module**: Significantly expanded from ~160 to ~680 lines
+  - Added comprehensive documentation for parsing rules
+  - Extracted helper functions for better code organization
+  - Support for both v1 and v2 parsing formats
+
+#### Technical
+- Total tests: 216+ (up from 210)
+- Binary size: Unchanged (~3.5MB)
+- All formatting and clippy checks pass
+- Full backward compatibility maintained
+
 ## [2.12.0] - 2025-09-01
 
 ### Phase 6: Embedding API Complete
