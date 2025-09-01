@@ -289,6 +289,7 @@ pub fn format_output(
 ///
 /// This is the library-friendly version of format_output that returns
 /// the formatted statusline as a String.
+#[allow(dead_code)]
 pub fn format_output_to_string(
     current_dir: &str,
     model_name: Option<&str>,

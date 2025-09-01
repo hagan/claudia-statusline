@@ -552,6 +552,7 @@ where
 }
 
 /// Get the daily total from stats data
+#[allow(dead_code)]
 pub fn get_daily_total(data: &StatsData) -> f64 {
     let today = chrono::Local::now().format("%Y-%m-%d").to_string();
     data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0)
