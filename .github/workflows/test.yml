@@ -24,6 +24,109 @@ jobs:
     - name: Run clippy
       run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args
 
+  test-matrix:
+    name: Test Suite
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        mode: [default, git_pv2]
+        include:
+          - mode: default
+            features: ""
+            desc: "Default features"
+          - mode: git_pv2
+            features: "--features git_porcelain_v2"
+            desc: "Git Porcelain v2"
+
+    env:
+      NO_COLOR: 1  # Ensure deterministic output for tests
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.mode }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Cache cargo git index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.mode }}
+        restore-keys: |
+          ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-cargo-git-
+
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-${{ matrix.mode }}
+        restore-keys: |
+          ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-target-
+
+    - name: Run tests (${{ matrix.desc }})
+      id: test
+      run: |
+        start_time=$(date +%s)
+
+        # Run tests and capture output
+        if cargo test ${{ matrix.features }} --all-targets 2>&1 | tee test_output.txt; then
+          test_result="✅ PASSED"
+          test_status=0
+        else
+          test_result="❌ FAILED"
+          test_status=1
+        fi
+
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+
+        # Extract test count
+        test_count=$(grep -E "test result:" test_output.txt | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+" || echo "0")
+        failed_count=$(grep -E "test result:" test_output.txt | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+" || echo "0")
+
+        # Set outputs for step summary
+        echo "result=$test_result" >> $GITHUB_OUTPUT
+        echo "duration=$duration" >> $GITHUB_OUTPUT
+        echo "test_count=$test_count" >> $GITHUB_OUTPUT
+        echo "failed_count=$failed_count" >> $GITHUB_OUTPUT
+        echo "status=$test_status" >> $GITHUB_OUTPUT
+
+        exit $test_status
+
+    - name: Generate test summary
+      if: always()
+      run: |
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## Test Results: ${{ matrix.desc }}
+
+        | Metric | Value |
+        |--------|-------|
+        | Status | ${{ steps.test.outputs.result }} |
+        | Duration | ${{ steps.test.outputs.duration }}s |
+        | Tests Passed | ${{ steps.test.outputs.test_count }} |
+        | Tests Failed | ${{ steps.test.outputs.failed_count }} |
+        | Feature Mode | ${{ matrix.desc }} |
+
+        EOF
+
+        if [ "${{ steps.test.outputs.status }}" != "0" ]; then
+          echo "### Failed Test Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -A 5 "FAILED" test_output.txt | head -50 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
   test-scripts:
     runs-on: ubuntu-latest
 
@@ -129,6 +232,18 @@ jobs:
           echo "Binary too large! Expected < 4MB"
           exit 1
         fi
+
+        # Add to step summary
+        cat >> $GITHUB_STEP_SUMMARY << EOF
+        ## Build Results
+
+        | Metric | Value |
+        |--------|-------|
+        | Binary Size | $(($size / 1024 / 1024))MB ($(($size / 1024))KB) |
+        | Build Type | Release |
+        | Max Allowed | 4MB |
+
+        EOF
 
   test-sqlite:
     runs-on: ubuntu-latest
