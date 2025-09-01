@@ -129,6 +129,7 @@ pub fn get_git_status(dir: &str) -> Option<GitStatus> {
 /// # Returns
 ///
 /// Returns `Some(GitStatus)` with parsed information, or `None` if parsing fails.
+#[cfg_attr(feature = "git_porcelain_v2", allow(dead_code))]
 fn parse_git_status(status_text: &str) -> Option<GitStatus> {
     let mut status = GitStatus::default();
 

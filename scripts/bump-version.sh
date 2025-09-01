@@ -87,7 +87,7 @@ if [ -f "Cargo.toml" ]; then
     awk -v new_ver="$NEW_VERSION" '
         BEGIN { done=0 }
         {
-          if (!done && $0 ~ /^version = \".*\"$/) {
+          if (!done && $0 ~ /^version = ".*"$/) {
             print "version = \"" new_ver "\"";
             done=1;
           } else {
