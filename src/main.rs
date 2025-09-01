@@ -521,6 +521,7 @@ fn perform_database_maintenance(force_vacuum: bool, no_prune: bool, quiet: bool)
 /// Show diagnostic health information
 fn show_health_report(json_output: bool) -> Result<()> {
     use serde_json::json;
+    use rusqlite::{Connection, OpenFlags};
 
     // Get paths
     let db_path = stats::StatsData::get_sqlite_path()?;
@@ -539,15 +540,59 @@ fn show_health_report(json_output: bool) -> Result<()> {
     let mut earliest_session: Option<String> = None;
 
     if db_exists {
-        // Create database instance
-        let db = database::SqliteDatabase::new(&db_path)?;
-
-        // Use DB aggregate helpers for efficient retrieval
-        today_total = db.get_today_total()?;
-        month_total = db.get_month_total()?;
-        all_time_total = db.get_all_time_total()?;
-        session_count = db.get_all_time_sessions_count()?;
-        earliest_session = db.get_earliest_session_date()?;
+        // Prefer normal DB API first; fall back to read-only if environment is read-only (e.g., CI sandbox)
+        match database::SqliteDatabase::new(&db_path) {
+            Ok(db) => {
+                today_total = db.get_today_total().unwrap_or(0.0);
+                month_total = db.get_month_total().unwrap_or(0.0);
+                all_time_total = db.get_all_time_total().unwrap_or(0.0);
+                session_count = db.get_all_time_sessions_count().unwrap_or(0);
+                earliest_session = db.get_earliest_session_date().ok().flatten();
+            }
+            Err(_) => {
+                // Read-only fallback: open without attempting schema creation/WAL
+                if let Ok(conn) = Connection::open_with_flags(
+                    &db_path,
+                    OpenFlags::SQLITE_OPEN_READ_ONLY,
+                ) {
+                    // Today total
+                    let _ = conn
+                        .query_row(
+                            "SELECT COALESCE(total_cost, 0.0) FROM daily_stats WHERE date = date('now','localtime')",
+                            [],
+                            |row| { today_total = row.get::<_, f64>(0)?; Ok(()) },
+                        );
+                    // Month total
+                    let _ = conn
+                        .query_row(
+                            "SELECT COALESCE(total_cost, 0.0) FROM monthly_stats WHERE month = strftime('%Y-%m','now','localtime')",
+                            [],
+                            |row| { month_total = row.get::<_, f64>(0)?; Ok(()) },
+                        );
+                    // All-time total
+                    let _ = conn
+                        .query_row(
+                            "SELECT COALESCE(SUM(cost), 0.0) FROM sessions",
+                            [],
+                            |row| { all_time_total = row.get::<_, f64>(0)?; Ok(()) },
+                        );
+                    // Session count
+                    let _ = conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM sessions",
+                            [],
+                            |row| { session_count = row.get::<_, i64>(0)? as usize; Ok(()) },
+                        );
+                    // Earliest session
+                    let _ = conn
+                        .query_row(
+                            "SELECT MIN(start_time) FROM sessions",
+                            [],
+                            |row| { earliest_session = row.get::<_, Option<String>>(0)?; Ok(()) },
+                        );
+                }
+            }
+        }
     }
 
     if json_output {

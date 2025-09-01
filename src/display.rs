@@ -285,6 +285,182 @@ pub fn format_output(
     print!("{}", output);
 }
 
+/// Format output to a string instead of printing.
+///
+/// This is the library-friendly version of format_output that returns
+/// the formatted statusline as a String.
+pub fn format_output_to_string(
+    current_dir: &str,
+    model_name: Option<&str>,
+    transcript_path: Option<&str>,
+    cost: Option<&Cost>,
+    daily_total: f64,
+    session_id: Option<&str>,
+) -> String {
+    let mut output = String::new();
+
+    // Shorten and sanitize the path
+    let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
+
+    // Directory with color
+    output.push_str(&format!(
+        "{}{}{}",
+        Colors::cyan(),
+        short_dir,
+        Colors::reset()
+    ));
+
+    // Git status
+    if let Some(git_status) = get_git_status(current_dir) {
+        let git_info = format_git_info(&git_status);
+        if !git_info.is_empty() {
+            output.push_str(&format!(
+                " {}•{}",
+                Colors::separator_color(),
+                Colors::reset()
+            ));
+            output.push_str(&git_info);
+        }
+    }
+
+    // Context usage from transcript
+    if let Some(transcript) = transcript_path {
+        if let Some(context) = calculate_context_usage(transcript) {
+            output.push_str(&format_context_bar(&context));
+        }
+    }
+
+    // Model display (sanitize untrusted model name)
+    if let Some(name) = model_name {
+        let sanitized_name = sanitize_for_terminal(name);
+        let model_type = ModelType::from_name(&sanitized_name);
+        output.push_str(&format!(
+            " {}{}{}",
+            Colors::cyan(),
+            sanitize_for_terminal(model_type.abbreviation()),
+            Colors::reset()
+        ));
+    }
+
+    // Duration from transcript
+    if let Some(transcript) = transcript_path {
+        if let Some(duration) = parse_duration(transcript) {
+            output.push_str(&format!(
+                " {}{}{}",
+                Colors::light_gray(),
+                format_duration(duration),
+                Colors::reset()
+            ));
+        }
+    }
+
+    // Lines changed
+    if let Some(cost_data) = cost {
+        if let (Some(added), Some(removed)) =
+            (cost_data.total_lines_added, cost_data.total_lines_removed)
+        {
+            if added > 0 || removed > 0 {
+                output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
+                if added > 0 {
+                    output.push_str(&format!(
+                        " {}+{}{}",
+                        Colors::green(),
+                        added,
+                        Colors::reset()
+                    ));
+                }
+                if removed > 0 {
+                    output.push_str(&format!(
+                        " {}-{}{}",
+                        Colors::red(),
+                        removed,
+                        Colors::reset()
+                    ));
+                }
+            }
+        }
+    }
+
+    // Cost display with burn rate
+    if let Some(cost_data) = cost {
+        if let Some(total_cost) = cost_data.total_cost_usd {
+            let cost_color = get_cost_color(total_cost);
+
+            // Calculate burn rate if we have duration
+            // First try to get duration from our tracked session stats
+            let duration = session_id
+                .and_then(crate::stats::get_session_duration)
+                .or_else(|| {
+                    // Fallback to parsing transcript if available
+                    transcript_path.and_then(parse_duration)
+                });
+
+            let burn_rate = duration.and_then(|d| {
+                if d > 60 {
+                    // Only show burn rate for sessions > 1 minute
+                    Some((total_cost * 3600.0) / d as f64)
+                } else {
+                    None
+                }
+            });
+
+            output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
+            output.push_str(&format!(
+                " {}${:.2}{}",
+                cost_color,
+                total_cost,
+                Colors::reset()
+            ));
+
+            // Add burn rate if available
+            if let Some(rate) = burn_rate {
+                if rate > 0.0 {
+                    output.push_str(&format!(
+                        " {}(${:.2}/hr){}",
+                        Colors::gray(),
+                        rate,
+                        Colors::reset()
+                    ));
+                }
+            }
+
+            // Add daily total if different from session cost
+            if daily_total > total_cost {
+                let daily_color = get_cost_color(daily_total);
+                output.push_str(&format!(
+                    " {}(day: {}${:.2}){}",
+                    Colors::reset(),
+                    daily_color,
+                    daily_total,
+                    Colors::reset()
+                ));
+            }
+        } else if daily_total > 0.0 {
+            // Show daily total even if no session cost
+            let daily_color = get_cost_color(daily_total);
+            output.push_str(&format!(
+                " {}day: {}${:.2}{}",
+                Colors::reset(),
+                daily_color,
+                daily_total,
+                Colors::reset()
+            ));
+        }
+    } else if daily_total > 0.0 {
+        // Show daily total even if no cost data
+        let daily_color = get_cost_color(daily_total);
+        output.push_str(&format!(
+            " {}day: {}${:.2}{}",
+            Colors::reset(),
+            daily_color,
+            daily_total,
+            Colors::reset()
+        ));
+    }
+
+    output
+}
+
 fn format_context_bar(context: &ContextUsage) -> String {
     let percentage = context.percentage;
     let config = config::get_config();

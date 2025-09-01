@@ -286,6 +286,45 @@ statusline health --json | jq .
 
 Reports include database and JSON paths and existence, whether JSON backup is enabled, and cost totals (today/month/all-time), session count, and the earliest session date.
 
+### Embedding (Library API)
+Use the public API from other Rust tools (e.g., Codex adapters) to render the statusline without spawning the CLI.
+
+Basic usage with JSON:
+```rust
+use statusline::render_from_json;
+
+let json = r#"{
+  "workspace": {"current_dir": "/path/to/project"},
+  "model": {"display_name": "Claude 3.5 Sonnet"}
+}"#;
+
+// Preview mode: does not update persistent stats
+let line = render_from_json(json, false).expect("render");
+println!("{}", line);
+```
+
+Structured inputs:
+```rust
+use statusline::{render_statusline, StatuslineInput};
+use statusline::models::{Workspace, Model, Cost};
+
+let input = StatuslineInput {
+    workspace: Some(Workspace { current_dir: Some("/path/to/project".into()) }),
+    model: Some(Model { display_name: Some("Claude 3 Opus".into()) }),
+    cost: Some(Cost { total_cost_usd: Some(3.25), total_lines_added: Some(10), total_lines_removed: Some(2) }),
+    session_id: Some("my-session".into()),
+    transcript: None,
+};
+
+// When update_stats=true, persistent stats are updated (SQLite/JSON per config)
+let line = render_statusline(&input, true).expect("render");
+```
+
+Notes:
+- Set `NO_COLOR=1` for deterministic, no-ANSI output.
+- When `update_stats=true` and `session_id` is provided, the library updates persistent stats.
+- The library respects the same configuration and environment variables as the CLI.
+
 ### With Claude Code
 The statusline automatically integrates with Claude Code when installed via the installer script.
 
@@ -668,6 +707,9 @@ EOF
 echo '{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"},"transcript_path":"/tmp/high_usage.jsonl"}' | ./target/release/statusline
 ```
 
+## Embedding API
+See “Embedding (Library API)” above for quick-start usage with both JSON and structured inputs, and refer to `examples/embedding_example.rs` for a full demonstration.
+
 ## Customization
 
 ### Modifying Colors
@@ -758,7 +800,7 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 ### v2.11.0 (2025-09-01) - Latest
 - CLI UX: `--no-color`, `--theme`, `--config`, `--log-level` with precedence (CLI > env > config)
 - Diagnostics: `statusline health` and `statusline health --json` reporting paths and statistics
-  
+
 ### v2.10.0 (2025-08-31)
 - **Terminal Output Sanitization** - Strips ANSI escape sequences and control characters from untrusted inputs
 - **Git Operation Timeouts** - Configurable soft timeout (default 200ms) with `GIT_OPTIONAL_LOCKS=0`

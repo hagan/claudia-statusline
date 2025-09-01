@@ -120,6 +120,8 @@ update_version "README.md" \
     "s/Latest: v$CURRENT_VERSION/Latest: v$NEW_VERSION/g" \
     "Latest: v$NEW_VERSION"
 
+# Note: embedding_example.rs now reads version from VERSION file directly via include_str!
+
 # Run cargo build to update Cargo.lock
 echo ""
 echo "Updating Cargo.lock..."

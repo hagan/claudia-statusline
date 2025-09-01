@@ -82,7 +82,8 @@ Total: ~3,705 lines across 14 focused modules (average ~265 lines each)
 - Implements cost color coding
 - Supports light/dark themes via environment variables
 - **Key Functions:**
-  - `format_output()` - Main formatting orchestrator
+  - `format_output()` - Main formatting orchestrator (prints to stdout)
+  - `format_output_to_string()` - Library-friendly formatter that returns a String
   - `format_context_bar()` - Progress bar generation
   - `get_cost_color()` - Cost-based color selection
   - `format_duration()` - Time formatting
@@ -289,6 +290,83 @@ The application uses ANSI color codes for terminal output:
 2. **Plugin System** - Extensible status components
 3. **Git status caching** - Reduce repeated git calls
 4. **Advanced themes** - Full color customization
+
+## Embedding API (v2.12.0)
+
+The statusline library can be embedded in other Rust applications through its public API. This enables other tools (like Codex) to leverage the statusline functionality without spawning a separate process.
+
+### Core Functions
+
+#### `render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<String>`
+Primary function for embedding the statusline in other applications.
+
+**Parameters:**
+- `input`: StatuslineInput containing workspace and model information
+- `update_stats`: Whether to update persistent statistics (false for preview mode)
+
+**Returns:** Formatted statusline string ready for display
+
+Note: When `update_stats=true` and a `session_id` is provided, persistent stats are updated (SQLite/JSON per configuration). The library honors `NO_COLOR` and theme/environment configuration like the CLI.
+
+#### `render_from_json(json: &str, update_stats: bool) -> Result<String>`
+Convenience function that parses JSON input and calls `render_statusline`.
+
+**Parameters:**
+- `json`: JSON string containing statusline input
+- `update_stats`: Whether to update persistent statistics
+
+**Returns:** Formatted statusline string ready for display
+
+### Example Usage
+
+```rust
+use statusline::{render_statusline, StatuslineInput, Workspace, Model};
+
+// Using structured input
+let input = StatuslineInput {
+    workspace: Some(Workspace {
+        current_dir: Some("/home/user/project".to_string()),
+    }),
+    model: Some(Model {
+        display_name: Some("Claude 3.5 Sonnet".to_string()),
+    }),
+    ..Default::default()
+};
+
+let output = render_statusline(&input, false)?;
+println!("{}", output);
+```
+
+### Integration Guidelines
+
+1. **Add dependency** to Cargo.toml:
+   ```toml
+   statusline = "2.12.0"
+   ```
+
+2. **Import functions**:
+   ```rust
+   use statusline::{render_from_json, render_statusline};
+   ```
+
+3. **Choose update mode**:
+   - `update_stats=true`: Updates persistent statistics (production use)
+   - `update_stats=false`: Preview mode, no persistent changes (testing)
+
+4. **Error handling**: All functions return `Result<String, StatuslineError>`
+
+### Testing
+
+The embedding API includes comprehensive test coverage:
+- Basic rendering functionality
+- JSON input parsing
+- Cost display and formatting
+- Git repository integration
+- NO_COLOR environment variable support
+- Context usage calculations
+- Error handling for invalid inputs
+
+See `tests/lib_api_tests.rs` and `examples/embedding_example.rs` for complete usage examples.
 
 ## Development Guidelines
 

@@ -5,6 +5,44 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.0] - 2025-09-01
+
+### Phase 6: Embedding API Complete
+
+#### Added
+- **Public Embedding API**: New library functions for integration in other Rust applications
+  - `render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<String>` - Primary API function
+  - `render_from_json(json: &str, update_stats: bool) -> Result<String>` - Convenience function for JSON input
+  - Dual-mode operation: `update_stats = true` for production, `false` for preview/testing
+  - Full integration with existing statusline features: git, stats, colors, themes
+- **Library Test Coverage**: Comprehensive test suite with 9 tests covering all API scenarios
+  - Basic rendering functionality and JSON input parsing
+  - Cost display, git repository integration, NO_COLOR support
+  - Context usage calculations, error handling for invalid inputs
+  - Test isolation using mutexes to prevent environment variable race conditions
+- **Embedding Example**: Complete example at `examples/embedding_example.rs`
+  - Demonstrates both structured and JSON input approaches
+  - Shows error handling patterns and NO_COLOR integration
+  - Includes integration guide for developers
+- **Enhanced Documentation**:
+  - Added embedding API section to README.md and ARCHITECTURE.md
+  - Complete API documentation with usage examples
+  - Integration guidelines and best practices
+
+#### Changed
+- **Display Module**: Refactored to support both printing and string-returning modes
+  - Added `format_output_to_string()` function for library usage
+  - Maintains backward compatibility with existing CLI functionality
+- **Library Exports**: Enhanced public API surface in lib.rs
+  - Re-exported key types: `StatuslineInput`, `Workspace`, `Model`, `Cost`
+  - Added embedding-focused functions alongside existing CLI functions
+
+#### Testing
+- Total library API tests: 9 (covering all embedding scenarios)
+- Fixed NO_COLOR environment variable test isolation issues
+- All tests pass consistently in both isolated and concurrent execution
+- Comprehensive coverage of edge cases and error conditions
+
 ## [2.11.1] - 2025-09-01
 
 ### Fixed
