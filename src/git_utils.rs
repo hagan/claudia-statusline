@@ -120,6 +120,8 @@ fn execute_git_with_timeout<P: AsRef<Path>>(
 /// Gets the git status in porcelain format.
 ///
 /// This is the main function used by the statusline to get git information.
+/// When the `git_porcelain_v2` feature is enabled, it uses porcelain v2 format,
+/// otherwise it uses porcelain v1 format.
 ///
 /// # Arguments
 ///
@@ -129,7 +131,13 @@ fn execute_git_with_timeout<P: AsRef<Path>>(
 ///
 /// Returns the porcelain status output if successful.
 pub fn get_status_porcelain<P: AsRef<Path>>(dir: P) -> Option<String> {
-    let output = execute_git_command(dir, &["status", "--porcelain=v1", "--branch"])?;
+    #[cfg(feature = "git_porcelain_v2")]
+    let args = &["status", "--porcelain=v2", "--branch"];
+
+    #[cfg(not(feature = "git_porcelain_v2"))]
+    let args = &["status", "--porcelain=v1", "--branch"];
+
+    let output = execute_git_command(dir, args)?;
 
     if output.status.success() {
         Some(String::from_utf8_lossy(&output.stdout).to_string())

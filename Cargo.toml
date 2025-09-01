@@ -9,6 +9,7 @@ build = "build.rs"
 
 [features]
 default = []
+git_porcelain_v2 = []
 
 [lib]
 name = "statusline"
