@@ -19,10 +19,7 @@ Thank you for your interest in contributing to Claudia Statusline! This guide wi
 
 ## Development Planning
 
-For structured development work, please refer to the **[Planning Pack](.claude/planning/README.md)** which provides:
-- Acceptance-driven phase documents
-- Execution protocol for implementations
-- Clear success criteria for each phase
+We follow a phase-based development approach with acceptance criteria for each feature. Please check existing GitHub Issues and pull requests before starting new work.
 
 ## Development Setup
 

@@ -10,9 +10,8 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 
 ## For Contributors
 
-- Planning Pack (primary entrypoint): `.claude/planning/README.md`
-- Roadmap and phase status: `.claude/planning/00_overview.md`
-- Contribution guide: `CONTRIBUTING.md`
+- See `CONTRIBUTING.md` for development guidelines
+- Check GitHub Issues for planned features and bug reports
 
 ## Technical Highlights
 
@@ -775,15 +774,14 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 - [SQLITE_MIGRATION.md](SQLITE_MIGRATION.md) - SQLite migration guide for v2.7.0+
 - [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md) - Detailed migration instructions
 
-### Planning & Roadmap
-- [Planning Documents](.claude/planning/) - Phase-based development roadmap
-  - [Overview](.claude/planning/00_overview.md) - High-level roadmap
-  - [Phase 1: SQLite Finalization](.claude/planning/01_sqlite_finalization.md) ✅
-  - [Phase 2: DB Maintenance](.claude/planning/02_db_maintenance.md) ✅
-  - [Phase 3: Security Hardening](.claude/planning/03_security_hardening.md) ✅
-  - [Phase 4: CLI UX](.claude/planning/04_cli_ux_health.md) ✅
-  - [Phase 5: Git Performance](.claude/planning/05_git_parsing_perf.md) ✅
-  - [Phase 6: Reusability](.claude/planning/06_reuse_codex.md) 🔜
+### Development Roadmap
+- Phase 1: SQLite Finalization ✅
+- Phase 2: Database Maintenance ✅
+- Phase 3: Security Hardening ✅
+- Phase 4: CLI UX & Health Command ✅
+- Phase 5: Git Performance ✅
+- Phase 6: Reusability (In Progress)
+- Phase 7: CI/CD Security (PR 1-3 Complete)
 
 ### Legal & Attribution
 - [LICENSE](LICENSE) - MIT License for our contributions
@@ -793,7 +791,6 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ### Other Resources
 - [AGENTS.md](AGENTS.md) - Information about AI assistant usage
-- [Context Documentation](.claude/context/) - Development context for AI assistants
 
 ## Changelog
 
