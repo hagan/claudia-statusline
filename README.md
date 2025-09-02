@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.11.0** - CLI UX flags, diagnostics health command, and security hardening
+**Version 2.13.3** - Complete Phase 5 git parsing, Phase 7 CI/CD improvements, enhanced test performance
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -794,7 +794,27 @@ fn format_burn_rate(cost: f64, hours: f64) -> String {
 
 ## Changelog
 
-### v2.11.0 (2025-09-01) - Latest
+### v2.13.3 (2025-09-02) - Latest
+- **Phase 7 CI/CD Improvements (PR 1-3)**:
+  - Test matrix for parallel testing of default and git_porcelain_v2 features
+  - Comprehensive caching for 40%+ faster CI builds
+  - Security scanning with SARIF upload to GitHub Code Scanning
+  - Enhanced step summaries with binary sizes, test counts, and durations
+  - GitHub annotations for fmt/clippy failures with fix instructions
+- **Test Compatibility**: All tests updated to handle NO_COLOR environment variable
+- **GitHub Actions Fix**: Resolved output extraction for multiple test suites
+- **Documentation**: Removed `.claude/` references from public files
+
+### v2.13.1 (2025-09-01)
+- **Phase 5 Complete - Git Parsing & Test Performance**:
+  - Enhanced porcelain v1 parsing for all XY status codes
+  - Support for renamed (R), copied (C), type-changed (T) files
+  - All unmerged/conflict states handled (DD, AU, UD, UA, DU, AA, UU)
+  - Optional porcelain v2 support behind `git_porcelain_v2` feature flag
+  - Integration tests ~90% faster using prebuilt binary
+  - 216+ tests passing (up from 210)
+
+### v2.11.0 (2025-09-01)
 - CLI UX: `--no-color`, `--theme`, `--config`, `--log-level` with precedence (CLI > env > config)
 - Diagnostics: `statusline health` and `statusline health --json` reporting paths and statistics
 
