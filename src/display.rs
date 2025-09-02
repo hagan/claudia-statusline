@@ -530,18 +530,36 @@ mod tests {
 
     #[test]
     fn test_colors() {
-        assert_eq!(Colors::CYAN, "\x1b[36m");
-        assert_eq!(Colors::GREEN, "\x1b[32m");
-        assert_eq!(Colors::RED, "\x1b[31m");
-        assert_eq!(Colors::YELLOW, "\x1b[33m");
-        assert_eq!(Colors::RESET, "\x1b[0m");
+        // Test the color functions (which respect NO_COLOR) not the constants
+        if Colors::enabled() {
+            assert_eq!(Colors::cyan(), "\x1b[36m");
+            assert_eq!(Colors::green(), "\x1b[32m");
+            assert_eq!(Colors::red(), "\x1b[31m");
+            assert_eq!(Colors::yellow(), "\x1b[33m");
+            assert_eq!(Colors::reset(), "\x1b[0m");
+        } else {
+            // When NO_COLOR is set, all colors return empty strings
+            assert_eq!(Colors::cyan(), "");
+            assert_eq!(Colors::green(), "");
+            assert_eq!(Colors::red(), "");
+            assert_eq!(Colors::yellow(), "");
+            assert_eq!(Colors::reset(), "");
+        }
     }
 
     #[test]
     fn test_get_cost_color() {
-        assert_eq!(get_cost_color(2.5), Colors::GREEN);
-        assert_eq!(get_cost_color(10.0), Colors::YELLOW);
-        assert_eq!(get_cost_color(25.0), Colors::RED);
+        // The test should work whether or not NO_COLOR is set
+        if Colors::enabled() {
+            assert_eq!(get_cost_color(2.5), "\x1b[32m");  // green
+            assert_eq!(get_cost_color(10.0), "\x1b[33m"); // yellow
+            assert_eq!(get_cost_color(25.0), "\x1b[31m"); // red
+        } else {
+            // When NO_COLOR is set, all colors return empty strings
+            assert_eq!(get_cost_color(2.5), "");
+            assert_eq!(get_cost_color(10.0), "");
+            assert_eq!(get_cost_color(25.0), "");
+        }
     }
 
     #[test]
@@ -602,6 +620,9 @@ mod tests {
 
     #[test]
     fn test_theme_affects_colors() {
+        // Save original NO_COLOR state
+        let original_no_color = std::env::var("NO_COLOR").ok();
+
         // Ensure colors are enabled for this test
         std::env::remove_var("NO_COLOR");
 
@@ -617,6 +638,11 @@ mod tests {
 
         // Cleanup
         std::env::remove_var("STATUSLINE_THEME");
+
+        // Restore original NO_COLOR state
+        if let Some(value) = original_no_color {
+            std::env::set_var("NO_COLOR", value);
+        }
     }
 
     #[test]

@@ -192,6 +192,7 @@ fn test_binary_output_contains_ansi_colors() {
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
     let output = Command::new(get_test_binary())
+        .env_remove("NO_COLOR")  // Ensure colors are enabled for this test
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -470,6 +471,7 @@ fn test_colors_enabled_by_default() {
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
     let output = Command::new(get_test_binary())
+        .env_remove("NO_COLOR")  // Ensure colors are enabled for this test
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -626,6 +628,7 @@ fn test_theme_precedence() {
 
     let output = Command::new(get_test_binary())
         .args(["--theme", "dark"])
+        .env_remove("NO_COLOR")  // Ensure colors are enabled for this test
         .env("STATUSLINE_THEME", "light") // Environment says light
         .env("CLAUDE_THEME", "light") // Both env vars say light
         .stdin(std::process::Stdio::piped())

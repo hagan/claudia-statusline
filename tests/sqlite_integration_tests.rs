@@ -4,6 +4,24 @@ use std::sync::Arc;
 use std::thread;
 use tempfile::TempDir;
 
+/// Get the path to the test binary, with fallback paths for different build scenarios
+fn get_test_binary() -> String {
+    // Check for the environment variable that Cargo sets when running tests
+    std::env::var("CARGO_BIN_EXE_statusline")
+        .or_else(|_| -> Result<String, std::env::VarError> {
+            // Fallback: check common locations
+            if std::path::Path::new("./target/debug/statusline").exists() {
+                Ok("./target/debug/statusline".to_string())
+            } else if std::path::Path::new("./target/release/statusline").exists() {
+                Ok("./target/release/statusline".to_string())
+            } else {
+                // Default to debug path if nothing exists yet
+                Ok("./target/debug/statusline".to_string())
+            }
+        })
+        .unwrap()
+}
+
 // Test the dual-write functionality
 #[test]
 fn test_dual_write_creates_both_files() {
@@ -30,7 +48,7 @@ fn test_dual_write_creates_both_files() {
     }"#;
 
     // Run statusline with the input
-    let mut child = std::process::Command::new("./target/release/statusline")
+    let mut child = std::process::Command::new(get_test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
