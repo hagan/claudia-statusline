@@ -551,7 +551,7 @@ mod tests {
     fn test_get_cost_color() {
         // The test should work whether or not NO_COLOR is set
         if Colors::enabled() {
-            assert_eq!(get_cost_color(2.5), "\x1b[32m");  // green
+            assert_eq!(get_cost_color(2.5), "\x1b[32m"); // green
             assert_eq!(get_cost_color(10.0), "\x1b[33m"); // yellow
             assert_eq!(get_cost_color(25.0), "\x1b[31m"); // red
         } else {
