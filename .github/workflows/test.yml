@@ -128,9 +128,15 @@ jobs:
         end_time=$(date +%s)
         duration=$((end_time - start_time))
 
-        # Extract test count
-        test_count=$(grep -E "test result:" test_output.txt | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+" || echo "0")
-        failed_count=$(grep -E "test result:" test_output.txt | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+" || echo "0")
+        # Extract test count (sum all test suites)
+        test_count=$(grep -E "test result:" test_output.txt | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+" | awk '{s+=$1} END {print s+0}' | head -1 || echo "0")
+        failed_count=$(grep -E "test result:" test_output.txt | grep -oE "[0-9]+ failed" | grep -oE "[0-9]+" | awk '{s+=$1} END {print s+0}' | head -1 || echo "0")
+
+        # Ensure we have valid numbers (remove any whitespace/newlines)
+        test_count=$(echo "$test_count" | tr -d '\n\r' | xargs)
+        failed_count=$(echo "$failed_count" | tr -d '\n\r' | xargs)
+        test_count=${test_count:-0}
+        failed_count=${failed_count:-0}
 
         # Set outputs for step summary
         echo "result=$test_result" >> $GITHUB_OUTPUT
