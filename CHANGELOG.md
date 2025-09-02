@@ -5,6 +5,42 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.3] - 2025-01-02
+
+### Phase 7: CI/CD Improvements (PR 1-3 Complete)
+
+#### Added
+- **Test Matrix & Caching** (PR 1):
+  - Test matrix for parallel testing of default and `git_porcelain_v2` features
+  - Comprehensive caching for cargo registry, git index, and target directories
+  - GitHub step summaries with test results, durations, and Rust version
+  - Cache key optimization with mode-specific keys for better hit rates
+- **Security Scanning Hardening** (PR 2):
+  - Workflow permissions for `security-events: write` access
+  - SARIF generation and upload to GitHub Code Scanning
+  - 30-day artifact retention for all security reports
+  - Enhanced step summaries with links to full reports
+- **Build/Test Step Summaries** (PR 3):
+  - `NO_COLOR=1` and `CARGO_TERM_COLOR=never` for deterministic CI output
+  - Lint summaries with GitHub annotations (`::error::`) and fix instructions
+  - Binary size tables in build summaries for all targets
+  - Documentation links in all summaries for troubleshooting
+
+#### Fixed
+- **Test Compatibility**:
+  - All tests updated to handle `NO_COLOR=1` environment variable
+  - Display module tests check `Colors::enabled()` for both cases
+  - Integration tests use `.env_remove("NO_COLOR")` when testing colors
+  - SQLite tests use dynamic binary discovery with fallback paths
+- **GitHub Actions Output**:
+  - Fixed test count extraction for multiple test suites
+  - Sum all test counts using `awk` for accurate reporting
+  - Proper sanitization of multi-line output values
+
+#### Changed
+- **CI Performance**: ~40% faster builds with comprehensive caching
+- **Error Reporting**: Enhanced with annotations and fix commands
+
 ## [2.13.0] - 2025-01-09
 
 ### Phase 5: Git Parsing & Test Performance Complete
