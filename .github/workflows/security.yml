@@ -1,5 +1,9 @@
 name: Security Audit
 
+permissions:
+  contents: read
+  security-events: write
+
 on:
   push:
     branches: [ main ]
@@ -72,22 +76,25 @@ jobs:
         echo "## Security Audit Report" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
-        # Run cargo audit and capture output
-        if cargo audit --json > audit.json 2>&1; then
+        # Run cargo audit with JSON output for artifacts
+        cargo audit --json > audit.json 2>&1 || true
+
+        # Also run without JSON for human-readable output
+        if cargo audit 2>&1; then
           echo "✅ No security vulnerabilities found!" >> $GITHUB_STEP_SUMMARY
         else
           echo "⚠️ Security vulnerabilities detected!" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          # Parse and display vulnerabilities
-          cargo audit || true
-
-          # Also run without JSON for human-readable output in logs
+          # Display human-readable output in logs and summary
           echo "### Detailed Report:" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cargo audit 2>&1 | head -100 >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📄 [See full JSON report in workflow artifacts](../actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
 
     - name: Check for outdated dependencies
       run: |
@@ -161,7 +168,7 @@ jobs:
         echo '```' >> $GITHUB_STEP_SUMMARY
 
         # Try to run cargo-license and capture the result (informational table)
-        cargo license --authors --do-not-bundle >> $GITHUB_STEP_SUMMARY 2>/dev/null
+        cargo license --authors --do-not-bundle | tee license-report.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null
         LICENSE_EXIT_CODE=$?
 
         echo '```' >> $GITHUB_STEP_SUMMARY
@@ -193,8 +200,21 @@ jobs:
           echo "This is not a critical error - continuing build" >> $GITHUB_STEP_SUMMARY
         fi
 
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📄 [See full license report in workflow artifacts](../actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
         # Always exit successfully unless we found incompatible licenses
         exit 0
+
+    - name: Upload license report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: license-report
+        path: |
+          license-report.txt
+          /tmp/licenses.json
+        retention-days: 30
 
   supply-chain-security:
     runs-on: ubuntu-latest
@@ -256,6 +276,10 @@ jobs:
     - name: Run cargo-deny
       continue-on-error: true
       run: |
+        # Try to generate SARIF format (may not be supported)
+        cargo deny check --format sarif > deny.sarif 2>&1 || true
+
+
         echo "## Supply Chain Security Check" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
 
@@ -343,3 +367,24 @@ jobs:
           echo "❌ Critical errors found (${ERRORS} errors, ${WARNINGS} warnings)" >> $GITHUB_STEP_SUMMARY
           exit 2
         fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📄 [See full reports in workflow artifacts](../actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload SARIF to GitHub Code Scanning
+      if: always() && github.ref == 'refs/heads/main'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: deny.sarif
+      continue-on-error: true
+
+    - name: Upload supply chain artifacts
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: supply-chain-security
+        path: |
+          /tmp/deny.json
+          /tmp/deny_prod.json
+          deny.sarif
+        retention-days: 30

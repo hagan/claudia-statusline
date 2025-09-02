@@ -10,6 +10,9 @@ jobs:
   lint:
     name: Format and Lint
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
     steps:
     - uses: actions/checkout@v4
 
@@ -19,10 +22,43 @@ jobs:
         components: rustfmt, clippy
 
     - name: Check formatting
-      run: cargo fmt --all -- --check
+      id: fmt
+      run: |
+        if cargo fmt --all -- --check; then
+          echo "✅ Formatting OK" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Formatting failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to fix:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "cargo fmt --all" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "::error::Formatting check failed. Run: cargo fmt --all"
+          exit 1
+        fi
 
     - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args
+      id: clippy
+      run: |
+        if cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args; then
+          echo "✅ Clippy clean" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "❌ Clippy failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to fix:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "cargo clippy --all-targets --all-features -- -D warnings" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "::error::Clippy found issues. Run: cargo clippy --all-targets --all-features -- -D warnings"
+          exit 1
+        fi
+
+    - name: Lint summary
+      if: always()
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "📚 See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md#ci) for local reproduction" >> $GITHUB_STEP_SUMMARY
 
   test-matrix:
     name: Test Suite
@@ -40,6 +76,7 @@ jobs:
 
     env:
       NO_COLOR: 1  # Ensure deterministic output for tests
+      CARGO_TERM_COLOR: never  # Disable cargo color output for consistent logs
 
     steps:
     - uses: actions/checkout@v4
@@ -117,6 +154,7 @@ jobs:
         | Tests Passed | ${{ steps.test.outputs.test_count }} |
         | Tests Failed | ${{ steps.test.outputs.failed_count }} |
         | Feature Mode | ${{ matrix.desc }} |
+        | Rust Version | $(rustc --version) |
 
         EOF
 
@@ -127,8 +165,14 @@ jobs:
           echo '```' >> $GITHUB_STEP_SUMMARY
         fi
 
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📚 See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md#ci) for local reproduction" >> $GITHUB_STEP_SUMMARY
+
   test-scripts:
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
 
     steps:
     - uses: actions/checkout@v4
@@ -179,6 +223,9 @@ jobs:
 
   test-build:
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
 
     steps:
     - uses: actions/checkout@v4
@@ -221,7 +268,26 @@ jobs:
         ./target/release/statusline --help
 
     - name: Run tests
-      run: make test
+      id: test
+      run: |
+        start_time=$(date +%s)
+
+        if make test; then
+          test_result="✅ PASSED"
+          test_status=0
+        else
+          test_result="❌ FAILED"
+          test_status=1
+        fi
+
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+
+        echo "result=$test_result" >> $GITHUB_OUTPUT
+        echo "duration=$duration" >> $GITHUB_OUTPUT
+        echo "status=$test_status" >> $GITHUB_OUTPUT
+
+        exit $test_status
 
     - name: Check binary size
       run: |
@@ -242,11 +308,20 @@ jobs:
         | Binary Size | $(($size / 1024 / 1024))MB ($(($size / 1024))KB) |
         | Build Type | Release |
         | Max Allowed | 4MB |
+        | Test Status | ${{ steps.test.outputs.result }} |
+        | Test Duration | ${{ steps.test.outputs.duration }}s |
+        | Rust Version | $(rustc --version) |
 
         EOF
 
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📚 See [README.md](../../blob/main/README.md) for quick start" >> $GITHUB_STEP_SUMMARY
+
   test-sqlite:
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
 
     steps:
     - uses: actions/checkout@v4
@@ -334,6 +409,9 @@ jobs:
 
   test-features:
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
 
     steps:
     - uses: actions/checkout@v4

@@ -20,6 +20,9 @@ jobs:
   lint:
     name: Format and Lint
     runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
     steps:
     - uses: actions/checkout@v4
 
@@ -29,15 +32,55 @@ jobs:
         components: rustfmt, clippy
 
     - name: Check formatting
-      run: cargo fmt --all -- --check
+      id: fmt
+      run: |
+        if cargo fmt --all -- --check; then
+          echo "✅ Formatting OK" >> $GITHUB_STEP_SUMMARY
+          echo "fmt_status=success" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Formatting failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to fix:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "cargo fmt --all" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "::error::Formatting check failed. Run: cargo fmt --all"
+          echo "fmt_status=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
 
     - name: Run clippy
-      run: cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args
+      id: clippy
+      run: |
+        if cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args; then
+          echo "✅ Clippy clean" >> $GITHUB_STEP_SUMMARY
+          echo "clippy_status=success" >> $GITHUB_OUTPUT
+        else
+          echo "❌ Clippy failed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### How to fix:" >> $GITHUB_STEP_SUMMARY
+          echo '```bash' >> $GITHUB_STEP_SUMMARY
+          echo "cargo clippy --all-targets --all-features -- -D warnings" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "::error::Clippy found issues. Run: cargo clippy --all-targets --all-features -- -D warnings"
+          echo "clippy_status=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+
+    - name: Generate lint summary
+      if: always()
+      run: |
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "📚 See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md#ci) for local reproduction" >> $GITHUB_STEP_SUMMARY
 
   build:
     needs: lint
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
     strategy:
       fail-fast: false
       matrix:
@@ -157,6 +200,35 @@ jobs:
           .\target\${{ matrix.target }}\release\statusline.exe --version
           echo '{"workspace":{"current_dir":"C:\temp"}}' | .\target\${{ matrix.target }}\release\statusline.exe
 
+      - name: Generate build summary
+        if: always()
+        run: |
+          echo "## Build Summary: ${{ matrix.target }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+
+          # Get binary size
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            BIN_SIZE=$(stat -c%s target/${{ matrix.target }}/release/statusline.exe 2>/dev/null || echo "0")
+            PKG_SIZE=$(stat -c%s ${{ matrix.artifact }}.zip 2>/dev/null || echo "0")
+            PKG_FILE="${{ matrix.artifact }}.zip"
+          else
+            BIN_SIZE=$(stat -c%s target/${{ matrix.target }}/release/statusline 2>/dev/null || stat -f%z target/${{ matrix.target }}/release/statusline 2>/dev/null || echo "0")
+            PKG_SIZE=$(stat -c%s ${{ matrix.artifact }}.tar.gz 2>/dev/null || stat -f%z ${{ matrix.artifact }}.tar.gz 2>/dev/null || echo "0")
+            PKG_FILE="${{ matrix.artifact }}.tar.gz"
+          fi
+
+          BIN_SIZE_MB=$(echo "scale=2; $BIN_SIZE / 1048576" | bc 2>/dev/null || echo "$((BIN_SIZE / 1048576))")
+          PKG_SIZE_MB=$(echo "scale=2; $PKG_SIZE / 1048576" | bc 2>/dev/null || echo "$((PKG_SIZE / 1048576))")
+
+          echo "| Target Triple | ${{ matrix.target }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Binary Size | ${BIN_SIZE_MB}MB (${BIN_SIZE} bytes) |" >> $GITHUB_STEP_SUMMARY
+          echo "| Package Size | ${PKG_SIZE_MB}MB |" >> $GITHUB_STEP_SUMMARY
+          echo "| Artifact | ${PKG_FILE} ✅ |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA256 | ${PKG_FILE}.sha256 ✅ |" >> $GITHUB_STEP_SUMMARY
+        shell: bash
+
   # Quick security check on main branch
   security-check:
     runs-on: ubuntu-latest
@@ -193,20 +265,26 @@ jobs:
 
       - name: Display binary sizes
         run: |
-          echo "## Binary Sizes"
-          echo "| Platform | Size |"
-          echo "|----------|------|"
+          echo "## Binary Sizes Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Platform | Package Size | SHA256 |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------------|--------|" >> $GITHUB_STEP_SUMMARY
+
           for dir in artifacts/*; do
             if [ -d "$dir" ]; then
               platform=$(basename "$dir")
               if [[ -f "$dir/$platform.tar.gz" ]]; then
-                size=$(stat -c%s "$dir/$platform.tar.gz" 2>/dev/null || stat -f%z "$dir/$platform.tar.gz" 2>/dev/null || echo "N/A")
-                size_mb=$(echo "scale=2; $size / 1048576" | bc)
-                echo "| $platform | ${size_mb}MB |"
+                size=$(stat -c%s "$dir/$platform.tar.gz" 2>/dev/null || stat -f%z "$dir/$platform.tar.gz" 2>/dev/null || echo "0")
+                size_mb=$(echo "scale=2; $size / 1048576" | bc 2>/dev/null || echo "$((size / 1048576))")
+                echo "| $platform | ${size_mb}MB | ✅ |" >> $GITHUB_STEP_SUMMARY
               elif [[ -f "$dir/$platform.zip" ]]; then
-                size=$(stat -c%s "$dir/$platform.zip" 2>/dev/null || stat -f%z "$dir/$platform.zip" 2>/dev/null || echo "N/A")
-                size_mb=$(echo "scale=2; $size / 1048576" | bc)
-                echo "| $platform | ${size_mb}MB |"
+                size=$(stat -c%s "$dir/$platform.zip" 2>/dev/null || stat -f%z "$dir/$platform.zip" 2>/dev/null || echo "0")
+                size_mb=$(echo "scale=2; $size / 1048576" | bc 2>/dev/null || echo "$((size / 1048576))")
+                echo "| $platform | ${size_mb}MB | ✅ |" >> $GITHUB_STEP_SUMMARY
               fi
             fi
           done
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 [Download artifacts](../actions/runs/${{ github.run_id }})" >> $GITHUB_STEP_SUMMARY
+          echo "📚 See [README.md](../../blob/main/README.md) for quick start" >> $GITHUB_STEP_SUMMARY
