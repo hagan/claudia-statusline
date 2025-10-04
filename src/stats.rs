@@ -218,69 +218,121 @@ impl StatsData {
 
         let cost_delta = session_cost - last_cost;
 
-        // Only update if there's a positive delta
-        if cost_delta > 0.0 {
-            // Update or create session
-            if let Some(session) = self.sessions.get_mut(session_id) {
-                session.cost = session_cost;
-                session.lines_added = lines_added;
-                session.lines_removed = lines_removed;
-                session.last_updated = now.clone();
-            } else {
-                self.sessions.insert(
-                    session_id.to_string(),
-                    SessionStats {
-                        last_updated: now.clone(),
-                        cost: session_cost,
-                        lines_added,
-                        lines_removed,
-                        start_time: Some(now.clone()), // Track when session started
-                    },
-                );
-                self.all_time.sessions += 1;
-            }
+        // Calculate line deltas from previous values
+        let last_lines_added = self
+            .sessions
+            .get(session_id)
+            .map(|s| s.lines_added)
+            .unwrap_or(0);
+        let last_lines_removed = self
+            .sessions
+            .get(session_id)
+            .map(|s| s.lines_removed)
+            .unwrap_or(0);
+        let lines_added_delta = (lines_added as i64) - (last_lines_added as i64);
+        let lines_removed_delta = (lines_removed as i64) - (last_lines_removed as i64);
 
-            // Update daily stats
-            let daily = self
-                .daily
-                .entry(today.clone())
-                .or_insert_with(|| DailyStats {
-                    total_cost: 0.0,
-                    sessions: Vec::new(),
-                    lines_added: 0,
-                    lines_removed: 0,
-                });
-
-            if !daily.sessions.contains(&session_id.to_string()) {
-                daily.sessions.push(session_id.to_string());
-            }
-            daily.total_cost += cost_delta;
-            daily.lines_added += lines_added;
-            daily.lines_removed += lines_removed;
-
-            // Update monthly stats
-            let monthly = self
-                .monthly
-                .entry(month.clone())
-                .or_insert_with(|| MonthlyStats {
-                    total_cost: 0.0,
-                    sessions: 0,
-                    lines_added: 0,
-                    lines_removed: 0,
-                });
-            monthly.total_cost += cost_delta;
-            monthly.lines_added += lines_added;
-            monthly.lines_removed += lines_removed;
-
-            // Update all-time stats
-            self.all_time.total_cost += cost_delta;
-
-            // Update last modified
-            self.last_updated = now;
-
-            // No need to save here - the caller (update_stats_data) handles saving
-            // with proper file locking
+        // Always update session metadata (even with zero/negative deltas)
+        // This ensures cost corrections and metadata refreshes are persisted
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.cost = session_cost;
+            session.lines_added = lines_added;
+            session.lines_removed = lines_removed;
+            session.last_updated = now.clone();
+        } else {
+            self.sessions.insert(
+                session_id.to_string(),
+                SessionStats {
+                    last_updated: now.clone(),
+                    cost: session_cost,
+                    lines_added,
+                    lines_removed,
+                    start_time: Some(now.clone()), // Track when session started
+                },
+            );
+            self.all_time.sessions += 1;
         }
+
+        // IMPORTANT: Check if this session exists for this month BEFORE modifying daily.sessions
+        // We must query SQLite for the authoritative answer, since daily.sessions vectors
+        // are not persisted and will be empty after a restart (see database.rs:462)
+        let mut session_seen_this_month = false;
+
+        // Try to check SQLite first (authoritative source)
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if db_path.exists() {
+                if let Ok(db) = SqliteDatabase::new(&db_path) {
+                    session_seen_this_month = db
+                        .session_active_in_month(session_id, &month)
+                        .unwrap_or(false);
+                }
+            }
+        }
+
+        // Fallback: If SQLite check failed, check in-memory daily.sessions (works for non-restarted sessions)
+        if !session_seen_this_month {
+            for (date_key, daily_stats) in &self.daily {
+                if date_key.starts_with(&month)
+                    && daily_stats.sessions.contains(&session_id.to_string())
+                {
+                    session_seen_this_month = true;
+                    break;
+                }
+            }
+        }
+
+        // Update daily stats
+        let daily = self
+            .daily
+            .entry(today.clone())
+            .or_insert_with(|| DailyStats {
+                total_cost: 0.0,
+                sessions: Vec::new(),
+                lines_added: 0,
+                lines_removed: 0,
+            });
+
+        let is_new_session = !daily.sessions.contains(&session_id.to_string());
+        if is_new_session {
+            daily.sessions.push(session_id.to_string());
+        }
+        daily.total_cost += cost_delta;
+        // Use deltas instead of absolute totals to avoid double-counting
+        daily.lines_added = (daily.lines_added as i64 + lines_added_delta).max(0) as u64;
+        daily.lines_removed = (daily.lines_removed as i64 + lines_removed_delta).max(0) as u64;
+
+        // Update monthly stats
+        let monthly = self
+            .monthly
+            .entry(month.clone())
+            .or_insert_with(|| MonthlyStats {
+                total_cost: 0.0,
+                sessions: 0,
+                lines_added: 0,
+                lines_removed: 0,
+            });
+
+        // Increment monthly session count only if this is a new session for the month
+        // Note: When loading from SQLite, daily.sessions vectors are empty (we don't persist them),
+        // so we rely on the loaded monthly.sessions value and only increment when we see a truly new session
+        // We checked session_seen_this_month BEFORE modifying daily.sessions to avoid false positives
+        if !session_seen_this_month && is_new_session {
+            monthly.sessions += 1;
+        }
+
+        monthly.total_cost += cost_delta;
+        // Use deltas instead of absolute totals to avoid double-counting
+        monthly.lines_added = (monthly.lines_added as i64 + lines_added_delta).max(0) as u64;
+        monthly.lines_removed = (monthly.lines_removed as i64 + lines_removed_delta).max(0) as u64;
+
+        // Update all-time stats
+        self.all_time.total_cost += cost_delta;
+
+        // Update last modified
+        self.last_updated = now;
+
+        // No need to save here - the caller (update_stats_data) handles saving
+        // with proper file locking
 
         // Return current daily and monthly totals
         let daily_total = self.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);

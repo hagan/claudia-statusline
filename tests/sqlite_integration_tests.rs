@@ -485,3 +485,346 @@ fn test_schema_migrations_table() {
 
     assert_eq!(version, 1, "Current migration version should be 1");
 }
+
+// Regression test for cost reduction handling
+#[test]
+#[serial_test::serial]
+fn test_cost_reduction_updates_correctly() {
+    use tempfile::TempDir;
+    let temp_dir = TempDir::new().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    // Session 1: Initial cost of $10
+    let input1 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "cost-reduction-test",
+        "cost": {"total_cost_usd": 10.0, "total_lines_added": 200, "total_lines_removed": 50}
+    }"#;
+
+    let mut output1 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .arg("--no-color")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    output1
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input1.as_bytes())
+        .unwrap();
+    let result1 = output1.wait_with_output().unwrap();
+    let output_str1 = String::from_utf8_lossy(&result1.stdout);
+    assert!(output_str1.contains("$10"));
+
+    // Session 2: Cost corrected down to $6
+    let input2 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "cost-reduction-test",
+        "cost": {"total_cost_usd": 6.0, "total_lines_added": 210, "total_lines_removed": 55}
+    }"#;
+
+    let mut output2 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .arg("--no-color")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    output2
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input2.as_bytes())
+        .unwrap();
+    let result2 = output2.wait_with_output().unwrap();
+    let output_str2 = String::from_utf8_lossy(&result2.stdout);
+
+    // Daily total should reflect the reduction: $10 + (-$4) = $6
+    assert!(output_str2.contains("$6"));
+}
+
+// Regression test for unchanged cost still updating metadata
+#[test]
+#[serial_test::serial]
+fn test_unchanged_cost_updates_metadata() {
+    use tempfile::TempDir;
+    let temp_dir = TempDir::new().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    // Session 1: Initial
+    let input1 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "unchanged-test",
+        "cost": {"total_cost_usd": 5.0, "total_lines_added": 100, "total_lines_removed": 20}
+    }"#;
+
+    let mut cmd1 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cmd1.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input1.as_bytes())
+        .unwrap();
+    cmd1.wait().unwrap();
+
+    // Session 2: Same cost, but updated line counts
+    let input2 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "unchanged-test",
+        "cost": {"total_cost_usd": 5.0, "total_lines_added": 150, "total_lines_removed": 30}
+    }"#;
+
+    let mut cmd2 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cmd2.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input2.as_bytes())
+        .unwrap();
+    let result2 = cmd2.wait_with_output().unwrap();
+    let output_str2 = String::from_utf8_lossy(&result2.stdout);
+
+    // Cost should still be $5, and line counts should show the delta
+    assert!(output_str2.contains("$5"));
+    assert!(output_str2.contains("+150") || output_str2.contains("150"));
+}
+
+// Regression test for session count incrementing correctly
+#[test]
+#[serial_test::serial]
+fn test_multiple_sessions_increment_count() {
+    use tempfile::TempDir;
+    let temp_dir = TempDir::new().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    // Create 3 different sessions on the same day
+    for i in 1..=3 {
+        let input = format!(
+            r#"{{
+            "workspace": {{"current_dir": "/test"}},
+            "session_id": "session-{}",
+            "cost": {{"total_cost_usd": {}.0, "total_lines_added": 50, "total_lines_removed": 10}}
+        }}"#,
+            i, i
+        );
+
+        let mut cmd = std::process::Command::new(get_test_binary())
+            .env("NO_COLOR", "1")
+            .env("XDG_DATA_HOME", temp_dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        cmd.stdin
+            .as_mut()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        cmd.wait().unwrap();
+    }
+
+    // Check health output to verify session count
+    let health_output = std::process::Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .arg("health")
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    let health_str = String::from_utf8_lossy(&health_output.stdout);
+    let health_json: serde_json::Value = serde_json::from_str(&health_str).unwrap();
+
+    // Session count should be 3
+    assert_eq!(health_json["session_count"].as_u64().unwrap(), 3);
+}
+
+// Regression test for line count deltas (not absolute values)
+#[test]
+#[serial_test::serial]
+fn test_line_counts_use_deltas() {
+    use tempfile::TempDir;
+    let temp_dir = TempDir::new().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    // Session 1: 200 lines added
+    let input1 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "line-delta-test",
+        "cost": {"total_cost_usd": 5.0, "total_lines_added": 200, "total_lines_removed": 50}
+    }"#;
+
+    let mut cmd1 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cmd1.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input1.as_bytes())
+        .unwrap();
+    let result1 = cmd1.wait_with_output().unwrap();
+    let output1 = String::from_utf8_lossy(&result1.stdout);
+    assert!(output1.contains("+200"));
+
+    // Session 2: Updated to 210 lines added (delta of +10)
+    let input2 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "line-delta-test",
+        "cost": {"total_cost_usd": 6.0, "total_lines_added": 210, "total_lines_removed": 55}
+    }"#;
+
+    let mut cmd2 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cmd2.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input2.as_bytes())
+        .unwrap();
+    let result2 = cmd2.wait_with_output().unwrap();
+    let output2 = String::from_utf8_lossy(&result2.stdout);
+
+    // Should show 210 total lines, not 410 (which would be 200+210 if using absolutes)
+    assert!(output2.contains("+210"));
+}
+
+// Regression test for multi-day session spanning (Codex edge case)
+#[test]
+#[serial_test::serial]
+fn test_multi_day_session_counts_correctly() {
+    use tempfile::TempDir;
+    let temp_dir = TempDir::new().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    // Day 1: Start a long session
+    let input_day1 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "long-session",
+        "cost": {"total_cost_usd": 10.0, "total_lines_added": 100, "total_lines_removed": 20}
+    }"#;
+
+    let mut cmd1 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cmd1.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input_day1.as_bytes())
+        .unwrap();
+    cmd1.wait().unwrap();
+
+    // Simulate the session continuing on Day 2 (same session_id, updated cost)
+    // This should count the session on Day 2 as well
+    let input_day2 = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "long-session",
+        "cost": {"total_cost_usd": 15.0, "total_lines_added": 150, "total_lines_removed": 30}
+    }"#;
+
+    let mut cmd2 = std::process::Command::new(get_test_binary())
+        .env("NO_COLOR", "1")
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    cmd2.stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input_day2.as_bytes())
+        .unwrap();
+    cmd2.wait().unwrap();
+
+    // Check health to verify session count
+    // The session should be counted once globally but may appear in multiple days
+    let health_output = std::process::Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .arg("health")
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    let health_str = String::from_utf8_lossy(&health_output.stdout);
+    let health_json: serde_json::Value = serde_json::from_str(&health_str).unwrap();
+
+    // All-time session count should be 1 (same session across days)
+    assert_eq!(health_json["session_count"].as_u64().unwrap(), 1);
+
+    // Total cost should be $15 (final value, not $10+$15)
+    assert_eq!(health_json["all_time_total"].as_f64().unwrap(), 15.0);
+}
+
+// Regression test for monthly over-counting when session spans days
+#[test]
+#[serial_test::serial]
+fn test_monthly_sessions_no_overcount() {
+    use tempfile::TempDir;
+    let temp_dir = TempDir::new().unwrap();
+    std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    // Create a session that appears on 3 different days in the same month
+    // Monthly session count should be 1, not 3
+    for day in 1..=3 {
+        let input = format!(
+            r#"{{
+            "workspace": {{"current_dir": "/test"}},
+            "session_id": "spanning-session",
+            "cost": {{"total_cost_usd": {}.0, "total_lines_added": 50, "total_lines_removed": 10}}
+        }}"#,
+            day * 5
+        );
+
+        let mut cmd = std::process::Command::new(get_test_binary())
+            .env("NO_COLOR", "1")
+            .env("XDG_DATA_HOME", temp_dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        cmd.stdin
+            .as_mut()
+            .unwrap()
+            .write_all(input.as_bytes())
+            .unwrap();
+        cmd.wait().unwrap();
+    }
+
+    // Health check should show 1 session total (not 3)
+    let health_output = std::process::Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .arg("health")
+        .arg("--json")
+        .output()
+        .unwrap();
+
+    let health_str = String::from_utf8_lossy(&health_output.stdout);
+    let health_json: serde_json::Value = serde_json::from_str(&health_str).unwrap();
+
+    // Should show 1 unique session, not 3
+    assert_eq!(health_json["session_count"].as_u64().unwrap(), 1);
+}

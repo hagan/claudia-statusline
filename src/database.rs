@@ -220,26 +220,57 @@ impl SqliteDatabase {
             params![session_id, &now, &now, cost, lines_added as i64, lines_removed as i64],
         )?;
 
+        // Proper session counting: We need to track which sessions we've seen for each period
+        // Since we don't have a junction table, we'll use the session_count field itself
+        // as a counter that gets SET (not incremented) based on actual distinct sessions
+
+        // For daily: count distinct sessions that have been updated today
+        // We determine "updated today" by checking if last_updated matches today's date
+        // Use 'localtime' modifier to ensure timezone consistency with current_date()
+        let daily_session_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(DISTINCT session_id) FROM sessions
+                 WHERE date(last_updated, 'localtime') = ?1",
+                params![&today],
+                |row| row.get(0),
+            )
+            .unwrap_or(1); // Default to 1 (this session) if query fails
+
+        // For monthly: count distinct sessions updated this month
+        // Use 'localtime' modifier to ensure timezone consistency with current_month()
+        let monthly_session_count: i64 = tx
+            .query_row(
+                "SELECT COUNT(DISTINCT session_id) FROM sessions
+                 WHERE strftime('%Y-%m', last_updated, 'localtime') = ?1",
+                params![&month],
+                |row| row.get(0),
+            )
+            .unwrap_or(1);
+
         // Update daily stats atomically with delta values
+        // Note: session_count is SET (not incremented) to the actual count of distinct sessions
         tx.execute(
             "INSERT INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
-             VALUES (?1, ?2, ?3, ?4, 1)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(date) DO UPDATE SET
                 total_cost = total_cost + ?2,
                 total_lines_added = total_lines_added + ?3,
-                total_lines_removed = total_lines_removed + ?4",
-            params![&today, cost_delta, lines_added_delta, lines_removed_delta],
+                total_lines_removed = total_lines_removed + ?4,
+                session_count = ?5",
+            params![&today, cost_delta, lines_added_delta, lines_removed_delta, daily_session_count],
         )?;
 
         // Update monthly stats atomically with delta values
+        // Note: session_count is SET (not incremented) to the actual count of distinct sessions
         tx.execute(
             "INSERT INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed, session_count)
-             VALUES (?1, ?2, ?3, ?4, 1)
+             VALUES (?1, ?2, ?3, ?4, ?5)
              ON CONFLICT(month) DO UPDATE SET
                 total_cost = total_cost + ?2,
                 total_lines_added = total_lines_added + ?3,
-                total_lines_removed = total_lines_removed + ?4",
-            params![&month, cost_delta, lines_added_delta, lines_removed_delta],
+                total_lines_removed = total_lines_removed + ?4,
+                session_count = ?5",
+            params![&month, cost_delta, lines_added_delta, lines_removed_delta, monthly_session_count],
         )?;
 
         // Get totals for return
@@ -309,6 +340,22 @@ impl SqliteDatabase {
         let result: Option<String> =
             conn.query_row("SELECT MIN(start_time) FROM sessions", [], |row| row.get(0))?;
         Ok(result)
+    }
+
+    /// Check if a session was active in a given month
+    /// Returns true if the session exists and was last updated in the specified month (YYYY-MM format)
+    /// Uses 'localtime' modifier to ensure timezone consistency with Rust's Local::now()
+    pub fn session_active_in_month(&self, session_id: &str, month: &str) -> Result<bool> {
+        let conn = self.get_connection()?;
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sessions
+                 WHERE session_id = ?1 AND strftime('%Y-%m', last_updated, 'localtime') = ?2",
+                params![session_id, month],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        Ok(count > 0)
     }
 
     /// Get today's total cost

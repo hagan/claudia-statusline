@@ -188,10 +188,22 @@ mod tests {
             ModelType::from_name("claude-3-opus-20240229"),
             ModelType::Opus
         );
-        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet"), ModelType::Sonnet35);
-        assert_eq!(ModelType::from_name("Claude Sonnet 4.5"), ModelType::Sonnet45);
-        assert_eq!(ModelType::from_name("Claude 4.5 Sonnet"), ModelType::Sonnet45);
-        assert_eq!(ModelType::from_name("claude-sonnet-4-5"), ModelType::Sonnet45);
+        assert_eq!(
+            ModelType::from_name("Claude 3.5 Sonnet"),
+            ModelType::Sonnet35
+        );
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 4.5"),
+            ModelType::Sonnet45
+        );
+        assert_eq!(
+            ModelType::from_name("Claude 4.5 Sonnet"),
+            ModelType::Sonnet45
+        );
+        assert_eq!(
+            ModelType::from_name("claude-sonnet-4-5"),
+            ModelType::Sonnet45
+        );
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
     }
 

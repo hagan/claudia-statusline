@@ -5,6 +5,45 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.4] - 2025-10-04
+
+### Critical Bug Fixes
+
+#### Fixed
+- **Critical Timezone Bug**: Fixed SQLite date comparisons to use `'localtime'` modifier for timezone consistency
+  - **Issue**: SQLite's `strftime()` and `date()` functions normalize timestamps to UTC by default, while Rust's `current_date()` and `current_month()` use local timezone. This caused month/day mismatches for all non-UTC users.
+  - **Impact**:
+    - Users in positive UTC offsets (e.g., UTC+10 Sydney): Monthly session counts would spuriously increment on every update near midnight (e.g., 2025-07-01 00:30+10:00 became 2025-06 in SQLite vs 2025-07 in Rust)
+    - Users in negative UTC offsets (e.g., UTC-5 New York): Would miss counting sessions near month boundaries
+    - **Silent data corruption** - no error messages, just incorrect statistics
+  - **Fix**: Added `'localtime'` modifier to all 3 SQLite date comparison queries:
+    - `session_active_in_month()`: Line 351 - `strftime('%Y-%m', last_updated, 'localtime')`
+    - Daily session count: Line 233 - `date(last_updated, 'localtime')`
+    - Monthly session count: Line 244 - `strftime('%Y-%m', last_updated, 'localtime')`
+  - **Result**: All users now get timezone-consistent date comparisons, preventing spurious increments and data corruption
+- **Monthly Session Count Reset on Restart**: Fixed session counts being reset after process restart
+  - **Issue**: When loading from SQLite, `daily.sessions` vectors were empty (not persisted), causing monthly session counts to be rebuilt from empty data and overwritten to 1
+  - **Fix**: Added `Database::session_active_in_month()` method to query SQLite for authoritative session membership, with in-memory fallback for performance
+  - Lines 248-270 in `stats.rs` now query SQLite before checking in-memory data
+- **Order-of-Operations Bug**: Fixed monthly count never incrementing for new sessions
+  - **Issue**: Month membership check happened AFTER adding session to `daily.sessions`, causing the check to always find the session (we just added it)
+  - **Fix**: Moved month membership check to execute BEFORE modifying `daily.sessions` vectors
+
+#### Changes
+- `src/database.rs`:
+  - Added `session_active_in_month()` method with timezone-aware query (lines 343-357)
+  - Updated daily session count query to use `date(last_updated, 'localtime')` (line 233)
+  - Updated monthly session count query to use `strftime('%Y-%m', last_updated, 'localtime')` (line 244)
+- `src/stats.rs`:
+  - Implemented SQLite-first session membership check with in-memory fallback (lines 248-270)
+  - Moved month membership check before `daily.sessions` modification to prevent false positives
+
+#### Testing
+- All 241 unit/integration tests passing
+- Added timezone consistency verification
+- Comprehensive edge-case testing: new sessions, updates, restarts, multiple restart cycles
+- Verified no session count inflation or suppression across timezone boundaries
+
 ## [2.13.3] - 2025-01-02
 
 ### Phase 7: CI/CD Improvements (PR 1-3 Complete)

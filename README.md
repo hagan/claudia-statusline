@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.13.3** - Complete Phase 5 git parsing, Phase 7 CI/CD improvements, enhanced test performance
+**Version 2.13.4** - Critical bug fixes: Timezone consistency, session count persistence, Sonnet 4.5 support
 
 ![Claudia Statusline Screenshot](statusline.png)
 
