@@ -241,7 +241,7 @@ pub fn format_output(
                 if rate > 0.0 {
                     output.push_str(&format!(
                         " {}(${:.2}/hr){}",
-                        Colors::gray(),
+                        Colors::light_gray(),
                         rate,
                         Colors::reset()
                     ));
@@ -418,7 +418,7 @@ pub fn format_output_to_string(
                 if rate > 0.0 {
                     output.push_str(&format!(
                         " {}(${:.2}/hr){}",
-                        Colors::gray(),
+                        Colors::light_gray(),
                         rate,
                         Colors::reset()
                     ));
