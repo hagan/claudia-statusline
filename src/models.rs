@@ -61,7 +61,9 @@ pub enum ModelType {
     /// Claude 3 Opus model
     Opus,
     /// Claude 3.5 Sonnet model
-    Sonnet,
+    Sonnet35,
+    /// Claude 4.5 Sonnet model
+    Sonnet45,
     /// Claude 3 Haiku model
     Haiku,
     /// Unknown or unrecognized model
@@ -74,7 +76,13 @@ impl ModelType {
         if lower.contains("opus") {
             ModelType::Opus
         } else if lower.contains("sonnet") {
-            ModelType::Sonnet
+            // Check for version number to differentiate between Sonnet versions
+            if lower.contains("4.5") || lower.contains("4-5") || lower.contains("sonnet-4") {
+                ModelType::Sonnet45
+            } else {
+                // Default to 3.5 for backward compatibility
+                ModelType::Sonnet35
+            }
         } else if lower.contains("haiku") {
             ModelType::Haiku
         } else {
@@ -86,7 +94,8 @@ impl ModelType {
     pub fn abbreviation(&self) -> &str {
         match self {
             ModelType::Opus => "Opus",
-            ModelType::Sonnet => "S3.5",
+            ModelType::Sonnet35 => "S3.5",
+            ModelType::Sonnet45 => "S4.5",
             ModelType::Haiku => "Haiku",
             ModelType::Unknown => "Claude",
         }
@@ -179,14 +188,18 @@ mod tests {
             ModelType::from_name("claude-3-opus-20240229"),
             ModelType::Opus
         );
-        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet"), ModelType::Sonnet);
+        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet"), ModelType::Sonnet35);
+        assert_eq!(ModelType::from_name("Claude Sonnet 4.5"), ModelType::Sonnet45);
+        assert_eq!(ModelType::from_name("Claude 4.5 Sonnet"), ModelType::Sonnet45);
+        assert_eq!(ModelType::from_name("claude-sonnet-4-5"), ModelType::Sonnet45);
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
     }
 
     #[test]
     fn test_model_type_display() {
         assert_eq!(ModelType::Opus.abbreviation(), "Opus");
-        assert_eq!(ModelType::Sonnet.abbreviation(), "S3.5");
+        assert_eq!(ModelType::Sonnet35.abbreviation(), "S3.5");
+        assert_eq!(ModelType::Sonnet45.abbreviation(), "S4.5");
         assert_eq!(ModelType::Haiku.abbreviation(), "Haiku");
         assert_eq!(ModelType::Unknown.abbreviation(), "Claude");
     }

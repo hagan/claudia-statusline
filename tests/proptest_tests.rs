@@ -141,7 +141,7 @@ proptest! {
 
         // Should always return a valid ModelType variant
         match model_type {
-            ModelType::Opus | ModelType::Sonnet | ModelType::Haiku | ModelType::Unknown => {
+            ModelType::Opus | ModelType::Sonnet35 | ModelType::Sonnet45 | ModelType::Haiku | ModelType::Unknown => {
                 // All valid variants
             }
         }
