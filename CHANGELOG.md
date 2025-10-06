@@ -5,6 +5,14 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.1] - 2025-10-05
+
+### Fixed
+- **Code Quality Improvements**: Applied clippy suggestions for better code quality
+  - Derive `Default` for `TursoConfig` instead of manual implementation
+  - Use `strip_prefix()` instead of manual string slicing for better safety
+  - Auto-formatting improvements from `cargo fmt`
+
 ## [2.14.0] - 2025-10-05
 
 ### Added - Experimental Turso Sync (Phase 1)

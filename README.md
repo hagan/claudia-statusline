@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.14.0** - Optional Turso cloud sync (Phase 1), burn rate visibility improvements
+**Version 2.14.1** - Optional Turso cloud sync (Phase 1), code quality improvements
 
 ![Claudia Statusline Screenshot](statusline.png)
 

@@ -686,7 +686,11 @@ fn show_sync_status(_status: bool) -> Result<()> {
         if !config.sync.turso.database_url.is_empty() {
             println!("  Database URL: {}", config.sync.turso.database_url);
         } else {
-            println!("  Database URL: {}(not configured){}", Colors::red(), Colors::reset());
+            println!(
+                "  Database URL: {}(not configured){}",
+                Colors::red(),
+                Colors::reset()
+            );
         }
 
         if !config.sync.turso.auth_token.is_empty() {
@@ -696,7 +700,11 @@ fn show_sync_status(_status: bool) -> Result<()> {
                 println!("  Auth token: *** (configured)");
             }
         } else {
-            println!("  Auth token: {}(not configured){}", Colors::red(), Colors::reset());
+            println!(
+                "  Auth token: {}(not configured){}",
+                Colors::red(),
+                Colors::reset()
+            );
         }
         println!();
 
@@ -707,7 +715,11 @@ fn show_sync_status(_status: bool) -> Result<()> {
         match sync_manager.test_connection() {
             Ok(connected) => {
                 if connected {
-                    println!("  Connection: {}✅ Connected{}", Colors::green(), Colors::reset());
+                    println!(
+                        "  Connection: {}✅ Connected{}",
+                        Colors::green(),
+                        Colors::reset()
+                    );
                 } else {
                     println!(
                         "  Connection: {}❌ Not connected{}",
@@ -720,7 +732,12 @@ fn show_sync_status(_status: bool) -> Result<()> {
                 }
             }
             Err(e) => {
-                println!("  Connection: {}❌ Error: {}{}", Colors::red(), e, Colors::reset());
+                println!(
+                    "  Connection: {}❌ Error: {}{}",
+                    Colors::red(),
+                    e,
+                    Colors::reset()
+                );
             }
         }
     } else {

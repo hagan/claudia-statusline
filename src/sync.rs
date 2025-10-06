@@ -8,7 +8,7 @@ use std::env;
 
 /// Sync status information
 #[derive(Debug, Clone)]
-#[allow(dead_code)]  // Will be used in Phase 2+
+#[allow(dead_code)] // Will be used in Phase 2+
 pub struct SyncStatus {
     pub enabled: bool,
     pub provider: String,
@@ -55,7 +55,7 @@ impl SyncManager {
     }
 
     /// Check if sync is enabled and configured
-    #[allow(dead_code)]  // Will be used in Phase 2+
+    #[allow(dead_code)] // Will be used in Phase 2+
     pub fn is_enabled(&self) -> bool {
         self.config.enabled && !self.config.turso.database_url.is_empty()
     }
@@ -97,10 +97,7 @@ impl SyncManager {
             return Ok(false);
         }
 
-        info!(
-            "Testing Turso connection to {}",
-            turso_config.database_url
-        );
+        info!("Testing Turso connection to {}", turso_config.database_url);
 
         // TODO: Actual libSQL connection test will go here in Phase 1
         // For now, just validate configuration
@@ -125,19 +122,12 @@ impl SyncManager {
             // Extract variable name: ${VAR_NAME} -> VAR_NAME
             let var_name = &token_config[2..token_config.len() - 1];
             env::var(var_name).map_err(|_| {
-                StatuslineError::Sync(format!(
-                    "Environment variable {} not found",
-                    var_name
-                ))
+                StatuslineError::Sync(format!("Environment variable {} not found", var_name))
             })
-        } else if token_config.starts_with('$') {
+        } else if let Some(var_name) = token_config.strip_prefix('$') {
             // Extract variable name: $VAR_NAME -> VAR_NAME
-            let var_name = &token_config[1..];
             env::var(var_name).map_err(|_| {
-                StatuslineError::Sync(format!(
-                    "Environment variable {} not found",
-                    var_name
-                ))
+                StatuslineError::Sync(format!("Environment variable {} not found", var_name))
             })
         } else {
             // Use token directly

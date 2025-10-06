@@ -178,7 +178,7 @@ pub struct SyncConfig {
 
 /// Turso-specific sync configuration
 #[cfg(feature = "turso-sync")]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct TursoConfig {
     /// Turso database URL (e.g., "libsql://your-db.turso.io")
@@ -300,16 +300,6 @@ impl Default for SyncConfig {
             sync_interval_seconds: 60,
             soft_quota_fraction: 0.75, // Warn at 75% of quota
             turso: TursoConfig::default(),
-        }
-    }
-}
-
-#[cfg(feature = "turso-sync")]
-impl Default for TursoConfig {
-    fn default() -> Self {
-        TursoConfig {
-            database_url: String::new(),
-            auth_token: String::new(),
         }
     }
 }
