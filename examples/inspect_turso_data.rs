@@ -41,9 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📊 SESSIONS TABLE");
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    let mut rows = conn
-        .query("SELECT * FROM sessions LIMIT 3", ())
-        .await?;
+    let mut rows = conn.query("SELECT * FROM sessions LIMIT 3", ()).await?;
 
     println!("Sample rows (first 3):\n");
     let mut count = 0;
@@ -79,9 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("📊 DAILY_STATS TABLE");
     println!("═══════════════════════════════════════════════════════════════\n");
 
-    let mut rows = conn
-        .query("SELECT * FROM daily_stats LIMIT 3", ())
-        .await?;
+    let mut rows = conn.query("SELECT * FROM daily_stats LIMIT 3", ()).await?;
 
     println!("Sample rows (first 3):\n");
     count = 0;
@@ -141,9 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Get total count
-    let mut rows = conn
-        .query("SELECT COUNT(*) FROM monthly_stats", ())
-        .await?;
+    let mut rows = conn.query("SELECT COUNT(*) FROM monthly_stats", ()).await?;
     if let Some(row) = rows.next().await? {
         let total: i64 = row.get(0)?;
         println!("Total monthly records: {}\n", total);

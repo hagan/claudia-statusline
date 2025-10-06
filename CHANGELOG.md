@@ -57,6 +57,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed: `setup_schema.rs`, `inspect_turso_data.rs`, `check_turso_version.rs`, `migrate_turso.rs`
   - All documented commands now work as expected
 
+- **Feature-Gated Examples** - Added `required-features` to Turso sync examples
+  - Examples now only build when `--features turso-sync` is enabled
+  - Prevents compilation errors in CI/CD without the feature
+  - Database upsert methods now properly feature-gated with `#[cfg(feature = "turso-sync")]`
+
 #### Technical Architecture
 - **Local-First Design** - Statusline remains fast and offline-capable
   - All sync operations happen in background commands

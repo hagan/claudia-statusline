@@ -1,6 +1,6 @@
 [package]
 name = "statusline"
-version = "2.15.0"
+version = "2.15.1"
 edition = "2021"
 license = "MIT"
 description = "Claudia Statusline - A feature-rich statusline for Claude Code, inspired by Peter Steinberger's statusline.rs"
@@ -48,6 +48,23 @@ chrono = "0.4"
 tempfile = "3.8"
 serial_test = "3.1"
 proptest = "1.4"
+
+# Turso sync examples require the turso-sync feature
+[[example]]
+name = "setup_schema"
+required-features = ["turso-sync"]
+
+[[example]]
+name = "inspect_turso_data"
+required-features = ["turso-sync"]
+
+[[example]]
+name = "check_turso_version"
+required-features = ["turso-sync"]
+
+[[example]]
+name = "migrate_turso"
+required-features = ["turso-sync"]
 
 [profile.release]
 opt-level = "z"  # Optimize for size

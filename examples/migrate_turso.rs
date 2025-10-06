@@ -57,9 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("  Current version: v{}\n", current_version);
 
     // Apply migrations
-    let migrations = vec![
-        (1, "Initial schema", initial_schema),
-    ];
+    let migrations = vec![(1, "Initial schema", initial_schema)];
 
     let mut applied = 0;
     for (version, description, migration_fn) in migrations {

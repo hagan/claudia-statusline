@@ -104,9 +104,8 @@ impl SyncManager {
         info!("Testing Turso connection to {}", turso_config.database_url);
 
         // Create async runtime for libSQL operations
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            StatuslineError::Sync(format!("Failed to create async runtime: {}", e))
-        })?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| StatuslineError::Sync(format!("Failed to create async runtime: {}", e)))?;
 
         // Test connection in async context
         let result = runtime.block_on(async {
@@ -320,11 +319,9 @@ impl SyncManager {
             let lines_added: i64 = row
                 .get(4)
                 .map_err(|e| StatuslineError::Sync(format!("Failed to get lines_added: {}", e)))?;
-            let lines_removed: i64 = row
-                .get(5)
-                .map_err(|e| {
-                    StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
-                })?;
+            let lines_removed: i64 = row.get(5).map_err(|e| {
+                StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
+            })?;
 
             sessions.insert(
                 session_id,
@@ -362,11 +359,9 @@ impl SyncManager {
             let lines_added: i64 = row
                 .get(2)
                 .map_err(|e| StatuslineError::Sync(format!("Failed to get lines_added: {}", e)))?;
-            let lines_removed: i64 = row
-                .get(3)
-                .map_err(|e| {
-                    StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
-                })?;
+            let lines_removed: i64 = row.get(3).map_err(|e| {
+                StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
+            })?;
 
             daily_stats.insert(
                 date,
@@ -380,7 +375,8 @@ impl SyncManager {
         }
 
         // Pull monthly stats for this device
-        let query = "SELECT month, total_cost, total_lines_added, total_lines_removed, session_count
+        let query =
+            "SELECT month, total_cost, total_lines_added, total_lines_removed, session_count
                      FROM monthly_stats WHERE device_id = ?";
 
         let mut rows = conn
@@ -403,16 +399,12 @@ impl SyncManager {
             let lines_added: i64 = row
                 .get(2)
                 .map_err(|e| StatuslineError::Sync(format!("Failed to get lines_added: {}", e)))?;
-            let lines_removed: i64 = row
-                .get(3)
-                .map_err(|e| {
-                    StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
-                })?;
-            let session_count: i64 = row
-                .get(4)
-                .map_err(|e| {
-                    StatuslineError::Sync(format!("Failed to get session_count: {}", e))
-                })?;
+            let lines_removed: i64 = row.get(3).map_err(|e| {
+                StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
+            })?;
+            let session_count: i64 = row.get(4).map_err(|e| {
+                StatuslineError::Sync(format!("Failed to get session_count: {}", e))
+            })?;
 
             monthly_stats.insert(
                 month,
@@ -517,9 +509,8 @@ impl SyncManager {
         let auth_token = self.resolve_auth_token(&self.config.turso.auth_token)?;
 
         // Create async runtime for Turso operations
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            StatuslineError::Sync(format!("Failed to create async runtime: {}", e))
-        })?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| StatuslineError::Sync(format!("Failed to create async runtime: {}", e)))?;
 
         // Push to Turso in async context
         let result = runtime.block_on(async {
@@ -589,9 +580,8 @@ impl SyncManager {
         let auth_token = self.resolve_auth_token(&self.config.turso.auth_token)?;
 
         // Create async runtime for Turso operations
-        let runtime = tokio::runtime::Runtime::new().map_err(|e| {
-            StatuslineError::Sync(format!("Failed to create async runtime: {}", e))
-        })?;
+        let runtime = tokio::runtime::Runtime::new()
+            .map_err(|e| StatuslineError::Sync(format!("Failed to create async runtime: {}", e)))?;
 
         // Pull from Turso in async context
         let result = runtime.block_on(async {

@@ -585,6 +585,7 @@ impl SqliteDatabase {
 
     /// Upsert session data directly (for sync pull)
     /// This replaces the entire session without delta calculations
+    #[cfg(feature = "turso-sync")]
     pub fn upsert_session_direct(
         &self,
         session_id: &str,
@@ -611,6 +612,7 @@ impl SqliteDatabase {
     }
 
     /// Upsert daily stats directly (for sync pull)
+    #[cfg(feature = "turso-sync")]
     pub fn upsert_daily_stats_direct(
         &self,
         date: &str,
@@ -633,6 +635,7 @@ impl SqliteDatabase {
     }
 
     /// Upsert monthly stats directly (for sync pull)
+    #[cfg(feature = "turso-sync")]
     pub fn upsert_monthly_stats_direct(
         &self,
         month: &str,
