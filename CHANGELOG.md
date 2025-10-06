@@ -5,6 +5,16 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.13.5] - 2025-10-05
+
+### UX Improvements
+
+#### Fixed
+- **Burn Rate Color Visibility**: Changed burn rate ($/hr) display from dark gray to light gray
+  - **Issue**: Dark gray color (ANSI 90) was difficult to see on some terminal themes
+  - **Fix**: Changed to light gray (ANSI 245) for better contrast and readability
+  - Applied to both `format_output()` and `format_output_to_string()` in `src/display.rs` (lines 244, 421)
+
 ## [2.13.4] - 2025-10-04
 
 ### Critical Bug Fixes
