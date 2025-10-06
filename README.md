@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.14.1** - Optional Turso cloud sync (Phase 1), code quality improvements
+**Version 2.15.0** - Turso cloud sync Phase 2 complete: full push/pull synchronization with migration support
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -15,9 +15,11 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 
 ## Technical Highlights
 
+- **Cloud Sync** - Optional Turso synchronization for cross-machine cost tracking (v2.15.0)
+- **Database Migrations** - Versioned schema migrations with automatic local and manual remote upgrades (v2.15.0)
 - **Security Hardened** - Terminal output sanitization, Git timeouts, input validation (v2.10.0)
 - **Modular Architecture** - Clean separation across 11 focused modules (~200 lines each)
-- **Comprehensive Testing** - 210 tests including security, CLI, and health diagnostics
+- **Comprehensive Testing** - 240+ tests including security, CLI, sync, and health diagnostics
 - **Configuration System** - Full TOML-based configuration with sensible defaults (v2.6.0)
 - **Retry Logic** - Automatic retry with exponential backoff for transient failures (v2.5.0)
 - **Unified Error Handling** - Type-safe error system with thiserror (v2.4.0)
@@ -46,8 +48,9 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Theme-Aware Colors** - Automatically adapts to dark/light terminal themes
 - **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
 - **High Performance** - Written in Rust for minimal overhead (~5ms execution)
-- **Migration Support** - Automatic migration from JSON to SQLite with rollback capability
-- **Cloud Sync (Optional)** - Optional Turso cloud sync for cross-machine cost tracking (requires `--features turso-sync`)
+- **Migration Support** - Versioned schema migrations with automatic local and manual Turso upgrades
+- **Cloud Sync (Optional)** - Turso cloud sync with push/pull, conflict resolution, privacy-preserving design (requires `--features turso-sync`)
+- **Inspection Tools** - Verify data privacy, check schema versions, inspect remote data
 - **Full Source** - Complete Rust implementation with proper attribution
 
 ## Quick Start
@@ -543,7 +546,7 @@ echo 'export CLAUDE_THEME=dark' >> ~/.bashrc
 
 ### Cloud Sync (Optional Feature)
 
-> **Note**: Cloud sync is an optional feature that requires building with `--features turso-sync`. This feature is currently in **Phase 1** (foundation/testing) and not recommended for production use yet.
+> **Note**: Cloud sync is an optional feature that requires building with `--features turso-sync`. This feature is currently in **Phase 2** (manual sync) and provides full push/pull synchronization.
 
 The statusline supports optional cloud synchronization using [Turso](https://turso.tech/) (SQLite at the edge) to track costs across multiple machines and concurrent Claude sessions.
 
@@ -556,16 +559,24 @@ The statusline supports optional cloud synchronization using [Turso](https://tur
 
 **Solution**: Optional background sync to Turso keeps all your machines' stats synchronized while maintaining local-first performance.
 
-#### Current Status (Phase 1)
+#### Current Status (Phase 2)
 
-✅ **Completed**:
+✅ **Phase 1 Complete** (Foundation):
 - Configuration infrastructure with TOML support
 - `statusline sync --status` command to test connection
 - Environment variable support for auth tokens
 - Feature flag (`turso-sync`) keeps it opt-in
 
+✅ **Phase 2 Complete** (Manual Sync):
+- Full push/pull synchronization with Turso
+- Last-write-wins conflict resolution for sessions
+- Device-specific data isolation
+- Comprehensive error handling for network/auth/quota issues
+- `statusline sync --push` to upload local stats
+- `statusline sync --pull` to download remote stats
+- Dry-run support with `--dry-run` flag
+
 🚧 **Not Yet Implemented**:
-- Actual data synchronization (Phase 2)
 - Automatic background sync (Phase 3)
 - Cross-machine analytics dashboard (Phase 4)
 
@@ -579,18 +590,24 @@ cargo build --release --features turso-sync
 cargo install --path . --features turso-sync
 ```
 
-#### Testing Sync Configuration
+#### Using Sync Commands
 
-Once built with `--features turso-sync`, you can test the sync configuration:
+Once built with `--features turso-sync`, you can use the following sync commands:
 
 ```bash
-# Check sync status
+# Check sync status and test connection
 statusline sync --status
+
+# Push local stats to Turso (dry-run first)
+statusline sync --push --dry-run
+statusline sync --push
+
+# Pull remote stats from Turso (dry-run first)
+statusline sync --pull --dry-run
+statusline sync --pull
 ```
 
-#### Example Configuration (Future)
-
-When sync is fully implemented (Phase 2+), configuration will look like:
+#### Example Configuration
 
 ```toml
 # ~/.config/claudia-statusline/config.toml
@@ -605,7 +622,97 @@ database_url = "libsql://claude-stats.turso.io"
 auth_token = "${TURSO_AUTH_TOKEN}"  # Or paste token directly
 ```
 
-For detailed implementation plans, see `.claude/tasks/futures/01_turso_sync_feature.md`.
+#### Setting Up Turso Sync
+
+**Prerequisites:**
+- Turso account (free tier available at [turso.tech](https://turso.tech))
+- Turso database created
+- Auth token generated
+
+**Quick Setup:**
+
+1. **Create Turso Database** (one-time):
+```bash
+# Install Turso CLI
+curl -sSfL https://get.tur.so/install.sh | bash
+
+# Create database
+turso db create claude-statusline
+
+# Get database URL
+turso db show claude-statusline --url
+
+# Create auth token
+turso db tokens create claude-statusline
+```
+
+2. **Configure Statusline**:
+
+Edit `~/.config/claudia-statusline/config.toml`:
+```toml
+[sync]
+enabled = true
+provider = "turso"
+sync_interval_seconds = 60
+soft_quota_fraction = 0.75
+
+[sync.turso]
+database_url = "libsql://your-database.turso.io"
+auth_token = "${TURSO_AUTH_TOKEN}"  # Or paste token directly
+```
+
+3. **Initialize Database Schema**:
+```bash
+# One-time setup to create tables in Turso
+cargo run --example setup_schema --features turso-sync --release
+```
+
+4. **Push Your Existing Stats**:
+```bash
+# Preview what will be pushed
+statusline sync --push --dry-run
+
+# Actually push to cloud
+statusline sync --push
+```
+
+**Tools:**
+```bash
+# Check schema version
+cargo run --example check_turso_version --features turso-sync --release
+
+# Inspect what data is stored
+cargo run --example inspect_turso_data --features turso-sync --release
+
+# Run database migrations (if schema changes)
+cargo run --example migrate_turso --features turso-sync --release
+```
+
+#### Privacy & Security
+
+**What is synced:**
+- ✅ Device ID (anonymous 16-char hash)
+- ✅ Session costs and line counts
+- ✅ Timestamps
+
+**What is NOT synced:**
+- ✅ No file paths or directory names
+- ✅ No git branches or project names
+- ✅ No code content
+- ✅ No usernames or hostnames (device ID is one-way hashed)
+
+See `examples/inspect_turso_data.rs` to verify what data is stored.
+
+#### Database Migrations
+
+Both local and Turso databases use versioned schema migrations:
+
+- **Local database**: Migrates automatically on startup
+- **Turso database**: Requires manual migration via `migrate_turso` tool
+- **Version tracking**: `schema_migrations` table tracks all changes
+- **Safe upgrades**: Sequential versions, idempotent migrations
+
+For detailed migration guide, see [`docs/DATABASE_MIGRATIONS.md`](docs/DATABASE_MIGRATIONS.md).
 
 ### JSON Input Format
 ```json

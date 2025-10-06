@@ -5,6 +5,81 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.15.0] - 2025-10-06
+
+### Added - Turso Sync Phase 2 Complete (Manual Sync)
+
+> **Phase 2 Complete**: Full push/pull synchronization with Turso is now implemented! This feature is optional and requires building with `--features turso-sync`.
+
+#### Core Synchronization Features
+- **Push to Remote** - Upload local stats to Turso cloud database
+  - `statusline sync --push` - Push all sessions, daily, and monthly stats
+  - Device-specific data isolation (each device has its own namespace)
+  - Real-time progress reporting (sessions/daily/monthly counts)
+  - Full error handling with descriptive messages
+
+- **Pull from Remote** - Download and merge remote stats into local database
+  - `statusline sync --pull` - Pull and merge stats from all devices
+  - Last-write-wins conflict resolution based on `last_updated` timestamps
+  - Automatic conflict detection and resolution
+  - Reports conflicts resolved during merge
+
+- **Dry-Run Support** - Test sync operations without making changes
+  - `--dry-run` flag available for both push and pull
+  - Shows exactly what would be synchronized
+  - Safe for testing before committing to actual sync
+
+#### Implementation Details
+- **Async Turso Client** - Using libSQL 0.6 for SQLite-compatible cloud access
+  - Tokio async runtime for non-blocking network operations
+  - Connection pooling and retry logic
+  - Comprehensive error handling for network/auth/quota failures
+
+- **Conflict Resolution** - Last-write-wins strategy for session data
+  - Sessions: Compared by `last_updated` timestamp
+  - Daily/Monthly aggregates: Simple replacement (no conflicts expected)
+  - Conflict counter tracks number of resolved conflicts
+
+- **Database Methods** - New direct upsert methods for pulled data
+  - `upsert_session_direct()` - Replace session without delta calculations
+  - `upsert_daily_stats_direct()` - Direct daily stats replacement
+  - `upsert_monthly_stats_direct()` - Direct monthly stats replacement
+  - These bypass normal UPSERT logic to preserve remote data integrity
+
+#### Bug Fixes
+- **Feature Gate Alignment** - Fixed test compilation without turso-sync feature
+  - Added `#[cfg(feature = "turso-sync")]` to `test_get_device_id()` test
+  - Tests now compile and pass with both feature flags: enabled and disabled
+  - Zero clippy warnings on all feature combinations
+
+- **Tokio Macros Feature** - Added missing "macros" feature to tokio dependency
+  - Examples using `#[tokio::main]` now compile successfully
+  - Fixed: `setup_schema.rs`, `inspect_turso_data.rs`, `check_turso_version.rs`, `migrate_turso.rs`
+  - All documented commands now work as expected
+
+#### Technical Architecture
+- **Local-First Design** - Statusline remains fast and offline-capable
+  - All sync operations happen in background commands
+  - Normal statusline operation never blocks on network
+  - Local SQLite remains source of truth for display
+
+- **Privacy-Conscious** - Device-specific namespacing
+  - Each device's data stored separately in Turso
+  - Future phases will add data encryption/hashing for sensitive fields
+  - Only stats data synchronized, not sensitive paths or branches
+
+### Changed
+- **Documentation Updates**
+  - README.md now reflects Phase 2 completion status
+  - Added sync command examples with push/pull/dry-run
+  - Updated "Current Status" section with Phase 2 achievements
+  - Enhanced configuration examples
+
+### Testing
+- All existing tests pass (241 total)
+- Tests verified with both `--features turso-sync` and default features
+- Zero clippy warnings on all configurations
+
 ## [2.14.3] - 2025-10-05
 
 ### Fixed

@@ -193,6 +193,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "turso-sync")]
     fn test_get_device_id() {
         let device_id = get_device_id();
 
