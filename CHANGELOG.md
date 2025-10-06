@@ -5,6 +5,56 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] - 2025-10-05
+
+### Added - Experimental Turso Sync (Phase 1)
+
+> **Experimental Feature**: Cloud sync is in early development (Phase 1). Not recommended for production use.
+
+- **Optional Cloud Sync Foundation** - Infrastructure for cross-machine cost tracking using Turso (SQLite at the edge)
+  - Requires building with `--features turso-sync` (zero impact when disabled)
+  - Added sync configuration system with TOML support (`SyncConfig`, `TursoConfig`)
+  - Implemented `statusline sync --status` command for testing connection
+  - Environment variable support for auth tokens (`${TURSO_AUTH_TOKEN}` or `$TURSO_AUTH_TOKEN`)
+  - Feature flag ensures opt-in only - no code compiled without flag
+  - Default: disabled, 60s sync interval, 75% quota warning threshold
+
+#### What Works (Phase 1)
+- Configuration parsing and validation
+- Auth token resolution from environment variables
+- Connection status testing
+- CLI integration with help text
+
+#### What's Not Implemented Yet
+- **Phase 2**: Actual data synchronization (push/pull commands)
+- **Phase 3**: Automatic background sync
+- **Phase 4**: Cross-machine analytics dashboard
+
+#### Technical Details
+- New module: `src/sync.rs` (148 lines)
+- Added optional dependencies: `libsql = "0.6"`, `tokio = "1.0"`
+- 5 new unit tests (83 total with feature, 78 without)
+- Binary size impact: ~500KB when compiled with feature
+- See `.claude/tasks/futures/01_turso_sync_feature.md` for complete roadmap
+
+#### Configuration Example (Future - Phase 2+)
+```toml
+[sync]
+enabled = true
+provider = "turso"
+sync_interval_seconds = 60
+soft_quota_fraction = 0.75
+
+[sync.turso]
+database_url = "libsql://claude-stats.turso.io"
+auth_token = "${TURSO_AUTH_TOKEN}"
+```
+
+#### Building with Sync Support
+```bash
+cargo build --release --features turso-sync
+```
+
 ## [2.13.5] - 2025-10-05
 
 ### UX Improvements

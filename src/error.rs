@@ -50,6 +50,12 @@ pub enum StatuslineError {
     #[allow(dead_code)]
     Config(String),
 
+    /// Sync operation errors
+    #[cfg(feature = "turso-sync")]
+    #[error("Sync error: {0}")]
+    #[allow(dead_code)]
+    Sync(String),
+
     /// Generic operation errors
     #[error("{0}")]
     Other(String),

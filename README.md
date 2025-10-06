@@ -4,7 +4,7 @@
 
 A high-performance, secure, and customizable statusline for Claude Code written in Rust. Displays workspace information, git status, model usage metrics, session cost tracking, and more in your terminal.
 
-**Version 2.13.4** - Critical bug fixes: Timezone consistency, session count persistence, Sonnet 4.5 support
+**Version 2.14.0** - Optional Turso cloud sync (Phase 1), burn rate visibility improvements
 
 ![Claudia Statusline Screenshot](statusline.png)
 
@@ -47,6 +47,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Dark Mode Optimized** - Enhanced visibility for Claude's dark theme
 - **High Performance** - Written in Rust for minimal overhead (~5ms execution)
 - **Migration Support** - Automatic migration from JSON to SQLite with rollback capability
+- **Cloud Sync (Optional)** - Optional Turso cloud sync for cross-machine cost tracking (requires `--features turso-sync`)
 - **Full Source** - Complete Rust implementation with proper attribution
 
 ## Quick Start
@@ -539,6 +540,72 @@ echo 'export CLAUDE_THEME=dark' >> ~/.bashrc
   - Green (<$5) - Low cost
   - Yellow ($5-$20) - Medium cost
   - Red (≥$20) - High cost
+
+### Cloud Sync (Optional Feature)
+
+> **Note**: Cloud sync is an optional feature that requires building with `--features turso-sync`. This feature is currently in **Phase 1** (foundation/testing) and not recommended for production use yet.
+
+The statusline supports optional cloud synchronization using [Turso](https://turso.tech/) (SQLite at the edge) to track costs across multiple machines and concurrent Claude sessions.
+
+#### Why Cloud Sync?
+
+**Problem**: Each machine has isolated stats in `~/.local/share/claudia-statusline/stats.db`
+- No visibility into total costs across all machines
+- Can't track concurrent session activity
+- Lost context when switching between machines
+
+**Solution**: Optional background sync to Turso keeps all your machines' stats synchronized while maintaining local-first performance.
+
+#### Current Status (Phase 1)
+
+✅ **Completed**:
+- Configuration infrastructure with TOML support
+- `statusline sync --status` command to test connection
+- Environment variable support for auth tokens
+- Feature flag (`turso-sync`) keeps it opt-in
+
+🚧 **Not Yet Implemented**:
+- Actual data synchronization (Phase 2)
+- Automatic background sync (Phase 3)
+- Cross-machine analytics dashboard (Phase 4)
+
+#### Building with Sync Support
+
+```bash
+# Build with turso-sync feature
+cargo build --release --features turso-sync
+
+# Install with sync support
+cargo install --path . --features turso-sync
+```
+
+#### Testing Sync Configuration
+
+Once built with `--features turso-sync`, you can test the sync configuration:
+
+```bash
+# Check sync status
+statusline sync --status
+```
+
+#### Example Configuration (Future)
+
+When sync is fully implemented (Phase 2+), configuration will look like:
+
+```toml
+# ~/.config/claudia-statusline/config.toml
+[sync]
+enabled = true
+provider = "turso"
+sync_interval_seconds = 60
+soft_quota_fraction = 0.75  # Warn at 75% of quota
+
+[sync.turso]
+database_url = "libsql://claude-stats.turso.io"
+auth_token = "${TURSO_AUTH_TOKEN}"  # Or paste token directly
+```
+
+For detailed implementation plans, see `.claude/tasks/futures/01_turso_sync_feature.md`.
 
 ### JSON Input Format
 ```json

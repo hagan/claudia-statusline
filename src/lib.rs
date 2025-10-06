@@ -45,6 +45,9 @@ pub mod models;
 /// Retry logic with exponential backoff for transient failures
 pub mod retry;
 pub mod stats;
+/// Cloud synchronization module (requires turso-sync feature)
+#[cfg(feature = "turso-sync")]
+pub mod sync;
 pub mod utils;
 pub mod version;
 

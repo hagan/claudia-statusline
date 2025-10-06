@@ -29,6 +29,10 @@ pub struct Config {
 
     /// Git configuration
     pub git: GitConfig,
+
+    /// Sync configuration (optional cloud sync)
+    #[cfg(feature = "turso-sync")]
+    pub sync: SyncConfig,
 }
 
 /// Display-related configuration
@@ -150,6 +154,40 @@ pub struct GitConfig {
     pub timeout_ms: u32,
 }
 
+/// Sync configuration for cloud synchronization
+#[cfg(feature = "turso-sync")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SyncConfig {
+    /// Whether sync is enabled
+    pub enabled: bool,
+
+    /// Sync provider (currently only "turso" is supported)
+    pub provider: String,
+
+    /// Sync interval in seconds
+    pub sync_interval_seconds: u64,
+
+    /// Soft quota warning threshold (0.0 - 1.0)
+    /// Warns when usage exceeds this fraction of quota
+    pub soft_quota_fraction: f64,
+
+    /// Turso-specific configuration
+    pub turso: TursoConfig,
+}
+
+/// Turso-specific sync configuration
+#[cfg(feature = "turso-sync")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TursoConfig {
+    /// Turso database URL (e.g., "libsql://your-db.turso.io")
+    pub database_url: String,
+
+    /// Authentication token (or environment variable reference like "${TURSO_AUTH_TOKEN}")
+    pub auth_token: String,
+}
+
 // Default implementations
 // Default is derived above
 
@@ -249,6 +287,29 @@ impl Default for GitConfig {
     fn default() -> Self {
         GitConfig {
             timeout_ms: 200, // 200ms default timeout for git operations
+        }
+    }
+}
+
+#[cfg(feature = "turso-sync")]
+impl Default for SyncConfig {
+    fn default() -> Self {
+        SyncConfig {
+            enabled: false, // Disabled by default
+            provider: "turso".to_string(),
+            sync_interval_seconds: 60,
+            soft_quota_fraction: 0.75, // Warn at 75% of quota
+            turso: TursoConfig::default(),
+        }
+    }
+}
+
+#[cfg(feature = "turso-sync")]
+impl Default for TursoConfig {
+    fn default() -> Self {
+        TursoConfig {
+            database_url: String::new(),
+            auth_token: String::new(),
         }
     }
 }
@@ -446,6 +507,22 @@ max_attempts = 2
 initial_delay_ms = 200
 max_delay_ms = 1000
 backoff_factor = 2.0
+
+[git]
+# Git operation settings
+timeout_ms = 200  # Timeout for git operations
+
+# Optional cloud sync configuration
+# Requires building with --features turso-sync
+# [sync]
+# enabled = false
+# provider = "turso"
+# sync_interval_seconds = 60
+# soft_quota_fraction = 0.75  # Warn when usage exceeds 75% of quota
+#
+# [sync.turso]
+# database_url = "libsql://claude-stats.turso.io"
+# auth_token = "${TURSO_AUTH_TOKEN}"  # Or paste token directly
 "#
     }
 }

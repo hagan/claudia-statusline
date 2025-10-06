@@ -37,6 +37,8 @@ mod migrations;
 mod models;
 mod retry;
 mod stats;
+#[cfg(feature = "turso-sync")]
+mod sync;
 mod utils;
 mod version;
 
@@ -115,6 +117,14 @@ enum Commands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+
+    /// Cloud sync operations (requires turso-sync feature)
+    #[cfg(feature = "turso-sync")]
+    Sync {
+        /// Show sync status
+        #[arg(long)]
+        status: bool,
     },
 }
 
@@ -197,6 +207,11 @@ fn main() -> Result<()> {
             }
             Commands::Health { json } => {
                 return show_health_report(json);
+            }
+
+            #[cfg(feature = "turso-sync")]
+            Commands::Sync { status } => {
+                return show_sync_status(status);
             }
         }
     }
@@ -636,6 +651,85 @@ fn show_health_report(json_output: bool) -> Result<()> {
         } else {
             println!("  Earliest session: N/A");
         }
+    }
+
+    Ok(())
+}
+
+/// Show sync status and configuration
+#[cfg(feature = "turso-sync")]
+fn show_sync_status(_status: bool) -> Result<()> {
+    use crate::config::Config;
+
+    // Load configuration
+    let config = Config::load()?;
+
+    println!("{}Sync Status{}", Colors::cyan(), Colors::reset());
+    println!("============");
+    println!();
+
+    println!("Configuration:");
+    println!(
+        "  Sync enabled: {}",
+        if config.sync.enabled { "✅" } else { "❌" }
+    );
+    println!("  Provider: {}", config.sync.provider);
+    println!("  Sync interval: {}s", config.sync.sync_interval_seconds);
+    println!(
+        "  Quota warning threshold: {:.0}%",
+        config.sync.soft_quota_fraction * 100.0
+    );
+    println!();
+
+    if config.sync.enabled {
+        println!("Turso Configuration:");
+        if !config.sync.turso.database_url.is_empty() {
+            println!("  Database URL: {}", config.sync.turso.database_url);
+        } else {
+            println!("  Database URL: {}(not configured){}", Colors::red(), Colors::reset());
+        }
+
+        if !config.sync.turso.auth_token.is_empty() {
+            if config.sync.turso.auth_token.starts_with('$') {
+                println!("  Auth token: {} (env var)", config.sync.turso.auth_token);
+            } else {
+                println!("  Auth token: *** (configured)");
+            }
+        } else {
+            println!("  Auth token: {}(not configured){}", Colors::red(), Colors::reset());
+        }
+        println!();
+
+        // Test connection
+        println!("Testing connection...");
+        let mut sync_manager = crate::sync::SyncManager::new(config.sync.clone());
+
+        match sync_manager.test_connection() {
+            Ok(connected) => {
+                if connected {
+                    println!("  Connection: {}✅ Connected{}", Colors::green(), Colors::reset());
+                } else {
+                    println!(
+                        "  Connection: {}❌ Not connected{}",
+                        Colors::red(),
+                        Colors::reset()
+                    );
+                    if let Some(err) = sync_manager.status().error_message.as_ref() {
+                        println!("  Error: {}", err);
+                    }
+                }
+            }
+            Err(e) => {
+                println!("  Connection: {}❌ Error: {}{}", Colors::red(), e, Colors::reset());
+            }
+        }
+    } else {
+        println!("Sync is disabled. To enable:");
+        println!("  1. Edit your config file with sync settings");
+        println!("  2. Set sync.enabled = true");
+        println!("  3. Configure Turso database URL and token");
+        println!();
+        println!("See: statusline generate-config for example configuration");
     }
 
     Ok(())
