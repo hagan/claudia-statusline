@@ -5,6 +5,8 @@
 
 use crate::error::Result;
 use chrono::Local;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 /// Gets the application data directory using XDG Base Directory specification.
@@ -100,6 +102,49 @@ pub fn validate_path_security(path: &str) -> Result<PathBuf> {
         .map_err(|_| StatuslineError::invalid_path(format!("Cannot canonicalize path: {}", path)))
 }
 
+/// Generates a stable device ID from hostname and username.
+///
+/// The device ID is a hash of the hostname and username, providing:
+/// - Stability across reboots (same ID for same machine)
+/// - Privacy (doesn't leak actual hostname/username)
+/// - Uniqueness (unlikely collisions across different machines)
+///
+/// # Returns
+///
+/// A 16-character hexadecimal string representing the device ID.
+///
+/// # Example
+///
+/// ```rust
+/// use statusline::common::get_device_id;
+///
+/// let device_id = get_device_id();
+/// assert_eq!(device_id.len(), 16); // 64-bit hash in hex
+/// ```
+pub fn get_device_id() -> String {
+    use std::env;
+
+    // Get hostname (fallback to "unknown-host" if unavailable)
+    let hostname = hostname::get()
+        .ok()
+        .and_then(|h| h.into_string().ok())
+        .unwrap_or_else(|| "unknown-host".to_string());
+
+    // Get username (fallback to "unknown-user" if unavailable)
+    let username = env::var("USER")
+        .or_else(|_| env::var("USERNAME"))
+        .unwrap_or_else(|_| "unknown-user".to_string());
+
+    // Create a stable hash of hostname + username
+    let mut hasher = DefaultHasher::new();
+    hostname.hash(&mut hasher);
+    username.hash(&mut hasher);
+    let hash = hasher.finish();
+
+    // Return as 16-character hex string
+    format!("{:016x}", hash)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +186,20 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let result = validate_path_security(temp_dir.path().to_str().unwrap());
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_device_id() {
+        let device_id = get_device_id();
+
+        // Should be exactly 16 characters (64-bit hash in hex)
+        assert_eq!(device_id.len(), 16);
+
+        // Should only contain hex characters
+        assert!(device_id.chars().all(|c| c.is_ascii_hexdigit()));
+
+        // Should be stable (same ID on multiple calls)
+        let device_id2 = get_device_id();
+        assert_eq!(device_id, device_id2);
     }
 }

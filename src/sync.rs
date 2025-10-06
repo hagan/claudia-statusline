@@ -1,8 +1,12 @@
 // Sync module for cloud synchronization
 // Only compiled when turso-sync feature is enabled
 
+use crate::common::get_device_id;
 use crate::config::SyncConfig;
+use crate::database::SqliteDatabase;
 use crate::error::{Result, StatuslineError};
+use crate::stats::StatsData;
+use chrono::Local;
 use log::{debug, info, warn};
 use std::env;
 
@@ -134,6 +138,116 @@ impl SyncManager {
             Ok(token_config.to_string())
         }
     }
+
+    /// Push local stats to remote (Turso)
+    pub fn push(&mut self, dry_run: bool) -> Result<PushResult> {
+        if !self.is_enabled() {
+            return Err(StatuslineError::Sync(
+                "Sync is not enabled or not configured".to_string(),
+            ));
+        }
+
+        info!("Starting sync push (dry_run={})", dry_run);
+
+        // Get device ID
+        let device_id = get_device_id();
+        debug!("Device ID: {}", device_id);
+
+        // Load local database
+        let db_path = StatsData::get_sqlite_path()?;
+        let db = SqliteDatabase::new(&db_path)?;
+
+        // Get current timestamp for sync tracking
+        let _sync_timestamp = Local::now().timestamp();
+
+        // Count records to sync
+        let sessions_count = db.count_sessions()?;
+        let daily_count = db.count_daily_stats()?;
+        let monthly_count = db.count_monthly_stats()?;
+
+        info!(
+            "Found {} sessions, {} daily, {} monthly stats to push",
+            sessions_count, daily_count, monthly_count
+        );
+
+        if dry_run {
+            info!("Dry run mode - no data will be pushed");
+            return Ok(PushResult {
+                sessions_pushed: sessions_count as u32,
+                daily_stats_pushed: daily_count as u32,
+                monthly_stats_pushed: monthly_count as u32,
+                dry_run: true,
+            });
+        }
+
+        // TODO: Actual Turso push implementation
+        // For Phase 2, we'll implement the real push logic here
+        warn!("Push implementation not yet complete - this is a Phase 2 prototype");
+
+        Ok(PushResult {
+            sessions_pushed: 0,
+            daily_stats_pushed: 0,
+            monthly_stats_pushed: 0,
+            dry_run: false,
+        })
+    }
+
+    /// Pull remote stats to local database
+    pub fn pull(&mut self, dry_run: bool) -> Result<PullResult> {
+        if !self.is_enabled() {
+            return Err(StatuslineError::Sync(
+                "Sync is not enabled or not configured".to_string(),
+            ));
+        }
+
+        info!("Starting sync pull (dry_run={})", dry_run);
+
+        // Get device ID
+        let device_id = get_device_id();
+        debug!("Device ID: {}", device_id);
+
+        if dry_run {
+            info!("Dry run mode - no data will be pulled");
+            return Ok(PullResult {
+                sessions_pulled: 0,
+                daily_stats_pulled: 0,
+                monthly_stats_pulled: 0,
+                conflicts_resolved: 0,
+                dry_run: true,
+            });
+        }
+
+        // TODO: Actual Turso pull implementation
+        // For Phase 2, we'll implement the real pull logic here
+        warn!("Pull implementation not yet complete - this is a Phase 2 prototype");
+
+        Ok(PullResult {
+            sessions_pulled: 0,
+            daily_stats_pulled: 0,
+            monthly_stats_pulled: 0,
+            conflicts_resolved: 0,
+            dry_run: false,
+        })
+    }
+}
+
+/// Result of a push operation
+#[derive(Debug, Clone)]
+pub struct PushResult {
+    pub sessions_pushed: u32,
+    pub daily_stats_pushed: u32,
+    pub monthly_stats_pushed: u32,
+    pub dry_run: bool,
+}
+
+/// Result of a pull operation
+#[derive(Debug, Clone)]
+pub struct PullResult {
+    pub sessions_pulled: u32,
+    pub daily_stats_pulled: u32,
+    pub monthly_stats_pulled: u32,
+    pub conflicts_resolved: u32,
+    pub dry_run: bool,
 }
 
 #[cfg(test)]

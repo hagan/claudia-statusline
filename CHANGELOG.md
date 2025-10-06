@@ -5,6 +5,57 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.2] - 2025-10-05
+
+### Added - Experimental Turso Sync (Phase 2)
+
+> **Experimental Feature**: Cloud sync is in early development (Phase 2). Not recommended for production use.
+
+- **Manual Sync Commands** - Push and pull commands for testing sync infrastructure
+  - `statusline sync --push` - Upload local stats to remote (placeholder)
+  - `statusline sync --pull` - Download remote stats to local (placeholder)
+  - `statusline sync --push --dry-run` - Preview push without making changes
+  - `statusline sync --pull --dry-run` - Preview pull without making changes
+
+- **Device Identification**
+  - Added `get_device_id()` function generating stable device hash from hostname + username
+  - Privacy-preserving 16-character hex ID (64-bit hash)
+  - New dependency: `hostname = "0.4"`
+
+- **Database Schema Migration v3**
+  - Added `device_id` column to sessions, daily_stats, monthly_stats tables
+  - Added `sync_timestamp` column to sessions table
+  - Created `sync_meta` table for tracking sync state per device
+  - Migration gracefully handles both feature-enabled and disabled builds
+
+- **Database Helper Methods**
+  - `count_sessions()` - Returns total session count
+  - `count_daily_stats()` - Returns total daily stats count
+  - `count_monthly_stats()` - Returns total monthly stats count
+
+#### What Works (Phase 2)
+- Complete CLI interface for sync operations
+- Device ID generation and tracking
+- Database schema ready for multi-device sync
+- Dry-run mode for testing without side effects
+- Formatted output with color-coded success/failure messages
+
+#### What's Not Implemented Yet
+- **Phase 2 (continued)**: Actual Turso/libSQL network operations
+- **Phase 2 (continued)**: Conflict resolution with last-write-wins strategy
+- **Phase 3**: Automatic background sync worker
+- **Phase 4**: Cross-machine analytics dashboard
+
+#### Technical Details
+- Updated `src/sync.rs`: Added `push()` and `pull()` methods with `PushResult`/`PullResult`
+- Updated `src/common.rs`: Added device ID generation (33 lines)
+- Updated `src/migrations/mod.rs`: Added Migration v3 (90 lines)
+- Updated `src/database.rs`: Added count helper methods
+- Updated `src/main.rs`: Enhanced CLI with push/pull/dry-run flags
+- All 256 tests passing (with turso-sync feature)
+- Zero clippy warnings
+- See `.claude/tasks/futures/01_turso_sync_feature.md` for complete roadmap
+
 ## [2.14.1] - 2025-10-05
 
 ### Fixed

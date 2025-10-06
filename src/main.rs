@@ -125,6 +125,18 @@ enum Commands {
         /// Show sync status
         #[arg(long)]
         status: bool,
+
+        /// Push local stats to remote
+        #[arg(long)]
+        push: bool,
+
+        /// Pull remote stats to local
+        #[arg(long)]
+        pull: bool,
+
+        /// Dry run - preview changes without applying them
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -210,8 +222,13 @@ fn main() -> Result<()> {
             }
 
             #[cfg(feature = "turso-sync")]
-            Commands::Sync { status } => {
-                return show_sync_status(status);
+            Commands::Sync {
+                status,
+                push,
+                pull,
+                dry_run,
+            } => {
+                return handle_sync_command(status, push, pull, dry_run);
             }
         }
     }
@@ -656,12 +673,116 @@ fn show_health_report(json_output: bool) -> Result<()> {
     Ok(())
 }
 
-/// Show sync status and configuration
+/// Handle sync commands (status, push, pull)
 #[cfg(feature = "turso-sync")]
-fn show_sync_status(_status: bool) -> Result<()> {
+fn handle_sync_command(status: bool, push: bool, pull: bool, dry_run: bool) -> Result<()> {
     use crate::config::Config;
 
     // Load configuration
+    let config = Config::load()?;
+    let mut sync_manager = crate::sync::SyncManager::new(config.sync.clone());
+
+    // Determine which action to take
+    if status || (!push && !pull) {
+        // Show status (default if no flags specified)
+        return show_sync_status(&sync_manager);
+    } else if push {
+        // Push to remote
+        return handle_sync_push(&mut sync_manager, dry_run);
+    } else if pull {
+        // Pull from remote
+        return handle_sync_pull(&mut sync_manager, dry_run);
+    }
+
+    Ok(())
+}
+
+/// Handle push command
+#[cfg(feature = "turso-sync")]
+fn handle_sync_push(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) -> Result<()> {
+    println!("{}Pushing to remote{}", Colors::cyan(), Colors::reset());
+    if dry_run {
+        println!(
+            "{}[DRY RUN MODE - No changes will be made]{}",
+            Colors::yellow(),
+            Colors::reset()
+        );
+    }
+    println!();
+
+    match sync_manager.push(dry_run) {
+        Ok(result) => {
+            println!("{}✅ Push completed{}", Colors::green(), Colors::reset());
+            println!();
+            println!("Summary:");
+            println!("  Sessions: {} pushed", result.sessions_pushed);
+            println!("  Daily stats: {} pushed", result.daily_stats_pushed);
+            println!("  Monthly stats: {} pushed", result.monthly_stats_pushed);
+
+            if result.dry_run {
+                println!();
+                println!(
+                    "{}This was a dry run - no data was actually pushed.{}",
+                    Colors::yellow(),
+                    Colors::reset()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("{}❌ Push failed: {}{}", Colors::red(), e, Colors::reset());
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Handle pull command
+#[cfg(feature = "turso-sync")]
+fn handle_sync_pull(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) -> Result<()> {
+    println!("{}Pulling from remote{}", Colors::cyan(), Colors::reset());
+    if dry_run {
+        println!(
+            "{}[DRY RUN MODE - No changes will be made]{}",
+            Colors::yellow(),
+            Colors::reset()
+        );
+    }
+    println!();
+
+    match sync_manager.pull(dry_run) {
+        Ok(result) => {
+            println!("{}✅ Pull completed{}", Colors::green(), Colors::reset());
+            println!();
+            println!("Summary:");
+            println!("  Sessions: {} pulled", result.sessions_pulled);
+            println!("  Daily stats: {} pulled", result.daily_stats_pulled);
+            println!("  Monthly stats: {} pulled", result.monthly_stats_pulled);
+            println!("  Conflicts resolved: {}", result.conflicts_resolved);
+
+            if result.dry_run {
+                println!();
+                println!(
+                    "{}This was a dry run - no data was actually pulled.{}",
+                    Colors::yellow(),
+                    Colors::reset()
+                );
+            }
+        }
+        Err(e) => {
+            eprintln!("{}❌ Pull failed: {}{}", Colors::red(), e, Colors::reset());
+            return Err(e);
+        }
+    }
+
+    Ok(())
+}
+
+/// Show sync status and configuration
+#[cfg(feature = "turso-sync")]
+fn show_sync_status(_sync_manager: &crate::sync::SyncManager) -> Result<()> {
+    use crate::config::Config;
+
     let config = Config::load()?;
 
     println!("{}Sync Status{}", Colors::cyan(), Colors::reset());
@@ -710,9 +831,11 @@ fn show_sync_status(_status: bool) -> Result<()> {
 
         // Test connection
         println!("Testing connection...");
-        let mut sync_manager = crate::sync::SyncManager::new(config.sync.clone());
+        // Note: We need a mutable reference for test_connection
+        // But we received an immutable reference, so we'll create a temp copy
+        let mut temp_manager = crate::sync::SyncManager::new(config.sync.clone());
 
-        match sync_manager.test_connection() {
+        match temp_manager.test_connection() {
             Ok(connected) => {
                 if connected {
                     println!(
@@ -726,7 +849,7 @@ fn show_sync_status(_status: bool) -> Result<()> {
                         Colors::red(),
                         Colors::reset()
                     );
-                    if let Some(err) = sync_manager.status().error_message.as_ref() {
+                    if let Some(err) = temp_manager.status().error_message.as_ref() {
                         println!("  Error: {}", err);
                     }
                 }

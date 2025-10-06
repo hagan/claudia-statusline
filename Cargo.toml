@@ -1,6 +1,6 @@
 [package]
 name = "statusline"
-version = "2.14.1"
+version = "2.14.2"
 edition = "2021"
 license = "MIT"
 description = "Claudia Statusline - A feature-rich statusline for Claude Code, inspired by Peter Steinberger's statusline.rs"
@@ -35,6 +35,7 @@ clap = { version = "4.5", features = ["derive"] }  # CLI argument parsing
 log = "0.4"  # Structured logging
 env_logger = "0.11"  # Environment-based log configuration
 regex = "1.10"  # For sanitizing terminal output
+hostname = "0.4"  # For device ID generation
 
 # Optional dependencies for turso-sync feature
 libsql = { version = "0.6", optional = true }

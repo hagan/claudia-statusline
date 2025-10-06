@@ -410,6 +410,27 @@ impl SqliteDatabase {
         false
     }
 
+    /// Count total number of sessions
+    pub fn count_sessions(&self) -> Result<i64> {
+        let conn = self.get_connection()?;
+        let count = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Count total number of daily stats records
+    pub fn count_daily_stats(&self) -> Result<i64> {
+        let conn = self.get_connection()?;
+        let count = conn.query_row("SELECT COUNT(*) FROM daily_stats", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
+    /// Count total number of monthly stats records
+    pub fn count_monthly_stats(&self) -> Result<i64> {
+        let conn = self.get_connection()?;
+        let count = conn.query_row("SELECT COUNT(*) FROM monthly_stats", [], |row| row.get(0))?;
+        Ok(count)
+    }
+
     /// Get all sessions from the database
     pub fn get_all_sessions(
         &self,

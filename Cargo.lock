@@ -784,6 +784,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hostname"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a56f203cd1c76362b69e3863fd987520ac36cf70a8c92627449b2f64a8cf7d65"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "windows-link 0.1.3",
+]
+
+[[package]]
 name = "http"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1990,13 +2001,14 @@ dependencies = [
 
 [[package]]
 name = "statusline"
-version = "2.14.1"
+version = "2.14.2"
 dependencies = [
  "chrono",
  "clap",
  "dirs",
  "env_logger",
  "fs2",
+ "hostname",
  "libsql",
  "log",
  "proptest",
