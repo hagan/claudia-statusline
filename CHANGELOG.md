@@ -5,6 +5,22 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.3] - 2025-10-05
+
+### Fixed
+- **Build Warnings**: Fixed dead code warnings when building without turso-sync feature
+  - Added `#[cfg(feature = "turso-sync")]` to `get_device_id()` in `src/common.rs`
+  - Added feature guards to `count_sessions()`, `count_daily_stats()`, `count_monthly_stats()` in `src/database.rs`
+  - Moved hash imports under feature flag in `src/common.rs`
+  - Zero warnings on both default and all-features builds
+
+### Changed
+- **Build System**: Updated Makefile to build with `--all-features` by default
+  - `make build` and `make install` now include turso-sync commands
+  - Binary size: 3.5MB (includes all optional features)
+  - Sync still disabled by default via configuration (opt-in only)
+  - Users can now access `statusline sync` commands without rebuilding
+
 ## [2.14.2] - 2025-10-05
 
 ### Added - Experimental Turso Sync (Phase 2)

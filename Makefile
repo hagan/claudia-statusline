@@ -84,14 +84,15 @@ $(TARGET_DIR):
 .PHONY: build
 build: release
 
-# Build optimized release binary
+# Build optimized release binary (with all features)
 .PHONY: release
 release: check
-	@echo "$(BLUE)Building release binary v$(VERSION) ($(GIT_HASH)$(GIT_DIRTY))...$(NC)"
-	@$(CARGO) build --release
+	@echo "$(BLUE)Building release binary v$(VERSION) ($(GIT_HASH)$(GIT_DIRTY)) with all features...$(NC)"
+	@$(CARGO) build --release --all-features
 	@echo "$(GREEN)✓$(NC) Release binary built: $(TARGET_DIR)/release/$(BINARY_NAME)"
 	@ls -lh $(TARGET_DIR)/release/$(BINARY_NAME) | awk '{print "  Size: " $$5}'
 	@echo "  Version: v$(VERSION) ($(GIT_HASH)$(GIT_DIRTY))"
+	@echo "  Features: turso-sync (optional, disabled by default)"
 
 # Build debug binary
 .PHONY: debug

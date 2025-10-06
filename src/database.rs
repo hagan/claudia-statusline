@@ -411,6 +411,7 @@ impl SqliteDatabase {
     }
 
     /// Count total number of sessions
+    #[cfg(feature = "turso-sync")]
     pub fn count_sessions(&self) -> Result<i64> {
         let conn = self.get_connection()?;
         let count = conn.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))?;
@@ -418,6 +419,7 @@ impl SqliteDatabase {
     }
 
     /// Count total number of daily stats records
+    #[cfg(feature = "turso-sync")]
     pub fn count_daily_stats(&self) -> Result<i64> {
         let conn = self.get_connection()?;
         let count = conn.query_row("SELECT COUNT(*) FROM daily_stats", [], |row| row.get(0))?;
@@ -425,6 +427,7 @@ impl SqliteDatabase {
     }
 
     /// Count total number of monthly stats records
+    #[cfg(feature = "turso-sync")]
     pub fn count_monthly_stats(&self) -> Result<i64> {
         let conn = self.get_connection()?;
         let count = conn.query_row("SELECT COUNT(*) FROM monthly_stats", [], |row| row.get(0))?;

@@ -5,9 +5,12 @@
 
 use crate::error::Result;
 use chrono::Local;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+
+#[cfg(feature = "turso-sync")]
+use std::collections::hash_map::DefaultHasher;
+#[cfg(feature = "turso-sync")]
+use std::hash::{Hash, Hasher};
 
 /// Gets the application data directory using XDG Base Directory specification.
 ///
@@ -121,6 +124,7 @@ pub fn validate_path_security(path: &str) -> Result<PathBuf> {
 /// let device_id = get_device_id();
 /// assert_eq!(device_id.len(), 16); // 64-bit hash in hex
 /// ```
+#[cfg(feature = "turso-sync")]
 pub fn get_device_id() -> String {
     use std::env;
 
