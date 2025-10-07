@@ -1,5 +1,6 @@
 # Build artifacts
 /target/
+.cargo/
 # Note: Cargo.lock is tracked for reproducible builds (binary application)
 
 # Archive directory for old patch-based approach

@@ -29,7 +29,7 @@ A high-performance, secure, and customizable statusline for Claude Code written 
 - **Atomic Operations** - Safe file writes prevent data corruption
 - **Data Integrity** - No stats loss even with 10+ concurrent sessions
 - **Type Safety** - Strong typing with zero unsafe code
-- **Cross-Platform** - Automated CI/CD builds for Linux (x86_64, ARM64), macOS, and Windows
+- **Cross-Platform** - Automated CI/CD builds for Linux (x86_64, ARM64), macOS, and Windows (MSVC)
 
 ## Features
 
@@ -81,8 +81,10 @@ git clone https://github.com/hagan/claudia-statusline && cd claudia-statusline &
 
 ### System Requirements
 
-**Supported Platforms**: Linux, macOS, Unix-like systems
+**Supported Platforms**: Linux, macOS, Windows, Unix-like systems
 **Terminal**: Any terminal with ANSI color support
+
+**Windows Users**: See [WINDOWS_BUILD.md](WINDOWS_BUILD.md) for detailed Windows build instructions.
 
 ### Prerequisites
 
@@ -152,7 +154,7 @@ statusline --version || "$HOME/.local/bin/statusline" --version
 
 On macOS, use the `statusline-darwin-<arch>.tar.gz` asset. On Windows, download the latest `.zip` from Releases and replace your existing `statusline.exe`.
 
-Windows PATH setup:
+Windows installation and configuration:
 
 ```powershell
 # Create a user-local bin directory and place the binary
@@ -167,9 +169,22 @@ Copy-Item "$env:TEMP\statusline\statusline.exe" "$env:USERPROFILE\bin\statusline
   'User'
 )
 
+# Configure Claude Code settings
+$settingsPath = "$env:USERPROFILE\.claude\settings.json"
+$settings = @{
+    statusLine = @{
+        type = "command"
+        command = "$env:USERPROFILE\bin\statusline.exe"
+        padding = 0
+    }
+} | ConvertTo-Json -Depth 10
+$settings | Out-File -FilePath $settingsPath -Encoding UTF8
+
 # Verify in a new terminal
 statusline --version
 ```
+
+**Important for Windows users**: The `"type": "command"` field is required in settings.json for Claude Code to recognize the statusline.
 
 macOS Gatekeeper note:
 
@@ -1404,6 +1419,13 @@ NO_COLOR=1 statusline
 - Update binary: `./scripts/install-statusline.sh`
 - Cost only appears if Claude Code sends cost data in the JSON
 
+**Windows-specific: Statusline not showing**
+- Verify the `"type": "command"` field is present in settings.json
+- Check settings location: `$env:USERPROFILE\.claude\settings.json`
+- Ensure the path uses escaped backslashes: `C:\\Users\\...\\statusline.exe`
+- Test the binary: `echo '{"workspace":{"current_dir":"C:\\temp"}}' | statusline.exe`
+- See [WINDOWS_BUILD.md](WINDOWS_BUILD.md) for complete troubleshooting
+
 ## How It Works
 
 This project was inspired by [Peter Steinberger's statusline.rs gist](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e), but has evolved into a complete rewrite with modular architecture, persistent stats tracking, and enhanced features.
@@ -1447,7 +1469,7 @@ A: Yes! The statusline binary works standalone. Just pipe JSON to it: `echo '{..
 A: Edit the color constants in `src/display.rs`, then rebuild with `make build`.
 
 **Q: Does this work on Windows?**
-A: Not natively, but it works in WSL (Windows Subsystem for Linux) or Git Bash.
+A: Yes! Windows is fully supported. See [WINDOWS_BUILD.md](WINDOWS_BUILD.md) for detailed build instructions. Pre-built binaries are also available for Windows.
 
 **Q: Where does Claude Code store its configuration?**
 A: Claude Code stores configuration in `~/.claude/settings.local.json` (if it exists) or `~/.claude/settings.json`. The `settings.local.json` file takes precedence when both exist.
