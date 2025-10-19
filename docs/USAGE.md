@@ -234,22 +234,22 @@ The statusline accepts JSON via stdin with this format:
 ### Color Coding
 
 **Context Usage:**
-- 🔴 Red (≥90%) - Critical, approaching limit
-- 🟠 Orange (≥70%) - Warning
-- 🟡 Yellow (≥50%) - Caution
-- ⚪ White/Gray (<50%) - Normal
+- Red (≥90%) - Critical, approaching limit
+- Orange (≥70%) - Warning
+- Yellow (≥50%) - Caution
+- White/Gray (<50%) - Normal
 
 **Cost:**
-- 🟢 Green (<$5) - Low cost
-- 🟡 Yellow ($5-$20) - Medium cost
-- 🔴 Red (≥$20) - High cost
+- Green (<$5) - Low cost
+- Yellow ($5-$20) - Medium cost
+- Red (≥$20) - High cost
 
 **Lines Changed:**
-- 🟢 Green - Lines added (+)
-- 🔴 Red - Lines removed (-)
+- Green - Lines added (+)
+- Red - Lines removed (-)
 
 **Git Info:**
-- 🟢 Green - Branch name and status
+- Green - Branch name and status
 
 ## Usage Examples
 

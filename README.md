@@ -27,35 +27,35 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 
 ## What You Get
 
-- 📁 **Current directory** with `~` shorthand
-- 🌿 **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
-- 📊 **Context usage** with progress bar (45% [====------])
-- 🤖 **Claude model** (Opus/Sonnet/Haiku)
-- ⏱️ **Session duration** (1h 23m)
-- 💰 **Cost tracking** ($3.50 session, $2.54/hour burn rate)
-- 📝 **Lines changed** (+150 added, -42 removed)
+- **Current directory** with `~` shorthand
+- **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
+- **Context usage** with progress bar (45% [====------])
+- **Claude model** (Opus/Sonnet/Haiku)
+- **Session duration** (1h 23m)
+- **Cost tracking** ($3.50 session, $2.54/hour burn rate)
+- **Lines changed** (+150 added, -42 removed)
 
 **Automatic features:**
-- ✅ Persistent cost tracking across sessions
-- ✅ Multi-console safe (run multiple Claude instances)
-- ✅ Dark/light theme support
-- ✅ SQLite database for reliability
-- ✅ No configuration needed
+- Persistent cost tracking across sessions
+- Multi-console safe (run multiple Claude instances)
+- Dark/light theme support
+- SQLite database for reliability
+- No configuration needed
 
 ## Documentation
 
-- 📦 **[Installation Guide](docs/INSTALLATION.md)** - All platforms, build from source, troubleshooting
-- 📖 **[Usage Guide](docs/USAGE.md)** - Commands, examples, JSON format, embedding API
-- ⚙️ **[Configuration Guide](docs/CONFIGURATION.md)** - Themes, retention, git timeout, advanced settings
-- ☁️ **[Cloud Sync Guide](docs/CLOUD_SYNC.md)** - Turso setup for cross-machine stats (experimental)
-- 🗄️ **[Database Migrations](docs/DATABASE_MIGRATIONS.md)** - Schema versioning and migrations
+- **[Installation Guide](docs/INSTALLATION.md)** - All platforms, build from source, troubleshooting
+- **[Usage Guide](docs/USAGE.md)** - Commands, examples, JSON format, embedding API
+- **[Configuration Guide](docs/CONFIGURATION.md)** - Themes, retention, git timeout, advanced settings
+- **[Cloud Sync Guide](docs/CLOUD_SYNC.md)** - Turso setup for cross-machine stats (experimental)
+- **[Database Migrations](docs/DATABASE_MIGRATIONS.md)** - Schema versioning and migrations
 
 **Project docs:**
-- 🏗️ **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture and module design
-- 🤝 **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines and debugging
-- 🔒 **[SECURITY.md](SECURITY.md)** - Security policies and vulnerability reporting
-- 📝 **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
-- 🪟 **[WINDOWS_BUILD.md](WINDOWS_BUILD.md)** - Windows-specific build instructions
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** - Technical architecture and module design
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** - Development guidelines and debugging
+- **[SECURITY.md](SECURITY.md)** - Security policies and vulnerability reporting
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
+- **[WINDOWS_BUILD.md](WINDOWS_BUILD.md)** - Windows-specific build instructions
 
 ## Quick Start
 
@@ -173,7 +173,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 ## Advanced Features
 
 <details>
-<summary><b>📊 Database Maintenance</b></summary>
+<summary><b>Database Maintenance</b></summary>
 
 Keep your stats database optimized:
 
@@ -191,7 +191,7 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 </details>
 
 <details>
-<summary><b>☁️ Cloud Sync</b></summary>
+<summary><b>Cloud Sync</b></summary>
 
 Track costs across multiple machines:
 
@@ -204,7 +204,7 @@ See [Cloud Sync Guide](docs/CLOUD_SYNC.md) for complete setup.
 </details>
 
 <details>
-<summary><b>🔧 Building from Source</b></summary>
+<summary><b>Building from Source</b></summary>
 
 For developers or latest features:
 
@@ -226,7 +226,7 @@ See [Installation Guide](docs/INSTALLATION.md#building-from-source) for details.
 </details>
 
 <details>
-<summary><b>🎨 Themes & Colors</b></summary>
+<summary><b>Themes & Colors</b></summary>
 
 ```bash
 # Dark theme (default)
@@ -246,10 +246,10 @@ See [Configuration Guide](docs/CONFIGURATION.md#theme-customization) for customi
 
 We welcome contributions! Please see:
 
-- 🐛 **[Issues](https://github.com/hagan/claudia-statusline/issues)** - Bug reports and feature requests
-- 💬 **[Discussions](https://github.com/hagan/claudia-statusline/discussions)** - Questions and ideas
-- 🤝 **[Contributing Guide](CONTRIBUTING.md)** - Development guidelines
-- 🔒 **[Security Policy](SECURITY.md)** - Reporting vulnerabilities
+- **[Issues](https://github.com/hagan/claudia-statusline/issues)** - Bug reports and feature requests
+- **[Discussions](https://github.com/hagan/claudia-statusline/discussions)** - Questions and ideas
+- **[Contributing Guide](CONTRIBUTING.md)** - Development guidelines
+- **[Security Policy](SECURITY.md)** - Reporting vulnerabilities
 
 ## Credits
 
