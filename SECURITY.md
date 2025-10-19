@@ -4,14 +4,14 @@
 
 | Version | Supported          |
 | ------- | ------------------ |
-| 2.10.x  | :white_check_mark: |
-| 2.9.x   | :white_check_mark: |
-| 2.8.x   | :white_check_mark: |
-| < 2.8   | :x:                |
+| 2.15.x  | :white_check_mark: |
+| 2.14.x  | :white_check_mark: |
+| 2.13.x  | :white_check_mark: |
+| < 2.13  | :x:                |
 
 ## Automated Security Scanning
 
-As of version 2.6.0, Claudia Statusline includes automated security scanning in CI/CD:
+The CI pipeline (`.github/workflows/security.yml`) runs the following on every push and nightly schedule:
 
 ### Continuous Security Monitoring
 - **cargo-audit**: Scans for known vulnerabilities on every push and daily
@@ -21,23 +21,23 @@ As of version 2.6.0, Claudia Statusline includes automated security scanning in 
 
 ## Security Hardening
 
-As of version 2.10.0, Claudia Statusline includes comprehensive security hardening:
+Security hardening highlights:
 
-### Terminal Output Sanitization (v2.10.0)
+### Terminal Output Sanitization
 - All untrusted user input is sanitized before terminal display
 - ANSI escape sequences are stripped to prevent injection attacks
 - Control characters are removed (except tab, newline, carriage return)
 - Applied to: Git branch names, model names, directory paths
 - Function: `sanitize_for_terminal()` in utils.rs
 
-### Git Operation Resilience (v2.10.0)
+### Git Operation Resilience
 - Git operations enforce a soft timeout (default 200ms)
 - Configurable via `config.git.timeout_ms` or `STATUSLINE_GIT_TIMEOUT_MS` env var
 - Processes are killed if timeout exceeded with INFO logging
 - `GIT_OPTIONAL_LOCKS=0` prevents lock conflicts
 - Automatic retry on failure (2 attempts with 100ms backoff)
 
-### Input Validation (v2.2.1)
+### Input Validation
 - All user-supplied paths from JSON input are validated and canonicalized
 - Directory traversal attempts are blocked (e.g., "../../../etc")
 - Null byte injection is prevented
@@ -48,15 +48,15 @@ As of version 2.10.0, Claudia Statusline includes comprehensive security hardeni
 
 ### Security Functions
 - `sanitize_for_terminal()` in utils.rs - Removes control chars and ANSI escapes
-- `validate_directory_path()` in git.rs - Validates directory paths for git operations
-- `validate_file_path()` in utils.rs - Validates file paths for transcript reading
+- `validate_git_directory()` in git.rs - Validates directories before running git commands
+- `validate_transcript_file()` in utils.rs - Validates transcript file paths before reading
 - `execute_git_with_timeout()` in git_utils.rs - Enforces timeout on git operations
 
 ### Security Tests
 The following security tests ensure our protection mechanisms work:
-- `test_validate_directory_path_security` - Tests directory path validation
+- `test_validate_git_directory_security` - Tests directory path validation
 - `test_malicious_path_inputs` - Tests protection against malicious git paths
-- `test_validate_file_path_security` - Tests file path validation
+- `test_validate_transcript_file_security` - Tests transcript file validation
 - `test_malicious_transcript_paths` - Tests protection against malicious transcript paths
 
 ## Reporting a Vulnerability
@@ -79,12 +79,11 @@ Security updates will be released as patch versions (e.g., 2.2.1, 2.2.2) and cle
 
 ## Known Security Issues
 
-### Fixed in v2.2.1
-- **CVE-pending**: Command injection vulnerability via unvalidated directory paths (Fixed)
-- **CVE-pending**: File path traversal vulnerability in transcript reading (Fixed)
+### Fixed Issues
+- Historical fixes are documented in `CHANGELOG.md`. No open advisories at this time.
 
 ### Currently Known Issues
-- None
+- None reported.
 
 ## Best Practices for Users
 
@@ -97,8 +96,8 @@ Security updates will be released as patch versions (e.g., 2.2.1, 2.2.2) and cle
 
 ## Security Audit History
 
-- **2025-08-26**: Security audit completed, critical vulnerabilities fixed in v2.2.1
-- **2025-08-25**: Initial security review identified 2 critical issues (fixed in v2.2.1)
+- Automated checks run on every pull request and on a nightly schedule (see `.github/workflows/security.yml`).
+- Formal audits are recorded in release notes within `CHANGELOG.md` when applicable.
 
 ## Credits
 
