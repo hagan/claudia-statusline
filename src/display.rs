@@ -89,6 +89,7 @@ impl Colors {
         Self::get_themed("cyan")
     }
 
+    #[allow(dead_code)]
     pub fn white() -> String {
         Self::get_themed("white")
     }
@@ -97,6 +98,7 @@ impl Colors {
         Self::get_themed("gray")
     }
 
+    #[allow(dead_code)]
     pub fn orange() -> String {
         Self::get_themed("orange")
     }
@@ -106,6 +108,7 @@ impl Colors {
     }
 
     /// Get the appropriate text color based on theme
+    #[allow(dead_code)]
     pub fn text_color() -> String {
         if !Self::enabled() {
             return String::new();
@@ -142,6 +145,7 @@ impl Colors {
     }
 
     /// Get git branch color from theme
+    #[allow(dead_code)]
     pub fn git_branch() -> String {
         if !Self::enabled() {
             return String::new();

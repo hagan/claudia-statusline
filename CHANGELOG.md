@@ -56,6 +56,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - On Windows, both `config_dir` and `data_dir` map to `%APPDATA%` (not different)
   - On Unix/macOS, config and data directories are different locations
   - Tests now pass correctly on all platforms
+- **CI/CD Fixes**: Resolved all clippy errors for GitHub Actions
+  - Fixed `clippy::items_after_test_module` by moving `impl Default for ThemeColors` before tests
+  - Fixed unnecessary `to_string()` calls in theme integration tests
+  - Added `#[allow(dead_code)]` to intentionally unused public API methods
+  - All GitHub Actions workflows now pass successfully
 - Improved NO_COLOR environment variable handling in `test_theme_affects_colors`
 - Added RAII guard (`ClearNoColor`) to ensure clean test environment
 - Fixed theme test flakiness when running full test suite

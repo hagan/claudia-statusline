@@ -14,6 +14,7 @@ use tempfile::NamedTempFile;
 // ============================================================================
 
 /// Create a config with specific display toggles
+#[allow(dead_code)]
 fn config_with_toggles(
     show_directory: bool,
     show_git: bool,

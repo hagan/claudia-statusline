@@ -219,13 +219,13 @@ fn test_color_resolution_named_colors() {
     let theme = Theme::load_embedded("dark").unwrap();
 
     // Test common named color resolutions
-    let green = theme.resolve_color(&"green".to_string());
+    let green = theme.resolve_color("green");
     assert_eq!(green, "\x1b[32m", "green should resolve to \\x1b[32m");
 
-    let cyan = theme.resolve_color(&"cyan".to_string());
+    let cyan = theme.resolve_color("cyan");
     assert_eq!(cyan, "\x1b[36m", "cyan should resolve to \\x1b[36m");
 
-    let red = theme.resolve_color(&"red".to_string());
+    let red = theme.resolve_color("red");
     assert_eq!(red, "\x1b[31m", "red should resolve to \\x1b[31m");
 }
 

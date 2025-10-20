@@ -255,6 +255,7 @@ impl ThemeManager {
     /// let themes = manager.list_themes();
     /// assert!(themes.contains(&"dark".to_string()));
     /// ```
+    #[allow(dead_code)]
     pub fn list_themes(&self) -> Vec<String> {
         let mut themes = Vec::new();
 
@@ -499,6 +500,27 @@ impl fmt::Display for Theme {
             write!(f, " - {}", desc)?;
         }
         Ok(())
+    }
+}
+
+impl Default for ThemeColors {
+    fn default() -> Self {
+        Self {
+            directory: default_cyan(),
+            git_branch: default_green(),
+            model: default_cyan(),
+            duration: default_light_gray(),
+            separator: default_light_gray(),
+            lines_added: default_green(),
+            lines_removed: default_red(),
+            cost_low: default_green(),
+            cost_medium: default_yellow(),
+            cost_high: default_red(),
+            context_normal: default_white(),
+            context_caution: default_yellow(),
+            context_warning: default_orange(),
+            context_critical: default_red(),
+        }
     }
 }
 
@@ -749,26 +771,5 @@ mod tests {
             palette: None,
         };
         assert_eq!(format!("{}", minimal), "test");
-    }
-}
-
-impl Default for ThemeColors {
-    fn default() -> Self {
-        Self {
-            directory: default_cyan(),
-            git_branch: default_green(),
-            model: default_cyan(),
-            duration: default_light_gray(),
-            separator: default_light_gray(),
-            lines_added: default_green(),
-            lines_removed: default_red(),
-            cost_low: default_green(),
-            cost_medium: default_yellow(),
-            cost_high: default_red(),
-            context_normal: default_white(),
-            context_caution: default_yellow(),
-            context_warning: default_orange(),
-            context_critical: default_red(),
-        }
     }
 }
