@@ -59,6 +59,7 @@ pub use error::{Result, StatuslineError};
 pub use git::get_git_status;
 pub use models::{Cost, Model, StatuslineInput, Workspace};
 pub use stats::{get_daily_total, get_or_load_stats_data, update_stats_data, StatsData};
+pub use theme::{get_theme_manager, Theme, ThemeManager};
 pub use version::{short_version, version_string};
 
 // ============================================================================
