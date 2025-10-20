@@ -1,0 +1,36 @@
+# Dark Theme - Default theme for dark terminals
+#
+# This theme matches the original hardcoded color scheme for backward compatibility.
+# Optimized for dark backgrounds with high contrast.
+
+name = "dark"
+description = "Default dark theme for dark terminals"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "cyan"              # Current working directory path
+git_branch = "green"            # Git branch name
+model = "cyan"                  # Claude model name (e.g., "S4.5")
+duration = "light_gray"         # Session duration (e.g., "5m")
+separator = "light_gray"        # Bullet separator (•)
+
+# State-based colors - dynamic based on content
+lines_added = "green"           # Lines added (+123)
+lines_removed = "red"           # Lines removed (-45)
+
+# Cost threshold colors - based on session cost
+cost_low = "green"              # Cost < $5
+cost_medium = "yellow"          # Cost $5-$20
+cost_high = "red"               # Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "white"        # < 50% - plenty of room
+context_caution = "yellow"      # 50-70% - getting full
+context_warning = "orange"      # 70-90% - running low
+context_critical = "red"        # >= 90% - almost full
+
+# Optional: Custom color palette for advanced users
+# Use double backslash (\\x1b) for ANSI escape sequences
+[palette.custom]
+# Example: Define custom colors using 256-color codes
+# my_custom_blue = "\\x1b[38;5;39m"

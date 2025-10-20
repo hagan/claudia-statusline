@@ -48,6 +48,8 @@ pub mod stats;
 /// Cloud synchronization module (requires turso-sync feature)
 #[cfg(feature = "turso-sync")]
 pub mod sync;
+/// Theme system for customizable statusline colors
+pub mod theme;
 pub mod utils;
 pub mod version;
 

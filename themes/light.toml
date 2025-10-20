@@ -1,0 +1,35 @@
+# Light Theme - Optimized for light terminals
+#
+# This theme uses darker colors for better visibility on light backgrounds.
+# All colors adjusted for high contrast against white/light gray backgrounds.
+
+name = "light"
+description = "Light theme for bright terminals"
+
+[colors]
+# Component colors - darker for light backgrounds
+directory = "blue"              # Current working directory path (darker than cyan)
+git_branch = "green"            # Git branch name (standard green works well)
+model = "blue"                  # Claude model name (darker than cyan)
+duration = "gray"               # Session duration (darker gray for visibility)
+separator = "gray"              # Bullet separator (•)
+
+# State-based colors
+lines_added = "green"           # Lines added (+123)
+lines_removed = "red"           # Lines removed (-45)
+
+# Cost threshold colors
+cost_low = "green"              # Cost < $5
+cost_medium = "yellow"          # Cost $5-$20
+cost_high = "red"               # Cost >= $20
+
+# Context usage threshold colors
+context_normal = "gray"         # < 50% - uses gray instead of white for visibility
+context_caution = "yellow"      # 50-70% - getting full
+context_warning = "orange"      # 70-90% - running low
+context_critical = "red"        # >= 90% - almost full
+
+# Optional: Custom color palette
+[palette.custom]
+# Example: Custom colors for light backgrounds
+# dark_cyan = "\\x1b[36m"

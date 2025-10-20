@@ -161,7 +161,8 @@ fn format_statusline_string(
         if let Some(git_status) = get_git_status(current_dir) {
             let git_info = format_git_info(&git_status);
             if !git_info.is_empty() {
-                parts.push(git_info);
+                // Trim leading space from git_info (legacy format)
+                parts.push(git_info.trim_start().to_string());
             }
         }
     }
