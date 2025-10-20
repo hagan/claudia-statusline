@@ -185,12 +185,7 @@ impl ThemeManager {
     /// let theme = manager.load_theme("dark").unwrap();
     /// ```
     pub fn new() -> Self {
-        let themes_dir = crate::common::get_data_dir()
-            .parent()
-            .unwrap()
-            .join("config")
-            .join("claudia-statusline")
-            .join("themes");
+        let themes_dir = crate::common::get_config_dir().join("themes");
 
         Self {
             themes_dir,
@@ -246,8 +241,7 @@ impl ThemeManager {
         let content = fs::read_to_string(&theme_path)
             .map_err(|e| format!("Failed to read theme file: {}", e))?;
 
-        Theme::from_toml(&content)
-            .map_err(|e| format!("Failed to parse theme '{}': {}", name, e))
+        Theme::from_toml(&content).map_err(|e| format!("Failed to parse theme '{}': {}", name, e))
     }
 
     /// Lists all available themes (user + embedded).
@@ -517,7 +511,17 @@ mod tests {
     #[test]
     fn test_theme_manager_new() {
         let manager = ThemeManager::new();
-        assert!(manager.themes_dir.to_string_lossy().contains("claudia-statusline/themes"));
+
+        // Should be in config directory (platform-agnostic check)
+        let config_dir = crate::common::get_config_dir();
+        let expected_themes_dir = config_dir.join("themes");
+        assert_eq!(
+            manager.themes_dir, expected_themes_dir,
+            "Themes directory should be in config directory"
+        );
+
+        // Should end with claudia-statusline/themes (platform-agnostic)
+        assert!(manager.themes_dir.ends_with("claudia-statusline/themes"));
     }
 
     #[test]
@@ -733,7 +737,10 @@ mod tests {
     #[test]
     fn test_theme_display() {
         let theme = Theme::default();
-        assert_eq!(format!("{}", theme), "dark - Default dark theme for dark terminals");
+        assert_eq!(
+            format!("{}", theme),
+            "dark - Default dark theme for dark terminals"
+        );
 
         let minimal = Theme {
             name: "test".to_string(),

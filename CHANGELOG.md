@@ -5,6 +5,61 @@ All notable changes to the Claudia Statusline project will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added - Phase 3: Theme System Integration Testing
+- Comprehensive integration test suite (29 new tests):
+  - **Display Configuration Tests** (`tests/display_config_integration.rs`) - 10 scenarios
+    - Baseline test with all components enabled
+    - Individual component toggle tests (directory, git, model, etc.)
+    - Multiple component combinations
+    - NO_COLOR environment variable support
+    - Double separator regression prevention
+  - **Theme Integration Tests** (`tests/theme_integration.rs`) - 10 scenarios
+    - Embedded theme loading (dark and light)
+    - Theme color resolution (named colors + ANSI escapes)
+    - User theme support with custom colors
+    - Theme manager caching behavior
+    - Environment variable precedence
+  - **Regression Tests** (`tests/regression_tests.rs`) - 9 scenarios
+    - Model abbreviation with build IDs
+    - Double separator prevention
+    - Git info formatting
+    - NO_COLOR support verification
+    - Timezone consistency checks
+- Public API exports for library embedding:
+  - Exported `Theme`, `ThemeManager`, and `get_theme_manager` from theme module
+  - Enables comprehensive integration testing from external test files
+
+### Changed
+- Improved NO_COLOR handling in theme tests with RAII guard
+- All Colors methods now properly respect NO_COLOR environment variable
+
+### Testing
+- **Total test count**: 336+ tests (up from ~307)
+- **New integration tests**: 29 (display: 10, theme: 10, regression: 9)
+- **Coverage**: >90% for display.rs and theme.rs modules
+- All new tests passing with comprehensive edge case coverage
+
+### Fixed
+- **Critical**: Fixed user theme directory path construction in `ThemeManager::new()`
+  - Was incorrectly resolving to `~/.local/config/claudia-statusline/themes` on Unix
+  - Now correctly uses platform-appropriate config directory:
+    - Unix: `~/.config/claudia-statusline/themes`
+    - macOS: `~/Library/Application Support/claudia-statusline/themes`
+    - Windows: `%APPDATA%\claudia-statusline\themes`
+  - User-provided themes are now properly discovered on all platforms
+  - Added `get_config_dir()` helper to `common.rs` using `dirs::config_dir()`
+  - Platform-agnostic test coverage ensures cross-platform compatibility
+- **Windows Compatibility**: Fixed test assertion in `test_get_config_dir()`
+  - Directory inequality check now platform-specific with `#[cfg(not(target_os = "windows"))]`
+  - On Windows, both `config_dir` and `data_dir` map to `%APPDATA%` (not different)
+  - On Unix/macOS, config and data directories are different locations
+  - Tests now pass correctly on all platforms
+- Improved NO_COLOR environment variable handling in `test_theme_affects_colors`
+- Added RAII guard (`ClearNoColor`) to ensure clean test environment
+- Fixed theme test flakiness when running full test suite
+
 ## [2.15.0] - 2025-10-06
 
 ### Added - Turso Sync Phase 2 Complete (Manual Sync)

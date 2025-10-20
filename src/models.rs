@@ -232,27 +232,39 @@ mod tests {
         assert!(matches!(opus, ModelType::Model { family, .. } if family == "Opus"));
 
         let opus3 = ModelType::from_name("claude-3-opus-20240229");
-        assert!(matches!(opus3, ModelType::Model { family, version } if family == "Opus" && version == "3"));
+        assert!(
+            matches!(opus3, ModelType::Model { family, version } if family == "Opus" && version == "3")
+        );
 
         // Test Sonnet detection
         let sonnet35 = ModelType::from_name("Claude 3.5 Sonnet");
-        assert!(matches!(sonnet35, ModelType::Model { family, version } if family == "Sonnet" && version == "3.5"));
+        assert!(
+            matches!(sonnet35, ModelType::Model { family, version } if family == "Sonnet" && version == "3.5")
+        );
 
         let sonnet45 = ModelType::from_name("Claude Sonnet 4.5");
-        assert!(matches!(sonnet45, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5"));
+        assert!(
+            matches!(sonnet45, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5")
+        );
 
         let sonnet45_alt = ModelType::from_name("Claude 4.5 Sonnet");
-        assert!(matches!(sonnet45_alt, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5"));
+        assert!(
+            matches!(sonnet45_alt, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5")
+        );
 
         let sonnet45_dash = ModelType::from_name("claude-sonnet-4-5");
-        assert!(matches!(sonnet45_dash, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5"));
+        assert!(
+            matches!(sonnet45_dash, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5")
+        );
 
         // Test Haiku detection
         let haiku = ModelType::from_name("Claude Haiku");
         assert!(matches!(haiku, ModelType::Model { family, .. } if family == "Haiku"));
 
         let haiku45 = ModelType::from_name("Claude Haiku 4.5");
-        assert!(matches!(haiku45, ModelType::Model { family, version } if family == "Haiku" && version == "4.5"));
+        assert!(
+            matches!(haiku45, ModelType::Model { family, version } if family == "Haiku" && version == "4.5")
+        );
 
         // Test unknown
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
@@ -261,8 +273,14 @@ mod tests {
     #[test]
     fn test_model_type_display() {
         assert_eq!(ModelType::from_name("Claude Opus").abbreviation(), "Opus");
-        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet").abbreviation(), "S3.5");
-        assert_eq!(ModelType::from_name("Claude 4.5 Sonnet").abbreviation(), "S4.5");
+        assert_eq!(
+            ModelType::from_name("Claude 3.5 Sonnet").abbreviation(),
+            "S3.5"
+        );
+        assert_eq!(
+            ModelType::from_name("Claude 4.5 Sonnet").abbreviation(),
+            "S4.5"
+        );
         assert_eq!(ModelType::from_name("Claude Sonnet").abbreviation(), "S3.5"); // Default to 3.5
         assert_eq!(ModelType::from_name("Claude Haiku").abbreviation(), "Haiku");
         assert_eq!(ModelType::Unknown.abbreviation(), "Claude");
@@ -300,14 +318,32 @@ mod tests {
     #[test]
     fn test_future_model_versions() {
         // Test that future versions work without code changes
-        assert_eq!(ModelType::from_name("Claude Sonnet 5.0").abbreviation(), "S5.0");
-        assert_eq!(ModelType::from_name("Claude Sonnet 6.5").abbreviation(), "S6.5");
-        assert_eq!(ModelType::from_name("Claude Haiku 4.5").abbreviation(), "Haiku");
-        assert_eq!(ModelType::from_name("Claude Opus 4.0").abbreviation(), "Opus");
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 5.0").abbreviation(),
+            "S5.0"
+        );
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 6.5").abbreviation(),
+            "S6.5"
+        );
+        assert_eq!(
+            ModelType::from_name("Claude Haiku 4.5").abbreviation(),
+            "Haiku"
+        );
+        assert_eq!(
+            ModelType::from_name("Claude Opus 4.0").abbreviation(),
+            "Opus"
+        );
 
         // Test edge cases
-        assert_eq!(ModelType::from_name("Claude Sonnet 10.5").abbreviation(), "S10.5");
-        assert_eq!(ModelType::from_name("Claude Sonnet 3-7").abbreviation(), "S3.7");
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 10.5").abbreviation(),
+            "S10.5"
+        );
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 3-7").abbreviation(),
+            "S3.7"
+        );
     }
 
     #[test]

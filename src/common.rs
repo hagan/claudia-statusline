@@ -35,6 +35,29 @@ pub fn get_data_dir() -> PathBuf {
     base_dir.join("claudia-statusline")
 }
 
+/// Gets the application config directory using XDG Base Directory specification.
+///
+/// Returns `~/.config/claudia-statusline/` on Unix-like systems.
+///
+/// # Example
+///
+/// ```rust,no_run
+/// use statusline::common::get_config_dir;
+///
+/// let config_dir = get_config_dir();
+/// let config_file = config_dir.join("config.toml");
+/// ```
+pub fn get_config_dir() -> PathBuf {
+    // Use dirs crate for proper XDG handling
+    let base_dir = dirs::config_dir().unwrap_or_else(|| {
+        // Fallback if dirs crate fails
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".config")
+    });
+
+    base_dir.join("claudia-statusline")
+}
+
 /// Gets the current timestamp in ISO 8601 format.
 ///
 /// # Example
@@ -158,6 +181,26 @@ mod tests {
     fn test_get_data_dir() {
         let dir = get_data_dir();
         assert!(dir.to_string_lossy().contains("claudia-statusline"));
+    }
+
+    #[test]
+    fn test_get_config_dir() {
+        let config_dir = get_config_dir();
+        let data_dir = get_data_dir();
+
+        // Should contain our app name
+        assert!(config_dir.to_string_lossy().contains("claudia-statusline"));
+
+        // On Windows, both config_dir and data_dir map to %APPDATA%
+        // On Unix/macOS, they should be different
+        #[cfg(not(target_os = "windows"))]
+        assert_ne!(
+            config_dir, data_dir,
+            "Config directory should be different from data directory"
+        );
+
+        // Should end with claudia-statusline (platform-agnostic)
+        assert!(config_dir.ends_with("claudia-statusline"));
     }
 
     #[test]

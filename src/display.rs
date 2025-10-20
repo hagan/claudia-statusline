@@ -357,12 +357,7 @@ fn format_statusline_string(
                     }
                 });
 
-                let mut cost_part = format!(
-                    "{}${:.2}{}",
-                    cost_color,
-                    total_cost,
-                    Colors::reset()
-                );
+                let mut cost_part = format!("{}${:.2}{}", cost_color, total_cost, Colors::reset());
 
                 // Add burn rate if available
                 if let Some(rate) = burn_rate {
@@ -606,11 +601,32 @@ mod tests {
         assert_eq!(realistic_burn, 3.0); // $3.00/hr is reasonable
     }
 
+    // Helper guard to temporarily clear NO_COLOR for theme tests
+    struct ClearNoColor(Option<String>);
+    impl ClearNoColor {
+        fn new() -> Self {
+            let old = std::env::var("NO_COLOR").ok();
+            std::env::remove_var("NO_COLOR");
+            Self(old)
+        }
+    }
+    impl Drop for ClearNoColor {
+        fn drop(&mut self) {
+            if let Some(val) = &self.0 {
+                std::env::set_var("NO_COLOR", val);
+            }
+        }
+    }
+
     #[test]
     fn test_theme_affects_colors() {
-        // Skip if running in NO_COLOR environment
-        if std::env::var("NO_COLOR").is_ok() {
-            eprintln!("Skipping theme test due to NO_COLOR environment");
+        // Use RAII guard to ensure clean environment
+        let _guard = ClearNoColor::new();
+
+        // Verify colors are actually enabled after clearing NO_COLOR
+        if !Colors::enabled() {
+            // If colors are still disabled, skip this test
+            eprintln!("Skipping theme test - colors remain disabled despite clearing NO_COLOR");
             return;
         }
 

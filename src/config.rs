@@ -683,8 +683,8 @@ mod tests {
 
         let config: Config = toml::from_str(toml).unwrap();
         assert!(config.display.show_directory); // Not specified, should default to true
-        assert!(!config.display.show_git);      // Explicitly set to false
-        assert!(config.display.show_model);     // Not specified, should default to true
+        assert!(!config.display.show_git); // Explicitly set to false
+        assert!(config.display.show_model); // Not specified, should default to true
     }
 
     #[test]
