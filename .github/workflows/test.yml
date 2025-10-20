@@ -299,9 +299,9 @@ jobs:
       run: |
         size=$(stat -c%s target/release/statusline)
         echo "Binary size: $size bytes"
-        # Fail if binary is larger than 4MB (includes bundled SQLite)
-        if [ $size -gt 4194304 ]; then
-          echo "Binary too large! Expected < 4MB"
+        # Fail if binary is larger than 8MB (includes bundled SQLite, TOML parser, theme system)
+        if [ $size -gt 8388608 ]; then
+          echo "Binary too large! Expected < 8MB"
           exit 1
         fi
 
@@ -313,7 +313,7 @@ jobs:
         |--------|-------|
         | Binary Size | $(($size / 1024 / 1024))MB ($(($size / 1024))KB) |
         | Build Type | Release |
-        | Max Allowed | 4MB |
+        | Max Allowed | 8MB |
         | Test Status | ${{ steps.test.outputs.result }} |
         | Test Duration | ${{ steps.test.outputs.duration }}s |
         | Rust Version | $(rustc --version) |

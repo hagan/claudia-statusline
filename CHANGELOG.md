@@ -60,6 +60,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Fixed `clippy::items_after_test_module` by moving `impl Default for ThemeColors` before tests
   - Fixed unnecessary `to_string()` calls in theme integration tests
   - Added `#[allow(dead_code)]` to intentionally unused public API methods
+  - Updated binary size limit in CI from 4MB to 8MB (reflects theme system additions)
   - All GitHub Actions workflows now pass successfully
 - Improved NO_COLOR environment variable handling in `test_theme_affects_colors`
 - Added RAII guard (`ClearNoColor`) to ensure clean test environment
