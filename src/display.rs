@@ -161,7 +161,7 @@ pub fn format_output(
         output.push_str(&format!(
             " {}{}{}",
             Colors::cyan(),
-            sanitize_for_terminal(model_type.abbreviation()),
+            sanitize_for_terminal(&model_type.abbreviation()),
             Colors::reset()
         ));
     }
@@ -338,7 +338,7 @@ pub fn format_output_to_string(
         output.push_str(&format!(
             " {}{}{}",
             Colors::cyan(),
-            sanitize_for_terminal(model_type.abbreviation()),
+            sanitize_for_terminal(&model_type.abbreviation()),
             Colors::reset()
         ));
     }

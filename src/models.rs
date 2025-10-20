@@ -58,14 +58,8 @@ pub struct Cost {
 /// Claude model type enumeration
 #[derive(Debug, PartialEq)]
 pub enum ModelType {
-    /// Claude 3 Opus model
-    Opus,
-    /// Claude 3.5 Sonnet model
-    Sonnet35,
-    /// Claude 4.5 Sonnet model
-    Sonnet45,
-    /// Claude 3 Haiku model
-    Haiku,
+    /// Recognized Claude model with extracted name and version
+    Model { family: String, version: String },
     /// Unknown or unrecognized model
     Unknown,
 }
@@ -73,31 +67,73 @@ pub enum ModelType {
 impl ModelType {
     pub fn from_name(name: &str) -> Self {
         let lower = name.to_lowercase();
-        if lower.contains("opus") {
-            ModelType::Opus
+
+        // Extract model family
+        let family = if lower.contains("opus") {
+            "Opus"
         } else if lower.contains("sonnet") {
-            // Check for version number to differentiate between Sonnet versions
-            if lower.contains("4.5") || lower.contains("4-5") || lower.contains("sonnet-4") {
-                ModelType::Sonnet45
-            } else {
-                // Default to 3.5 for backward compatibility
-                ModelType::Sonnet35
-            }
+            "Sonnet"
         } else if lower.contains("haiku") {
-            ModelType::Haiku
+            "Haiku"
         } else {
-            ModelType::Unknown
+            return ModelType::Unknown;
+        };
+
+        // Extract version number dynamically
+        let version = Self::extract_version(&lower);
+
+        ModelType::Model {
+            family: family.to_string(),
+            version,
+        }
+    }
+
+    /// Extracts version number from model name
+    /// Handles patterns like "3.5", "4.5", "3-5", "4-5", "4", etc.
+    fn extract_version(name: &str) -> String {
+        use regex::Regex;
+
+        // Match version patterns: "3.5", "4.5", "3-5", "4-5", etc.
+        let re = Regex::new(r"(\d+)[\.\-](\d+)").unwrap();
+        if let Some(caps) = re.captures(name) {
+            format!("{}.{}", &caps[1], &caps[2])
+        } else {
+            // Try single digit version
+            let re_single = Regex::new(r"(\d+)").unwrap();
+            if let Some(caps) = re_single.captures(name) {
+                caps[1].to_string()
+            } else {
+                String::new()
+            }
         }
     }
 
     /// Returns the abbreviated display name for the model
-    pub fn abbreviation(&self) -> &str {
+    /// Examples: "Opus" → "Opus", "Sonnet 3.5" → "S3.5", "Haiku 4.5" → "H4.5"
+    pub fn abbreviation(&self) -> String {
         match self {
-            ModelType::Opus => "Opus",
-            ModelType::Sonnet35 => "S3.5",
-            ModelType::Sonnet45 => "S4.5",
-            ModelType::Haiku => "Haiku",
-            ModelType::Unknown => "Claude",
+            ModelType::Model { family, version } => {
+                match family.as_str() {
+                    "Opus" => {
+                        // Opus is already short, just show "Opus"
+                        "Opus".to_string()
+                    }
+                    "Sonnet" => {
+                        if version.is_empty() {
+                            // Default to 3.5 for backward compatibility
+                            "S3.5".to_string()
+                        } else {
+                            format!("S{}", version)
+                        }
+                    }
+                    "Haiku" => {
+                        // Haiku is already short, just show "Haiku"
+                        "Haiku".to_string()
+                    }
+                    _ => family.clone(),
+                }
+            }
+            ModelType::Unknown => "Claude".to_string(),
         }
     }
 }
@@ -183,37 +219,108 @@ mod tests {
 
     #[test]
     fn test_model_type_detection() {
-        assert_eq!(ModelType::from_name("Claude Opus"), ModelType::Opus);
-        assert_eq!(
-            ModelType::from_name("claude-3-opus-20240229"),
-            ModelType::Opus
-        );
-        assert_eq!(
-            ModelType::from_name("Claude 3.5 Sonnet"),
-            ModelType::Sonnet35
-        );
-        assert_eq!(
-            ModelType::from_name("Claude Sonnet 4.5"),
-            ModelType::Sonnet45
-        );
-        assert_eq!(
-            ModelType::from_name("Claude 4.5 Sonnet"),
-            ModelType::Sonnet45
-        );
-        assert_eq!(
-            ModelType::from_name("claude-sonnet-4-5"),
-            ModelType::Sonnet45
-        );
+        // Test Opus detection
+        let opus = ModelType::from_name("Claude Opus");
+        assert!(matches!(opus, ModelType::Model { family, .. } if family == "Opus"));
+
+        let opus3 = ModelType::from_name("claude-3-opus-20240229");
+        assert!(matches!(opus3, ModelType::Model { family, version } if family == "Opus" && version == "3"));
+
+        // Test Sonnet detection
+        let sonnet35 = ModelType::from_name("Claude 3.5 Sonnet");
+        assert!(matches!(sonnet35, ModelType::Model { family, version } if family == "Sonnet" && version == "3.5"));
+
+        let sonnet45 = ModelType::from_name("Claude Sonnet 4.5");
+        assert!(matches!(sonnet45, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5"));
+
+        let sonnet45_alt = ModelType::from_name("Claude 4.5 Sonnet");
+        assert!(matches!(sonnet45_alt, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5"));
+
+        let sonnet45_dash = ModelType::from_name("claude-sonnet-4-5");
+        assert!(matches!(sonnet45_dash, ModelType::Model { family, version } if family == "Sonnet" && version == "4.5"));
+
+        // Test Haiku detection
+        let haiku = ModelType::from_name("Claude Haiku");
+        assert!(matches!(haiku, ModelType::Model { family, .. } if family == "Haiku"));
+
+        let haiku45 = ModelType::from_name("Claude Haiku 4.5");
+        assert!(matches!(haiku45, ModelType::Model { family, version } if family == "Haiku" && version == "4.5"));
+
+        // Test unknown
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
     }
 
     #[test]
     fn test_model_type_display() {
-        assert_eq!(ModelType::Opus.abbreviation(), "Opus");
-        assert_eq!(ModelType::Sonnet35.abbreviation(), "S3.5");
-        assert_eq!(ModelType::Sonnet45.abbreviation(), "S4.5");
-        assert_eq!(ModelType::Haiku.abbreviation(), "Haiku");
+        assert_eq!(ModelType::from_name("Claude Opus").abbreviation(), "Opus");
+        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet").abbreviation(), "S3.5");
+        assert_eq!(ModelType::from_name("Claude 4.5 Sonnet").abbreviation(), "S4.5");
+        assert_eq!(ModelType::from_name("Claude Sonnet").abbreviation(), "S3.5"); // Default to 3.5
+        assert_eq!(ModelType::from_name("Claude Haiku").abbreviation(), "Haiku");
         assert_eq!(ModelType::Unknown.abbreviation(), "Claude");
+    }
+
+    #[test]
+    fn test_version_extraction() {
+        // Test various version number formats
+        let test_cases = vec![
+            ("Claude 3.5 Sonnet", "3.5"),
+            ("Claude Sonnet 4.5", "4.5"),
+            ("claude-sonnet-4-5", "4.5"),
+            ("Claude 4.5 Sonnet", "4.5"),
+            ("claude-3-opus-20240229", "3"),
+            ("Claude Haiku 3", "3"),
+            ("Claude Opus 4.1", "4.1"),
+            ("Claude Sonnet 5.0", "5.0"),
+            ("Claude Haiku 6-2", "6.2"),
+        ];
+
+        for (input, expected_version) in test_cases {
+            let model = ModelType::from_name(input);
+            if let ModelType::Model { version, .. } = model {
+                assert_eq!(
+                    version, expected_version,
+                    "Failed for input '{}': expected '{}', got '{}'",
+                    input, expected_version, version
+                );
+            } else {
+                panic!("Expected Model variant for input '{}'", input);
+            }
+        }
+    }
+
+    #[test]
+    fn test_future_model_versions() {
+        // Test that future versions work without code changes
+        assert_eq!(ModelType::from_name("Claude Sonnet 5.0").abbreviation(), "S5.0");
+        assert_eq!(ModelType::from_name("Claude Sonnet 6.5").abbreviation(), "S6.5");
+        assert_eq!(ModelType::from_name("Claude Haiku 4.5").abbreviation(), "Haiku");
+        assert_eq!(ModelType::from_name("Claude Opus 4.0").abbreviation(), "Opus");
+
+        // Test edge cases
+        assert_eq!(ModelType::from_name("Claude Sonnet 10.5").abbreviation(), "S10.5");
+        assert_eq!(ModelType::from_name("Claude Sonnet 3-7").abbreviation(), "S3.7");
+    }
+
+    #[test]
+    fn test_model_detection_edge_cases() {
+        // No version number - should handle gracefully
+        let no_version = ModelType::from_name("Claude Sonnet");
+        assert!(matches!(&no_version, ModelType::Model { family, .. } if family == "Sonnet"));
+        assert_eq!(no_version.abbreviation(), "S3.5"); // Falls back to 3.5
+
+        // Unknown model
+        assert_eq!(ModelType::from_name("GPT-4"), ModelType::Unknown);
+        assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
+
+        // Case insensitive
+        let lowercase = ModelType::from_name("claude sonnet 4.5");
+        assert!(matches!(&lowercase, ModelType::Model { family, version }
+            if family == "Sonnet" && version == "4.5"));
+
+        // Multiple digits
+        let multi = ModelType::from_name("Claude Sonnet 12.34");
+        assert!(matches!(&multi, ModelType::Model { version, .. } if version == "12.34"));
     }
 
     #[test]
