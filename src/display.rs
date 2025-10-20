@@ -121,167 +121,218 @@ pub fn format_output(
     daily_total: f64,
     session_id: Option<&str>,
 ) {
-    let mut output = String::new();
+    let config = config::get_config();
+    format_output_with_config(
+        current_dir,
+        model_name,
+        transcript_path,
+        cost,
+        daily_total,
+        session_id,
+        &config.display,
+    )
+}
 
-    // Shorten and sanitize the path
-    let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
+/// Format output with explicit display configuration (returns String)
+fn format_statusline_string(
+    current_dir: &str,
+    model_name: Option<&str>,
+    transcript_path: Option<&str>,
+    cost: Option<&Cost>,
+    daily_total: f64,
+    session_id: Option<&str>,
+    display_config: &config::DisplayConfig,
+) -> String {
+    let mut parts = Vec::new();
 
-    // Directory with color
-    output.push_str(&format!(
-        "{}{}{}",
-        Colors::cyan(),
-        short_dir,
-        Colors::reset()
-    ));
-
-    // Git status
-    if let Some(git_status) = get_git_status(current_dir) {
-        let git_info = format_git_info(&git_status);
-        if !git_info.is_empty() {
-            output.push_str(&format!(
-                " {}•{}",
-                Colors::separator_color(),
-                Colors::reset()
-            ));
-            output.push_str(&git_info);
-        }
-    }
-
-    // Context usage from transcript
-    if let Some(transcript) = transcript_path {
-        if let Some(context) = calculate_context_usage(transcript) {
-            output.push_str(&format_context_bar(&context));
-        }
-    }
-
-    // Model display (sanitize untrusted model name)
-    if let Some(name) = model_name {
-        let sanitized_name = sanitize_for_terminal(name);
-        let model_type = ModelType::from_name(&sanitized_name);
-        output.push_str(&format!(
-            " {}{}{}",
+    // 1. Directory (always first if shown)
+    if display_config.show_directory {
+        let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
+        parts.push(format!(
+            "{}{}{}",
             Colors::cyan(),
-            sanitize_for_terminal(&model_type.abbreviation()),
+            short_dir,
             Colors::reset()
         ));
     }
 
-    // Duration from transcript
-    if let Some(transcript) = transcript_path {
-        if let Some(duration) = parse_duration(transcript) {
-            output.push_str(&format!(
-                " {}{}{}",
-                Colors::light_gray(),
-                format_duration(duration),
+    // 2. Git status
+    if display_config.show_git {
+        if let Some(git_status) = get_git_status(current_dir) {
+            let git_info = format_git_info(&git_status);
+            if !git_info.is_empty() {
+                parts.push(git_info);
+            }
+        }
+    }
+
+    // 3. Context usage from transcript
+    if display_config.show_context {
+        if let Some(transcript) = transcript_path {
+            if let Some(context) = calculate_context_usage(transcript) {
+                parts.push(format_context_bar(&context));
+            }
+        }
+    }
+
+    // 4. Model display (sanitize untrusted model name)
+    if display_config.show_model {
+        if let Some(name) = model_name {
+            let sanitized_name = sanitize_for_terminal(name);
+            let model_type = ModelType::from_name(&sanitized_name);
+            parts.push(format!(
+                "{}{}{}",
+                Colors::cyan(),
+                sanitize_for_terminal(&model_type.abbreviation()),
                 Colors::reset()
             ));
         }
     }
 
-    // Lines changed
-    if let Some(cost_data) = cost {
-        if let (Some(added), Some(removed)) =
-            (cost_data.total_lines_added, cost_data.total_lines_removed)
-        {
-            if added > 0 || removed > 0 {
-                output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
-                if added > 0 {
-                    output.push_str(&format!(
-                        " {}+{}{}",
-                        Colors::green(),
-                        added,
-                        Colors::reset()
-                    ));
-                }
-                if removed > 0 {
-                    output.push_str(&format!(
-                        " {}-{}{}",
-                        Colors::red(),
-                        removed,
-                        Colors::reset()
-                    ));
+    // 5. Duration from transcript
+    if display_config.show_duration {
+        if let Some(transcript) = transcript_path {
+            if let Some(duration) = parse_duration(transcript) {
+                parts.push(format!(
+                    "{}{}{}",
+                    Colors::light_gray(),
+                    format_duration(duration),
+                    Colors::reset()
+                ));
+            }
+        }
+    }
+
+    // 6. Lines changed
+    if display_config.show_lines_changed {
+        if let Some(cost_data) = cost {
+            if let (Some(added), Some(removed)) =
+                (cost_data.total_lines_added, cost_data.total_lines_removed)
+            {
+                if added > 0 || removed > 0 {
+                    let mut lines_part = String::new();
+                    if added > 0 {
+                        lines_part.push_str(&format!(
+                            "{}+{}{}",
+                            Colors::green(),
+                            added,
+                            Colors::reset()
+                        ));
+                    }
+                    if removed > 0 {
+                        if added > 0 {
+                            lines_part.push(' ');
+                        }
+                        lines_part.push_str(&format!(
+                            "{}-{}{}",
+                            Colors::red(),
+                            removed,
+                            Colors::reset()
+                        ));
+                    }
+                    parts.push(lines_part);
                 }
             }
         }
     }
 
-    // Cost display with burn rate
-    if let Some(cost_data) = cost {
-        if let Some(total_cost) = cost_data.total_cost_usd {
-            let cost_color = get_cost_color(total_cost);
+    // 7. Cost display with burn rate
+    if display_config.show_cost {
+        if let Some(cost_data) = cost {
+            if let Some(total_cost) = cost_data.total_cost_usd {
+                let cost_color = get_cost_color(total_cost);
 
-            // Calculate burn rate if we have duration
-            // First try to get duration from our tracked session stats
-            let duration = session_id
-                .and_then(crate::stats::get_session_duration)
-                .or_else(|| {
-                    // Fallback to parsing transcript if available
-                    transcript_path.and_then(parse_duration)
+                // Calculate burn rate if we have duration
+                let duration = session_id
+                    .and_then(crate::stats::get_session_duration)
+                    .or_else(|| transcript_path.and_then(parse_duration));
+
+                let burn_rate = duration.and_then(|d| {
+                    if d > 60 {
+                        Some((total_cost * 3600.0) / d as f64)
+                    } else {
+                        None
+                    }
                 });
 
-            let burn_rate = duration.and_then(|d| {
-                if d > 60 {
-                    // Only show burn rate for sessions > 1 minute
-                    Some((total_cost * 3600.0) / d as f64)
-                } else {
-                    None
+                let mut cost_part = format!(
+                    "{}${:.2}{}",
+                    cost_color,
+                    total_cost,
+                    Colors::reset()
+                );
+
+                // Add burn rate if available
+                if let Some(rate) = burn_rate {
+                    if rate > 0.0 {
+                        cost_part.push_str(&format!(
+                            " {}(${:.2}/hr){}",
+                            Colors::light_gray(),
+                            rate,
+                            Colors::reset()
+                        ));
+                    }
                 }
-            });
 
-            output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
-            output.push_str(&format!(
-                " {}${:.2}{}",
-                cost_color,
-                total_cost,
-                Colors::reset()
-            ));
-
-            // Add burn rate if available
-            if let Some(rate) = burn_rate {
-                if rate > 0.0 {
-                    output.push_str(&format!(
-                        " {}(${:.2}/hr){}",
-                        Colors::light_gray(),
-                        rate,
+                // Add daily total if different from session cost
+                if daily_total > total_cost {
+                    let daily_color = get_cost_color(daily_total);
+                    cost_part.push_str(&format!(
+                        " {}(day: {}${:.2}){}",
+                        Colors::reset(),
+                        daily_color,
+                        daily_total,
                         Colors::reset()
                     ));
                 }
-            }
 
-            // Add daily total if different from session cost
-            if daily_total > total_cost {
+                parts.push(cost_part);
+            } else if daily_total > 0.0 {
+                // Show daily total even if no session cost
                 let daily_color = get_cost_color(daily_total);
-                output.push_str(&format!(
-                    " {}(day: {}${:.2}){}",
-                    Colors::reset(),
+                parts.push(format!(
+                    "day: {}${:.2}{}",
                     daily_color,
                     daily_total,
                     Colors::reset()
                 ));
             }
         } else if daily_total > 0.0 {
-            // Show daily total even if no session cost
+            // Show daily total even if no cost data
             let daily_color = get_cost_color(daily_total);
-            output.push_str(&format!(
-                " {}day: {}${:.2}{}",
-                Colors::reset(),
+            parts.push(format!(
+                "day: {}${:.2}{}",
                 daily_color,
                 daily_total,
                 Colors::reset()
             ));
         }
-    } else if daily_total > 0.0 {
-        // Show daily total even if no cost data
-        let daily_color = get_cost_color(daily_total);
-        output.push_str(&format!(
-            " {}day: {}${:.2}{}",
-            Colors::reset(),
-            daily_color,
-            daily_total,
-            Colors::reset()
-        ));
     }
 
+    // Join parts with separator
+    let separator = format!(" {}•{} ", Colors::separator_color(), Colors::reset());
+    parts.join(&separator)
+}
+
+/// Format output with explicit display configuration (prints to stdout)
+fn format_output_with_config(
+    current_dir: &str,
+    model_name: Option<&str>,
+    transcript_path: Option<&str>,
+    cost: Option<&Cost>,
+    daily_total: f64,
+    session_id: Option<&str>,
+    display_config: &config::DisplayConfig,
+) {
+    let output = format_statusline_string(
+        current_dir,
+        model_name,
+        transcript_path,
+        cost,
+        daily_total,
+        session_id,
+        display_config,
+    );
     print!("{}", output);
 }
 
@@ -298,168 +349,16 @@ pub fn format_output_to_string(
     daily_total: f64,
     session_id: Option<&str>,
 ) -> String {
-    let mut output = String::new();
-
-    // Shorten and sanitize the path
-    let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
-
-    // Directory with color
-    output.push_str(&format!(
-        "{}{}{}",
-        Colors::cyan(),
-        short_dir,
-        Colors::reset()
-    ));
-
-    // Git status
-    if let Some(git_status) = get_git_status(current_dir) {
-        let git_info = format_git_info(&git_status);
-        if !git_info.is_empty() {
-            output.push_str(&format!(
-                " {}•{}",
-                Colors::separator_color(),
-                Colors::reset()
-            ));
-            output.push_str(&git_info);
-        }
-    }
-
-    // Context usage from transcript
-    if let Some(transcript) = transcript_path {
-        if let Some(context) = calculate_context_usage(transcript) {
-            output.push_str(&format_context_bar(&context));
-        }
-    }
-
-    // Model display (sanitize untrusted model name)
-    if let Some(name) = model_name {
-        let sanitized_name = sanitize_for_terminal(name);
-        let model_type = ModelType::from_name(&sanitized_name);
-        output.push_str(&format!(
-            " {}{}{}",
-            Colors::cyan(),
-            sanitize_for_terminal(&model_type.abbreviation()),
-            Colors::reset()
-        ));
-    }
-
-    // Duration from transcript
-    if let Some(transcript) = transcript_path {
-        if let Some(duration) = parse_duration(transcript) {
-            output.push_str(&format!(
-                " {}{}{}",
-                Colors::light_gray(),
-                format_duration(duration),
-                Colors::reset()
-            ));
-        }
-    }
-
-    // Lines changed
-    if let Some(cost_data) = cost {
-        if let (Some(added), Some(removed)) =
-            (cost_data.total_lines_added, cost_data.total_lines_removed)
-        {
-            if added > 0 || removed > 0 {
-                output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
-                if added > 0 {
-                    output.push_str(&format!(
-                        " {}+{}{}",
-                        Colors::green(),
-                        added,
-                        Colors::reset()
-                    ));
-                }
-                if removed > 0 {
-                    output.push_str(&format!(
-                        " {}-{}{}",
-                        Colors::red(),
-                        removed,
-                        Colors::reset()
-                    ));
-                }
-            }
-        }
-    }
-
-    // Cost display with burn rate
-    if let Some(cost_data) = cost {
-        if let Some(total_cost) = cost_data.total_cost_usd {
-            let cost_color = get_cost_color(total_cost);
-
-            // Calculate burn rate if we have duration
-            // First try to get duration from our tracked session stats
-            let duration = session_id
-                .and_then(crate::stats::get_session_duration)
-                .or_else(|| {
-                    // Fallback to parsing transcript if available
-                    transcript_path.and_then(parse_duration)
-                });
-
-            let burn_rate = duration.and_then(|d| {
-                if d > 60 {
-                    // Only show burn rate for sessions > 1 minute
-                    Some((total_cost * 3600.0) / d as f64)
-                } else {
-                    None
-                }
-            });
-
-            output.push_str(&format!(" {}•{}", Colors::light_gray(), Colors::reset()));
-            output.push_str(&format!(
-                " {}${:.2}{}",
-                cost_color,
-                total_cost,
-                Colors::reset()
-            ));
-
-            // Add burn rate if available
-            if let Some(rate) = burn_rate {
-                if rate > 0.0 {
-                    output.push_str(&format!(
-                        " {}(${:.2}/hr){}",
-                        Colors::light_gray(),
-                        rate,
-                        Colors::reset()
-                    ));
-                }
-            }
-
-            // Add daily total if different from session cost
-            if daily_total > total_cost {
-                let daily_color = get_cost_color(daily_total);
-                output.push_str(&format!(
-                    " {}(day: {}${:.2}){}",
-                    Colors::reset(),
-                    daily_color,
-                    daily_total,
-                    Colors::reset()
-                ));
-            }
-        } else if daily_total > 0.0 {
-            // Show daily total even if no session cost
-            let daily_color = get_cost_color(daily_total);
-            output.push_str(&format!(
-                " {}day: {}${:.2}{}",
-                Colors::reset(),
-                daily_color,
-                daily_total,
-                Colors::reset()
-            ));
-        }
-    } else if daily_total > 0.0 {
-        // Show daily total even if no cost data
-        let daily_color = get_cost_color(daily_total);
-        output.push_str(&format!(
-            " {}day: {}${:.2}{}",
-            Colors::reset(),
-            daily_color,
-            daily_total,
-            Colors::reset()
-        ));
-    }
-
-    output
+    let config = config::get_config();
+    format_statusline_string(
+        current_dir,
+        model_name,
+        transcript_path,
+        cost,
+        daily_total,
+        session_id,
+        &config.display,
+    )
 }
 
 fn format_context_bar(context: &ContextUsage) -> String {
@@ -492,8 +391,7 @@ fn format_context_bar(context: &ContextUsage) -> String {
     );
 
     format!(
-        " {}• {}{}%{} {}[{}]{}",
-        Colors::separator_color(),
+        "{}{}%{} {}[{}]{}",
         percentage_color,
         percentage.round() as u32,
         Colors::reset(),
@@ -575,10 +473,12 @@ mod tests {
         let bar = format_context_bar(&low);
         assert!(bar.contains("10%"));
         assert!(bar.contains("[=>"));
+        assert!(!bar.contains('•'));
 
         let high = ContextUsage { percentage: 95.0 };
         let bar = format_context_bar(&high);
         assert!(bar.contains("95%"));
+        assert!(!bar.contains('•'));
     }
 
     #[test]

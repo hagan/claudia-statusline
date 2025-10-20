@@ -53,6 +53,28 @@ pub struct DisplayConfig {
 
     /// Theme (dark or light)
     pub theme: String,
+
+    // Component visibility toggles
+    /// Show current directory path
+    pub show_directory: bool,
+
+    /// Show git branch and status
+    pub show_git: bool,
+
+    /// Show context usage percentage and progress bar
+    pub show_context: bool,
+
+    /// Show Claude model name
+    pub show_model: bool,
+
+    /// Show session duration
+    pub show_duration: bool,
+
+    /// Show lines added/removed
+    pub show_lines_changed: bool,
+
+    /// Show session cost and burn rate
+    pub show_cost: bool,
 }
 
 /// Context window configuration
@@ -199,6 +221,14 @@ impl Default for DisplayConfig {
             context_critical_threshold: 90.0,
             context_caution_threshold: 50.0,
             theme: "dark".to_string(),
+            // All components visible by default (backward compatible)
+            show_directory: true,
+            show_git: true,
+            show_context: true,
+            show_model: true,
+            show_duration: true,
+            show_lines_changed: true,
+            show_cost: true,
         }
     }
 }
@@ -582,5 +612,116 @@ mod tests {
         assert!(example.contains("Claudia Statusline Configuration"));
         assert!(example.contains("progress_bar_width"));
         assert!(example.contains("window_size"));
+    }
+
+    #[test]
+    fn test_display_config_defaults() {
+        let config = DisplayConfig::default();
+        // All components should be visible by default (backward compatible)
+        assert!(config.show_directory);
+        assert!(config.show_git);
+        assert!(config.show_context);
+        assert!(config.show_model);
+        assert!(config.show_duration);
+        assert!(config.show_lines_changed);
+        assert!(config.show_cost);
+    }
+
+    #[test]
+    fn test_display_config_minimal() {
+        let toml = r#"
+        [display]
+        show_directory = true
+        show_git = false
+        show_context = false
+        show_model = false
+        show_duration = false
+        show_lines_changed = false
+        show_cost = true
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.display.show_directory);
+        assert!(config.display.show_cost);
+        assert!(!config.display.show_git);
+        assert!(!config.display.show_context);
+        assert!(!config.display.show_model);
+        assert!(!config.display.show_duration);
+        assert!(!config.display.show_lines_changed);
+    }
+
+    #[test]
+    fn test_display_config_developer_focus() {
+        let toml = r#"
+        [display]
+        show_directory = true
+        show_git = true
+        show_context = true
+        show_model = false
+        show_duration = false
+        show_lines_changed = true
+        show_cost = false
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.display.show_directory);
+        assert!(config.display.show_git);
+        assert!(config.display.show_context);
+        assert!(config.display.show_lines_changed);
+        assert!(!config.display.show_model);
+        assert!(!config.display.show_duration);
+        assert!(!config.display.show_cost);
+    }
+
+    #[test]
+    fn test_display_config_partial() {
+        // Test that unspecified fields default to true
+        let toml = r#"
+        [display]
+        show_git = false
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(config.display.show_directory); // Not specified, should default to true
+        assert!(!config.display.show_git);      // Explicitly set to false
+        assert!(config.display.show_model);     // Not specified, should default to true
+    }
+
+    #[test]
+    fn test_display_config_all_disabled() {
+        let toml = r#"
+        [display]
+        show_directory = false
+        show_git = false
+        show_context = false
+        show_model = false
+        show_duration = false
+        show_lines_changed = false
+        show_cost = false
+        "#;
+
+        let config: Config = toml::from_str(toml).unwrap();
+        assert!(!config.display.show_directory);
+        assert!(!config.display.show_git);
+        assert!(!config.display.show_context);
+        assert!(!config.display.show_model);
+        assert!(!config.display.show_duration);
+        assert!(!config.display.show_lines_changed);
+        assert!(!config.display.show_cost);
+    }
+
+    #[test]
+    fn test_display_config_serialization() {
+        let config = DisplayConfig::default();
+        let serialized = toml::to_string(&config).unwrap();
+
+        // Check that all fields are present in serialized output
+        assert!(serialized.contains("show_directory"));
+        assert!(serialized.contains("show_git"));
+        assert!(serialized.contains("show_context"));
+        assert!(serialized.contains("show_model"));
+        assert!(serialized.contains("show_duration"));
+        assert!(serialized.contains("show_lines_changed"));
+        assert!(serialized.contains("show_cost"));
     }
 }

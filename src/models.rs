@@ -3,7 +3,9 @@
 //! This module defines the core data structures used throughout the application,
 //! including the input format from Claude Code and various status representations.
 
+use regex::Regex;
 use serde::Deserialize;
+use std::sync::OnceLock;
 
 /// Main input structure from Claude Code.
 ///
@@ -80,7 +82,7 @@ impl ModelType {
         };
 
         // Extract version number dynamically
-        let version = Self::extract_version(&lower);
+        let version = Self::extract_version(&lower).unwrap_or_default();
 
         ModelType::Model {
             family: family.to_string(),
@@ -90,22 +92,28 @@ impl ModelType {
 
     /// Extracts version number from model name
     /// Handles patterns like "3.5", "4.5", "3-5", "4-5", "4", etc.
-    fn extract_version(name: &str) -> String {
-        use regex::Regex;
+    fn extract_version(name: &str) -> Option<String> {
+        static VERSION_REGEX: OnceLock<Regex> = OnceLock::new();
 
-        // Match version patterns: "3.5", "4.5", "3-5", "4-5", etc.
-        let re = Regex::new(r"(\d+)[\.\-](\d+)").unwrap();
-        if let Some(caps) = re.captures(name) {
-            format!("{}.{}", &caps[1], &caps[2])
-        } else {
-            // Try single digit version
-            let re_single = Regex::new(r"(\d+)").unwrap();
-            if let Some(caps) = re_single.captures(name) {
-                caps[1].to_string()
-            } else {
-                String::new()
+        let regex = VERSION_REGEX.get_or_init(|| Regex::new(r"\d+(?:[.\-]\d+)?").unwrap());
+
+        regex.find_iter(name).find_map(|mat| {
+            let candidate = mat.as_str();
+
+            // Skip build identifiers or dates (e.g., 20240229)
+            if candidate.len() > 5 {
+                return None;
             }
-        }
+
+            let normalized = candidate.replace('-', ".");
+            let parts: Vec<&str> = normalized.split('.').collect();
+
+            if parts.iter().all(|part| !part.is_empty() && part.len() <= 2) {
+                Some(normalized)
+            } else {
+                None
+            }
+        })
     }
 
     /// Returns the abbreviated display name for the model
@@ -321,6 +329,11 @@ mod tests {
         // Multiple digits
         let multi = ModelType::from_name("Claude Sonnet 12.34");
         assert!(matches!(&multi, ModelType::Model { version, .. } if version == "12.34"));
+
+        // Ignore build identifiers when extracting versions
+        let slug = ModelType::from_name("claude-sonnet-20240229");
+        assert!(matches!(&slug, ModelType::Model { version, .. } if version.is_empty()));
+        assert_eq!(slug.abbreviation(), "S3.5");
     }
 
     #[test]

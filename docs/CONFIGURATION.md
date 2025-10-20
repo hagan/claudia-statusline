@@ -81,6 +81,18 @@ retention_days_monthly = 0      # Keep monthly stats forever
 # Prevents hangs on large repositories or slow filesystems
 timeout_ms = 200
 
+# Display Configuration
+[display]
+# Control which components are shown in the statusline
+# All components are visible by default
+show_directory = true       # Current working directory
+show_git = true            # Git branch and file changes
+show_context = true        # Context usage progress bar
+show_model = true          # Claude model name (e.g., "S4.5")
+show_duration = true       # Session duration
+show_lines_changed = true  # Code additions/deletions (+123/-45)
+show_cost = true           # Session and daily totals
+
 # Theme Configuration
 # Can also be set via CLAUDE_THEME or STATUSLINE_THEME environment variables
 theme = "dark"  # Options: "dark" or "light"
@@ -260,6 +272,135 @@ Colors are hardcoded in `src/display.rs`. To change:
    }
    ```
 3. Rebuild: `cargo build --release`
+
+## Display Component Customization
+
+You can selectively show or hide individual components of the statusline.
+
+### Available Components
+
+The statusline can display up to 7 components:
+
+1. **Directory** - Current working directory path
+2. **Git** - Branch name and file changes
+3. **Context** - Context usage progress bar
+4. **Model** - Claude model name (e.g., "S4.5")
+5. **Duration** - Session duration
+6. **Lines Changed** - Code additions/deletions (+123/-45)
+7. **Cost** - Session and daily totals
+
+### Default Configuration
+
+All components are visible by default:
+
+```toml
+[display]
+show_directory = true
+show_git = true
+show_context = true
+show_model = true
+show_duration = true
+show_lines_changed = true
+show_cost = true
+```
+
+### Example Configurations
+
+#### Minimal Display (Directory + Cost Only)
+
+Perfect for focusing on costs while keeping orientation:
+
+```toml
+[display]
+show_directory = true
+show_git = false
+show_context = false
+show_model = false
+show_duration = false
+show_lines_changed = false
+show_cost = true
+```
+
+**Output:** `~/projects/myapp • $0.25 ($3.45 today)`
+
+#### Developer Focus (Git + Context + Lines)
+
+Best for active development work:
+
+```toml
+[display]
+show_directory = true
+show_git = true
+show_context = true
+show_model = false
+show_duration = false
+show_lines_changed = true
+show_cost = false
+```
+
+**Output:** `~/projects/myapp • main +2 ~1 • [====------] 42% • +123/-45`
+
+#### Cost Tracking (Model + Duration + Cost)
+
+For monitoring API usage and costs:
+
+```toml
+[display]
+show_directory = true
+show_git = false
+show_context = false
+show_model = true
+show_duration = true
+show_lines_changed = false
+show_cost = true
+```
+
+**Output:** `~/projects/myapp • S4.5 • 5m • $0.25 ($3.45 today) $3.00/h`
+
+#### Clean Minimal (Directory Only)
+
+Maximum simplicity:
+
+```toml
+[display]
+show_directory = true
+show_git = false
+show_context = false
+show_model = false
+show_duration = false
+show_lines_changed = false
+show_cost = false
+```
+
+**Output:** `~/projects/myapp`
+
+### Partial Configuration
+
+You can specify only the components you want to change. Unspecified components default to `true`:
+
+```toml
+[display]
+# Only hide git info, everything else shows
+show_git = false
+```
+
+### Using with Themes
+
+Display toggles work seamlessly with theme settings:
+
+```toml
+theme = "light"
+
+[display]
+show_directory = true
+show_cost = true
+show_context = true
+# Hide everything else
+show_git = false
+show_model = false
+show_duration = false
+show_lines_changed = false
+```
 
 ## Data Retention
 
