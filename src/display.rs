@@ -6,7 +6,27 @@
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
 use crate::models::{ContextUsage, Cost, ModelType};
+use crate::theme::{get_theme_manager, Theme};
 use crate::utils::{calculate_context_usage, parse_duration, sanitize_for_terminal, shorten_path};
+
+/// Gets the current theme based on configuration.
+///
+/// Checks in this order:
+/// 1. Config file: theme = "name"
+/// 2. Environment: CLAUDE_THEME or STATUSLINE_THEME
+/// 3. Default: "dark"
+fn get_current_theme() -> Theme {
+    // Get theme name from config or environment
+    let theme_name = config::get_theme();
+
+    // Load theme with fallback to default
+    get_theme_manager()
+        .get_or_load(&theme_name)
+        .unwrap_or_else(|_| {
+            log::warn!("Failed to load theme '{}', using default", theme_name);
+            Theme::default()
+        })
+}
 
 /// ANSI color codes for terminal output.
 pub struct Colors;
@@ -17,98 +37,179 @@ impl Colors {
         std::env::var("NO_COLOR").is_err()
     }
 
-    /// Get a color code, or empty string if colors are disabled
-    fn get(code: &'static str) -> &'static str {
+    /// Get a color from theme, or empty string if colors are disabled
+    fn get_themed(color_name: &str) -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(color_name)
+    }
+
+    pub fn reset() -> String {
         if Self::enabled() {
-            code
+            "\x1b[0m".to_string()
         } else {
-            ""
+            String::new()
         }
     }
 
-    pub fn reset() -> &'static str {
-        Self::get("\x1b[0m")
-    }
     #[allow(dead_code)]
-    pub fn bold() -> &'static str {
-        Self::get("\x1b[1m")
-    }
-    pub fn red() -> &'static str {
-        Self::get("\x1b[31m")
-    }
-    pub fn green() -> &'static str {
-        Self::get("\x1b[32m")
-    }
-    pub fn yellow() -> &'static str {
-        Self::get("\x1b[33m")
-    }
-    #[allow(dead_code)]
-    pub fn blue() -> &'static str {
-        Self::get("\x1b[34m")
-    }
-    #[allow(dead_code)]
-    pub fn magenta() -> &'static str {
-        Self::get("\x1b[35m")
-    }
-    pub fn cyan() -> &'static str {
-        Self::get("\x1b[36m")
-    }
-    pub fn white() -> &'static str {
-        Self::get("\x1b[37m")
-    }
-    pub fn gray() -> &'static str {
-        Self::get("\x1b[90m")
-    }
-    pub fn orange() -> &'static str {
-        Self::get("\x1b[38;5;208m")
-    }
-    pub fn light_gray() -> &'static str {
-        Self::get("\x1b[38;5;245m")
+    pub fn bold() -> String {
+        if Self::enabled() {
+            "\x1b[1m".to_string()
+        } else {
+            String::new()
+        }
     }
 
-    // For backwards compatibility with existing code
+    pub fn red() -> String {
+        Self::get_themed("red")
+    }
+
+    pub fn green() -> String {
+        Self::get_themed("green")
+    }
+
+    pub fn yellow() -> String {
+        Self::get_themed("yellow")
+    }
+
     #[allow(dead_code)]
-    pub const RESET: &'static str = "\x1b[0m";
+    pub fn blue() -> String {
+        Self::get_themed("blue")
+    }
+
     #[allow(dead_code)]
-    pub const RED: &'static str = "\x1b[31m";
-    #[allow(dead_code)]
-    pub const GREEN: &'static str = "\x1b[32m";
-    #[allow(dead_code)]
-    pub const YELLOW: &'static str = "\x1b[33m";
-    #[allow(dead_code)]
-    pub const CYAN: &'static str = "\x1b[36m";
-    #[allow(dead_code)]
-    pub const WHITE: &'static str = "\x1b[37m";
-    #[allow(dead_code)]
-    pub const GRAY: &'static str = "\x1b[90m";
-    #[allow(dead_code)]
-    pub const ORANGE: &'static str = "\x1b[38;5;208m";
-    #[allow(dead_code)]
-    pub const LIGHT_GRAY: &'static str = "\x1b[38;5;245m";
+    pub fn magenta() -> String {
+        Self::get_themed("magenta")
+    }
+
+    pub fn cyan() -> String {
+        Self::get_themed("cyan")
+    }
+
+    pub fn white() -> String {
+        Self::get_themed("white")
+    }
+
+    pub fn gray() -> String {
+        Self::get_themed("gray")
+    }
+
+    pub fn orange() -> String {
+        Self::get_themed("orange")
+    }
+
+    pub fn light_gray() -> String {
+        Self::get_themed("light_gray")
+    }
 
     /// Get the appropriate text color based on theme
-    pub fn text_color() -> &'static str {
+    pub fn text_color() -> String {
         if !Self::enabled() {
-            return "";
+            return String::new();
         }
-        let theme = config::get_theme();
-        if theme == "light" {
-            Self::gray() // Darker for light backgrounds
-        } else {
-            Self::white() // Brighter for dark backgrounds
-        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.context_normal)
     }
 
     /// Get the appropriate separator color based on theme
-    pub fn separator_color() -> &'static str {
+    pub fn separator_color() -> String {
         if !Self::enabled() {
-            return "";
+            return String::new();
         }
-        let theme = config::get_theme();
-        if theme == "light" {
-            Self::gray()
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.separator)
+    }
+
+    /// Get directory color from theme
+    pub fn directory() -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.directory)
+    }
+
+    /// Get model color from theme
+    pub fn model() -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.model)
+    }
+
+    /// Get git branch color from theme
+    pub fn git_branch() -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.git_branch)
+    }
+
+    /// Get duration color from theme
+    pub fn duration() -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.duration)
+    }
+
+    /// Get lines added color from theme
+    pub fn lines_added() -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.lines_added)
+    }
+
+    /// Get lines removed color from theme
+    pub fn lines_removed() -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        theme.resolve_color(&theme.colors.lines_removed)
+    }
+
+    /// Get cost color based on amount and theme thresholds
+    pub fn cost_color(cost: f64) -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        let config = config::get_config();
+
+        if cost >= config.cost.medium_threshold {
+            theme.resolve_color(&theme.colors.cost_high)
+        } else if cost >= config.cost.low_threshold {
+            theme.resolve_color(&theme.colors.cost_medium)
         } else {
-            Self::light_gray()
+            theme.resolve_color(&theme.colors.cost_low)
+        }
+    }
+
+    /// Get context color based on percentage and theme thresholds
+    pub fn context_color(percentage: f64) -> String {
+        if !Self::enabled() {
+            return String::new();
+        }
+        let theme = get_current_theme();
+        let config = config::get_config();
+
+        if percentage > config.display.context_critical_threshold {
+            theme.resolve_color(&theme.colors.context_critical)
+        } else if percentage > config.display.context_warning_threshold {
+            theme.resolve_color(&theme.colors.context_warning)
+        } else if percentage > config.display.context_caution_threshold {
+            theme.resolve_color(&theme.colors.context_caution)
+        } else {
+            theme.resolve_color(&theme.colors.context_normal)
         }
     }
 }
@@ -150,7 +251,7 @@ fn format_statusline_string(
         let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
         parts.push(format!(
             "{}{}{}",
-            Colors::cyan(),
+            Colors::directory(),
             short_dir,
             Colors::reset()
         ));
@@ -183,7 +284,7 @@ fn format_statusline_string(
             let model_type = ModelType::from_name(&sanitized_name);
             parts.push(format!(
                 "{}{}{}",
-                Colors::cyan(),
+                Colors::model(),
                 sanitize_for_terminal(&model_type.abbreviation()),
                 Colors::reset()
             ));
@@ -196,7 +297,7 @@ fn format_statusline_string(
             if let Some(duration) = parse_duration(transcript) {
                 parts.push(format!(
                     "{}{}{}",
-                    Colors::light_gray(),
+                    Colors::duration(),
                     format_duration(duration),
                     Colors::reset()
                 ));
@@ -215,7 +316,7 @@ fn format_statusline_string(
                     if added > 0 {
                         lines_part.push_str(&format!(
                             "{}+{}{}",
-                            Colors::green(),
+                            Colors::lines_added(),
                             added,
                             Colors::reset()
                         ));
@@ -226,7 +327,7 @@ fn format_statusline_string(
                         }
                         lines_part.push_str(&format!(
                             "{}-{}{}",
-                            Colors::red(),
+                            Colors::lines_removed(),
                             removed,
                             Colors::reset()
                         ));
@@ -364,20 +465,13 @@ pub fn format_output_to_string(
 
 fn format_context_bar(context: &ContextUsage) -> String {
     let percentage = context.percentage;
-    let config = config::get_config();
 
-    // Choose color based on configured thresholds
-    let (color, percentage_color) = if percentage > config.display.context_critical_threshold {
-        (Colors::red(), Colors::red())
-    } else if percentage > config.display.context_warning_threshold {
-        (Colors::orange(), Colors::orange())
-    } else if percentage > config.display.context_caution_threshold {
-        (Colors::yellow(), Colors::yellow())
-    } else {
-        (Colors::green(), Colors::text_color())
-    };
+    // Get theme-aware color based on percentage
+    let color = Colors::context_color(percentage);
+    let percentage_color = color.clone();
 
     // Create progress bar with configured width
+    let config = config::get_config();
     let bar_width = config.display.progress_bar_width;
     let filled_ratio = percentage / 100.0;
     let filled = (filled_ratio * bar_width as f64).round() as usize;
@@ -402,15 +496,8 @@ fn format_context_bar(context: &ContextUsage) -> String {
     )
 }
 
-fn get_cost_color(cost: f64) -> &'static str {
-    let config = config::get_config();
-    if cost >= config.cost.medium_threshold {
-        Colors::red()
-    } else if cost >= config.cost.low_threshold {
-        Colors::yellow()
-    } else {
-        Colors::green()
-    }
+fn get_cost_color(cost: f64) -> String {
+    Colors::cost_color(cost)
 }
 
 fn format_duration(seconds: u64) -> String {
@@ -450,14 +537,14 @@ mod tests {
     fn test_get_cost_color() {
         // The test should work whether or not NO_COLOR is set
         if Colors::enabled() {
-            assert_eq!(get_cost_color(2.5), "\x1b[32m"); // green
-            assert_eq!(get_cost_color(10.0), "\x1b[33m"); // yellow
-            assert_eq!(get_cost_color(25.0), "\x1b[31m"); // red
+            assert_eq!(get_cost_color(2.5), "\x1b[32m".to_string()); // green
+            assert_eq!(get_cost_color(10.0), "\x1b[33m".to_string()); // yellow
+            assert_eq!(get_cost_color(25.0), "\x1b[31m".to_string()); // red
         } else {
             // When NO_COLOR is set, all colors return empty strings
-            assert_eq!(get_cost_color(2.5), "");
-            assert_eq!(get_cost_color(10.0), "");
-            assert_eq!(get_cost_color(25.0), "");
+            assert_eq!(get_cost_color(2.5), String::new());
+            assert_eq!(get_cost_color(10.0), String::new());
+            assert_eq!(get_cost_color(25.0), String::new());
         }
     }
 
@@ -521,28 +608,30 @@ mod tests {
 
     #[test]
     fn test_theme_affects_colors() {
-        // Save original NO_COLOR state
-        let original_no_color = std::env::var("NO_COLOR").ok();
+        // Skip if running in NO_COLOR environment
+        if std::env::var("NO_COLOR").is_ok() {
+            eprintln!("Skipping theme test due to NO_COLOR environment");
+            return;
+        }
 
-        // Ensure colors are enabled for this test
-        std::env::remove_var("NO_COLOR");
+        // Save original theme env var
+        let original_theme = std::env::var("STATUSLINE_THEME").ok();
 
         // Light theme should use gray text/separator
         std::env::set_var("STATUSLINE_THEME", "light");
-        assert_eq!(Colors::text_color(), Colors::gray());
-        assert_eq!(Colors::separator_color(), Colors::gray());
+        assert_eq!(Colors::text_color(), "\x1b[90m"); // gray
+        assert_eq!(Colors::separator_color(), "\x1b[90m"); // gray
 
         // Dark theme should use white text and light gray separator
         std::env::set_var("STATUSLINE_THEME", "dark");
-        assert_eq!(Colors::text_color(), Colors::white());
-        assert_eq!(Colors::separator_color(), Colors::light_gray());
+        assert_eq!(Colors::text_color(), "\x1b[37m"); // white
+        assert_eq!(Colors::separator_color(), "\x1b[38;5;245m"); // light_gray
 
         // Cleanup
-        std::env::remove_var("STATUSLINE_THEME");
-
-        // Restore original NO_COLOR state
-        if let Some(value) = original_no_color {
-            std::env::set_var("NO_COLOR", value);
+        if let Some(value) = original_theme {
+            std::env::set_var("STATUSLINE_THEME", value);
+        } else {
+            std::env::remove_var("STATUSLINE_THEME");
         }
     }
 

@@ -39,6 +39,7 @@ mod retry;
 mod stats;
 #[cfg(feature = "turso-sync")]
 mod sync;
+mod theme;
 mod utils;
 mod version;
 
@@ -161,6 +162,9 @@ fn main() -> Result<()> {
 
     // Handle theme with precedence: CLI > env > config
     if let Some(ref theme) = cli.theme {
+        // Set CLAUDE_THEME to override any existing env vars
+        // (CLAUDE_THEME takes precedence over STATUSLINE_THEME in config::get_theme)
+        env::set_var("CLAUDE_THEME", theme);
         env::set_var("STATUSLINE_THEME", theme);
     }
 
@@ -265,7 +269,7 @@ fn main() -> Result<()> {
 
     // Early exit for empty or home directory only
     if current_dir.is_empty() || current_dir == "~" {
-        print!("{}~{}", Colors::CYAN, Colors::RESET);
+        print!("{}~{}", Colors::directory(), Colors::reset());
         return Ok(());
     }
 
