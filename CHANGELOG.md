@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Critical Context Window Bug
+- **Critical Bug Fix**: Fixed context percentage showing 100% when Claude reports 51%
+  - **Root Cause**: Hardcoded 160k token context window (Sonnet 3.5's old limit)
+  - **Actual Issue**: Sonnet 4.5 has 200k token context window
+  - **Impact**: Context usage was incorrectly calculated as `tokens/160k` instead of `tokens/200k`
+  - **Example**: 101k tokens showed as 63%+ instead of correct 51%
+- **Solution**: Intelligent model-based context window detection
+  - Default changed from 160k to 200k tokens (modern Claude models)
+  - Automatic detection based on model family and version:
+    - Sonnet 3.5+, 4.5+: 200k tokens
+    - Opus 3.5+: 200k tokens
+    - Older models (Sonnet 3.0, etc.): 160k tokens
+    - Unknown models: Uses config default (200k)
+  - Users can override via `config.toml` for specific models
+- **Added**: `get_context_window_for_model()` helper function in utils.rs
+  - Intelligent version parsing (handles "3.5", "4.5", "4", etc.)
+  - First checks user config overrides in `[context.model_windows]`
+  - Then applies smart defaults based on model family/version
+  - Falls back to config default for unknown models
+- **Changed**: `calculate_context_usage()` now accepts optional `model_name` parameter
+  - Display module passes model name for accurate window size detection
+  - All tests updated to pass model_name (or None for testing)
+- **Documentation**: Enhanced ContextConfig with intelligent detection details
+  - Added comprehensive comments explaining detection logic
+  - Updated example config.toml with model override examples
+  - Documented future path for API-based window size queries
+
 ### Added - Phase 3: Theme System Integration Testing
 - Comprehensive integration test suite (29 new tests):
   - **Display Configuration Tests** (`tests/display_config_integration.rs`) - 10 scenarios

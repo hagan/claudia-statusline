@@ -78,13 +78,35 @@ pub struct DisplayConfig {
 }
 
 /// Context window configuration
+///
+/// The statusline intelligently detects context window size based on model family and version:
+/// - Sonnet 3.5+, 4.5+: 200k tokens
+/// - Opus 3.5+: 200k tokens
+/// - Older models (Sonnet 3.0, etc.): 160k tokens
+/// - Unknown models: Uses `window_size` default (200k)
+///
+/// Users can override detection for specific models using `model_windows` HashMap.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContextConfig {
-    /// Default context window size in tokens
+    /// Default context window size in tokens (fallback for unknown models)
+    ///
+    /// Modern Claude models (Sonnet 3.5+, Opus 3.5+, Sonnet 4.5+) use 200k tokens.
+    /// This default is used when model-specific detection fails or for unknown models.
     pub window_size: usize,
 
-    /// Context window sizes for specific models (model name -> size)
+    /// Optional overrides for specific model display names
+    ///
+    /// Use this to override intelligent detection for specific models.
+    /// Key is the model display name from Claude Code (e.g., "Claude 3.5 Sonnet").
+    /// Value is the context window size in tokens.
+    ///
+    /// Example in config.toml:
+    /// ```toml
+    /// [context.model_windows]
+    /// "Claude 3.5 Sonnet" = 200000
+    /// "Claude Sonnet 4.5" = 200000
+    /// ```
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub model_windows: std::collections::HashMap<String, usize>,
 }
@@ -236,7 +258,7 @@ impl Default for DisplayConfig {
 impl Default for ContextConfig {
     fn default() -> Self {
         ContextConfig {
-            window_size: 160_000,
+            window_size: 200_000, // Default for modern Claude models (Sonnet 3.5+, Opus 3.5+, Sonnet 4.5+)
             model_windows: std::collections::HashMap::new(),
         }
     }
@@ -471,13 +493,18 @@ context_caution_threshold = 50.0     # Yellow color above this
 theme = "dark"
 
 [context]
-# Default context window size in tokens
-window_size = 160000
+# Default context window size in tokens (modern Claude models use 200k)
+# This is used as fallback when model-specific window is not configured
+window_size = 200000
 
-# Model-specific context windows (optional)
+# Model-specific context windows (optional overrides)
+# The statusline intelligently detects context window size based on model family/version
+# You can override detection here for specific models by display name
 # [context.model_windows]
-# "claude-3-opus" = 200000
-# "claude-3.5-sonnet" = 200000
+# "Claude 3.5 Sonnet" = 200000
+# "Claude Sonnet 4.5" = 200000
+# "Claude 3.5 Opus" = 200000
+# "Claude 3 Haiku" = 100000
 
 [cost]
 # Cost thresholds for color coding
@@ -587,7 +614,7 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.display.progress_bar_width, 10);
-        assert_eq!(config.context.window_size, 160_000);
+        assert_eq!(config.context.window_size, 200_000); // Updated for modern Claude models
         assert_eq!(config.cost.low_threshold, 5.0);
     }
 

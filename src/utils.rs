@@ -95,6 +95,101 @@ pub fn shorten_path(path: &str) -> String {
 /// Maximum size for transcript files (10MB)
 const MAX_TRANSCRIPT_SIZE: u64 = 10 * 1024 * 1024;
 
+/// Determines the context window size for a given model
+///
+/// Uses intelligent defaults based on model family and version:
+/// - Sonnet 3.5+, 4.5+: 200k tokens
+/// - Opus 3.5+: 200k tokens
+/// - Older models: 160k tokens
+/// - Unknown models: Config default (200k)
+///
+/// Users can override any model in config.toml [context.model_windows]
+///
+/// # Future Enhancement
+///
+/// **API-based context window queries**: In a future version, we could query
+/// the Anthropic API or a maintained database to get accurate, up-to-date
+/// context window sizes for all models. This would eliminate the need for
+/// hardcoded defaults and manual config updates.
+///
+/// Potential approaches:
+/// - Query `/v1/models` endpoint (if available) for model metadata
+/// - Maintain a remote JSON file with current context window sizes
+/// - Use a caching strategy to avoid repeated API calls
+/// - Fall back to intelligent defaults if query fails
+///
+/// Trade-offs to consider:
+/// - API latency (would need caching to maintain ~5ms execution time)
+/// - Offline usage (must have fallback)
+/// - API availability and authentication requirements
+///
+/// # Arguments
+///
+/// * `model_name` - Optional model display name from Claude Code
+/// * `config` - Configuration containing window_size defaults and overrides
+///
+/// # Returns
+///
+/// Context window size in tokens
+fn get_context_window_for_model(model_name: Option<&str>, config: &config::Config) -> usize {
+    if let Some(model) = model_name {
+        // First check if user has configured a specific override
+        if let Some(&custom_size) = config.context.model_windows.get(model) {
+            return custom_size;
+        }
+
+        // Smart defaults based on model family and version
+        use crate::models::ModelType;
+        let model_type = ModelType::from_name(model);
+
+        match model_type {
+            ModelType::Model { family, version } => {
+                // Parse version for comparison (handle formats like "3.5", "4.5", "3", etc.)
+                let version_number = version
+                    .split('.')
+                    .next()
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+
+                let minor_version = version
+                    .split('.')
+                    .nth(1)
+                    .and_then(|s| s.parse::<u32>().ok())
+                    .unwrap_or(0);
+
+                match family.as_str() {
+                    "Sonnet" => {
+                        // Sonnet 3.5+, 4.x+: 200k tokens
+                        if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
+                            200_000
+                        } else {
+                            160_000
+                        }
+                    }
+                    "Opus" => {
+                        // Opus 3.5+: 200k tokens
+                        if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
+                            200_000
+                        } else {
+                            160_000
+                        }
+                    }
+                    "Haiku" => {
+                        // Haiku models typically have smaller windows
+                        // Future versions might increase, but default to config
+                        config.context.window_size
+                    }
+                    _ => config.context.window_size,
+                }
+            }
+            ModelType::Unknown => config.context.window_size,
+        }
+    } else {
+        // No model name provided, use config default
+        config.context.window_size
+    }
+}
+
 /// Validates that a path is a valid transcript file
 fn validate_transcript_file(path: &str) -> Result<PathBuf> {
     // Use common validation first
@@ -139,7 +234,10 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
     Ok(canonical_path)
 }
 
-pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
+pub fn calculate_context_usage(
+    transcript_path: &str,
+    model_name: Option<&str>,
+) -> Option<ContextUsage> {
     // Validate and canonicalize the file path
     let safe_path = validate_transcript_file(transcript_path).ok()?;
 
@@ -180,9 +278,8 @@ pub fn calculate_context_usage(transcript_path: &str) -> Option<ContextUsage> {
     }
 
     if total_tokens > 0 {
-        // Get context window size from config
-        let config = config::get_config();
-        let context_window = config.context.window_size;
+        // Get context window size based on model (intelligent detection + config overrides)
+        let context_window = get_context_window_for_model(model_name, &config);
         let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
 
         return Some(ContextUsage {
@@ -268,22 +365,22 @@ mod tests {
     #[test]
     fn test_malicious_transcript_paths() {
         // Directory traversal attempts
-        assert!(calculate_context_usage("../../../etc/passwd").is_none());
+        assert!(calculate_context_usage("../../../etc/passwd", None).is_none());
         assert!(parse_duration("../../../../../../etc/shadow").is_none());
 
         // Command injection attempts
-        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /").is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /", None).is_none());
         assert!(parse_duration("/tmp/test.jsonl && echo hacked").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd").is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd", None).is_none());
         assert!(parse_duration("/tmp/test.jsonl`whoami`").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)").is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)", None).is_none());
 
         // Null byte injection
-        assert!(calculate_context_usage("/tmp/test\0.jsonl").is_none());
+        assert!(calculate_context_usage("/tmp/test\0.jsonl", None).is_none());
         assert!(parse_duration("/tmp\0/test.jsonl").is_none());
 
         // Special characters that might cause issues
-        assert!(calculate_context_usage("/tmp/test\n.jsonl").is_none());
+        assert!(calculate_context_usage("/tmp/test\n.jsonl", None).is_none());
         assert!(parse_duration("/tmp/test\r.jsonl").is_none());
     }
 
@@ -377,17 +474,17 @@ mod tests {
         use tempfile::NamedTempFile;
 
         // Test with non-existent file
-        assert!(calculate_context_usage("/tmp/nonexistent.jsonl").is_none());
+        assert!(calculate_context_usage("/tmp/nonexistent.jsonl", None).is_none());
 
         // Test with valid transcript (string timestamp and string content)
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":120000,"output_tokens":5000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"question"}},"timestamp":"2025-08-22T18:33:00.000Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap());
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 78.125).abs() < 0.01); // 125000/160000 * 100
+        assert!((usage.percentage - 62.5).abs() < 0.01); // 125000/200000 * 100 (updated for 200k default)
     }
 
     #[test]
@@ -399,11 +496,11 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100,"cache_read_input_tokens":30000,"cache_creation_input_tokens":200,"output_tokens":500}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap());
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let usage = result.unwrap();
         // Total: 100 + 30000 + 200 + 500 = 30800
-        assert!((usage.percentage - 19.25).abs() < 0.01); // 30800/160000 * 100
+        assert!((usage.percentage - 15.4).abs() < 0.01); // 30800/200000 * 100 (updated for 200k default)
     }
 
     #[test]
@@ -415,10 +512,10 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":[{{"type":"text","text":"response"}}],"usage":{{"input_tokens":50000,"output_tokens":1000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap());
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 31.875).abs() < 0.01); // 51000/160000 * 100
+        assert!((usage.percentage - 25.5).abs() < 0.01); // 51000/200000 * 100 (updated for 200k default)
     }
 
     #[test]
@@ -495,5 +592,48 @@ mod tests {
         let result2 = parse_duration(file2.path().to_str().unwrap());
         assert!(result2.is_some());
         assert_eq!(result2.unwrap(), 600); // 10 minutes = 600 seconds
+    }
+
+    #[test]
+    fn test_model_based_context_window() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a test file with 100k tokens
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
+        writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
+
+        // Test Sonnet 4.5 (should use 200k window)
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Claude Sonnet 4.5"),
+        );
+        assert!(result.is_some());
+        let usage = result.unwrap();
+        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+
+        // Test Sonnet 3.5 (should use 200k window)
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Claude 3.5 Sonnet"),
+        );
+        assert!(result.is_some());
+        let usage = result.unwrap();
+        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+
+        // Test Opus 3.5 (should use 200k window)
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Claude 3.5 Opus"),
+        );
+        assert!(result.is_some());
+        let usage = result.unwrap();
+        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+
+        // Test unknown model (should use default 200k window)
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
+        assert!(result.is_some());
+        let usage = result.unwrap();
+        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
     }
 }

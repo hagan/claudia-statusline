@@ -275,7 +275,7 @@ fn format_statusline_string(
     // 3. Context usage from transcript
     if display_config.show_context {
         if let Some(transcript) = transcript_path {
-            if let Some(context) = calculate_context_usage(transcript) {
+            if let Some(context) = calculate_context_usage(transcript, model_name) {
                 parts.push(format_context_bar(&context));
             }
         }
