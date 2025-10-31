@@ -538,15 +538,36 @@ tail -f ~/.cache/statusline-debug.log
 
 ## Advanced Configuration
 
-### Context Window Limit
+### Context Window Configuration
 
-Default is 160,000 tokens. To change, edit `src/utils.rs` and rebuild:
+**Default**: 200,000 tokens (modern Claude models: Sonnet 3.5+, Opus 3.5+, Sonnet 4.5+)
 
-```rust
-// In calculate_context_usage() function
-latest_usage = Some((total * 100.0 / 160000.0).min(100.0));
-//                                    ^^^^^^ Change this value
+The statusline intelligently detects context window size based on model family and version:
+- **Sonnet 3.5+, 4.5+**: 200k tokens
+- **Opus 3.5+**: 200k tokens
+- **Older models** (Sonnet 3.0, etc.): 160k tokens
+- **Unknown models**: Uses default from config
+
+#### Override Context Window Size
+
+To override the default or set model-specific sizes, edit `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[context]
+# Default context window size for unknown models
+window_size = 200000
+
+# Optional: Override for specific models
+[context.model_windows]
+"Claude 3.5 Sonnet" = 200000
+"Claude Sonnet 4.5" = 200000
+"Claude 3 Haiku" = 100000
 ```
+
+**Note**: The statusline automatically detects the correct window size for most models. Manual overrides are only needed for:
+- Unreleased models
+- Custom model configurations
+- Testing purposes
 
 ### Progress Bar Width
 
