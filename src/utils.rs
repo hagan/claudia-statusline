@@ -279,7 +279,7 @@ pub fn calculate_context_usage(
 
     if total_tokens > 0 {
         // Get context window size based on model (intelligent detection + config overrides)
-        let context_window = get_context_window_for_model(model_name, &config);
+        let context_window = get_context_window_for_model(model_name, config);
         let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
 
         return Some(ContextUsage {
