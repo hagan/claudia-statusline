@@ -33,9 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added comprehensive comments explaining detection logic
   - Updated example config.toml with model override examples
   - Documented future path for API-based window size queries
-- **CI/CD**: Updated GitHub Actions test expectations
+- **CI/CD**: Updated GitHub Actions test expectations for 200k context window
   - Fixed "Test context progress bar" to expect 63% (was 78%)
-  - Reflects new 200k context window default (125000/200000 = 62.5% → 63%)
+    - Calculation: 125,000 / 200,000 = 62.5% → displays as 63%
+  - Fixed "Test cache tokens support" to expect 15% (was 19%)
+    - Calculation: 30,800 / 200,000 = 15.4% → displays as 15%
+  - Fixed "Test array content support" to expect 26% (was 32%)
+    - Calculation: 51,000 / 200,000 = 25.5% → displays as 26%
+  - All tests now reflect new 200k context window default (was 160k)
 
 ### Added - Phase 3: Theme System Integration Testing
 - Comprehensive integration test suite (29 new tests):
