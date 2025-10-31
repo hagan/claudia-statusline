@@ -604,28 +604,22 @@ mod tests {
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
         // Test Sonnet 4.5 (should use 200k window)
-        let result = calculate_context_usage(
-            file.path().to_str().unwrap(),
-            Some("Claude Sonnet 4.5"),
-        );
+        let result =
+            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude Sonnet 4.5"));
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
 
         // Test Sonnet 3.5 (should use 200k window)
-        let result = calculate_context_usage(
-            file.path().to_str().unwrap(),
-            Some("Claude 3.5 Sonnet"),
-        );
+        let result =
+            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Sonnet"));
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
 
         // Test Opus 3.5 (should use 200k window)
-        let result = calculate_context_usage(
-            file.path().to_str().unwrap(),
-            Some("Claude 3.5 Opus"),
-        );
+        let result =
+            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Opus"));
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%

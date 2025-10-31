@@ -33,6 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Added comprehensive comments explaining detection logic
   - Updated example config.toml with model override examples
   - Documented future path for API-based window size queries
+- **CI/CD**: Updated GitHub Actions test expectations
+  - Fixed "Test context progress bar" to expect 63% (was 78%)
+  - Reflects new 200k context window default (125000/200000 = 62.5% → 63%)
 
 ### Added - Phase 3: Theme System Integration Testing
 - Comprehensive integration test suite (29 new tests):
