@@ -175,6 +175,27 @@ pub struct ContextConfig {
     /// Reference: The auto-compact threshold is at 160K tokens, which is 80% of
     /// the 200K context window for modern Claude models.
     pub auto_compact_threshold: f64,
+
+    /// Context percentage display mode
+    ///
+    /// **Default: "full"**
+    ///
+    /// Controls how the context percentage is calculated and displayed:
+    ///
+    /// - **"full"**: Percentage of total advertised context window (e.g., 200K)
+    ///   - More intuitive: 100% = full 200K context as advertised by Anthropic
+    ///   - Example: 150K tokens = 75% of 200K window
+    ///   - **Recommended for most users**
+    ///
+    /// - **"working"**: Percentage of usable working window (context - buffer)
+    ///   - More accurate: accounts for Claude's 40K response buffer
+    ///   - Example: 150K tokens = 93.75% of 160K working window (200K - 40K)
+    ///   - Shows how close you are to actual auto-compact trigger
+    ///   - **Useful for power users tracking compaction**
+    ///
+    /// The buffer_size (default 40K) is only subtracted in "working" mode.
+    #[serde(default = "default_percentage_mode")]
+    pub percentage_mode: String,
 }
 
 /// Cost threshold configuration
@@ -321,6 +342,10 @@ impl Default for DisplayConfig {
     }
 }
 
+fn default_percentage_mode() -> String {
+    "full".to_string()
+}
+
 impl Default for ContextConfig {
     fn default() -> Self {
         ContextConfig {
@@ -330,6 +355,7 @@ impl Default for ContextConfig {
             learning_confidence_threshold: 0.7, // Require 70% confidence before using learned values
             buffer_size: 40_000, // Claude Code reserves ~40-45K tokens for responses
             auto_compact_threshold: 80.0, // Claude Code auto-compacts at ~80% (160K for 200K models)
+            percentage_mode: default_percentage_mode(), // Default to "full" for user expectations
         }
     }
 }

@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.3] - 2025-11-08
+
+### Added
+- **Context percentage display modes**: New config option `percentage_mode` for controlling how context percentage is calculated
+  - **"full" mode (default)**: Percentage of total advertised context window (200K)
+    - More intuitive for users: 100% = full 200K as advertised by Anthropic
+    - Example: 150K tokens = 75% of 200K window
+    - Matches user expectations from Anthropic's specifications
+  - **"working" mode**: Percentage of usable working window (context - buffer)
+    - Accounts for Claude's 40K response buffer (200K - 40K = 160K working)
+    - Example: 150K tokens = 93.75% of 160K working window
+    - Shows proximity to actual auto-compact trigger (~98%)
+    - Useful for power users tracking compaction events
+  - Configuration: `percentage_mode = "full"` or `"working"` in config.toml `[context]` section
+  - **Breaking change**: Previous version (2.16.2) always used "working" mode, now defaults to "full" mode
+
+### Changed
+- Default percentage calculation now uses "full" mode (total context window) instead of "working" mode
+  - Users will see lower percentages that match Anthropic's 200K context window specification
+  - Power users can switch to "working" mode for accurate compaction tracking
+  - Updated all test expectations to reflect "full" mode calculations
+
 ## [2.16.2] - 2025-11-08
 
 ### Fixed
