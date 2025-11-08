@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Schema Auto-Generation
+- **Migrate --dump-schema command**: Generate Turso schema from migrations automatically
+  - Creates temporary database and runs all migrations
+  - Dumps SQL DDL statements for cloud sync setup
+  - Prevents manual schema drift as migrations evolve
+  - Output ready for copy-paste to Turso setup scripts
+  - Usage: `statusline migrate --dump-schema > scripts/setup-turso-schema.sql`
+
 ### Fixed - Code Review Follow-up
 - **Performance: Config caching in transcript parsing**: Load config once instead of repeatedly
   - `get_token_breakdown_from_transcript` now loads config at function start

@@ -101,6 +101,10 @@ enum Commands {
         /// Run schema migrations to latest version
         #[arg(long)]
         run: bool,
+
+        /// Dump current schema SQL (for Turso setup or documentation)
+        #[arg(long)]
+        dump_schema: bool,
     },
 
     /// Database maintenance operations (suitable for cron)
@@ -229,8 +233,11 @@ fn main() -> Result<()> {
                 finalize,
                 delete_json,
                 run,
+                dump_schema,
             } => {
-                if run {
+                if dump_schema {
+                    return dump_database_schema();
+                } else if run {
                     return run_schema_migrations();
                 } else if finalize {
                     return finalize_migration(delete_json);
@@ -240,6 +247,7 @@ fn main() -> Result<()> {
                     println!("  --run          Run schema migrations to latest version");
                     println!("  --finalize     Complete the migration from JSON to SQLite-only mode");
                     println!("  --delete-json  Delete the JSON file instead of archiving it (use with --finalize)");
+                    println!("  --dump-schema  Dump current database schema for Turso/documentation");
                     return Ok(());
                 }
             }
@@ -486,6 +494,55 @@ fn run_schema_migrations() -> Result<()> {
         println!("{}✓ Database already at latest version ({}){}", Colors::green(), new_version, Colors::reset());
     }
     println!();
+
+    Ok(())
+}
+
+fn dump_database_schema() -> Result<()> {
+    use crate::display::Colors;
+
+    println!("{}Generating database schema...{}", Colors::cyan(), Colors::reset());
+    println!();
+
+    // Run all migrations on this temporary database
+    let temp_dir = std::env::temp_dir();
+    let temp_path = temp_dir.join(format!("statusline_schema_{}.db", std::process::id()));
+
+    // Create a file-based database for migrations (they need a path)
+    {
+        let db = crate::database::SqliteDatabase::new(&temp_path)?;
+        drop(db); // Close before dumping
+    }
+
+    // Open the file to read schema and dump it
+    let schemas: Vec<String> = {
+        let conn = rusqlite::Connection::open(&temp_path)?;
+        let mut stmt = conn.prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type DESC, name")?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+
+        let mut result = Vec::new();
+        for row in rows {
+            result.push(row?);
+        }
+        result
+    };
+
+    println!("-- Turso Database Schema Setup for Claudia Statusline");
+    println!("-- Auto-generated from migrations on {}", chrono::Local::now().format("%Y-%m-%d"));
+    println!("-- This script creates the necessary tables for cloud sync");
+    println!();
+
+    for schema in schemas {
+        println!("{};", schema);
+        println!();
+    }
+
+    println!("-- Indexes for better query performance");
+    println!("-- (Indexes are included in the CREATE TABLE statements above)");
+    println!();
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&temp_path);
 
     Ok(())
 }
