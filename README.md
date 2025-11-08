@@ -40,6 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - Multi-console safe (run multiple Claude instances)
 - Dark/light theme support
 - SQLite database for reliability
+- **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
 - No configuration needed
 
 ## Documentation

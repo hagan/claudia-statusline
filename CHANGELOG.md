@@ -42,6 +42,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     - Calculation: 51,000 / 200,000 = 25.5% → displays as 26%
   - All tests now reflect new 200k context window default (was 160k)
 
+### Added - Phase 8: Adaptive Context Window Learning (Experimental)
+- **Phase 8C - Integration Complete**: Adaptive learning now fully operational
+  - Learns actual context limits by observing automatic compaction events
+  - Filters out manual `/compact` commands using transcript pattern matching
+  - Builds confidence over time (70% threshold to use learned values)
+  - Priority system: User overrides > Learned values > Intelligent defaults > Global fallback
+- **Database Schema v4**: Added learned_context_windows table
+  - Tracks: model_name, observed_max_tokens, ceiling_observations, compaction_count
+  - Confidence scoring: ceiling_observations * 0.1 + compactions * 0.3 (max 1.0)
+  - Session tracking: Added max_tokens_observed column to sessions table
+- **CLI Management Commands**:
+  - `statusline context-learning --status` - Show all learned context windows
+  - `statusline context-learning --details <model>` - Show detailed observations for specific model
+  - `statusline context-learning --reset <model>` - Reset learning data for specific model
+  - `statusline context-learning --reset-all` - Reset all learning data
+- **Configuration**:
+  - Added `[context]` section with adaptive_learning toggle (disabled by default)
+  - `learning_confidence_threshold` setting (default: 0.7)
+  - Example config in ~/.config/claudia-statusline/config.toml
+- **Implementation Details**:
+  - Compaction detection: >10% token drop from previous max, after >150k tokens
+  - Proximity filtering: Only records if within 95% of observed ceiling
+  - Manual compaction filtering: Scans last 5 transcript messages for 13 common phrases
+  - Token tracking: Reads JSONL transcript, sums all token types (input, cache, output)
+- **Critical Fix**: Added adaptive learning to main.rs binary
+  - Original implementation only in lib.rs (for library embedding)
+  - Binary (what Claude Code calls) now has full learning integration
+  - Tracks tokens and updates session max_tokens_observed correctly
+
 ### Added - Phase 3: Theme System Integration Testing
 - Comprehensive integration test suite (29 new tests):
   - **Display Configuration Tests** (`tests/display_config_integration.rs`) - 10 scenarios
