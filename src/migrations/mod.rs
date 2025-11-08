@@ -65,6 +65,7 @@ impl MigrationRunner {
             Box::new(AddMetaTable),
             Box::new(AddSyncMetadata),
             Box::new(AddLearnedContextWindows),
+            Box::new(AddSessionMetadata),
         ]
     }
 
@@ -376,6 +377,79 @@ impl Migration for AddLearnedContextWindows {
     }
 }
 
+/// Migration 005: Add session metadata for analytics and recovery
+pub struct AddSessionMetadata;
+
+impl Migration for AddSessionMetadata {
+    fn version(&self) -> u32 {
+        5
+    }
+
+    fn description(&self) -> &str {
+        "Add model_name, workspace_dir, and token breakdown columns to sessions table"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Add model name for recovery and per-model analytics
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN model_name TEXT",
+            [],
+        )?;
+
+        // Add workspace directory for per-project analytics
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN workspace_dir TEXT",
+            [],
+        )?;
+
+        // Add token breakdown for cost analysis and cache efficiency tracking
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        // Create index for model-based queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_model_name ON sessions(model_name)",
+            [],
+        )?;
+
+        // Create index for workspace-based queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_dir)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        // Drop indexes
+        tx.execute("DROP INDEX IF EXISTS idx_sessions_model_name", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_sessions_workspace", [])?;
+
+        // Note: SQLite doesn't support DROP COLUMN easily
+        // Columns remain but that's acceptable for backward compatibility
+
+        Ok(())
+    }
+}
+
 /// Run migrations on startup (best effort)
 #[allow(dead_code)]
 pub fn run_migrations() {
@@ -400,8 +474,8 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 4 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddLearnedContextWindows (v4)
-        assert_eq!(runner.current_version().unwrap(), 4);
+        // We now have 5 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddLearnedContextWindows (v4), AddSessionMetadata (v5)
+        assert_eq!(runner.current_version().unwrap(), 5);
     }
 
     #[test]

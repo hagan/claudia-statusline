@@ -478,6 +478,37 @@ impl SqliteDatabase {
         Ok(sessions)
     }
 
+    /// Get all sessions with token data for rebuilding learned context windows
+    pub fn get_all_sessions_with_tokens(&self) -> Result<Vec<SessionWithModel>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT s.session_id, s.max_tokens_observed, COALESCE(m.model_name, 'Unknown') as model_name
+             FROM sessions s
+             LEFT JOIN (
+                 SELECT session_id, model_name
+                 FROM sessions
+                 WHERE model_name IS NOT NULL
+             ) m ON s.session_id = m.session_id
+             WHERE s.max_tokens_observed > 0
+             ORDER BY s.last_updated ASC",
+        )?;
+
+        let session_iter = stmt.query_map([], |row| {
+            Ok(SessionWithModel {
+                session_id: row.get(0)?,
+                max_tokens_observed: row.get(1)?,
+                model_name: row.get(2)?,
+            })
+        })?;
+
+        let mut sessions = Vec::new();
+        for session in session_iter {
+            sessions.push(session?);
+        }
+
+        Ok(sessions)
+    }
+
     /// Get all daily stats from the database
     pub fn get_all_daily_stats(
         &self,
@@ -812,6 +843,14 @@ pub struct MaintenanceResult {
     pub prune_done: bool,
     pub records_pruned: usize,
     pub integrity_ok: bool,
+}
+
+/// Session data with model name for rebuilding learned context windows
+#[derive(Debug)]
+pub struct SessionWithModel {
+    pub session_id: String,
+    pub max_tokens_observed: Option<i64>,
+    pub model_name: String,
 }
 
 /// Perform database maintenance operations

@@ -457,6 +457,58 @@ impl ContextLearner {
         warn!("Resetting ALL learned context data");
         Ok(self.db.delete_all_learned_contexts()?)
     }
+
+    /// Rebuild learned context windows from historical session data
+    ///
+    /// This recovery function replays all session token observations to rebuild
+    /// the learned_context_windows table. Useful for recovering accidentally
+    /// deleted learning data.
+    pub fn rebuild_from_sessions(&self) -> Result<()> {
+
+        info!("Rebuilding learned context windows from session history...");
+
+        // Get all sessions with token data ordered by time
+        let sessions = self.db.get_all_sessions_with_tokens()?;
+
+        if sessions.is_empty() {
+            warn!("No sessions with token data found");
+            return Ok(());
+        }
+
+        info!("Found {} sessions with token data", sessions.len());
+
+        // Group by model and replay observations
+        let mut model_sessions: std::collections::HashMap<String, Vec<(String, usize)>> =
+            std::collections::HashMap::new();
+
+        for session in sessions {
+            if let Some(tokens) = session.max_tokens_observed {
+                if tokens > 0 {
+                    model_sessions
+                        .entry(session.model_name.clone())
+                        .or_default()
+                        .push((session.session_id, tokens as usize));
+                }
+            }
+        }
+
+        // Process each model's sessions in chronological order
+        for (model_name, mut sessions) in model_sessions {
+            sessions.sort_by(|a, b| a.0.cmp(&b.0)); // Sort by session_id (timestamp-based)
+
+            info!("Processing {} sessions for model: {}", sessions.len(), model_name);
+
+            let mut prev_tokens: Option<usize> = None;
+            for (_session_id, current_tokens) in sessions {
+                // Simulate observation (no transcript path for historical replay)
+                self.observe_usage(&model_name, current_tokens, prev_tokens, None)?;
+                prev_tokens = Some(current_tokens);
+            }
+        }
+
+        info!("Rebuild complete");
+        Ok(())
+    }
 }
 
 /// Learned context window record from database
