@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - **Current directory** with `~` shorthand
 - **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
 - **Context usage** with progress bar (45% [====------])
-- **Claude model** (Opus/Sonnet/Haiku)
+- **Claude model** (Opus/S3.5/S4.5/Haiku)
 - **Session duration** (1h 23m)
 - **Cost tracking** ($3.50 session, $2.54/hour burn rate)
 - **Lines changed** (+150 added, -42 removed)
@@ -48,6 +48,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - **[Installation Guide](docs/INSTALLATION.md)** - All platforms, build from source, troubleshooting
 - **[Usage Guide](docs/USAGE.md)** - Commands, examples, JSON format, embedding API
 - **[Configuration Guide](docs/CONFIGURATION.md)** - Themes, retention, git timeout, advanced settings
+- **[Adaptive Learning Guide](docs/ADAPTIVE_LEARNING.md)** - Automatic context limit learning (experimental)
 - **[Cloud Sync Guide](docs/CLOUD_SYNC.md)** - Turso setup for cross-machine stats (experimental)
 - **[Database Migrations](docs/DATABASE_MIGRATIONS.md)** - Schema versioning and migrations
 
