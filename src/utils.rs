@@ -363,11 +363,14 @@ pub fn calculate_context_usage(
     // Get context window size based on model (intelligent detection + config overrides)
     let config = config::get_config();
     let context_window = get_context_window_for_model(model_name, config);
-    let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
 
     // Calculate working window (total context minus buffer reserved for responses)
     let buffer_size = config.context.buffer_size;
     let working_window = context_window.saturating_sub(buffer_size);
+
+    // Calculate percentage against working window, not total window
+    // This gives accurate representation of available conversation space
+    let percentage = (total_tokens as f64 / working_window as f64) * 100.0;
 
     // Tokens remaining in working window before hitting buffer zone
     let tokens_remaining = working_window.saturating_sub(total_tokens as usize);
@@ -599,7 +602,7 @@ mod tests {
         let result = calculate_context_usage(file.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 62.5).abs() < 0.01); // 125000/200000 * 100 (updated for 200k default)
+        assert!((usage.percentage - 78.125).abs() < 0.01); // 125000/160000 * 100 (160k = 200k - 40k buffer)
     }
 
     #[test]
@@ -615,7 +618,7 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
         // Total: 100 + 30000 + 200 + 500 = 30800
-        assert!((usage.percentage - 15.4).abs() < 0.01); // 30800/200000 * 100 (updated for 200k default)
+        assert!((usage.percentage - 19.25).abs() < 0.01); // 30800/160000 * 100 (160k = 200k - 40k buffer)
     }
 
     #[test]
@@ -630,7 +633,7 @@ mod tests {
         let result = calculate_context_usage(file.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 25.5).abs() < 0.01); // 51000/200000 * 100 (updated for 200k default)
+        assert!((usage.percentage - 31.875).abs() < 0.01); // 51000/160000 * 100 (160k = 200k - 40k buffer)
     }
 
     #[test]
@@ -718,31 +721,31 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        // Test Sonnet 4.5 (should use 200k window)
+        // Test Sonnet 4.5 (200k window - 40k buffer = 160k working window)
         let result =
             calculate_context_usage(file.path().to_str().unwrap(), Some("Claude Sonnet 4.5"));
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+        assert!((usage.percentage - 62.5).abs() < 0.01); // 100000/160000 * 100 = 62.5%
 
-        // Test Sonnet 3.5 (should use 200k window)
+        // Test Sonnet 3.5 (200k window - 40k buffer = 160k working window)
         let result =
             calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Sonnet"));
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+        assert!((usage.percentage - 62.5).abs() < 0.01); // 100000/160000 * 100 = 62.5%
 
-        // Test Opus 3.5 (should use 200k window)
+        // Test Opus 3.5 (200k window - 40k buffer = 160k working window)
         let result =
             calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Opus"));
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+        assert!((usage.percentage - 62.5).abs() < 0.01); // 100000/160000 * 100 = 62.5%
 
-        // Test unknown model (should use default 200k window)
+        // Test unknown model (default 200k window - 40k buffer = 160k working window)
         let result = calculate_context_usage(file.path().to_str().unwrap(), None);
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
+        assert!((usage.percentage - 62.5).abs() < 0.01); // 100000/160000 * 100 = 62.5%
     }
 }

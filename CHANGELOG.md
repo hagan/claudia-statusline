@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.2] - 2025-11-08
+
+### Fixed
+- **CRITICAL: Context percentage calculation bug**: Fixed percentage calculated against wrong denominator
+  - **Root cause**: Percentage was calculated against total context window (200k) instead of working window (160k = 200k - 40k buffer)
+  - **Impact**: Users saw compaction at 99% instead of expected 80%
+  - **Example**: With 158k tokens:
+    - Before (wrong): 158k / 200k × 100 = 79% ❌
+    - After (correct): 158k / 160k × 100 = 98.75% ✅
+  - **Fix**: Changed `calculate_context_usage` to divide by `working_window` instead of `context_window`
+  - Updated all test expectations to reflect corrected calculations
+  - Now properly accounts for Claude's response buffer (default 40k tokens)
+
+## [2.16.1] - 2025-11-08
+
 ### Fixed - Code Review Round 3 (Critical)
 - **Historical device_id preservation in rebuild**: `rebuild_from_sessions` now uses actual device_id from sessions table
   - Previously stamped all rows with current machine's device_id, destroying cross-device audit trail
