@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Code Review Round 3 (Critical)
+- **Historical device_id preservation in rebuild**: `rebuild_from_sessions` now uses actual device_id from sessions table
+  - Previously stamped all rows with current machine's device_id, destroying cross-device audit trail
+  - Updated `SessionWithModel` struct to include `device_id` field
+  - Updated `get_all_sessions_with_tokens()` query to fetch historical device_id
+  - Rebuild now preserves multi-device history accurately
+- **Chronological rebuild ordering**: Rebuild now sorts by `last_updated` timestamp instead of lexical session_id
+  - Session IDs aren't guaranteed monotonic, causing wrong-order replay
+  - Updated `SessionWithModel` to include `last_updated` field
+  - Compaction/ceiling replays now happen in correct chronological order
+  - Fixes bogus "previous token" comparisons and muted compaction detection
+- **Migration caching**: Avoid running migrations on every hot path (update_session, etc.)
+  - Added `MIGRATED_DBS` static cache using `OnceLock<Mutex<HashSet>>`
+  - Migrations only run once per database file per process
+  - Eliminates redundant schema_migrations queries on statusline refresh
+  - Reduces I/O overhead from "multiple times per second" to "once per session"
+- **Turso schema type mismatch**: Regenerated scripts/setup-turso-schema.sql with correct types
+  - Fixed `sync_timestamp` from TEXT to INTEGER to match Rust schema
+  - Used `migrate --dump-schema` to auto-generate from actual migrations
+  - Prevents implicit conversions or panics during push/pull operations
+  - Schema now stays in sync with migration evolution automatically
+
 ### Added - Schema Auto-Generation
 - **Migrate --dump-schema command**: Generate Turso schema from migrations automatically
   - Creates temporary database and runs all migrations

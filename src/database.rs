@@ -5,8 +5,12 @@ use chrono::Local;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
+
+// Track which database files have been migrated to avoid redundant migration checks
+static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
 pub const SCHEMA: &str = r#"
 -- Sessions table (includes all migration v3, v4, v5 columns)
@@ -204,10 +208,23 @@ impl SqliteDatabase {
         // Drop the connection before running migrations (migrations need exclusive access)
         drop(conn);
 
-        // Run any pending migrations automatically BEFORE creating the wrapper
-        // This ensures the schema is correct before we return a database handle
-        // Fail fast if migrations fail - better to error than return a broken connection
-        crate::migrations::run_migrations_on_db(db_path)?;
+        // Run migrations only if not already done for this database file
+        // This avoids redundant migration checks on hot paths (update_session, etc.)
+        let canonical_path = db_path.canonicalize().unwrap_or_else(|_| db_path.to_path_buf());
+        let migrated_dbs = MIGRATED_DBS.get_or_init(|| Mutex::new(HashSet::new()));
+
+        let needs_migration = {
+            let guard = migrated_dbs.lock().unwrap();
+            !guard.contains(&canonical_path)
+        };
+
+        if needs_migration {
+            // Run pending migrations and mark as migrated
+            crate::migrations::run_migrations_on_db(db_path)?;
+
+            let mut guard = migrated_dbs.lock().unwrap();
+            guard.insert(canonical_path);
+        }
 
         // Create the database wrapper with correct schema
         let db = Self {
@@ -658,6 +675,7 @@ impl SqliteDatabase {
 
     /// Get all sessions with token data for rebuilding learned context windows
     /// Uses migration v5 token breakdown fields to calculate total tokens
+    /// Preserves device_id and last_updated for accurate historical replay
     pub fn get_all_sessions_with_tokens(&self) -> Result<Vec<SessionWithModel>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
@@ -665,7 +683,9 @@ impl SqliteDatabase {
                 session_id,
                 total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens as total_tokens,
                 COALESCE(model_name, 'Unknown') as model_name,
-                workspace_dir
+                workspace_dir,
+                device_id,
+                last_updated
              FROM sessions
              WHERE (total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) > 0
              ORDER BY last_updated ASC",
@@ -677,6 +697,8 @@ impl SqliteDatabase {
                 max_tokens_observed: row.get(1)?,
                 model_name: row.get(2)?,
                 workspace_dir: row.get(3)?,
+                device_id: row.get(4)?,
+                last_updated: row.get(5)?,
             })
         })?;
 
@@ -1044,6 +1066,8 @@ pub struct SessionWithModel {
     pub max_tokens_observed: Option<i64>,
     pub model_name: String,
     pub workspace_dir: Option<String>,
+    pub device_id: Option<String>,
+    pub last_updated: String,
 }
 
 /// Perform database maintenance operations

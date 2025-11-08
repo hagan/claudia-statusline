@@ -501,8 +501,9 @@ fn run_schema_migrations() -> Result<()> {
 fn dump_database_schema() -> Result<()> {
     use crate::display::Colors;
 
-    println!("{}Generating database schema...{}", Colors::cyan(), Colors::reset());
-    println!();
+    // Print status to stderr so it doesn't pollute the SQL output on stdout
+    eprintln!("{}Generating database schema...{}", Colors::cyan(), Colors::reset());
+    eprintln!();
 
     // Run all migrations on this temporary database
     let temp_dir = std::env::temp_dir();
