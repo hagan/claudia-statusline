@@ -86,6 +86,11 @@ pub struct DisplayConfig {
 /// - Unknown models: Uses `window_size` default (200k)
 ///
 /// Users can override detection for specific models using `model_windows` HashMap.
+///
+/// **Adaptive Learning (Experimental):**
+/// When enabled, the statusline learns actual context window sizes from usage patterns
+/// by detecting compaction events and token ceiling observations. This feature is
+/// **disabled by default** and requires explicit opt-in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContextConfig {
@@ -109,6 +114,35 @@ pub struct ContextConfig {
     /// ```
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub model_windows: std::collections::HashMap<String, usize>,
+
+    /// Enable adaptive learning of context window sizes from usage patterns
+    ///
+    /// **Default: false (disabled)**
+    ///
+    /// When enabled, the statusline observes token patterns to learn actual context limits:
+    /// - Detects automatic compaction events (sudden token drops)
+    /// - Tracks repeated token ceiling observations
+    /// - Builds confidence scores based on multiple observations
+    ///
+    /// Learned values are only used when confidence >= `learning_confidence_threshold`.
+    /// User overrides in `model_windows` always take precedence.
+    ///
+    /// **Experimental feature** - disabled by default for stability.
+    pub adaptive_learning: bool,
+
+    /// Minimum confidence score required to use learned context window values
+    ///
+    /// **Default: 0.7 (70%)**
+    ///
+    /// Range: 0.0 (0%) to 1.0 (100%)
+    ///
+    /// Confidence increases with observations:
+    /// - 1 observation = ~0.1 confidence
+    /// - 3 observations = ~0.4 confidence
+    /// - 5+ observations = 0.7+ confidence
+    ///
+    /// Only applies when `adaptive_learning = true`.
+    pub learning_confidence_threshold: f64,
 }
 
 /// Cost threshold configuration
@@ -260,6 +294,8 @@ impl Default for ContextConfig {
         ContextConfig {
             window_size: 200_000, // Default for modern Claude models (Sonnet 3.5+, Opus 3.5+, Sonnet 4.5+)
             model_windows: std::collections::HashMap::new(),
+            adaptive_learning: false, // Disabled by default (experimental feature)
+            learning_confidence_threshold: 0.7, // Require 70% confidence before using learned values
         }
     }
 }
@@ -505,6 +541,16 @@ window_size = 200000
 # "Claude Sonnet 4.5" = 200000
 # "Claude 3.5 Opus" = 200000
 # "Claude 3 Haiku" = 100000
+
+# Adaptive Learning (Experimental) - DISABLED BY DEFAULT
+# When enabled, the statusline learns actual context window sizes from usage patterns
+# by detecting compaction events and token ceiling observations
+adaptive_learning = false
+
+# Minimum confidence threshold (0.0-1.0) required to use learned values
+# Only applies when adaptive_learning = true
+# Confidence increases with more observations (0.7 = 70% confidence)
+learning_confidence_threshold = 0.7
 
 [cost]
 # Cost thresholds for color coding

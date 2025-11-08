@@ -64,6 +64,7 @@ impl MigrationRunner {
             Box::new(InitialJsonToSqlite),
             Box::new(AddMetaTable),
             Box::new(AddSyncMetadata),
+            Box::new(AddLearnedContextWindows),
         ]
     }
 
@@ -319,6 +320,62 @@ impl Migration for AddSyncMetadata {
     }
 }
 
+/// Migration 004: Add adaptive context window learning tables and columns
+pub struct AddLearnedContextWindows;
+
+impl Migration for AddLearnedContextWindows {
+    fn version(&self) -> u32 {
+        4
+    }
+
+    fn description(&self) -> &str {
+        "Add learned_context_windows table and max_tokens_observed to sessions for adaptive learning"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Create learned_context_windows table for tracking observed limits
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS learned_context_windows (
+                model_name TEXT PRIMARY KEY,
+                observed_max_tokens INTEGER NOT NULL,
+                ceiling_observations INTEGER DEFAULT 0,
+                compaction_count INTEGER DEFAULT 0,
+                last_observed_max INTEGER NOT NULL,
+                last_updated TEXT NOT NULL,
+                confidence_score REAL DEFAULT 0.0,
+                first_seen TEXT NOT NULL
+            )",
+            [],
+        )?;
+
+        // Create index for confidence-based queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_confidence
+             ON learned_context_windows(confidence_score DESC)",
+            [],
+        )?;
+
+        // Add max_tokens_observed column to sessions table for tracking previous values
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN max_tokens_observed INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        // Drop the learned context windows table
+        tx.execute("DROP TABLE IF EXISTS learned_context_windows", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_learned_confidence", [])?;
+
+        // Note: SQLite doesn't support DROP COLUMN easily, so max_tokens_observed remains
+        // This is acceptable since it's nullable and doesn't affect existing functionality
+
+        Ok(())
+    }
+}
+
 /// Run migrations on startup (best effort)
 #[allow(dead_code)]
 pub fn run_migrations() {
@@ -343,8 +400,8 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 3 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3)
-        assert_eq!(runner.current_version().unwrap(), 3);
+        // We now have 4 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddLearnedContextWindows (v4)
+        assert_eq!(runner.current_version().unwrap(), 4);
     }
 
     #[test]
@@ -386,6 +443,56 @@ mod tests {
         assert!(
             sessions_columns.contains(&"sync_timestamp".to_string()),
             "sessions table should have sync_timestamp column"
+        );
+    }
+
+    #[test]
+    fn test_learned_context_windows_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_learned.db");
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.migrate().unwrap();
+
+        // Verify learned_context_windows table exists
+        let table_exists: bool = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='learned_context_windows'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+
+        assert!(table_exists, "learned_context_windows table should exist");
+
+        // Verify index exists
+        let index_exists: bool = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_learned_confidence'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+
+        assert!(index_exists, "idx_learned_confidence index should exist");
+
+        // Verify max_tokens_observed column was added to sessions
+        let sessions_columns: Vec<String> = runner
+            .conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            sessions_columns.contains(&"max_tokens_observed".to_string()),
+            "sessions table should have max_tokens_observed column"
         );
     }
 }
