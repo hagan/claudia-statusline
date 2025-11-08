@@ -617,6 +617,49 @@ statusline context-learning --reset-all
 
 For detailed information, see [Adaptive Learning Guide](ADAPTIVE_LEARNING.md).
 
+#### Context Percentage Display Mode
+
+**New in v2.16.3**: Choose how context percentage is calculated and displayed.
+
+By default, the statusline shows percentage of the **total context window** (e.g., 200K as advertised by Anthropic). This matches user expectations, where 100% = the full context window.
+
+However, Claude Code reserves a **buffer** (~40K tokens) for generating responses, which isn't available for conversation. Power users tracking compaction may prefer to see percentage of the **working window** (total - buffer).
+
+**Configure display mode** in `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[context]
+# Context percentage display mode
+# Options: "full" (default) or "working"
+# Default: "full"
+percentage_mode = "full"
+
+# Optional: Configure buffer size (default: 40000)
+# Only affects "working" mode calculation
+buffer_size = 40000
+
+# Optional: Auto-compact warning threshold (default: 80.0)
+# Shows warning indicator (⚠) when percentage exceeds this value
+auto_compact_threshold = 80.0
+```
+
+**Mode comparison** (example with 150K tokens):
+
+| Mode | Calculation | Display | Best For |
+|------|-------------|---------|----------|
+| **"full"** (default) | 150K / 200K = **75%** | Matches Anthropic's 200K claim | Most users ✅ |
+| **"working"** | 150K / 160K = **93.75%** | Shows proximity to auto-compact | Power users tracking compaction |
+
+**When to use "working" mode:**
+- You're tracking when Claude will auto-compact (typically at ~98% of working window)
+- You have adaptive learning enabled and want to see how close you are to learned limits
+- You need precise tracking of usable conversation space
+
+**When to use "full" mode (recommended):**
+- You want percentages that match Anthropic's advertised context sizes
+- You expect 100% = full 200K context window
+- You're not specifically tracking compaction events
+
 ### Progress Bar Width
 
 Default is 10 characters. To change, edit `src/display.rs` and rebuild:
