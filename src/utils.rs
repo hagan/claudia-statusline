@@ -274,13 +274,15 @@ pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crat
     let mut file = File::open(&safe_path).ok()?;
     let file_size = file.metadata().ok()?.len();
 
+    // Load config once to avoid repeated TOML parsing
+    let config = config::get_config();
+    let buffer_size = config.transcript.buffer_lines;
+
     // For small files, read normally from start
     // For large files (>1MB), read from end to avoid processing entire file
     let lines: Vec<String> = if file_size < 1024 * 1024 {
         // Small file: read normally
         let reader = BufReader::new(file);
-        let config = config::get_config();
-        let buffer_size = config.transcript.buffer_lines;
         let mut circular_buffer = std::collections::VecDeque::with_capacity(buffer_size);
         for line in reader.lines().map_while(|l| l.ok()) {
             if circular_buffer.len() == buffer_size {
@@ -292,8 +294,7 @@ pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crat
     } else {
         // Large file: read from end
         // Estimate: average line ~2KB, read last 200KB to get ~100 lines (buffer for safety)
-        let config = config::get_config();
-        let read_size = (config.transcript.buffer_lines * 2048).max(200 * 1024) as u64;
+        let read_size = (buffer_size * 2048).max(200 * 1024) as u64;
         let start_pos = file_size.saturating_sub(read_size);
 
         // Seek to position
@@ -311,7 +312,7 @@ pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crat
             .into_iter()
             .skip(skip_first)
             .rev()
-            .take(config.transcript.buffer_lines)
+            .take(buffer_size)
             .rev()
             .collect()
     };

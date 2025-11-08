@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Code Review Follow-up
+- **Performance: Config caching in transcript parsing**: Load config once instead of repeatedly
+  - `get_token_breakdown_from_transcript` now loads config at function start
+  - Eliminates redundant TOML parsing (once per 1MB+ transcript vs twice)
+  - Reduces CPU overhead during statusline rendering
+- **UX: Audit trail now visible in CLI**: Added workspace/device to `context-learning --details`
+  - Shows workspace_dir and device_id in detailed output
+  - Helps debug cross-project context limit discrepancies
+  - Added hint in `--status` output to use `--details` for audit trail
+
 ### Fixed - Code Review Findings
 - **Critical: Stable device ID hashing**: Replaced `DefaultHasher` with SHA-256 for `get_device_id()`
   - `DefaultHasher` algorithm can change between Rust versions, breaking device ID stability

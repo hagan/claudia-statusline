@@ -1080,6 +1080,10 @@ fn handle_context_learning_command(
             println!("  First Seen:              {}", record.first_seen);
             println!("  Last Updated:            {}", record.last_updated);
             println!();
+            println!("{}Audit Trail:{}", Colors::cyan(), Colors::reset());
+            println!("  Workspace:               {}", record.workspace_dir.as_deref().unwrap_or("<unknown>"));
+            println!("  Device ID:               {}", record.device_id.as_deref().unwrap_or("<unknown>"));
+            println!();
 
             let config = crate::config::get_config();
             if record.confidence_score >= config.context.learning_confidence_threshold {
@@ -1147,6 +1151,8 @@ fn handle_context_learning_command(
             println!("{}⚠ Adaptive learning is disabled in config{}", Colors::yellow(), Colors::reset());
         }
         println!("  Confidence threshold: {:.1}%", config.context.learning_confidence_threshold * 100.0);
+        println!();
+        println!("{}Use --details <model> to see audit trail (workspace/device){}", Colors::cyan(), Colors::reset());
         println!();
 
         return Ok(());
