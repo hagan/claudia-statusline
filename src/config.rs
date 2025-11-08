@@ -143,6 +143,38 @@ pub struct ContextConfig {
     ///
     /// Only applies when `adaptive_learning = true`.
     pub learning_confidence_threshold: f64,
+
+    /// Claude Code buffer reserved for responses (not available for conversation)
+    ///
+    /// **Default: 40000 tokens (40K)**
+    ///
+    /// Claude Code reserves approximately 40-45K tokens as a buffer for generating
+    /// responses. This buffer is not available for the conversation context.
+    ///
+    /// This setting is used to:
+    /// - Calculate the "working window" (context_window - buffer)
+    /// - Determine when to show auto-compact warnings
+    /// - Provide accurate estimates of usable context space
+    ///
+    /// Reference: Claude Code auto-compact triggers when context reaches ~95% capacity
+    /// or when you have ~40-45K tokens remaining (the buffer zone).
+    pub buffer_size: usize,
+
+    /// Auto-compact threshold percentage
+    ///
+    /// **Default: 80.0 (80%)**
+    ///
+    /// Claude Code automatically compacts (summarizes) the conversation when the
+    /// context window reaches approximately 80% capacity (160K tokens for 200K models).
+    ///
+    /// When context usage exceeds this threshold, the statusline will show a warning
+    /// indicator that auto-compact may occur soon.
+    ///
+    /// Range: 0.0 to 100.0
+    ///
+    /// Reference: The auto-compact threshold is at 160K tokens, which is 80% of
+    /// the 200K context window for modern Claude models.
+    pub auto_compact_threshold: f64,
 }
 
 /// Cost threshold configuration
@@ -296,6 +328,8 @@ impl Default for ContextConfig {
             model_windows: std::collections::HashMap::new(),
             adaptive_learning: false, // Disabled by default (experimental feature)
             learning_confidence_threshold: 0.7, // Require 70% confidence before using learned values
+            buffer_size: 40_000, // Claude Code reserves ~40-45K tokens for responses
+            auto_compact_threshold: 80.0, // Claude Code auto-compacts at ~80% (160K for 200K models)
         }
     }
 }

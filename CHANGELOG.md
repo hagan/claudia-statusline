@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Auto-Compact Warning System
+- **Context Usage Enhancements**: Better understanding of Claude Code's auto-compact behavior
+  - Added `buffer_size` config (default: 40,000 tokens) - Claude Code reserves ~40-45K for responses
+  - Added `auto_compact_threshold` config (default: 80%) - Claude auto-compacts at ~80% (160K for 200K models)
+  - Visual warning indicator (⚠) appears when context exceeds threshold
+  - Calculate `tokens_remaining` in working window (context - buffer - used)
+- **Configuration Options** (config.toml `[context]` section):
+  ```toml
+  buffer_size = 40000              # Tokens reserved for responses
+  auto_compact_threshold = 80.0    # Percentage at which auto-compact triggers
+  ```
+- **Display Changes**:
+  - Warning symbol (⚠) displayed when approaching auto-compact (>80% by default)
+  - Orange color for warning indicator
+  - No visual changes when below threshold
+- **Implementation Details**:
+  - `ContextUsage` now includes `approaching_limit` boolean flag
+  - `tokens_remaining` field shows actual available space before buffer zone
+  - Percentage calculation unchanged (still matches Claude's reported values)
+- **References**:
+  - Claude Code auto-compact triggers at ~95% capacity or ~40-45K tokens remaining
+  - Auto-compact threshold is 160K tokens (80% of 200K window) for modern models
+  - Buffer prevents response generation from exceeding total context limit
+
 ### Fixed - Critical Phase 8D Migration Bugs
 - **Issue 1: Missing migration columns in base SCHEMA** (CRITICAL)
   - **Root Cause**: `SCHEMA` constant in database.rs didn't include migration v5 columns

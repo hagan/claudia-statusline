@@ -228,6 +228,18 @@ pub struct Usage {
 pub struct ContextUsage {
     /// Percentage of context window used (0-100)
     pub percentage: f64,
+
+    /// Warning: approaching auto-compact threshold
+    ///
+    /// True when context usage exceeds the auto_compact_threshold (default 80%).
+    /// Claude Code will automatically compact the conversation at this point.
+    pub approaching_limit: bool,
+
+    /// Number of tokens remaining in working window (context_window - buffer - used)
+    ///
+    /// This represents the actual space available for conversation before hitting
+    /// the buffer zone reserved for responses.
+    pub tokens_remaining: usize,
 }
 
 #[cfg(test)]

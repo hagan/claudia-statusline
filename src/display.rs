@@ -484,14 +484,22 @@ fn format_context_bar(context: &ContextUsage) -> String {
         "-".repeat(empty.saturating_sub(if filled < bar_width { 1 } else { 0 }))
     );
 
+    // Add warning indicator if approaching auto-compact threshold
+    let warning = if context.approaching_limit {
+        format!(" {}⚠{}", Colors::orange(), Colors::reset())
+    } else {
+        String::new()
+    };
+
     format!(
-        "{}{}%{} {}[{}]{}",
+        "{}{}%{} {}[{}]{}{}",
         percentage_color,
         percentage.round() as u32,
         Colors::reset(),
         color,
         bar,
-        Colors::reset()
+        Colors::reset(),
+        warning
     )
 }
 
@@ -556,16 +564,26 @@ mod tests {
 
     #[test]
     fn test_format_context_bar() {
-        let low = ContextUsage { percentage: 10.0 };
+        let low = ContextUsage {
+            percentage: 10.0,
+            approaching_limit: false,
+            tokens_remaining: 180_000,
+        };
         let bar = format_context_bar(&low);
         assert!(bar.contains("10%"));
         assert!(bar.contains("[=>"));
         assert!(!bar.contains('•'));
+        assert!(!bar.contains('⚠')); // No warning at 10%
 
-        let high = ContextUsage { percentage: 95.0 };
+        let high = ContextUsage {
+            percentage: 95.0,
+            approaching_limit: true,
+            tokens_remaining: 10_000,
+        };
         let bar = format_context_bar(&high);
         assert!(bar.contains("95%"));
         assert!(!bar.contains('•'));
+        assert!(bar.contains('⚠')); // Warning at 95%
     }
 
     #[test]

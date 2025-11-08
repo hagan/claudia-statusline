@@ -364,8 +364,20 @@ pub fn calculate_context_usage(
     let context_window = get_context_window_for_model(model_name, config);
     let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
 
+    // Calculate working window (total context minus buffer reserved for responses)
+    let buffer_size = config.context.buffer_size;
+    let working_window = context_window.saturating_sub(buffer_size);
+
+    // Tokens remaining in working window before hitting buffer zone
+    let tokens_remaining = working_window.saturating_sub(total_tokens as usize);
+
+    // Check if approaching auto-compact threshold (default 80%)
+    let approaching_limit = percentage >= config.context.auto_compact_threshold;
+
     Some(ContextUsage {
         percentage: percentage.min(100.0),
+        approaching_limit,
+        tokens_remaining,
     })
 }
 
@@ -535,16 +547,39 @@ mod tests {
 
     #[test]
     fn test_context_usage_levels() {
-        // Test various percentage levels
-        let low = ContextUsage { percentage: 10.0 };
-        let medium = ContextUsage { percentage: 55.0 };
-        let high = ContextUsage { percentage: 75.0 };
-        let critical = ContextUsage { percentage: 95.0 };
+        // Test various percentage levels with approaching_limit logic
+        let low = ContextUsage {
+            percentage: 10.0,
+            approaching_limit: false,
+            tokens_remaining: 180_000,
+        };
+        let medium = ContextUsage {
+            percentage: 55.0,
+            approaching_limit: false,
+            tokens_remaining: 90_000,
+        };
+        let high = ContextUsage {
+            percentage: 75.0,
+            approaching_limit: false,
+            tokens_remaining: 50_000,
+        };
+        let critical = ContextUsage {
+            percentage: 95.0,
+            approaching_limit: true, // Above 80% threshold
+            tokens_remaining: 10_000,
+        };
 
         assert_eq!(low.percentage, 10.0);
+        assert!(!low.approaching_limit);
+
         assert_eq!(medium.percentage, 55.0);
+        assert!(!medium.approaching_limit);
+
         assert_eq!(high.percentage, 75.0);
+        assert!(!high.approaching_limit);
+
         assert_eq!(critical.percentage, 95.0);
+        assert!(critical.approaching_limit); // Should warn at 95%
     }
 
     #[test]
