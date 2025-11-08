@@ -419,9 +419,19 @@ impl ContextLearner {
         Ok(None)
     }
 
+    /// Get detailed learning information for a specific model
+    pub fn get_learned_window_details(&self, model_name: &str) -> Result<Option<LearnedContextWindow>> {
+        Ok(self.db.get_learned_context(model_name)?)
+    }
+
     /// Get all learned context windows with their details
-    pub fn get_all_learned(&self) -> Result<Vec<LearnedContextWindow>> {
+    pub fn get_all_learned_windows(&self) -> Result<Vec<LearnedContextWindow>> {
         Ok(self.db.get_all_learned_contexts()?)
+    }
+
+    /// Get all learned context windows with their details (alias for compatibility)
+    pub fn get_all_learned(&self) -> Result<Vec<LearnedContextWindow>> {
+        self.get_all_learned_windows()
     }
 
     /// Reset learned data for a specific model

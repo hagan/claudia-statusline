@@ -38,6 +38,8 @@ pub struct SessionStats {
     pub lines_removed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_time: Option<String>, // ISO 8601 timestamp of session start
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens_observed: Option<u32>, // For adaptive context learning
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -248,6 +250,7 @@ impl StatsData {
                     lines_added,
                     lines_removed,
                     start_time: Some(now.clone()), // Track when session started
+                    max_tokens_observed: None, // Will be updated by adaptive learning
                 },
             );
             self.all_time.sessions += 1;

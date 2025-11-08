@@ -112,6 +112,22 @@ const MAX_TRANSCRIPT_SIZE: u64 = 10 * 1024 * 1024;
 /// context window sizes for all models. This would eliminate the need for
 /// hardcoded defaults and manual config updates.
 ///
+/// Get learned context window from database (if available and confident)
+fn get_learned_context_window(
+    model_name: &str,
+    config: &config::Config,
+) -> crate::error::Result<Option<usize>> {
+    use crate::common::get_data_dir;
+    use crate::context_learning::ContextLearner;
+    use crate::database::SqliteDatabase;
+
+    let db_path = get_data_dir().join("stats.db");
+    let db = SqliteDatabase::new(&db_path)?;
+    let learner = ContextLearner::new(db);
+
+    learner.get_learned_window(model_name, config.context.learning_confidence_threshold)
+}
+
 /// Potential approaches:
 /// - Query `/v1/models` endpoint (if available) for model metadata
 /// - Maintain a remote JSON file with current context window sizes
@@ -133,12 +149,21 @@ const MAX_TRANSCRIPT_SIZE: u64 = 10 * 1024 * 1024;
 /// Context window size in tokens
 fn get_context_window_for_model(model_name: Option<&str>, config: &config::Config) -> usize {
     if let Some(model) = model_name {
-        // First check if user has configured a specific override
+        // Priority 1: User config overrides (highest priority)
         if let Some(&custom_size) = config.context.model_windows.get(model) {
             return custom_size;
         }
 
-        // Smart defaults based on model family and version
+        // Priority 2: Learned values (if adaptive learning enabled and confident)
+        if config.context.adaptive_learning {
+            if let Ok(learned_window) = get_learned_context_window(model, config) {
+                if let Some(window) = learned_window {
+                    return window;
+                }
+            }
+        }
+
+        // Priority 3: Smart defaults based on model family and version
         use crate::models::ModelType;
         let model_type = ModelType::from_name(model);
 
@@ -234,10 +259,9 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
     Ok(canonical_path)
 }
 
-pub fn calculate_context_usage(
-    transcript_path: &str,
-    model_name: Option<&str>,
-) -> Option<ContextUsage> {
+/// Extract the maximum token count from transcript file.
+/// Returns the highest token count observed across all assistant messages.
+pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
     // Validate and canonicalize the file path
     let safe_path = validate_transcript_file(transcript_path).ok()?;
 
@@ -278,16 +302,26 @@ pub fn calculate_context_usage(
     }
 
     if total_tokens > 0 {
-        // Get context window size based on model (intelligent detection + config overrides)
-        let context_window = get_context_window_for_model(model_name, config);
-        let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
-
-        return Some(ContextUsage {
-            percentage: percentage.min(100.0),
-        });
+        Some(total_tokens)
+    } else {
+        None
     }
+}
 
-    None
+pub fn calculate_context_usage(
+    transcript_path: &str,
+    model_name: Option<&str>,
+) -> Option<ContextUsage> {
+    let total_tokens = get_token_count_from_transcript(transcript_path)?;
+
+    // Get context window size based on model (intelligent detection + config overrides)
+    let config = config::get_config();
+    let context_window = get_context_window_for_model(model_name, config);
+    let percentage = (total_tokens as f64 / context_window as f64) * 100.0;
+
+    Some(ContextUsage {
+        percentage: percentage.min(100.0),
+    })
 }
 
 pub fn parse_duration(transcript_path: &str) -> Option<u64> {

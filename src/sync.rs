@@ -331,6 +331,7 @@ impl SyncManager {
                     lines_removed: lines_removed as u64,
                     last_updated,
                     start_time,
+                    max_tokens_observed: None, // Sync doesn't track token counts
                 },
             );
         }

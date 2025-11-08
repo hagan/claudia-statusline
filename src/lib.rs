@@ -151,6 +151,55 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
         stats::get_daily_total(&stats_data)
     };
 
+    // Adaptive context learning: observe token usage if enabled
+    if update_stats && transcript_path.is_some() && model_name.is_some() && session_id.is_some() {
+        let config = config::get_config();
+        if config.context.adaptive_learning {
+            if let Some(current_tokens) = utils::get_token_count_from_transcript(transcript_path.unwrap()) {
+                // Get previous token count from session stats
+                let stats_data = stats::get_or_load_stats_data();
+                let previous_tokens = stats_data
+                    .sessions
+                    .get(session_id.unwrap())
+                    .and_then(|s| s.max_tokens_observed)
+                    .map(|t| t as usize);
+
+                // Create context learner and observe usage
+                use crate::common::get_data_dir;
+                use crate::context_learning::ContextLearner;
+                use crate::database::SqliteDatabase;
+
+                let db_path = get_data_dir().join("stats.db");
+                if let Ok(db) = SqliteDatabase::new(&db_path) {
+                    let learner = ContextLearner::new(db);
+                    // Ignore errors from adaptive learning - it's experimental and shouldn't block statusline
+                    let _ = learner.observe_usage(
+                        model_name.unwrap(),
+                        current_tokens as usize,
+                        previous_tokens,
+                        transcript_path,
+                    );
+
+                    // Update session's max_tokens_observed for next comparison
+                    stats::update_stats_data(|data| {
+                        use crate::common::{current_date, current_month};
+
+                        if let Some(session) = data.sessions.get_mut(session_id.unwrap()) {
+                            let new_max = session.max_tokens_observed.unwrap_or(0).max(current_tokens);
+                            session.max_tokens_observed = Some(new_max);
+                        }
+                        // Return unchanged totals (we're just updating token tracking)
+                        let today = current_date();
+                        let month = current_month();
+                        let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+                        let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
+                        (daily_total, monthly_total)
+                    });
+                }
+            }
+        }
+    }
+
     // Format the output to string
     let output = display::format_output_to_string(
         current_dir,

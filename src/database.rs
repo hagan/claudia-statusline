@@ -443,7 +443,7 @@ impl SqliteDatabase {
 
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed
+            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed, max_tokens_observed
              FROM sessions",
         )?;
 
@@ -454,6 +454,7 @@ impl SqliteDatabase {
             let cost: f64 = row.get(3)?;
             let lines_added: i64 = row.get(4)?;
             let lines_removed: i64 = row.get(5)?;
+            let max_tokens_observed: Option<i64> = row.get(6).ok();
 
             Ok((
                 session_id.clone(),
@@ -463,6 +464,7 @@ impl SqliteDatabase {
                     lines_removed: lines_removed as u64,
                     last_updated,
                     start_time,
+                    max_tokens_observed: max_tokens_observed.map(|t| t as u32),
                 },
             ))
         })?;
