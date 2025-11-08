@@ -367,7 +367,9 @@ impl Default for RetrySettings {
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
-        TranscriptConfig { buffer_lines: 50 }
+        TranscriptConfig {
+            buffer_lines: 50,
+        }
     }
 }
 
@@ -570,7 +572,8 @@ retention_days_daily = 365      # Keep daily aggregates for N days
 retention_days_monthly = 0      # Keep monthly aggregates for N days (0 = forever)
 
 [transcript]
-# Number of transcript lines to keep in memory
+# Number of transcript lines to keep in memory (circular buffer)
+# For large files, only the last N lines are read (tail-reading optimization)
 buffer_lines = 50
 
 [retry.file_ops]

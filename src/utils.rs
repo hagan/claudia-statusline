@@ -92,8 +92,6 @@ pub fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
-/// Maximum size for transcript files (10MB)
-const MAX_TRANSCRIPT_SIZE: u64 = 50 * 1024 * 1024; // 50MB for long Claude sessions
 
 /// Determines the context window size for a given model
 ///
@@ -246,15 +244,8 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
         ));
     }
 
-    // Check file size to prevent DoS
-    if let Ok(metadata) = canonical_path.metadata() {
-        if metadata.len() > MAX_TRANSCRIPT_SIZE {
-            return Err(StatuslineError::invalid_path(format!(
-                "Transcript file too large (max {}MB)",
-                MAX_TRANSCRIPT_SIZE / 1024 / 1024
-            )));
-        }
-    }
+    // Note: No file size limit needed - we use tail-reading for efficiency
+    // Large files are handled by seeking to the end and reading last N lines only
 
     Ok(canonical_path)
 }
@@ -269,28 +260,61 @@ pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
 ///
 /// Returns a TokenBreakdown with separate counts for input, output, cache read, and cache creation tokens.
 /// This data is used for cost analysis, cache efficiency tracking, and per-model analytics.
+///
+/// Implementation: Reads from the end of the file for efficiency with large transcripts.
+/// Only processes the last N lines (configured via transcript.buffer_lines).
 pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crate::models::TokenBreakdown> {
     use crate::models::TokenBreakdown;
+    use std::io::{Seek, SeekFrom};
 
     // Validate and canonicalize the file path
     let safe_path = validate_transcript_file(transcript_path).ok()?;
 
-    // Efficiently read only the last 50 lines using a circular buffer
-    let file = File::open(&safe_path).ok()?;
-    let reader = BufReader::new(file);
+    // Open file and get size
+    let mut file = File::open(&safe_path).ok()?;
+    let file_size = file.metadata().ok()?.len();
 
-    // Use a circular buffer to keep only the configured number of lines in memory
-    let config = config::get_config();
-    let buffer_size = config.transcript.buffer_lines;
-    let mut circular_buffer = std::collections::VecDeque::with_capacity(buffer_size);
-    for line in reader.lines().map_while(|l| l.ok()) {
-        if circular_buffer.len() == buffer_size {
-            circular_buffer.pop_front();
+    // For small files, read normally from start
+    // For large files (>1MB), read from end to avoid processing entire file
+    let lines: Vec<String> = if file_size < 1024 * 1024 {
+        // Small file: read normally
+        let reader = BufReader::new(file);
+        let config = config::get_config();
+        let buffer_size = config.transcript.buffer_lines;
+        let mut circular_buffer = std::collections::VecDeque::with_capacity(buffer_size);
+        for line in reader.lines().map_while(|l| l.ok()) {
+            if circular_buffer.len() == buffer_size {
+                circular_buffer.pop_front();
+            }
+            circular_buffer.push_back(line);
         }
-        circular_buffer.push_back(line);
-    }
+        circular_buffer.into_iter().collect()
+    } else {
+        // Large file: read from end
+        // Estimate: average line ~2KB, read last 200KB to get ~100 lines (buffer for safety)
+        let config = config::get_config();
+        let read_size = (config.transcript.buffer_lines * 2048).max(200 * 1024) as u64;
+        let start_pos = file_size.saturating_sub(read_size);
 
-    let lines: Vec<String> = circular_buffer.into_iter().collect();
+        // Seek to position
+        file.seek(SeekFrom::Start(start_pos)).ok()?;
+
+        // Read from that position
+        let reader = BufReader::new(file);
+        let all_lines: Vec<String> = reader.lines().map_while(|l| l.ok()).collect();
+
+        // Skip first line if we started mid-line (partial line)
+        let skip_first = if start_pos > 0 { 1 } else { 0 };
+
+        // Take last N lines
+        all_lines
+            .into_iter()
+            .skip(skip_first)
+            .rev()
+            .take(config.transcript.buffer_lines)
+            .rev()
+            .collect()
+    };
 
     // Find the most recent assistant message with usage data
     let mut best_breakdown = TokenBreakdown::default();
