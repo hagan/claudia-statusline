@@ -191,15 +191,12 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
                         transcript_path,
                     );
 
-                    // Update session's max_tokens_observed for next comparison
+                    // Update session's max_tokens_observed (adaptive learning)
+                    // This updates both in-memory stats and SQLite database
                     stats::update_stats_data(|data| {
-                        use crate::common::{current_date, current_month};
-
-                        if let Some(session) = data.sessions.get_mut(session_id.unwrap()) {
-                            let new_max = session.max_tokens_observed.unwrap_or(0).max(current_tokens);
-                            session.max_tokens_observed = Some(new_max);
-                        }
+                        data.update_max_tokens(session_id.unwrap(), current_tokens);
                         // Return unchanged totals (we're just updating token tracking)
+                        use crate::common::{current_date, current_month};
                         let today = current_date();
                         let month = current_month();
                         let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);

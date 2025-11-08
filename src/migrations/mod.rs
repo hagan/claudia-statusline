@@ -1,4 +1,3 @@
-use crate::database::SqliteDatabase;
 use crate::stats::StatsData;
 use chrono::Local;
 use rusqlite::{params, Connection, Result, Transaction};

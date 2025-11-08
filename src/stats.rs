@@ -221,6 +221,7 @@ impl StatsData {
         // Update SQLite database directly with all parameters including new migration v5 fields
         // This ensures model_name, workspace_dir, and token breakdown are persisted immediately
         // SqliteDatabase::new() will create the database if it doesn't exist
+        // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
                 let _ = db.update_session(
@@ -231,6 +232,7 @@ impl StatsData {
                     model_name,
                     workspace_dir,
                     token_breakdown,
+                    None, // max_tokens_observed updated separately
                 );
             }
         }
@@ -366,6 +368,23 @@ impl StatsData {
             .unwrap_or(0.0);
 
         (daily_total, monthly_total)
+    }
+
+    /// Update max_tokens_observed for a session (adaptive learning)
+    /// This should be called after update_session when context usage is calculated
+    pub fn update_max_tokens(&mut self, session_id: &str, current_tokens: u32) {
+        // Update in-memory stats
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            let new_max = session.max_tokens_observed.unwrap_or(0).max(current_tokens);
+            session.max_tokens_observed = Some(new_max);
+        }
+
+        // Persist to SQLite database using dedicated method
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if let Ok(db) = SqliteDatabase::new(&db_path) {
+                let _ = db.update_max_tokens_observed(session_id, current_tokens);
+            }
+        }
     }
 }
 
@@ -511,6 +530,7 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
             None, // model_name not available in dual-write
             None, // workspace_dir not available in dual-write
             None, // token_breakdown not available in dual-write
+            session.max_tokens_observed, // max_tokens_observed from in-memory stats
         ) {
             Ok((day_total, session_total)) => {
                 debug!(
