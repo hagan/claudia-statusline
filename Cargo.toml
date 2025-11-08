@@ -36,6 +36,7 @@ log = "0.4"  # Structured logging
 env_logger = "0.11"  # Environment-based log configuration
 regex = "1.10"  # For sanitizing terminal output
 hostname = "0.4"  # For device ID generation
+sha2 = "0.10"  # For stable device ID hashing
 
 # Optional dependencies for turso-sync feature
 libsql = { version = "0.6", optional = true }

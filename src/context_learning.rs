@@ -278,6 +278,10 @@ impl ContextLearner {
             record.last_observed_max = observed_max;
             record.last_updated = now;
 
+            // Refresh audit metadata on every observation to track most recent workspace/device
+            record.workspace_dir = workspace_dir.map(|s| s.to_string());
+            record.device_id = device_id.map(|s| s.to_string());
+
             self.db.update_learned_context(&record)?;
         } else {
             // Create new record
@@ -342,6 +346,10 @@ impl ContextLearner {
 
             record.last_observed_max = current_tokens;
             record.last_updated = now;
+
+            // Refresh audit metadata on every observation to track most recent workspace/device
+            record.workspace_dir = workspace_dir.map(|s| s.to_string());
+            record.device_id = device_id.map(|s| s.to_string());
 
             self.db.update_learned_context(&record)?;
         } else {
@@ -495,8 +503,8 @@ impl ContextLearner {
 
         info!("Found {} sessions with token data", sessions.len());
 
-        // Group by model and replay observations
-        let mut model_sessions: std::collections::HashMap<String, Vec<(String, usize)>> =
+        // Group by model and replay observations, preserving workspace_dir for audit trail
+        let mut model_sessions: std::collections::HashMap<String, Vec<(String, usize, Option<String>)>> =
             std::collections::HashMap::new();
 
         for session in sessions {
@@ -505,10 +513,13 @@ impl ContextLearner {
                     model_sessions
                         .entry(session.model_name.clone())
                         .or_default()
-                        .push((session.session_id, tokens as usize));
+                        .push((session.session_id, tokens as usize, session.workspace_dir));
                 }
             }
         }
+
+        // Get device_id for audit trail
+        let device_id = crate::common::get_device_id();
 
         // Process each model's sessions in chronological order
         for (model_name, mut sessions) in model_sessions {
@@ -517,9 +528,17 @@ impl ContextLearner {
             info!("Processing {} sessions for model: {}", sessions.len(), model_name);
 
             let mut prev_tokens: Option<usize> = None;
-            for (_session_id, current_tokens) in sessions {
-                // Simulate observation (no transcript path for historical replay)
-                self.observe_usage(&model_name, current_tokens, prev_tokens, None, None, None)?;
+            for (_session_id, current_tokens, workspace_dir) in sessions {
+                // Simulate observation with preserved audit metadata
+                // No transcript path for historical replay, but preserve workspace_dir and device_id
+                self.observe_usage(
+                    &model_name,
+                    current_tokens,
+                    prev_tokens,
+                    None, // transcript_path
+                    workspace_dir.as_deref(),
+                    Some(&device_id),
+                )?;
                 prev_tokens = Some(current_tokens);
             }
         }

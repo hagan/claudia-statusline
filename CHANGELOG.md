@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Code Review Findings
+- **Critical: Stable device ID hashing**: Replaced `DefaultHasher` with SHA-256 for `get_device_id()`
+  - `DefaultHasher` algorithm can change between Rust versions, breaking device ID stability
+  - SHA-256 provides cryptographic stability and determinism across all Rust versions
+  - Added sha2 dependency for stable hashing
+  - Removed feature gate from `test_get_device_id` test
+- **Audit trail preservation in rebuild**: `rebuild_from_sessions` now preserves workspace_dir and device_id
+  - Updated `SessionWithModel` struct to include workspace_dir
+  - Modified `get_all_sessions_with_tokens()` query to fetch workspace_dir from sessions table
+  - Passes workspace_dir and device_id to `observe_usage()` during rebuild
+- **Audit metadata refresh**: `record_compaction` and `update_ceiling_observation` now update audit fields on every observation
+  - Previously only set workspace_dir/device_id when creating new records
+  - Now refreshes audit metadata on every observation to track most recent workspace/device
+  - Prevents stale audit data for cross-project debugging
+- **Error logging for stats persistence**: Added warning logs for SQLite failures
+  - `update_session()` failures now logged with session ID and error details
+  - `update_max_tokens_observed()` failures now logged
+  - Database open failures now logged with path information
+  - No more silent data loss from SQLite errors
+- **Fail-fast on migration failures**: `SqliteDatabase::new()` now returns error if migrations fail
+  - Previously logged warning but returned database handle with incorrect schema
+  - Now fails immediately rather than returning broken connection
+  - Prevents "no such column" errors from propagating through application
+- **Turso schema updated**: `scripts/setup-turso-schema.sql` now includes all migration columns
+  - Added migration v3 columns: sync_timestamp
+  - Added migration v5 columns: model_name, workspace_dir, token breakdown fields, max_tokens_observed
+  - Added learned_context_windows table (migration v4)
+  - Added migration v6 audit fields: workspace_dir, device_id in learned_context_windows
+  - Added indexes for workspace+model and device queries
+  - Cloud sync now supports all local database features
+
 ### Added - Context Learning Audit Trail (Migration v6)
 - **Audit Fields for Learned Context Windows**: Track which sessions/systems observe context limits
   - Added `workspace_dir` column to `learned_context_windows` table

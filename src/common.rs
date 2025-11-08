@@ -5,8 +5,7 @@
 
 use crate::error::Result;
 use chrono::Local;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use sha2::{Sha256, Digest};
 use std::path::PathBuf;
 
 /// Gets the application data directory using XDG Base Directory specification.
@@ -127,14 +126,15 @@ pub fn validate_path_security(path: &str) -> Result<PathBuf> {
 
 /// Generates a stable device ID from hostname and username.
 ///
-/// The device ID is a hash of the hostname and username, providing:
-/// - Stability across reboots (same ID for same machine)
+/// The device ID is a SHA-256 hash of the hostname and username, providing:
+/// - Stability across reboots and Rust version upgrades (same ID for same machine)
 /// - Privacy (doesn't leak actual hostname/username)
-/// - Uniqueness (unlikely collisions across different machines)
+/// - Uniqueness (cryptographically unlikely collisions across different machines)
+/// - Determinism (SHA-256 algorithm is standardized and stable)
 ///
 /// # Returns
 ///
-/// A 16-character hexadecimal string representing the device ID.
+/// A 16-character hexadecimal string (first 64 bits of SHA-256 hash).
 ///
 /// # Example
 ///
@@ -142,7 +142,7 @@ pub fn validate_path_security(path: &str) -> Result<PathBuf> {
 /// use statusline::common::get_device_id;
 ///
 /// let device_id = get_device_id();
-/// assert_eq!(device_id.len(), 16); // 64-bit hash in hex
+/// assert_eq!(device_id.len(), 16); // First 64 bits of SHA-256 in hex
 /// ```
 pub fn get_device_id() -> String {
     use std::env;
@@ -158,14 +158,15 @@ pub fn get_device_id() -> String {
         .or_else(|_| env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown-user".to_string());
 
-    // Create a stable hash of hostname + username
-    let mut hasher = DefaultHasher::new();
-    hostname.hash(&mut hasher);
-    username.hash(&mut hasher);
-    let hash = hasher.finish();
+    // Create a stable SHA-256 hash of hostname + username
+    let mut hasher = Sha256::new();
+    hasher.update(hostname.as_bytes());
+    hasher.update(b"|"); // Separator to prevent collision if hostname="foo" username="bar" vs hostname="foob" username="ar"
+    hasher.update(username.as_bytes());
+    let result = hasher.finalize();
 
-    // Return as 16-character hex string
-    format!("{:016x}", hash)
+    // Return first 64 bits (8 bytes) as 16-character hex string
+    format!("{:016x}", u64::from_be_bytes(result[0..8].try_into().unwrap()))
 }
 
 #[cfg(test)]
@@ -232,17 +233,16 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "turso-sync")]
     fn test_get_device_id() {
         let device_id = get_device_id();
 
-        // Should be exactly 16 characters (64-bit hash in hex)
+        // Should be exactly 16 characters (first 64 bits of SHA-256 in hex)
         assert_eq!(device_id.len(), 16);
 
         // Should only contain hex characters
         assert!(device_id.chars().all(|c| c.is_ascii_hexdigit()));
 
-        // Should be stable (same ID on multiple calls)
+        // Should be stable (same ID on multiple calls - SHA-256 is deterministic)
         let device_id2 = get_device_id();
         assert_eq!(device_id, device_id2);
     }

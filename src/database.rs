@@ -204,18 +204,16 @@ impl SqliteDatabase {
         // Drop the connection before running migrations (migrations need exclusive access)
         drop(conn);
 
-        // Create the database wrapper first
+        // Run any pending migrations automatically BEFORE creating the wrapper
+        // This ensures the schema is correct before we return a database handle
+        // Fail fast if migrations fail - better to error than return a broken connection
+        crate::migrations::run_migrations_on_db(db_path)?;
+
+        // Create the database wrapper with correct schema
         let db = Self {
             path: db_path.to_path_buf(),
             pool: Arc::new(pool),
         };
-
-        // Run any pending migrations automatically (will be skipped for new databases)
-        // This ensures existing databases are upgraded seamlessly
-        if let Err(e) = crate::migrations::run_migrations_on_db(db_path) {
-            log::warn!("Failed to run automatic migrations: {}", e);
-            // Don't fail - database will work with base schema
-        }
 
         Ok(db)
     }
@@ -666,7 +664,8 @@ impl SqliteDatabase {
             "SELECT
                 session_id,
                 total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens as total_tokens,
-                COALESCE(model_name, 'Unknown') as model_name
+                COALESCE(model_name, 'Unknown') as model_name,
+                workspace_dir
              FROM sessions
              WHERE (total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) > 0
              ORDER BY last_updated ASC",
@@ -677,6 +676,7 @@ impl SqliteDatabase {
                 session_id: row.get(0)?,
                 max_tokens_observed: row.get(1)?,
                 model_name: row.get(2)?,
+                workspace_dir: row.get(3)?,
             })
         })?;
 
@@ -1043,6 +1043,7 @@ pub struct SessionWithModel {
     pub session_id: String,
     pub max_tokens_observed: Option<i64>,
     pub model_name: String,
+    pub workspace_dir: Option<String>,
 }
 
 /// Perform database maintenance operations

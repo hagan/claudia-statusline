@@ -224,7 +224,7 @@ impl StatsData {
         // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
-                let _ = db.update_session(
+                if let Err(e) = db.update_session(
                     session_id,
                     session_cost,
                     lines_added,
@@ -233,8 +233,14 @@ impl StatsData {
                     workspace_dir,
                     token_breakdown,
                     None, // max_tokens_observed updated separately
-                );
+                ) {
+                    log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
+                }
+            } else {
+                log::warn!("Failed to open SQLite database at {:?} for session update", db_path);
             }
+        } else {
+            log::warn!("Failed to get SQLite path for session update");
         }
 
         // Calculate delta from last known session cost
@@ -382,8 +388,14 @@ impl StatsData {
         // Persist to SQLite database using dedicated method
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
-                let _ = db.update_max_tokens_observed(session_id, current_tokens);
+                if let Err(e) = db.update_max_tokens_observed(session_id, current_tokens) {
+                    log::warn!("Failed to update max_tokens_observed for session {} in SQLite: {}", session_id, e);
+                }
+            } else {
+                log::warn!("Failed to open SQLite database at {:?} for max_tokens update", db_path);
             }
+        } else {
+            log::warn!("Failed to get SQLite path for max_tokens update");
         }
     }
 }
