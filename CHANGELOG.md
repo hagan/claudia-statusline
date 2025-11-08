@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.4] - 2025-11-08
+
+### Fixed
+- **Mode-aware auto-compact threshold**: Warning now appears BEFORE compaction in both modes
+  - **Problem**: In "full" mode with 80% threshold, warning appeared at 160K but compaction happened at 156K (too late!)
+  - **Solution**: Threshold now automatically adjusts based on `percentage_mode`
+  - **"full" mode**: Default 75% = 150K tokens (warns ~6K before compaction at ~156K)
+  - **"working" mode**: Auto-adjusted to 94% = 150K tokens (same warning point)
+  - Both modes now show ⚠ before compaction, not after
+
+### Changed
+- Default `auto_compact_threshold` changed from 80.0 to 75.0
+  - Old default: 80% (designed for "working" mode only)
+  - New default: 75% (mode-aware, works correctly in both modes)
+  - Custom thresholds are respected as-is without automatic adjustment
+
+### Added
+- New `ContextConfig::get_effective_threshold()` method
+  - Returns mode-aware threshold (75% for "full", 94% for "working")
+  - Detects custom thresholds and uses them without adjustment
+  - Ensures consistent warning behavior across both display modes
+
 ## [2.16.3] - 2025-11-08
 
 ### Added

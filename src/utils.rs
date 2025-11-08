@@ -385,8 +385,9 @@ pub fn calculate_context_usage(
     // Tokens remaining in working window before hitting buffer zone
     let tokens_remaining = working_window.saturating_sub(total_tokens as usize);
 
-    // Check if approaching auto-compact threshold (default 80%)
-    let approaching_limit = percentage >= config.context.auto_compact_threshold;
+    // Check if approaching auto-compact threshold (mode-aware: 75% for "full", 94% for "working")
+    let effective_threshold = config.context.get_effective_threshold();
+    let approaching_limit = percentage >= effective_threshold;
 
     Some(ContextUsage {
         percentage: percentage.min(100.0),

@@ -160,20 +160,29 @@ pub struct ContextConfig {
     /// or when you have ~40-45K tokens remaining (the buffer zone).
     pub buffer_size: usize,
 
-    /// Auto-compact threshold percentage
+    /// Auto-compact warning threshold percentage (mode-aware)
     ///
-    /// **Default: 80.0 (80%)**
+    /// **Default: 75.0 (mode-aware)**
     ///
-    /// Claude Code automatically compacts (summarizes) the conversation when the
-    /// context window reaches approximately 80% capacity (160K tokens for 200K models).
+    /// Shows warning indicator (⚠) when context percentage exceeds this value.
     ///
-    /// When context usage exceeds this threshold, the statusline will show a warning
-    /// indicator that auto-compact may occur soon.
+    /// **Mode-aware behavior:**
+    /// - **"full" mode**: Default 75% = 150K tokens (warns ~6K before compaction at ~156K)
+    /// - **"working" mode**: Auto-adjusted to 94% = 150K tokens (same warning point)
+    ///
+    /// This ensures the warning appears before actual auto-compaction in both display modes.
+    ///
+    /// **Custom thresholds:**
+    /// Set any value between 0.0-100.0 to override the mode-aware defaults.
+    /// Custom values are respected as-is without adjustment.
+    ///
+    /// **Example:**
+    /// ```toml
+    /// [context]
+    /// auto_compact_threshold = 70.0  # Warn earlier (at 140K in "full" mode)
+    /// ```
     ///
     /// Range: 0.0 to 100.0
-    ///
-    /// Reference: The auto-compact threshold is at 160K tokens, which is 80% of
-    /// the 200K context window for modern Claude models.
     pub auto_compact_threshold: f64,
 
     /// Context percentage display mode
@@ -346,6 +355,46 @@ fn default_percentage_mode() -> String {
     "full".to_string()
 }
 
+impl ContextConfig {
+    /// Get the effective auto-compact threshold based on percentage mode
+    ///
+    /// The threshold is automatically adjusted based on the display mode to ensure
+    /// the warning appears before actual compaction in both modes:
+    ///
+    /// - "full" mode: Uses the configured threshold directly (default 75%)
+    ///   - 75% of 200K = 150K tokens (warning ~6K before compaction at ~156K)
+    ///
+    /// - "working" mode: Adjusts threshold to account for buffer (default 94%)
+    ///   - 94% of 160K = 150K tokens (same warning point as full mode)
+    ///
+    /// Users can override with custom thresholds that will be respected in both modes.
+    pub fn get_effective_threshold(&self) -> f64 {
+        // If user has customized the threshold, use it as-is
+        // (We detect customization by checking if it's not the default 75% or legacy 80%)
+        let is_custom = (self.auto_compact_threshold - 75.0).abs() > 0.1
+            && (self.auto_compact_threshold - 80.0).abs() > 0.1;
+
+        if is_custom {
+            return self.auto_compact_threshold;
+        }
+
+        // Auto-adjust based on mode for default thresholds
+        match self.percentage_mode.as_str() {
+            "working" => {
+                // In working mode, adjust to show warning at same absolute token count
+                // Default: 75% of 200K = 150K tokens
+                // In working mode: 150K / 160K = 93.75%, round to 94%
+                94.0
+            }
+            _ => {
+                // "full" mode (default): use 75% to warn before typical compaction at 78%
+                // 75% of 200K = 150K tokens, compaction at ~156K (78%) gives ~6K warning buffer
+                75.0
+            }
+        }
+    }
+}
+
 impl Default for ContextConfig {
     fn default() -> Self {
         ContextConfig {
@@ -354,7 +403,7 @@ impl Default for ContextConfig {
             adaptive_learning: false, // Disabled by default (experimental feature)
             learning_confidence_threshold: 0.7, // Require 70% confidence before using learned values
             buffer_size: 40_000, // Claude Code reserves ~40-45K tokens for responses
-            auto_compact_threshold: 80.0, // Claude Code auto-compacts at ~80% (160K for 200K models)
+            auto_compact_threshold: 75.0, // Mode-aware: 75% for "full", auto-adjusted to 94% for "working"
             percentage_mode: default_percentage_mode(), // Default to "full" for user expectations
         }
     }
