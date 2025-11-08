@@ -360,25 +360,58 @@ pub fn calculate_context_usage(
 ) -> Option<ContextUsage> {
     let total_tokens = get_token_count_from_transcript(transcript_path)?;
 
-    // Get context window size based on model (intelligent detection + config overrides)
     let config = config::get_config();
-    let context_window = get_context_window_for_model(model_name, config);
-
-    // Calculate working window (total context minus buffer reserved for responses)
     let buffer_size = config.context.buffer_size;
-    let working_window = context_window.saturating_sub(buffer_size);
+
+    // Get base context window from model detection (may be learned or advertised)
+    let base_window = get_context_window_for_model(model_name, config);
+
+    // Interpretation of base_window depends on whether adaptive learning is enabled:
+    // - If adaptive learning ENABLED: base_window is the learned compaction point (e.g., 156K)
+    //   This represents the working window where compaction happens
+    // - If adaptive learning DISABLED: base_window is the advertised total window (e.g., 200K)
+    //   This is the full context window as advertised by Anthropic
+
+    let (full_window, working_window) = if config.context.adaptive_learning {
+        // Adaptive learning enabled: base_window is the compaction point (working window)
+        // full_window = compaction_point + buffer (e.g., 156K + 40K = 196K total)
+        // working_window = compaction_point (e.g., 156K before compaction)
+        (base_window + buffer_size, base_window)
+    } else {
+        // Adaptive learning disabled: base_window is the advertised total window
+        // full_window = advertised total (e.g., 200K)
+        // working_window = advertised total - buffer (e.g., 200K - 40K = 160K)
+        (base_window, base_window.saturating_sub(buffer_size))
+    };
 
     // Calculate percentage based on configured display mode
+    log::debug!(
+        "Context calculation: mode={}, tokens={}, base_window={}, full_window={}, working_window={}, buffer={}, adaptive_learning={}",
+        config.context.percentage_mode,
+        total_tokens,
+        base_window,
+        full_window,
+        working_window,
+        buffer_size,
+        config.context.adaptive_learning
+    );
+
     let percentage = match config.context.percentage_mode.as_str() {
         "working" => {
-            // "working" mode: percentage of usable window (context - buffer)
-            // Example: 150K / 160K = 93.75% (shows proximity to auto-compact)
-            (total_tokens as f64 / working_window as f64) * 100.0
+            // "working" mode: percentage of working window
+            // - With learning: shows proximity to learned compaction point (e.g., 150K / 156K = 96%)
+            // - Without learning: shows proximity to advertised working window (e.g., 150K / 160K = 94%)
+            let pct = (total_tokens as f64 / working_window as f64) * 100.0;
+            log::debug!("Using 'working' mode: {} / {} = {:.2}%", total_tokens, working_window, pct);
+            pct
         }
         _ => {
-            // "full" mode (default): percentage of total advertised window
-            // Example: 150K / 200K = 75% (matches user expectations from Anthropic's 200K claim)
-            (total_tokens as f64 / context_window as f64) * 100.0
+            // "full" mode (default): percentage of total context window
+            // - With learning: uses learned total (compaction + buffer, e.g., 150K / 196K = 77%)
+            // - Without learning: uses advertised total (e.g., 150K / 200K = 75%)
+            let pct = (total_tokens as f64 / full_window as f64) * 100.0;
+            log::debug!("Using 'full' mode: {} / {} = {:.2}%", total_tokens, full_window, pct);
+            pct
         }
     };
 

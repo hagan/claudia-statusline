@@ -212,6 +212,7 @@ impl StatsData {
         lines_removed: u64,
         model_name: Option<&str>,
         workspace_dir: Option<&str>,
+        device_id: Option<&str>,
         token_breakdown: Option<&crate::models::TokenBreakdown>,
     ) -> (f64, f64) {
         let today = current_date();
@@ -219,7 +220,7 @@ impl StatsData {
         let now = current_timestamp();
 
         // Update SQLite database directly with all parameters including new migration v5 fields
-        // This ensures model_name, workspace_dir, and token breakdown are persisted immediately
+        // This ensures model_name, workspace_dir, device_id, and token breakdown are persisted immediately
         // SqliteDatabase::new() will create the database if it doesn't exist
         // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
         if let Ok(db_path) = Self::get_sqlite_path() {
@@ -231,6 +232,7 @@ impl StatsData {
                     lines_removed,
                     model_name,
                     workspace_dir,
+                    device_id,
                     token_breakdown,
                     None, // max_tokens_observed updated separately
                 ) {
@@ -541,6 +543,7 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
             session.lines_removed,
             None, // model_name not available in dual-write
             None, // workspace_dir not available in dual-write
+            None, // device_id not available in dual-write
             None, // token_breakdown not available in dual-write
             session.max_tokens_observed, // max_tokens_observed from in-memory stats
         ) {
@@ -610,7 +613,7 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
 /// use statusline::stats::update_stats_data;
 ///
 /// let (daily, monthly) = update_stats_data(|stats| {
-///     stats.update_session("session-123", 1.50, 100, 50, None, None, None)
+///     stats.update_session("session-123", 1.50, 100, 50, None, None, None, None)
 /// });
 /// ```
 pub fn update_stats_data<F>(updater: F) -> (f64, f64)
@@ -711,7 +714,7 @@ mod tests {
     #[test]
     fn test_stats_data_update_session() {
         let mut stats = StatsData::default();
-        let (daily, monthly) = stats.update_session("test-session", 10.0, 100, 50, None, None, None);
+        let (daily, monthly) = stats.update_session("test-session", 10.0, 100, 50, None, None, None, None);
 
         assert_eq!(daily, 10.0);
         assert_eq!(monthly, 10.0);
@@ -739,7 +742,7 @@ mod tests {
         env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
 
         let mut stats = StatsData::default();
-        stats.update_session("test", 5.0, 50, 25, None, None, None);
+        stats.update_session("test", 5.0, 50, 25, None, None, None, None);
 
         let save_result = stats.save();
         assert!(save_result.is_ok());
@@ -765,7 +768,7 @@ mod tests {
         let mut stats = StatsData::default();
 
         // First update creates session with start_time
-        stats.update_session("test-session", 1.0, 10, 5, None, None, None);
+        stats.update_session("test-session", 1.0, 10, 5, None, None, None, None);
 
         // Check that start_time was set
         let session = stats.sessions.get("test-session").unwrap();
@@ -773,7 +776,7 @@ mod tests {
 
         // Second update to same session shouldn't change start_time
         let original_start = session.start_time.clone();
-        stats.update_session("test-session", 2.0, 20, 10, None, None, None);
+        stats.update_session("test-session", 2.0, 20, 10, None, None, None, None);
 
         let session = stats.sessions.get("test-session").unwrap();
         assert_eq!(session.start_time, original_start);
@@ -815,7 +818,7 @@ mod tests {
                 // Ensure the thread uses the temp directory
                 env::set_var("XDG_DATA_HOME", &temp_path_clone);
                 let (daily, _) = update_stats_data(|stats| {
-                    stats.update_session(&format!("test-thread-{}", i), 1.0, 10, 5, None, None, None)
+                    stats.update_session(&format!("test-thread-{}", i), 1.0, 10, 5, None, None, None, None)
                 });
                 completed_clone.fetch_add(1, Ordering::SeqCst);
                 daily
@@ -881,7 +884,7 @@ mod tests {
         initial_stats.save().unwrap();
 
         // Create a session with a specific start time
-        update_stats_data(|stats| stats.update_session("duration-test-session", 1.0, 10, 5, None, None, None));
+        update_stats_data(|stats| stats.update_session("duration-test-session", 1.0, 10, 5, None, None, None, None));
 
         // Wait a bit to ensure some time passes
         thread::sleep(Duration::from_millis(100));

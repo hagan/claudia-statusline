@@ -619,11 +619,9 @@ For detailed information, see [Adaptive Learning Guide](ADAPTIVE_LEARNING.md).
 
 #### Context Percentage Display Mode
 
-**New in v2.16.3**: Choose how context percentage is calculated and displayed.
+**Updated in v2.16.5**: Choose how context percentage is calculated and displayed.
 
-By default, the statusline shows percentage of the **total context window** (e.g., 200K as advertised by Anthropic). This matches user expectations, where 100% = the full context window.
-
-However, Claude Code reserves a **buffer** (~40K tokens) for generating responses, which isn't available for conversation. Power users tracking compaction may prefer to see percentage of the **working window** (total - buffer).
+The statusline can show percentage of either the **total context window** ("full" mode) or the **working window** ("working" mode). The calculations automatically adapt based on your `adaptive_learning` setting.
 
 **Configure display mode** in `~/.config/claudia-statusline/config.toml`:
 
@@ -634,31 +632,43 @@ However, Claude Code reserves a **buffer** (~40K tokens) for generating response
 # Default: "full"
 percentage_mode = "full"
 
-# Optional: Configure buffer size (default: 40000)
-# Only affects "working" mode calculation
+# Buffer reserved for Claude's responses (default: 40000)
 buffer_size = 40000
 
-# Optional: Auto-compact warning threshold (default: 80.0)
-# Shows warning indicator (⚠) when percentage exceeds this value
-auto_compact_threshold = 80.0
+# Auto-compact warning threshold (default: 75.0)
+# Mode-aware: adjusts automatically based on percentage_mode
+auto_compact_threshold = 75.0
+
+# Enable adaptive learning to automatically detect actual context limits
+# Default: false
+adaptive_learning = false
 ```
 
 **Mode comparison** (example with 150K tokens):
 
-| Mode | Calculation | Display | Best For |
-|------|-------------|---------|----------|
-| **"full"** (default) | 150K / 200K = **75%** | Matches Anthropic's 200K claim | Most users ✅ |
-| **"working"** | 150K / 160K = **93.75%** | Shows proximity to auto-compact | Power users tracking compaction |
+**With Adaptive Learning DISABLED** (uses Anthropic's advertised values):
+| Mode | Calculation | Display | Description |
+|------|-------------|---------|-------------|
+| **"full"** (default) | 150K / 200K = **75%** | Uses advertised total (200K) | Matches Anthropic's specs ✅ |
+| **"working"** | 150K / 160K = **94%** | Uses advertised working (160K) | Shows usable conversation space |
+
+**With Adaptive Learning ENABLED** (refines based on 557 observations showing compaction at ~156K):
+| Mode | Calculation | Display | Description |
+|------|-------------|---------|-------------|
+| **"full"** | 150K / 196K = **77%** | Uses learned total (156K + 40K buffer) | Refined estimate of actual total |
+| **"working"** | 150K / 156K = **96%** | Uses learned compaction point (156K) | Precise proximity to compaction ⚠ |
+
+**Key difference**: Adaptive learning refines BOTH modes by learning the actual compaction point from observations, then calculating the total window as `compaction_point + buffer`.
 
 **When to use "working" mode:**
-- You're tracking when Claude will auto-compact (typically at ~98% of working window)
-- You have adaptive learning enabled and want to see how close you are to learned limits
-- You need precise tracking of usable conversation space
+- You want to track proximity to auto-compaction
+- You have adaptive learning enabled and need precise compaction warnings
+- You're optimizing for maximum context usage
 
 **When to use "full" mode (recommended):**
-- You want percentages that match Anthropic's advertised context sizes
-- You expect 100% = full 200K context window
-- You're not specifically tracking compaction events
+- You want intuitive percentages (100% = full context)
+- You prefer consistency with Anthropic's advertised specifications
+- You're using adaptive learning and want to see refined total window estimate
 
 ### Progress Bar Width
 

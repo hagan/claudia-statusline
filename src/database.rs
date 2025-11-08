@@ -254,6 +254,7 @@ impl SqliteDatabase {
         lines_removed: u64,
         model_name: Option<&str>,
         workspace_dir: Option<&str>,
+        device_id: Option<&str>,
         token_breakdown: Option<&crate::models::TokenBreakdown>,
         max_tokens_observed: Option<u32>,
     ) -> Result<(f64, f64)> {
@@ -272,6 +273,7 @@ impl SqliteDatabase {
                 lines_removed,
                 model_name,
                 workspace_dir,
+                device_id,
                 token_breakdown,
                 max_tokens_observed,
             )?;
@@ -348,6 +350,7 @@ impl SqliteDatabase {
         lines_removed: u64,
         model_name: Option<&str>,
         workspace_dir: Option<&str>,
+        device_id: Option<&str>,
         token_breakdown: Option<&crate::models::TokenBreakdown>,
         max_tokens_observed: Option<u32>,
     ) -> Result<(f64, f64)> {
@@ -396,11 +399,11 @@ impl SqliteDatabase {
         tx.execute(
             "INSERT INTO sessions (
                 session_id, start_time, last_updated, cost, lines_added, lines_removed,
-                model_name, workspace_dir,
+                model_name, workspace_dir, device_id,
                 total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
                 max_tokens_observed
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(session_id) DO UPDATE SET
                 last_updated = ?3,
                 cost = ?4,
@@ -408,18 +411,19 @@ impl SqliteDatabase {
                 lines_removed = ?6,
                 model_name = ?7,
                 workspace_dir = ?8,
-                total_input_tokens = ?9,
-                total_output_tokens = ?10,
-                total_cache_read_tokens = ?11,
-                total_cache_creation_tokens = ?12,
+                device_id = ?9,
+                total_input_tokens = ?10,
+                total_output_tokens = ?11,
+                total_cache_read_tokens = ?12,
+                total_cache_creation_tokens = ?13,
                 max_tokens_observed = CASE
-                    WHEN ?13 IS NOT NULL AND ?13 > COALESCE(max_tokens_observed, 0)
-                    THEN ?13
+                    WHEN ?14 IS NOT NULL AND ?14 > COALESCE(max_tokens_observed, 0)
+                    THEN ?14
                     ELSE max_tokens_observed
                 END",
             params![
                 session_id, &now, &now, cost, lines_added as i64, lines_removed as i64,
-                model_name, workspace_dir,
+                model_name, workspace_dir, device_id,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
                 max_tokens
             ],
@@ -1270,12 +1274,12 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let db = SqliteDatabase::new(&db_path).unwrap();
 
-        let (day_total, session_total) = db.update_session("test-session", 10.0, 100, 50, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("test-session", 10.0, 100, 50, None, None, None, None, None).unwrap();
         assert_eq!(day_total, 10.0);
         assert_eq!(session_total, 10.0);
 
         // Update same session - should REPLACE not accumulate
-        let (day_total, session_total) = db.update_session("test-session", 5.0, 50, 25, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("test-session", 5.0, 50, 25, None, None, None, None, None).unwrap();
         assert_eq!(
             day_total, 5.0,
             "Day total should be replaced, not accumulated"
@@ -1296,17 +1300,17 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // First update: session cost = 10.0
-        let (day_total, session_total) = db.update_session("session1", 10.0, 100, 50, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("session1", 10.0, 100, 50, None, None, None, None, None).unwrap();
         assert_eq!(session_total, 10.0);
         assert_eq!(day_total, 10.0);
 
         // Second session on same day
-        let (day_total, session_total) = db.update_session("session2", 20.0, 200, 100, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("session2", 20.0, 200, 100, None, None, None, None, None).unwrap();
         assert_eq!(session_total, 20.0);
         assert_eq!(day_total, 30.0); // 10 + 20
 
         // Update first session with LOWER value - should decrease day total
-        let (day_total, session_total) = db.update_session("session1", 8.0, 80, 40, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("session1", 8.0, 80, 40, None, None, None, None, None).unwrap();
         assert_eq!(session_total, 8.0, "Session should have new value");
         assert_eq!(
             day_total, 28.0,
@@ -1314,7 +1318,7 @@ mod tests {
         );
 
         // Update first session with HIGHER value - should increase day total
-        let (day_total, session_total) = db.update_session("session1", 15.0, 150, 75, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("session1", 15.0, 150, 75, None, None, None, None, None).unwrap();
         assert_eq!(session_total, 15.0, "Session should have new value");
         assert_eq!(
             day_total, 35.0,
@@ -1322,7 +1326,7 @@ mod tests {
         );
 
         // Update second session to zero - should decrease day total
-        let (day_total, session_total) = db.update_session("session2", 0.0, 0, 0, None, None, None, None).unwrap();
+        let (day_total, session_total) = db.update_session("session2", 0.0, 0, 0, None, None, None, None, None).unwrap();
         assert_eq!(session_total, 0.0, "Session should be zero");
         assert_eq!(
             day_total, 15.0,
@@ -1347,7 +1351,7 @@ mod tests {
                 let path = db_path.clone();
                 thread::spawn(move || {
                     let db = SqliteDatabase::new(&path).unwrap();
-                    db.update_session(&format!("session-{}", i), 1.0, 10, 5, None, None, None, None)
+                    db.update_session(&format!("session-{}", i), 1.0, 10, 5, None, None, None, None, None)
                 })
             })
             .collect();
@@ -1372,9 +1376,9 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions
-        db.update_session("session-1", 10.0, 100, 50, None, None, None, None).unwrap();
-        db.update_session("session-2", 20.0, 200, 100, None, None, None, None).unwrap();
-        db.update_session("session-3", 30.0, 300, 150, None, None, None, None).unwrap();
+        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None).unwrap();
+        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None).unwrap();
+        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None).unwrap();
 
         // Check totals
         assert_eq!(db.get_today_total().unwrap(), 60.0);
@@ -1534,7 +1538,7 @@ mod tests {
 
         // Step 5: Verify the database can be used normally after upgrade
         drop(conn);
-        db.update_session("new-session-after-upgrade", 3.0, 50, 25, None, None, None, None)
+        db.update_session("new-session-after-upgrade", 3.0, 50, 25, None, None, None, None, None)
             .unwrap();
 
         let today_total = db.get_today_total().unwrap();
@@ -1551,9 +1555,9 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions with different dates
-        db.update_session("session-1", 10.0, 100, 50, None, None, None, None).unwrap();
-        db.update_session("session-2", 20.0, 200, 100, None, None, None, None).unwrap();
-        db.update_session("session-3", 30.0, 300, 150, None, None, None, None).unwrap();
+        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None).unwrap();
+        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None).unwrap();
+        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None).unwrap();
 
         // Check all-time stats methods
         assert_eq!(db.get_all_time_total().unwrap(), 60.0);

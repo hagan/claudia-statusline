@@ -7,6 +7,84 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.6] - 2025-11-08
+
+### Fixed
+- **Critical: device_id now properly populated in sessions table**
+  - **Problem**: `sessions.device_id` was always NULL, breaking audit trails and cross-device sync
+  - **Root cause**: `SqliteDatabase::update_session` didn't accept or write device_id parameter
+  - **Solution**: Added `device_id` parameter throughout call chain (database.rs → stats.rs → main.rs/lib.rs)
+  - **Impact**: Device tracking now works correctly for context learning and Turso sync
+
+- **Critical: Restored composite primary keys in Turso schema**
+  - **Problem**: Single-column primary keys allowed cross-device data collisions in cloud sync
+  - **Root cause**: Schema regeneration lost composite keys from original design
+  - **Solution**: Restored `PRIMARY KEY (device_id, session_id)` etc. in `scripts/setup-turso-schema.sql`
+  - **Tables affected**: `sessions`, `daily_stats`, `monthly_stats`, `learned_context_windows`
+  - **Impact**: Prevents data clobbering when multiple machines sync to same Turso database
+
+- **Critical: Fixed manual compaction detection**
+  - **Problem**: Manual compaction requests never detected, all counted as automatic
+  - **Root cause**: Code assumed `message.content` was flat string, but Claude uses JSON array of segments
+  - **Solution**: Updated `is_manual_compaction()` to handle both string and array content formats
+  - **Detection patterns**: `/compact`, `/summarize`, "summarize conversation", etc.
+  - **Impact**: `compaction_count` and confidence scores now accurate for adaptive learning
+
+### Performance
+- **Optimized manual compaction detection to use tail-reading**
+  - **Problem**: Previously loaded entire transcript into memory (O(n) time complexity)
+  - **Solution**: Now ALWAYS seeks to end of file and reads only last ~20KB chunk
+  - **Impact**: O(1) time and memory regardless of transcript size - no longer iterates through entire file
+
+### Technical Details
+- Added `device_id: Option<&str>` parameter to:
+  - `SqliteDatabase::update_session()` and `update_session_tx()`
+  - `StatsData::update_session()`
+  - All call sites retrieve device_id via `common::get_device_id()`
+- Turso schema changes:
+  - Made `device_id` NOT NULL in all relevant tables
+  - Composite primary keys prevent duplicate rows across devices
+- Manual compaction detection:
+  - First tries `content` as string (backward compatibility)
+  - Falls back to array iteration, extracting "text" from each segment
+  - Joins all text parts before pattern matching
+  - Uses file seeking to read only last ~20KB, skips first partial line
+  - Takes last 5 lines from chunk (O(1) regardless of file size)
+
+## [2.16.5] - 2025-11-08
+
+### Fixed
+- **Critical: Adaptive learning now correctly adjusts both "full" and "working" mode calculations**
+  - **Problem**: Adaptive learning was being ignored in "full" mode, causing incorrect percentages
+  - **Root cause**: Window size interpretation was inconsistent between adaptive learning enabled/disabled states
+  - **Solution**: Properly interpret learned values as working window (compaction point) and calculate total window by adding buffer
+
+### Changed
+- **Adaptive learning now refines both modes** (when enabled):
+  - Learned value (e.g., 156K) represents the **working window** where compaction happens
+  - **"full" mode**: Uses learned total = working + buffer (e.g., 156K + 40K = 196K)
+    - Shows percentage of refined total window
+    - Example: 150K / 196K = 77%
+  - **"working" mode**: Uses learned working window (e.g., 156K)
+    - Shows proximity to actual compaction point
+    - Example: 150K / 156K = 96%
+
+- **Without adaptive learning** (disabled or no observations yet):
+  - **"full" mode**: Uses advertised total (e.g., 200K from Anthropic)
+    - Example: 150K / 200K = 75%
+  - **"working" mode**: Uses advertised working = total - buffer (e.g., 160K)
+    - Example: 150K / 160K = 94%
+
+### Technical Details
+- Removed `get_advertised_context_window()` function (not needed)
+- `calculate_context_usage()` now interprets `base_window` based on `adaptive_learning` setting:
+  - When enabled: `base_window` = learned compaction point (working window)
+  - When disabled: `base_window` = advertised total window
+- Window calculations:
+  - Adaptive ON: `full = base + buffer`, `working = base`
+  - Adaptive OFF: `full = base`, `working = base - buffer`
+- This allows the system to automatically adapt to actual context limits as models evolve
+
 ## [2.16.4] - 2025-11-08
 
 ### Fixed

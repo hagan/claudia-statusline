@@ -2,10 +2,13 @@
 
 **Status**: Experimental (v2.16.0+)
 **Default**: Disabled
+**Updated**: v2.16.5 - Now refines both "full" and "working" percentage modes
 
 ## Overview
 
 Adaptive Context Learning is an experimental feature that automatically learns the actual context window limits of Claude models by observing real usage patterns. Instead of relying on hardcoded defaults, the statusline detects when Claude performs automatic compaction and learns the true limits over time.
+
+**New in v2.16.5**: Learned values now refine both "full" and "working" percentage display modes, providing more accurate context tracking for all users.
 
 ## Why Use Adaptive Learning?
 
@@ -139,6 +142,32 @@ Context window limits are selected in this order:
 4. **Global fallback** (lowest priority)
    - Value from `window_size` setting
    - Used when nothing else available
+
+### Impact on Percentage Display Modes (v2.16.5+)
+
+Adaptive learning refines **BOTH** "full" and "working" percentage display modes:
+
+**Interpretation of learned values:**
+- The learned limit (e.g., 156K from compaction observations) represents the **working window** where compaction happens
+- The total window is calculated as `working_window + buffer` (e.g., 156K + 40K = 196K)
+
+**Without adaptive learning** (uses Anthropic's advertised values):
+- "full" mode: `tokens / 200K` (advertised total)
+- "working" mode: `tokens / 160K` (advertised working = 200K - 40K)
+- Example: `150K / 200K = 75%` (full), `150K / 160K = 94%` (working)
+
+**With adaptive learning enabled** (refines based on observations):
+- "full" mode: `tokens / 196K` (learned total = 156K + 40K)
+- "working" mode: `tokens / 156K` (learned compaction point)
+- Example: `150K / 196K = 77%` (full), `150K / 156K = 96%` (working)
+
+**Key benefits:**
+- Automatically adapts to actual model behavior
+- Both modes show more accurate percentages
+- Tracks real compaction thresholds, not assumptions
+- Works with future model updates without code changes
+
+See [Configuration Guide - Percentage Display Mode](CONFIGURATION.md#context-percentage-display-mode) for details on choosing between "full" and "working" modes
 
 ## CLI Commands
 

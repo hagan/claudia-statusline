@@ -124,6 +124,13 @@ pub struct ContextConfig {
     /// - Tracks repeated token ceiling observations
     /// - Builds confidence scores based on multiple observations
     ///
+    /// **Impact on percentage display (v2.16.5+)**:
+    /// Learned values refine BOTH "full" and "working" percentage modes:
+    /// - Learned value represents working window where compaction happens (e.g., 156K)
+    /// - Total window calculated as working + buffer (e.g., 156K + 40K = 196K)
+    /// - "full" mode: tokens / learned_total (e.g., 150K / 196K = 77%)
+    /// - "working" mode: tokens / learned_working (e.g., 150K / 156K = 96%)
+    ///
     /// Learned values are only used when confidence >= `learning_confidence_threshold`.
     /// User overrides in `model_windows` always take precedence.
     ///

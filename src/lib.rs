@@ -134,6 +134,9 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
                 let token_breakdown = input.transcript.as_ref()
                     .and_then(|path| utils::get_token_breakdown_from_transcript(path));
 
+                // Get device ID for audit trail
+                let device_id = common::get_device_id();
+
                 let (daily_total, _monthly_total) = stats::update_stats_data(|data| {
                     data.update_session(
                         session_id.unwrap(),
@@ -142,6 +145,7 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
                         cost.total_lines_removed.unwrap_or(0),
                         model_name,
                         workspace_dir,
+                        Some(&device_id),
                         token_breakdown.as_ref(),
                     )
                 });

@@ -191,20 +191,46 @@ impl ContextLearner {
     /// - "compress the context"
     /// - etc.
     fn is_manual_compaction(transcript_path: &str) -> bool {
-        // Read last few lines from transcript
-        let file = match File::open(transcript_path) {
+        use std::io::Seek;
+
+        // Read last few lines from transcript efficiently (O(1) time and memory)
+        let mut file = match File::open(transcript_path) {
             Ok(f) => f,
             Err(_) => return false,
         };
 
+        // Get file size
+        let file_size = match file.metadata() {
+            Ok(m) => m.len(),
+            Err(_) => return false,
+        };
+
+        let buffer_size = MANUAL_COMPACTION_CHECK_LINES;
+
+        // Always seek to end and read only last chunk (O(1) regardless of file size)
+        // Estimate: average line ~2KB, read last 20KB to get ~10 lines (buffer for safety)
+        let read_size = (buffer_size * 2048).max(20 * 1024) as u64;
+        let start_pos = file_size.saturating_sub(read_size);
+
+        // Seek to position
+        if file.seek(std::io::SeekFrom::Start(start_pos)).is_err() {
+            return false;
+        }
+
+        // Read from that position to end
         let reader = BufReader::new(file);
-        let lines: Vec<String> = reader
-            .lines()
-            .filter_map(|line| line.ok())
-            .collect::<Vec<_>>()
+        let all_lines: Vec<String> = reader.lines().map_while(|l| l.ok()).collect();
+
+        // Skip first line if we started mid-line (partial line)
+        let skip_first = if start_pos > 0 { 1 } else { 0 };
+
+        // Take last N lines
+        let lines: Vec<String> = all_lines
             .into_iter()
-            .rev() // Most recent first
-            .take(MANUAL_COMPACTION_CHECK_LINES)
+            .skip(skip_first)
+            .rev()
+            .take(buffer_size)
+            .rev()
             .collect();
 
         // Check each line for manual compaction indicators
@@ -213,10 +239,35 @@ impl ContextLearner {
                 // Check if this is a user message
                 if let Some(role) = entry.pointer("/message/role").and_then(|v| v.as_str()) {
                     if role == "user" {
-                        // Get message content
-                        if let Some(content) =
-                            entry.pointer("/message/content").and_then(|v| v.as_str())
+                        // Get message content - handle both string and array formats
+                        let content_text = if let Some(content_value) =
+                            entry.pointer("/message/content")
                         {
+                            // Try as string first (backward compatibility)
+                            if let Some(content_str) = content_value.as_str() {
+                                Some(content_str.to_string())
+                            } else if let Some(content_array) = content_value.as_array() {
+                                // Handle array of segments - extract text from each segment
+                                let mut text_parts = Vec::new();
+                                for segment in content_array {
+                                    if let Some(text) = segment.get("text").and_then(|v| v.as_str())
+                                    {
+                                        text_parts.push(text);
+                                    }
+                                }
+                                if !text_parts.is_empty() {
+                                    Some(text_parts.join(" "))
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        };
+
+                        if let Some(content) = content_text {
                             let content_lower = content.to_lowercase();
 
                             // Check for explicit compaction commands

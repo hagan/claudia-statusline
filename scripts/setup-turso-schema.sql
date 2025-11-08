@@ -3,24 +3,28 @@
 -- This script creates the necessary tables for cloud sync
 
 CREATE TABLE daily_stats (
-    date TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    date TEXT NOT NULL,
     total_cost REAL DEFAULT 0.0,
     total_lines_added INTEGER DEFAULT 0,
     total_lines_removed INTEGER DEFAULT 0,
     session_count INTEGER DEFAULT 0,
-    device_id TEXT
+    PRIMARY KEY (device_id, date)
 );
 
 CREATE TABLE learned_context_windows (
-    model_name TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    workspace_dir TEXT NOT NULL,
     observed_max_tokens INTEGER NOT NULL,
     ceiling_observations INTEGER DEFAULT 0,
     compaction_count INTEGER DEFAULT 0,
     last_observed_max INTEGER NOT NULL,
     last_updated TEXT NOT NULL,
     confidence_score REAL DEFAULT 0.0,
-    first_seen TEXT NOT NULL
-, workspace_dir TEXT, device_id TEXT);
+    first_seen TEXT NOT NULL,
+    PRIMARY KEY (device_id, model_name, workspace_dir)
+);
 
 CREATE TABLE meta (
     key TEXT PRIMARY KEY,
@@ -28,12 +32,13 @@ CREATE TABLE meta (
 );
 
 CREATE TABLE monthly_stats (
-    month TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    month TEXT NOT NULL,
     total_cost REAL DEFAULT 0.0,
     total_lines_added INTEGER DEFAULT 0,
     total_lines_removed INTEGER DEFAULT 0,
     session_count INTEGER DEFAULT 0,
-    device_id TEXT
+    PRIMARY KEY (device_id, month)
 );
 
 CREATE TABLE schema_migrations (
@@ -45,21 +50,22 @@ CREATE TABLE schema_migrations (
 );
 
 CREATE TABLE sessions (
-    session_id TEXT PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
     start_time TEXT NOT NULL,
     last_updated TEXT NOT NULL,
     cost REAL DEFAULT 0.0,
     lines_added INTEGER DEFAULT 0,
     lines_removed INTEGER DEFAULT 0,
     max_tokens_observed INTEGER DEFAULT 0,
-    device_id TEXT,
     sync_timestamp INTEGER,
     model_name TEXT,
     workspace_dir TEXT,
     total_input_tokens INTEGER DEFAULT 0,
     total_output_tokens INTEGER DEFAULT 0,
     total_cache_read_tokens INTEGER DEFAULT 0,
-    total_cache_creation_tokens INTEGER DEFAULT 0
+    total_cache_creation_tokens INTEGER DEFAULT 0,
+    PRIMARY KEY (device_id, session_id)
 );
 
 CREATE TABLE sync_meta (

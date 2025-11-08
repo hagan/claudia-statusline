@@ -332,6 +332,9 @@ fn main() -> Result<()> {
                 let token_breakdown = input.transcript.as_ref()
                     .and_then(|path| utils::get_token_breakdown_from_transcript(path));
 
+                // Get device ID for audit trail
+                let device_id = common::get_device_id();
+
                 // Update stats with new cost data
                 let result = update_stats_data(|data| {
                     data.update_session(
@@ -341,6 +344,7 @@ fn main() -> Result<()> {
                         cost.total_lines_removed.unwrap_or(0),
                         model_name,
                         workspace_dir,
+                        Some(&device_id),
                         token_breakdown.as_ref(),
                     )
                 });
@@ -367,8 +371,8 @@ fn main() -> Result<()> {
                                 let db_path = get_data_dir().join("stats.db");
                                 if let Ok(db) = SqliteDatabase::new(&db_path) {
                                     let learner = ContextLearner::new(db);
-                                    let device_id = common::get_device_id();
                                     // Ignore errors from adaptive learning - it's experimental
+                                    // Re-use device_id retrieved earlier for consistency
                                     let _ = learner.observe_usage(
                                         model_name,
                                         current_tokens as usize,

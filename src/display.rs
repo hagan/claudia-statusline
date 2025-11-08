@@ -248,6 +248,12 @@ fn format_statusline_string(
     session_id: Option<&str>,
     display_config: &config::DisplayConfig,
 ) -> String {
+    log::debug!(
+        "format_statusline_string called: model_name={:?}, transcript_path={:?}, show_context={}",
+        model_name,
+        transcript_path,
+        display_config.show_context
+    );
     let mut parts = Vec::new();
 
     // 1. Directory (always first if shown)
