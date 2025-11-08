@@ -93,7 +93,7 @@ pub fn shorten_path(path: &str) -> String {
 }
 
 /// Maximum size for transcript files (10MB)
-const MAX_TRANSCRIPT_SIZE: u64 = 10 * 1024 * 1024;
+const MAX_TRANSCRIPT_SIZE: u64 = 50 * 1024 * 1024; // 50MB for long Claude sessions
 
 /// Determines the context window size for a given model
 ///
