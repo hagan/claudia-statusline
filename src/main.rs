@@ -307,14 +307,67 @@ fn main() -> Result<()> {
         if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
             if let Some(total_cost) = cost.total_cost_usd {
                 // Update stats with new cost data
-                update_stats_data(|data| {
+                let result = update_stats_data(|data| {
                     data.update_session(
                         session_id,
                         total_cost,
                         cost.total_lines_added.unwrap_or(0),
                         cost.total_lines_removed.unwrap_or(0),
                     )
-                })
+                });
+
+                // Adaptive context learning: observe token usage if enabled
+                if let Some(ref transcript_path) = input.transcript {
+                    if let Some(ref model_name) = input.model.as_ref().and_then(|m| m.display_name.as_ref()) {
+                        let config = config::get_config();
+                        if config.context.adaptive_learning {
+                            if let Some(current_tokens) = utils::get_token_count_from_transcript(transcript_path) {
+                                // Get previous token count from session stats
+                                let stats_data = get_or_load_stats_data();
+                                let previous_tokens = stats_data
+                                    .sessions
+                                    .get(session_id)
+                                    .and_then(|s| s.max_tokens_observed)
+                                    .map(|t| t as usize);
+
+                                // Create context learner and observe usage
+                                use common::get_data_dir;
+                                use context_learning::ContextLearner;
+                                use database::SqliteDatabase;
+
+                                let db_path = get_data_dir().join("stats.db");
+                                if let Ok(db) = SqliteDatabase::new(&db_path) {
+                                    let learner = ContextLearner::new(db);
+                                    // Ignore errors from adaptive learning - it's experimental
+                                    let _ = learner.observe_usage(
+                                        model_name,
+                                        current_tokens as usize,
+                                        previous_tokens,
+                                        Some(transcript_path),
+                                    );
+
+                                    // Update session's max_tokens_observed for next comparison
+                                    update_stats_data(|data| {
+                                        use common::{current_date, current_month};
+
+                                        if let Some(session) = data.sessions.get_mut(session_id) {
+                                            let new_max = session.max_tokens_observed.unwrap_or(0).max(current_tokens);
+                                            session.max_tokens_observed = Some(new_max);
+                                        }
+                                        // Return unchanged totals
+                                        let today = current_date();
+                                        let month = current_month();
+                                        let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+                                        let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
+                                        (daily_total, monthly_total)
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+
+                result
             } else {
                 // Have session but no cost data - still load existing daily totals
                 let data = get_or_load_stats_data();
