@@ -219,11 +219,21 @@ impl SqliteDatabase {
         };
 
         if needs_migration {
+            log::debug!(
+                "Running migrations for database: {}",
+                canonical_path.display()
+            );
             // Run pending migrations and mark as migrated
             crate::migrations::run_migrations_on_db(db_path)?;
 
             let mut guard = migrated_dbs.lock().unwrap();
-            guard.insert(canonical_path);
+            guard.insert(canonical_path.clone());
+            log::debug!("Marked database as migrated: {}", canonical_path.display());
+        } else {
+            log::debug!(
+                "Skipping migrations (already migrated): {}",
+                canonical_path.display()
+            );
         }
 
         // Create the database wrapper with correct schema
