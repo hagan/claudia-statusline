@@ -21,6 +21,8 @@ use crate::database::SqliteDatabase;
 use crate::error::Result;
 use chrono::Local;
 use log::{debug, info, warn};
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 
 /// Minimum token count to consider for compaction detection
 const MIN_COMPACTION_TOKENS: usize = 150_000;
@@ -30,6 +32,13 @@ const COMPACTION_DROP_THRESHOLD: f64 = 0.10; // 10%
 
 /// Token variance threshold for ceiling detection (within 2% = same ceiling)
 const CEILING_VARIANCE_THRESHOLD: f64 = 0.02; // 2%
+
+/// Proximity threshold for compaction detection (95% of observed max)
+/// Used as fallback when transcript is unavailable
+const COMPACTION_PROXIMITY_THRESHOLD: f64 = 0.95;
+
+/// Number of recent messages to check for manual compaction commands
+const MANUAL_COMPACTION_CHECK_LINES: usize = 5;
 
 /// Context window learning manager
 pub struct ContextLearner {
@@ -54,6 +63,7 @@ impl ContextLearner {
     /// * `model_name` - The model display name (e.g., "Claude Sonnet 4.5")
     /// * `current_tokens` - Current total token count from this session
     /// * `previous_tokens` - Previous session's token count (if available)
+    /// * `transcript_path` - Optional path to transcript for manual compaction detection
     ///
     /// # Returns
     ///
@@ -63,15 +73,20 @@ impl ContextLearner {
         model_name: &str,
         current_tokens: usize,
         previous_tokens: Option<usize>,
+        transcript_path: Option<&str>,
     ) -> Result<()> {
         debug!(
-            "Observing usage for {}: current={}, previous={:?}",
-            model_name, current_tokens, previous_tokens
+            "Observing usage for {}: current={}, previous={:?}, transcript={:?}",
+            model_name, current_tokens, previous_tokens, transcript_path
         );
+
+        // Get observed max for proximity checking
+        let existing = self.db.get_learned_context(model_name)?;
+        let observed_max = existing.as_ref().map(|r| r.observed_max_tokens).unwrap_or(0);
 
         // Detect compaction event
         if let Some(prev) = previous_tokens {
-            if self.is_compaction_event(current_tokens, prev) {
+            if self.is_compaction_event(current_tokens, prev, observed_max, transcript_path) {
                 info!(
                     "Compaction detected for {}: {} → {} tokens ({:.1}% drop)",
                     model_name,
@@ -100,7 +115,16 @@ impl ContextLearner {
     /// - Previous tokens >= MIN_COMPACTION_TOKENS (150k)
     /// - Current tokens < previous tokens
     /// - Drop percentage >= COMPACTION_DROP_THRESHOLD (10%)
-    fn is_compaction_event(&self, current_tokens: usize, previous_tokens: usize) -> bool {
+    /// - NOT a manual compaction (user explicitly requested summary)
+    /// - Close to observed ceiling (if known) OR first observation at high level
+    fn is_compaction_event(
+        &self,
+        current_tokens: usize,
+        previous_tokens: usize,
+        observed_max: usize,
+        transcript_path: Option<&str>,
+    ) -> bool {
+        // Basic checks
         if previous_tokens < MIN_COMPACTION_TOKENS {
             return false;
         }
@@ -110,7 +134,117 @@ impl ContextLearner {
         }
 
         let drop_percent = (previous_tokens - current_tokens) as f64 / previous_tokens as f64;
-        drop_percent >= COMPACTION_DROP_THRESHOLD
+        if drop_percent < COMPACTION_DROP_THRESHOLD {
+            return false;
+        }
+
+        // Check if user manually requested compaction
+        if let Some(path) = transcript_path {
+            if Self::is_manual_compaction(path) {
+                debug!(
+                    "Skipping compaction event - user manually requested summary ({}→{})",
+                    previous_tokens, current_tokens
+                );
+                return false;
+            }
+        }
+
+        // Proximity check: Only record if near the observed ceiling
+        // This filters out manual compactions that weren't detected by pattern matching
+        if observed_max > 0 {
+            let proximity = previous_tokens as f64 / observed_max as f64;
+            if proximity < COMPACTION_PROXIMITY_THRESHOLD {
+                debug!(
+                    "Skipping compaction at {} (only {:.1}% of observed max {})",
+                    previous_tokens,
+                    proximity * 100.0,
+                    observed_max
+                );
+                return false;
+            }
+        } else {
+            // First observation - must be at high level (190k+) to be automatic
+            if previous_tokens < 190_000 {
+                debug!(
+                    "Skipping first compaction at {} (below 190k threshold)",
+                    previous_tokens
+                );
+                return false;
+            }
+        }
+
+        true
+    }
+
+    /// Check if a manual compaction was requested in recent transcript messages
+    ///
+    /// Looks for common compaction commands and phrases in user messages:
+    /// - /compact, /summarize
+    /// - "summarize our conversation"
+    /// - "compress the context"
+    /// - etc.
+    fn is_manual_compaction(transcript_path: &str) -> bool {
+        // Read last few lines from transcript
+        let file = match File::open(transcript_path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+
+        let reader = BufReader::new(file);
+        let lines: Vec<String> = reader
+            .lines()
+            .filter_map(|line| line.ok())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev() // Most recent first
+            .take(MANUAL_COMPACTION_CHECK_LINES)
+            .collect();
+
+        // Check each line for manual compaction indicators
+        for line in lines {
+            if let Ok(entry) = serde_json::from_str::<serde_json::Value>(&line) {
+                // Check if this is a user message
+                if let Some(role) = entry.pointer("/message/role").and_then(|v| v.as_str()) {
+                    if role == "user" {
+                        // Get message content
+                        if let Some(content) =
+                            entry.pointer("/message/content").and_then(|v| v.as_str())
+                        {
+                            let content_lower = content.to_lowercase();
+
+                            // Check for explicit compaction commands
+                            let compaction_patterns = [
+                                "/compact",
+                                "/summarize",
+                                "summarize our conversation",
+                                "summarize the conversation",
+                                "summarize this conversation",
+                                "compress the context",
+                                "reduce the context",
+                                "create a summary",
+                                "make a summary",
+                                "condense our conversation",
+                                "condense the conversation",
+                                "shorten the conversation",
+                                "compact the context",
+                            ];
+
+                            for pattern in &compaction_patterns {
+                                if content_lower.contains(pattern) {
+                                    debug!(
+                                        "Manual compaction detected: user message contains '{}'",
+                                        pattern
+                                    );
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        false
     }
 
     /// Record a compaction event in the database
@@ -337,20 +471,26 @@ mod tests {
     fn test_is_compaction_event() {
         let (learner, _temp) = create_test_learner();
 
-        // Should detect: 195k → 120k (38% drop, prev > 150k)
-        assert!(learner.is_compaction_event(120_000, 195_000));
+        // Should detect: 195k → 120k (38% drop, prev > 150k, first observation >190k)
+        assert!(learner.is_compaction_event(120_000, 195_000, 0, None));
 
         // Should NOT detect: small drop
-        assert!(!learner.is_compaction_event(190_000, 195_000));
+        assert!(!learner.is_compaction_event(190_000, 195_000, 0, None));
 
         // Should NOT detect: low token count
-        assert!(!learner.is_compaction_event(100_000, 140_000));
+        assert!(!learner.is_compaction_event(100_000, 140_000, 0, None));
 
         // Should NOT detect: increase
-        assert!(!learner.is_compaction_event(200_000, 195_000));
+        assert!(!learner.is_compaction_event(200_000, 195_000, 0, None));
 
-        // Edge case: exactly 10% drop should trigger
-        assert!(learner.is_compaction_event(135_000, 150_000));
+        // Should NOT detect: first observation below 190k (likely manual)
+        assert!(!learner.is_compaction_event(100_000, 180_000, 0, None));
+
+        // Should detect: near observed max (195k is 97.5% of 200k)
+        assert!(learner.is_compaction_event(120_000, 195_000, 200_000, None));
+
+        // Should NOT detect: far from observed max (180k is 90% of 200k)
+        assert!(!learner.is_compaction_event(100_000, 180_000, 200_000, None));
     }
 
     #[test]
@@ -457,13 +597,13 @@ mod tests {
 
         // Simulate approaching ceiling
         learner
-            .observe_usage("Test Model", 198_000, None)
+            .observe_usage("Test Model", 198_000, None, None)
             .unwrap();
         learner
-            .observe_usage("Test Model", 199_000, Some(198_000))
+            .observe_usage("Test Model", 199_000, Some(198_000), None)
             .unwrap();
         learner
-            .observe_usage("Test Model", 197_000, Some(199_000))
+            .observe_usage("Test Model", 197_000, Some(199_000), None)
             .unwrap();
 
         let record = learner
@@ -476,9 +616,9 @@ mod tests {
         assert!(record.ceiling_observations >= 2);
         assert_eq!(record.compaction_count, 0);
 
-        // Now simulate compaction
+        // Now simulate compaction near the ceiling
         learner
-            .observe_usage("Test Model", 120_000, Some(197_000))
+            .observe_usage("Test Model", 120_000, Some(197_000), None)
             .unwrap();
 
         let record = learner
@@ -498,16 +638,16 @@ mod tests {
 
         // Record enough observations to reach threshold
         learner
-            .observe_usage("High Confidence", 198_000, None)
+            .observe_usage("High Confidence", 198_000, None, None)
             .unwrap();
         for _ in 0..4 {
             learner
-                .observe_usage("High Confidence", 199_000, Some(198_000))
+                .observe_usage("High Confidence", 199_000, Some(198_000), None)
                 .unwrap();
         }
-        // Simulate compaction
+        // Simulate compaction near ceiling
         learner
-            .observe_usage("High Confidence", 120_000, Some(199_000))
+            .observe_usage("High Confidence", 120_000, Some(199_000), None)
             .unwrap();
 
         // Should be above 0.7 threshold
@@ -519,7 +659,7 @@ mod tests {
 
         // Low confidence model
         learner
-            .observe_usage("Low Confidence", 180_000, None)
+            .observe_usage("Low Confidence", 195_000, None, None)
             .unwrap();
 
         let learned = learner
@@ -534,10 +674,10 @@ mod tests {
 
         // Add some data
         learner
-            .observe_usage("Model A", 198_000, None)
+            .observe_usage("Model A", 198_000, None, None)
             .unwrap();
         learner
-            .observe_usage("Model B", 195_000, None)
+            .observe_usage("Model B", 195_000, None, None)
             .unwrap();
 
         // Reset one model
@@ -562,5 +702,100 @@ mod tests {
             .get_learned_context("Model B")
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn test_manual_compaction_detection() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a transcript with manual compaction request
+        let mut file = NamedTempFile::new().unwrap();
+        writeln!(
+            file,
+            r#"{{"message":{{"role":"user","content":"Let's start a new project"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"message":{{"role":"assistant","content":"Great! What project?"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file,
+            r#"{{"message":{{"role":"user","content":"Please summarize our conversation to save context"}}}}"#
+        )
+        .unwrap();
+        file.flush().unwrap();
+
+        // Should detect manual compaction
+        assert!(ContextLearner::is_manual_compaction(
+            file.path().to_str().unwrap()
+        ));
+
+        // Create a transcript without compaction request
+        let mut file2 = NamedTempFile::new().unwrap();
+        writeln!(
+            file2,
+            r#"{{"message":{{"role":"user","content":"Hello"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            file2,
+            r#"{{"message":{{"role":"assistant","content":"Hi there!"}}}}"#
+        )
+        .unwrap();
+        file2.flush().unwrap();
+
+        // Should NOT detect manual compaction
+        assert!(!ContextLearner::is_manual_compaction(
+            file2.path().to_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_proximity_filtering() {
+        let (learner, _temp) = create_test_learner();
+
+        // Establish an observed max of 200k
+        learner
+            .observe_usage("Test Model", 198_000, None, None)
+            .unwrap();
+        learner
+            .observe_usage("Test Model", 200_000, Some(198_000), None)
+            .unwrap();
+
+        let record = learner
+            .db
+            .get_learned_context("Test Model")
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.observed_max_tokens, 200_000);
+
+        // Compaction at 180k (90% of 200k) should be filtered out
+        learner
+            .observe_usage("Test Model", 100_000, Some(180_000), None)
+            .unwrap();
+
+        let record = learner
+            .db
+            .get_learned_context("Test Model")
+            .unwrap()
+            .unwrap();
+        // Compaction count should NOT have increased
+        assert_eq!(record.compaction_count, 0);
+
+        // Compaction at 195k (97.5% of 200k) should be recorded
+        learner
+            .observe_usage("Test Model", 100_000, Some(195_000), None)
+            .unwrap();
+
+        let record = learner
+            .db
+            .get_learned_context("Test Model")
+            .unwrap()
+            .unwrap();
+        // Now compaction count should have increased
+        assert_eq!(record.compaction_count, 1);
     }
 }
