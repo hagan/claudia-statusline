@@ -126,12 +126,23 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
         // Update stats with new data
         if let Some(ref cost) = input.cost {
             if let Some(total_cost) = cost.total_cost_usd {
+                // Extract model name and workspace directory
+                let model_name = input.model.as_ref().and_then(|m| m.display_name.as_ref()).map(|s| s.as_str());
+                let workspace_dir = input.workspace.as_ref().and_then(|w| w.current_dir.as_ref()).map(|s| s.as_str());
+
+                // Extract token breakdown from transcript if available
+                let token_breakdown = input.transcript.as_ref()
+                    .and_then(|path| utils::get_token_breakdown_from_transcript(path));
+
                 let (daily_total, _monthly_total) = stats::update_stats_data(|data| {
                     data.update_session(
                         session_id.unwrap(),
                         total_cost,
                         cost.total_lines_added.unwrap_or(0),
                         cost.total_lines_removed.unwrap_or(0),
+                        model_name,
+                        workspace_dir,
+                        token_breakdown.as_ref(),
                     )
                 });
                 daily_total

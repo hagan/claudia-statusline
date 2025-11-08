@@ -210,10 +210,31 @@ impl StatsData {
         session_cost: f64,
         lines_added: u64,
         lines_removed: u64,
+        model_name: Option<&str>,
+        workspace_dir: Option<&str>,
+        token_breakdown: Option<&crate::models::TokenBreakdown>,
     ) -> (f64, f64) {
         let today = current_date();
         let month = current_month();
         let now = current_timestamp();
+
+        // Update SQLite database directly with all parameters including new migration v5 fields
+        // This ensures model_name, workspace_dir, and token breakdown are persisted immediately
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if db_path.exists() {
+                if let Ok(db) = SqliteDatabase::new(&db_path) {
+                    let _ = db.update_session(
+                        session_id,
+                        session_cost,
+                        lines_added,
+                        lines_removed,
+                        model_name,
+                        workspace_dir,
+                        token_breakdown,
+                    );
+                }
+            }
+        }
 
         // Calculate delta from last known session cost
         let last_cost = self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0);
@@ -488,6 +509,9 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
             session.cost,
             session.lines_added,
             session.lines_removed,
+            None, // model_name not available in dual-write
+            None, // workspace_dir not available in dual-write
+            None, // token_breakdown not available in dual-write
         ) {
             Ok((day_total, session_total)) => {
                 debug!(
@@ -529,8 +553,9 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
         migrate_sessions_to_sqlite(&db, stats_data);
     }
 
-    // Write the current session
-    write_current_session_to_sqlite(&db, stats_data);
+    // NOTE: Current session is now written directly in update_session() with all migration v5 fields
+    // write_current_session_to_sqlite() has been disabled to avoid overwriting model_name/workspace_dir/tokens with NULL
+    // write_current_session_to_sqlite(&db, stats_data);
 }
 
 /// Updates the statistics data with process-safe file locking.

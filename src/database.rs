@@ -127,6 +127,9 @@ impl SqliteDatabase {
         cost: f64,
         lines_added: u64,
         lines_removed: u64,
+        model_name: Option<&str>,
+        workspace_dir: Option<&str>,
+        token_breakdown: Option<&crate::models::TokenBreakdown>,
     ) -> Result<(f64, f64)> {
         let retry_config = RetryConfig::for_db_ops();
 
@@ -135,8 +138,16 @@ impl SqliteDatabase {
             let mut conn = self.get_connection()?;
             let tx = conn.transaction()?;
 
-            let result =
-                self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
+            let result = self.update_session_tx(
+                &tx,
+                session_id,
+                cost,
+                lines_added,
+                lines_removed,
+                model_name,
+                workspace_dir,
+                token_breakdown,
+            )?;
 
             tx.commit()?;
             Ok(result)
@@ -179,6 +190,9 @@ impl SqliteDatabase {
         cost: f64,
         lines_added: u64,
         lines_removed: u64,
+        model_name: Option<&str>,
+        workspace_dir: Option<&str>,
+        token_breakdown: Option<&crate::models::TokenBreakdown>,
     ) -> Result<(f64, f64)> {
         let now = current_timestamp();
         let today = current_date();
@@ -207,17 +221,41 @@ impl SqliteDatabase {
                 (cost, lines_added as i64, lines_removed as i64)
             };
 
+        // Extract token breakdown values (0 if not provided)
+        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = token_breakdown
+            .map(|tb| (
+                tb.input_tokens as i64,
+                tb.output_tokens as i64,
+                tb.cache_read_tokens as i64,
+                tb.cache_creation_tokens as i64,
+            ))
+            .unwrap_or((0, 0, 0, 0));
+
         // UPSERT session (atomic operation)
         // Note: On conflict, we REPLACE the values, not accumulate them
         tx.execute(
-            "INSERT INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO sessions (
+                session_id, start_time, last_updated, cost, lines_added, lines_removed,
+                model_name, workspace_dir,
+                total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(session_id) DO UPDATE SET
                 last_updated = ?3,
                 cost = ?4,
                 lines_added = ?5,
-                lines_removed = ?6",
-            params![session_id, &now, &now, cost, lines_added as i64, lines_removed as i64],
+                lines_removed = ?6,
+                model_name = ?7,
+                workspace_dir = ?8,
+                total_input_tokens = ?9,
+                total_output_tokens = ?10,
+                total_cache_read_tokens = ?11,
+                total_cache_creation_tokens = ?12",
+            params![
+                session_id, &now, &now, cost, lines_added as i64, lines_removed as i64,
+                model_name, workspace_dir,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+            ],
         )?;
 
         // Proper session counting: We need to track which sessions we've seen for each period
@@ -479,18 +517,18 @@ impl SqliteDatabase {
     }
 
     /// Get all sessions with token data for rebuilding learned context windows
+    /// Uses migration v5 token breakdown fields to calculate total tokens
     pub fn get_all_sessions_with_tokens(&self) -> Result<Vec<SessionWithModel>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT s.session_id, s.max_tokens_observed, COALESCE(m.model_name, 'Unknown') as model_name
-             FROM sessions s
-             LEFT JOIN (
-                 SELECT session_id, model_name
-                 FROM sessions
-                 WHERE model_name IS NOT NULL
-             ) m ON s.session_id = m.session_id
-             WHERE s.max_tokens_observed > 0
-             ORDER BY s.last_updated ASC",
+            "SELECT
+                session_id,
+                total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens as total_tokens,
+                COALESCE(model_name, 'Unknown') as model_name
+             FROM sessions
+             WHERE model_name IS NOT NULL
+               AND (total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) > 0
+             ORDER BY last_updated ASC",
         )?;
 
         let session_iter = stmt.query_map([], |row| {

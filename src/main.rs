@@ -97,6 +97,10 @@ enum Commands {
         /// Delete JSON file after successful migration (instead of archiving)
         #[arg(long)]
         delete_json: bool,
+
+        /// Run schema migrations to latest version
+        #[arg(long)]
+        run: bool,
     },
 
     /// Database maintenance operations (suitable for cron)
@@ -158,6 +162,10 @@ enum Commands {
         /// Reset all learning data
         #[arg(long)]
         reset_all: bool,
+
+        /// Rebuild learned context windows from session history (recovery)
+        #[arg(long)]
+        rebuild: bool,
     },
 }
 
@@ -220,17 +228,18 @@ fn main() -> Result<()> {
             Commands::Migrate {
                 finalize,
                 delete_json,
+                run,
             } => {
-                if finalize {
+                if run {
+                    return run_schema_migrations();
+                } else if finalize {
                     return finalize_migration(delete_json);
                 } else {
-                    println!("Usage: statusline migrate --finalize [--delete-json]");
-                    println!(
-                        "\nThis command finalizes the migration from JSON to SQLite-only mode."
-                    );
-                    println!("Options:");
-                    println!("  --finalize     Complete the migration and disable JSON backup");
-                    println!("  --delete-json  Delete the JSON file instead of archiving it");
+                    println!("Usage: statusline migrate [OPTIONS]");
+                    println!("\nOptions:");
+                    println!("  --run          Run schema migrations to latest version");
+                    println!("  --finalize     Complete the migration from JSON to SQLite-only mode");
+                    println!("  --delete-json  Delete the JSON file instead of archiving it (use with --finalize)");
                     return Ok(());
                 }
             }
@@ -260,8 +269,9 @@ fn main() -> Result<()> {
                 reset,
                 details,
                 reset_all,
+                rebuild,
             } => {
-                return handle_context_learning_command(status, reset, details, reset_all);
+                return handle_context_learning_command(status, reset, details, reset_all, rebuild);
             }
         }
     }
@@ -306,6 +316,14 @@ fn main() -> Result<()> {
     let (daily_total, _monthly_total) =
         if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
             if let Some(total_cost) = cost.total_cost_usd {
+                // Extract model name and workspace directory
+                let model_name = input.model.as_ref().and_then(|m| m.display_name.as_ref()).map(|s| s.as_str());
+                let workspace_dir = input.workspace.as_ref().and_then(|w| w.current_dir.as_ref()).map(|s| s.as_str());
+
+                // Extract token breakdown from transcript if available
+                let token_breakdown = input.transcript.as_ref()
+                    .and_then(|path| utils::get_token_breakdown_from_transcript(path));
+
                 // Update stats with new cost data
                 let result = update_stats_data(|data| {
                     data.update_session(
@@ -313,6 +331,9 @@ fn main() -> Result<()> {
                         total_cost,
                         cost.total_lines_added.unwrap_or(0),
                         cost.total_lines_removed.unwrap_or(0),
+                        model_name,
+                        workspace_dir,
+                        token_breakdown.as_ref(),
                     )
                 });
 
@@ -435,6 +456,40 @@ fn check_migration_status() {
 }
 
 /// Finalize the migration from JSON to SQLite-only mode
+fn run_schema_migrations() -> Result<()> {
+    use crate::common::get_data_dir;
+    use crate::migrations::MigrationRunner;
+    use crate::display::Colors;
+
+    println!("{}Running database schema migrations...{}", Colors::cyan(), Colors::reset());
+    println!();
+
+    let db_path = get_data_dir().join("stats.db");
+    let mut runner = MigrationRunner::new(&db_path)
+        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+
+    let current_version = runner.current_version()
+        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+
+    println!("Current schema version: {}", current_version);
+
+    runner.migrate()
+        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+
+    let new_version = runner.current_version()
+        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+
+    println!();
+    if new_version > current_version {
+        println!("{}✓ Migrated from version {} to {}{}", Colors::green(), current_version, new_version, Colors::reset());
+    } else {
+        println!("{}✓ Database already at latest version ({}){}", Colors::green(), new_version, Colors::reset());
+    }
+    println!();
+
+    Ok(())
+}
+
 fn finalize_migration(delete_json: bool) -> Result<()> {
     use chrono::Utc;
     use std::fs;
@@ -967,6 +1022,7 @@ fn handle_context_learning_command(
     reset: Option<String>,
     details: Option<String>,
     reset_all: bool,
+    rebuild: bool,
 ) -> Result<()> {
     use crate::common::get_data_dir;
     use crate::context_learning::ContextLearner;
@@ -977,6 +1033,22 @@ fn handle_context_learning_command(
     let db_path = get_data_dir().join("stats.db");
     let db = SqliteDatabase::new(&db_path)?;
     let learner = ContextLearner::new(db);
+
+    // Handle rebuild from session history
+    if rebuild {
+        println!();
+        println!("{}Rebuilding learned context windows from session history...{}", Colors::cyan(), Colors::reset());
+        println!();
+
+        learner.rebuild_from_sessions()?;
+
+        println!();
+        println!("{}✓ Rebuild complete{}", Colors::green(), Colors::reset());
+        println!();
+        println!("{}Use --status to see the results{}", Colors::cyan(), Colors::reset());
+        println!();
+        return Ok(());
+    }
 
     // Handle reset all
     if reset_all {

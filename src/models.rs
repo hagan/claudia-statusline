@@ -57,6 +57,28 @@ pub struct Cost {
     pub total_lines_removed: Option<u64>,
 }
 
+/// Token usage breakdown from transcript.
+///
+/// Contains detailed token counts for cost analysis and cache efficiency tracking.
+#[derive(Debug, Clone, Default)]
+pub struct TokenBreakdown {
+    /// Input tokens (excluding cache)
+    pub input_tokens: u32,
+    /// Output tokens generated
+    pub output_tokens: u32,
+    /// Cache read tokens (cache hits - saves money)
+    pub cache_read_tokens: u32,
+    /// Cache creation tokens (initial cache write cost)
+    pub cache_creation_tokens: u32,
+}
+
+impl TokenBreakdown {
+    /// Returns the total token count (sum of all token types)
+    pub fn total(&self) -> u32 {
+        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
+    }
+}
+
 /// Claude model type enumeration
 #[derive(Debug, PartialEq)]
 pub enum ModelType {

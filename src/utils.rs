@@ -262,6 +262,16 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
 /// Extract the maximum token count from transcript file.
 /// Returns the highest token count observed across all assistant messages.
 pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
+    get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.total())
+}
+
+/// Extracts detailed token breakdown from transcript file.
+///
+/// Returns a TokenBreakdown with separate counts for input, output, cache read, and cache creation tokens.
+/// This data is used for cost analysis, cache efficiency tracking, and per-model analytics.
+pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crate::models::TokenBreakdown> {
+    use crate::models::TokenBreakdown;
+
     // Validate and canonicalize the file path
     let safe_path = validate_transcript_file(transcript_path).ok()?;
 
@@ -283,26 +293,37 @@ pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
     let lines: Vec<String> = circular_buffer.into_iter().collect();
 
     // Find the most recent assistant message with usage data
-    let mut total_tokens = 0u32;
+    let mut best_breakdown = TokenBreakdown::default();
+    let mut max_total = 0u32;
 
     for line in lines {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if entry.message.role == "assistant" {
                 if let Some(usage) = entry.message.usage {
-                    // Add up all token types
+                    // Extract individual token counts
                     let input = usage.input_tokens.unwrap_or(0);
                     let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
                     let cache_creation = usage.cache_creation_input_tokens.unwrap_or(0);
                     let output = usage.output_tokens.unwrap_or(0);
                     let current_total = input + cache_read + cache_creation + output;
-                    total_tokens = total_tokens.max(current_total);
+
+                    // Keep the breakdown with the highest total token count
+                    if current_total > max_total {
+                        max_total = current_total;
+                        best_breakdown = TokenBreakdown {
+                            input_tokens: input,
+                            output_tokens: output,
+                            cache_read_tokens: cache_read,
+                            cache_creation_tokens: cache_creation,
+                        };
+                    }
                 }
             }
         }
     }
 
-    if total_tokens > 0 {
-        Some(total_tokens)
+    if max_total > 0 {
+        Some(best_breakdown)
     } else {
         None
     }
