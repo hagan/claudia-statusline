@@ -33,6 +33,8 @@
 pub mod common;
 /// Configuration management module for loading and saving settings
 pub mod config;
+/// Adaptive context window learning from usage patterns
+pub mod context_learning;
 /// SQLite database backend for persistent statistics
 pub mod database;
 pub mod display;
