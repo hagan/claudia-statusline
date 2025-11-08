@@ -52,6 +52,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Tracks: model_name, observed_max_tokens, ceiling_observations, compaction_count
   - Confidence scoring: ceiling_observations * 0.1 + compactions * 0.3 (max 1.0)
   - Session tracking: Added max_tokens_observed column to sessions table
+- **Database Schema v5**: Added session metadata for recovery and analytics
+  - **Recovery capability**: Added model_name column to enable recovery from accidental deletions
+  - **Per-project analytics**: Added workspace_dir column for tracking costs by project
+  - **Token breakdown**: Added 4 columns for detailed cost analysis and cache efficiency
+    - total_input_tokens - Input tokens excluding cache
+    - total_output_tokens - Output tokens generated
+    - total_cache_read_tokens - Cache hits (saves money)
+    - total_cache_creation_tokens - Cache writes (initial cost)
+  - **Query optimization**: Added 2 indexes for fast filtering
+    - idx_sessions_model_name - Fast per-model queries
+    - idx_sessions_workspace - Fast per-project queries
+  - **Recovery scaffolding**: Added rebuild_from_sessions() method for replaying historical observations
+  - **Migration command**: `statusline migrate --run` applies schema migrations to latest version
 - **CLI Management Commands**:
   - `statusline context-learning --status` - Show all learned context windows
   - `statusline context-learning --details <model>` - Show detailed observations for specific model
