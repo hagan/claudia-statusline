@@ -8,6 +8,7 @@ Claudia Statusline is a Rust CLI and embeddable library that renders a richer st
 - `src/lib.rs` – public API surface for embedding (`render_statusline`, `render_from_json`)
 - `src/common.rs` – helpers for timestamps, device IDs, and path discovery (XDG locations)
 - `src/config.rs` – configuration loading/merging, defaults, retry settings, theme resolution
+- `src/context_learning.rs` – adaptive context window learning (experimental, opt-in)
 - `src/database.rs` – SQLite backend (schema creation, CRUD helpers, maintenance utilities)
 - `src/display.rs` – formatting helpers, color palette, context bar rendering
 - `src/error.rs` – shared error type built on `thiserror`
@@ -15,6 +16,7 @@ Claudia Statusline is a Rust CLI and embeddable library that renders a richer st
 - `src/models.rs` – serde-ready data structures for JSON input and transcripts
 - `src/retry.rs` – reusable retry/backoff primitives for transient failures
 - `src/stats.rs` – persistent stats tracking (JSON fallback, SQLite primary store)
+- `src/theme.rs` – theme system with TOML-based configuration and color resolution
 - `src/utils.rs` – path shortening, input sanitisation, transcript parsing, duration helpers
 - `src/version.rs` – build metadata exposed through `--version` and library helpers
 - `src/sync.rs` – cloud sync implementation (compiled when the `turso-sync` feature is enabled)
@@ -46,6 +48,7 @@ When compiled with `turso-sync`, the optional sync subcommand pulls data from `s
 - **XDG-aware paths** – data, config, and cache directories respect `$XDG_*` with sensible fallbacks on macOS/Windows.
 - **Resilient git integration** – git subprocesses run with timeouts, explicit args, and sanitised output to defend against malicious repos.
 - **Composable library API** – formatting logic is exposed through `render_statusline`/`render_from_json` so third parties can reuse the renderer without shelling out.
+- **Adaptive context learning** (experimental) – learns actual context limits by observing compaction events, with priority: user overrides > learned values > intelligent defaults > global fallback.
 
 ## Storage & Configuration
 - Config: `~/.config/claudia-statusline/config.toml` (or `$XDG_CONFIG_HOME`)

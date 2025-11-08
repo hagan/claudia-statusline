@@ -95,6 +95,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Exported `Theme`, `ThemeManager`, and `get_theme_manager` from theme module
   - Enables comprehensive integration testing from external test files
 
+### Documentation
+- **Comprehensive Phase 8 Documentation Updates**:
+  - Updated `ARCHITECTURE.md`: Added context_learning.rs and theme.rs to module list
+  - Updated `docs/CONFIGURATION.md`: Added complete "Adaptive Context Learning" section
+    - Configuration examples with TOML snippets
+    - How it works (5-step process explanation)
+    - Priority system documentation (4 levels)
+    - CLI command reference with examples
+  - Updated `docs/USAGE.md`: Added "Context Learning Commands" section
+    - All 4 CLI commands with example output
+    - How it works summary
+    - When to use guidance
+  - Created `docs/ADAPTIVE_LEARNING.md`: Comprehensive user guide (500+ lines)
+    - What adaptive learning is and why use it
+    - Detection mechanisms (compaction, manual filtering, ceiling patterns, confidence)
+    - Configuration guide with priority system
+    - CLI command reference with detailed examples
+    - Example learning session walkthrough
+    - Troubleshooting guide (6 common issues)
+    - Performance impact analysis
+    - Privacy & security guarantees
+    - Future enhancement roadmap
+
 ### Changed
 - Improved NO_COLOR handling in theme tests with RAII guard
 - All Colors methods now properly respect NO_COLOR environment variable

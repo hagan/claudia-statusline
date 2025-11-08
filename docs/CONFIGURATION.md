@@ -569,6 +569,54 @@ window_size = 200000
 - Custom model configurations
 - Testing purposes
 
+#### Adaptive Context Learning (Experimental)
+
+The statusline can **learn actual context limits** by observing your real usage patterns. When enabled, it automatically detects when Claude compacts the conversation and builds confidence in the true limit over time.
+
+**Enable adaptive learning** in `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[context]
+window_size = 200000
+
+# Adaptive Learning (Experimental)
+# Learns actual context limits by observing compaction events
+# Default: false (disabled)
+adaptive_learning = true
+
+# Minimum confidence score to use learned values (0.0-1.0)
+# Higher = more observations required before using learned limit
+# Default: 0.7 (70% confidence)
+learning_confidence_threshold = 0.7
+```
+
+**How it works:**
+1. Monitors token usage from Claude's transcript files
+2. Detects **automatic compaction** (sudden >10% token drop after >150k tokens)
+3. Filters out **manual compactions** (when you use `/compact` commands)
+4. Builds **confidence** through multiple observations
+5. Uses learned value when confidence ≥ threshold (default 70%)
+
+**Priority system:**
+1. **User config overrides** (`[context.model_windows]`) - highest priority
+2. **Learned values** (when confident) - used if no override
+3. **Intelligent defaults** (based on model family/version)
+4. **Global fallback** (`window_size`) - lowest priority
+
+**View learned data:**
+```bash
+statusline context-learning --status
+statusline context-learning --details "Claude Sonnet 4.5"
+```
+
+**Reset learning data:**
+```bash
+statusline context-learning --reset "Claude Sonnet 4.5"
+statusline context-learning --reset-all
+```
+
+For detailed information, see [Adaptive Learning Guide](ADAPTIVE_LEARNING.md).
+
 ### Progress Bar Width
 
 Default is 10 characters. To change, edit `src/display.rs` and rebuild:
