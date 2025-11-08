@@ -19,6 +19,7 @@
 
 use crate::database::SqliteDatabase;
 use crate::error::Result;
+use crate::models::ModelType;
 use chrono::Local;
 use log::{debug, info, warn};
 use std::fs::File;
@@ -75,13 +76,17 @@ impl ContextLearner {
         previous_tokens: Option<usize>,
         transcript_path: Option<&str>,
     ) -> Result<()> {
+        // Normalize model name to canonical format to avoid duplicates
+        // E.g., "Claude Sonnet 4.5" → "Sonnet 4.5", "claude-sonnet-4-5" → "Sonnet 4.5"
+        let canonical_name = ModelType::from_name(model_name).canonical_name();
+
         debug!(
-            "Observing usage for {}: current={}, previous={:?}, transcript={:?}",
-            model_name, current_tokens, previous_tokens, transcript_path
+            "Observing usage for {} (canonical: {}): current={}, previous={:?}, transcript={:?}",
+            model_name, canonical_name, current_tokens, previous_tokens, transcript_path
         );
 
         // Get observed max for proximity checking
-        let existing = self.db.get_learned_context(model_name)?;
+        let existing = self.db.get_learned_context(&canonical_name)?;
         let observed_max = existing.as_ref().map(|r| r.observed_max_tokens).unwrap_or(0);
 
         // Detect compaction event
@@ -89,22 +94,22 @@ impl ContextLearner {
             if self.is_compaction_event(current_tokens, prev, observed_max, transcript_path) {
                 info!(
                     "Compaction detected for {}: {} → {} tokens ({:.1}% drop)",
-                    model_name,
+                    canonical_name,
                     prev,
                     current_tokens,
                     ((prev - current_tokens) as f64 / prev as f64) * 100.0
                 );
-                self.record_compaction(model_name, prev)?;
+                self.record_compaction(&canonical_name, prev)?;
             }
         }
 
         // Update ceiling observation
         if current_tokens > MIN_COMPACTION_TOKENS {
-            self.update_ceiling_observation(model_name, current_tokens)?;
+            self.update_ceiling_observation(&canonical_name, current_tokens)?;
         }
 
         // Recalculate confidence score
-        self.update_confidence(model_name)?;
+        self.update_confidence(&canonical_name)?;
 
         Ok(())
     }
@@ -401,7 +406,10 @@ impl ContextLearner {
         model_name: &str,
         confidence_threshold: f64,
     ) -> Result<Option<usize>> {
-        if let Some(record) = self.db.get_learned_context(model_name)? {
+        // Normalize model name to canonical format
+        let canonical_name = ModelType::from_name(model_name).canonical_name();
+
+        if let Some(record) = self.db.get_learned_context(&canonical_name)? {
             if record.confidence_score >= confidence_threshold {
                 debug!(
                     "Using learned window for {}: {} tokens (confidence: {:.2})",
@@ -421,7 +429,9 @@ impl ContextLearner {
 
     /// Get detailed learning information for a specific model
     pub fn get_learned_window_details(&self, model_name: &str) -> Result<Option<LearnedContextWindow>> {
-        Ok(self.db.get_learned_context(model_name)?)
+        // Normalize model name to canonical format
+        let canonical_name = ModelType::from_name(model_name).canonical_name();
+        Ok(self.db.get_learned_context(&canonical_name)?)
     }
 
     /// Get all learned context windows with their details
@@ -436,8 +446,10 @@ impl ContextLearner {
 
     /// Reset learned data for a specific model
     pub fn reset_model(&self, model_name: &str) -> Result<()> {
-        warn!("Resetting learned context data for: {}", model_name);
-        Ok(self.db.delete_learned_context(model_name)?)
+        // Normalize model name to canonical format
+        let canonical_name = ModelType::from_name(model_name).canonical_name();
+        warn!("Resetting learned context data for: {} (canonical: {})", model_name, canonical_name);
+        Ok(self.db.delete_learned_context(&canonical_name)?)
     }
 
     /// Reset all learned context data
@@ -605,20 +617,24 @@ mod tests {
     fn test_observe_usage_flow() {
         let (learner, _temp) = create_test_learner();
 
+        // Use proper model name to avoid normalization conflicts
+        let model_name = "Claude Sonnet 4.5";
+        let canonical_name = ModelType::from_name(model_name).canonical_name();
+
         // Simulate approaching ceiling
         learner
-            .observe_usage("Test Model", 198_000, None, None)
+            .observe_usage(model_name, 198_000, None, None)
             .unwrap();
         learner
-            .observe_usage("Test Model", 199_000, Some(198_000), None)
+            .observe_usage(model_name, 199_000, Some(198_000), None)
             .unwrap();
         learner
-            .observe_usage("Test Model", 197_000, Some(199_000), None)
+            .observe_usage(model_name, 197_000, Some(199_000), None)
             .unwrap();
 
         let record = learner
             .db
-            .get_learned_context("Test Model")
+            .get_learned_context(&canonical_name)
             .unwrap()
             .unwrap();
 
@@ -628,12 +644,12 @@ mod tests {
 
         // Now simulate compaction near the ceiling
         learner
-            .observe_usage("Test Model", 120_000, Some(197_000), None)
+            .observe_usage(model_name, 120_000, Some(197_000), None)
             .unwrap();
 
         let record = learner
             .db
-            .get_learned_context("Test Model")
+            .get_learned_context(&canonical_name)
             .unwrap()
             .unwrap();
 
@@ -646,34 +662,37 @@ mod tests {
     fn test_get_learned_window_with_threshold() {
         let (learner, _temp) = create_test_learner();
 
+        // Use proper model names to avoid normalization conflicts
+        let high_conf_model = "Claude Opus 3.5";
+
         // Record enough observations to reach threshold
         learner
-            .observe_usage("High Confidence", 198_000, None, None)
+            .observe_usage(high_conf_model, 198_000, None, None)
             .unwrap();
         for _ in 0..4 {
             learner
-                .observe_usage("High Confidence", 199_000, Some(198_000), None)
+                .observe_usage(high_conf_model, 199_000, Some(198_000), None)
                 .unwrap();
         }
         // Simulate compaction near ceiling
         learner
-            .observe_usage("High Confidence", 120_000, Some(199_000), None)
+            .observe_usage(high_conf_model, 120_000, Some(199_000), None)
             .unwrap();
 
         // Should be above 0.7 threshold
         let learned = learner
-            .get_learned_window("High Confidence", 0.7)
+            .get_learned_window(high_conf_model, 0.7)
             .unwrap();
         assert!(learned.is_some());
         assert_eq!(learned.unwrap(), 199_000);
 
-        // Low confidence model
+        // Low confidence model (use proper model name to avoid normalization conflicts)
         learner
-            .observe_usage("Low Confidence", 195_000, None, None)
+            .observe_usage("Claude Haiku", 195_000, None, None)
             .unwrap();
 
         let learned = learner
-            .get_learned_window("Low Confidence", 0.7)
+            .get_learned_window("Claude Haiku", 0.7)
             .unwrap();
         assert!(learned.is_none()); // Below threshold
     }
@@ -682,25 +701,30 @@ mod tests {
     fn test_reset_operations() {
         let (learner, _temp) = create_test_learner();
 
-        // Add some data
+        // Add some data (use proper model names to avoid normalization conflicts)
         learner
-            .observe_usage("Model A", 198_000, None, None)
+            .observe_usage("Claude Opus 3.5", 198_000, None, None)
             .unwrap();
         learner
-            .observe_usage("Model B", 195_000, None, None)
+            .observe_usage("Claude Haiku 4.5", 195_000, None, None)
             .unwrap();
 
-        // Reset one model
-        learner.reset_model("Model A").unwrap();
+        // Reset one model (normalization happens inside reset_model)
+        learner.reset_model("Claude Opus 3.5").unwrap();
+
+        // Query with canonical names
+        use crate::models::ModelType;
+        let opus_canonical = ModelType::from_name("Claude Opus 3.5").canonical_name();
+        let haiku_canonical = ModelType::from_name("Claude Haiku 4.5").canonical_name();
 
         assert!(learner
             .db
-            .get_learned_context("Model A")
+            .get_learned_context(&opus_canonical)
             .unwrap()
             .is_none());
         assert!(learner
             .db
-            .get_learned_context("Model B")
+            .get_learned_context(&haiku_canonical)
             .unwrap()
             .is_some());
 
@@ -709,7 +733,7 @@ mod tests {
 
         assert!(learner
             .db
-            .get_learned_context("Model B")
+            .get_learned_context(&haiku_canonical)
             .unwrap()
             .is_none());
     }
@@ -767,29 +791,33 @@ mod tests {
     fn test_proximity_filtering() {
         let (learner, _temp) = create_test_learner();
 
+        // Use proper model name to avoid normalization conflicts
+        let model_name = "Claude Sonnet 3.5";
+        let canonical_name = ModelType::from_name(model_name).canonical_name();
+
         // Establish an observed max of 200k
         learner
-            .observe_usage("Test Model", 198_000, None, None)
+            .observe_usage(model_name, 198_000, None, None)
             .unwrap();
         learner
-            .observe_usage("Test Model", 200_000, Some(198_000), None)
+            .observe_usage(model_name, 200_000, Some(198_000), None)
             .unwrap();
 
         let record = learner
             .db
-            .get_learned_context("Test Model")
+            .get_learned_context(&canonical_name)
             .unwrap()
             .unwrap();
         assert_eq!(record.observed_max_tokens, 200_000);
 
         // Compaction at 180k (90% of 200k) should be filtered out
         learner
-            .observe_usage("Test Model", 100_000, Some(180_000), None)
+            .observe_usage(model_name, 100_000, Some(180_000), None)
             .unwrap();
 
         let record = learner
             .db
-            .get_learned_context("Test Model")
+            .get_learned_context(&canonical_name)
             .unwrap()
             .unwrap();
         // Compaction count should NOT have increased
@@ -797,12 +825,12 @@ mod tests {
 
         // Compaction at 195k (97.5% of 200k) should be recorded
         learner
-            .observe_usage("Test Model", 100_000, Some(195_000), None)
+            .observe_usage(model_name, 100_000, Some(195_000), None)
             .unwrap();
 
         let record = learner
             .db
-            .get_learned_context("Test Model")
+            .get_learned_context(&canonical_name)
             .unwrap()
             .unwrap();
         // Now compaction count should have increased

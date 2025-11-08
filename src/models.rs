@@ -144,6 +144,25 @@ impl ModelType {
             ModelType::Unknown => "Claude".to_string(),
         }
     }
+
+    /// Returns the canonical model name for database storage
+    /// This normalizes different display name variations to a consistent format
+    /// Examples:
+    /// - "Claude 3.5 Sonnet" → "Sonnet 3.5"
+    /// - "Sonnet 4.5" → "Sonnet 4.5"
+    /// - "claude-sonnet-4-5-20250929" → "Sonnet 4.5"
+    pub fn canonical_name(&self) -> String {
+        match self {
+            ModelType::Model { family, version } => {
+                if version.is_empty() {
+                    family.clone()
+                } else {
+                    format!("{} {}", family, version)
+                }
+            }
+            ModelType::Unknown => "Unknown".to_string(),
+        }
+    }
 }
 
 /// Entry in the Claude transcript file (JSONL format)
@@ -268,6 +287,69 @@ mod tests {
 
         // Test unknown
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
+    }
+
+    #[test]
+    fn test_canonical_name_normalization() {
+        // Test that different display names normalize to the same canonical name
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 4.5").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Sonnet 4.5").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("claude-sonnet-4-5-20250929").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Claude 4.5 Sonnet").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        // Test Sonnet 3.5 variations
+        assert_eq!(
+            ModelType::from_name("Claude 3.5 Sonnet").canonical_name(),
+            "Sonnet 3.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("claude-3-5-sonnet-20240620").canonical_name(),
+            "Sonnet 3.5"
+        );
+
+        // Test Opus
+        assert_eq!(
+            ModelType::from_name("Claude Opus").canonical_name(),
+            "Opus"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Claude 3.5 Opus").canonical_name(),
+            "Opus 3.5"
+        );
+
+        // Test Haiku
+        assert_eq!(
+            ModelType::from_name("Claude Haiku").canonical_name(),
+            "Haiku"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Claude 4.5 Haiku").canonical_name(),
+            "Haiku 4.5"
+        );
+
+        // Test Unknown
+        assert_eq!(
+            ModelType::from_name("Unknown Model").canonical_name(),
+            "Unknown"
+        );
     }
 
     #[test]
