@@ -210,7 +210,7 @@ proptest! {
         lines_removed in 0u64..10000,
     ) {
         let mut stats = StatsData::default();
-        stats.update_session(&session_id, cost, lines_added, lines_removed);
+        stats.update_session(&session_id, cost, lines_added, lines_removed, None, None, None);
 
         // Serialize to JSON
         let json = serde_json::to_string(&stats);

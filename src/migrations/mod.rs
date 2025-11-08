@@ -30,26 +30,50 @@ pub struct MigrationRunner {
 #[allow(dead_code)]
 impl MigrationRunner {
     pub fn new(db_path: &Path) -> Result<Self> {
-        // Initialize database
-        let _db = SqliteDatabase::new(db_path)?;
-
-        // Open connection for migrations
+        // Open connection for migrations (don't call SqliteDatabase::new to avoid infinite recursion)
         let conn = Connection::open(db_path)?;
 
         // Enable WAL for concurrent access
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 10000)?;
 
-        // Create migrations table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
+        // Create minimal base schema (WITHOUT migration columns) for testing migrations
+        // This allows migrations to add columns without "duplicate column" errors
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                start_time TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                cost REAL DEFAULT 0.0,
+                lines_added INTEGER DEFAULT 0,
+                lines_removed INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_stats (
+                date TEXT PRIMARY KEY,
+                total_cost REAL DEFAULT 0.0,
+                total_lines_added INTEGER DEFAULT 0,
+                total_lines_removed INTEGER DEFAULT 0,
+                session_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS monthly_stats (
+                month TEXT PRIMARY KEY,
+                total_cost REAL DEFAULT 0.0,
+                total_lines_added INTEGER DEFAULT 0,
+                total_lines_removed INTEGER DEFAULT 0,
+                session_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL,
                 checksum TEXT NOT NULL,
                 description TEXT,
                 execution_time_ms INTEGER
-            )",
-            [],
+            );
+            "#,
         )?;
 
         Ok(Self {
@@ -450,13 +474,18 @@ impl Migration for AddSessionMetadata {
     }
 }
 
+/// Run migrations on a specific database path
+/// Returns Err only on critical failures that prevent migrations from running
+pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
+    let mut runner = MigrationRunner::new(db_path)?;
+    runner.migrate()
+}
+
 /// Run migrations on startup (best effort)
 #[allow(dead_code)]
 pub fn run_migrations() {
     if let Ok(db_path) = StatsData::get_sqlite_path() {
-        if let Ok(mut runner) = MigrationRunner::new(&db_path) {
-            let _ = runner.migrate();
-        }
+        let _ = run_migrations_on_db(&db_path);
     }
 }
 

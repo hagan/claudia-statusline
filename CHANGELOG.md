@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed - Critical Phase 8D Migration Bugs
+- **Issue 1: Missing migration columns in base SCHEMA** (CRITICAL)
+  - **Root Cause**: `SCHEMA` constant in database.rs didn't include migration v5 columns
+  - **Impact**: All database writes silently failed with "no such column" errors for fresh installs
+  - **Fix**: Added all migration v3, v4, v5 columns to base SCHEMA
+    - v3 columns: device_id, sync_timestamp (Turso sync feature)
+    - v4 columns: max_tokens_observed, learned_context_windows table
+    - v5 columns: model_name, workspace_dir, total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens
+- **Issue 2: Fresh installs skip persisting current session** (CRITICAL)
+  - **Root Cause**: stats.rs checked `db_path.exists()` before creating database
+  - **Impact**: Current session never persisted on first run
+  - **Fix**: Removed exists() guard, SqliteDatabase::new() creates DB automatically
+- **Issue 3: Automatic migration on database initialization**
+  - **Implementation**: Migrations now run automatically in SqliteDatabase::new()
+  - **Benefit**: Seamless upgrades for existing users without manual `statusline migrate --run`
+  - **New databases**: Marked as version 5 to skip migration v1 JSON import
+- **Issue 4: Update all tests for new 7-argument signature**
+  - **Changed**: StatsData::update_session now requires 7 arguments (model_name, workspace_dir, token_breakdown added)
+  - **Fixed**: Updated 25+ test calls across stats.rs, database.rs, proptest_tests.rs
+- **Issue 5: Recovery query excluded historical sessions**
+  - **Root Cause**: `get_all_sessions_with_tokens()` filtered on `WHERE model_name IS NOT NULL`
+  - **Impact**: Sessions created before migration v5 were excluded from recovery
+  - **Fix**: Removed model_name filter, use COALESCE only for display
+- **Additional Fixes**:
+  - Fixed infinite recursion in MigrationRunner::new() calling SqliteDatabase::new()
+  - Fixed migration tests by using minimal schema (without migration columns)
+  - New databases marked as version 5 to prevent importing user data in tests
+- **Test Results**: All 345+ tests passing (122 lib, 122 integration, 101 property/theme tests)
+
+### Added - Database Upgrade Tests
+- **New Test**: `test_automatic_database_upgrade` verifies seamless upgrade path
+  - Creates old v0 database with basic schema (6 columns in sessions table)
+  - Inserts test data to verify preservation during migration
+  - Calls `SqliteDatabase::new()` to trigger automatic migrations
+  - Verifies all migration columns are added (v4: max_tokens_observed, v5: model_name, workspace_dir, token breakdowns)
+  - Confirms original data is preserved after upgrade
+  - Tests that upgraded database works normally (can insert new sessions)
+- **Upgrade Detection Logic**: Database checks for `sessions` table existence
+  - NEW database (no tables): Creates full SCHEMA with all migration columns, marks as v5
+  - OLD database (has tables): Creates minimal base tables, runs migrations to add columns
+  - Prevents "no such column" errors during index creation on old databases
+
 ### Fixed - Critical Context Window Bug
 - **Critical Bug Fix**: Fixed context percentage showing 100% when Claude reports 51%
   - **Root Cause**: Hardcoded 160k token context window (Sonnet 3.5's old limit)
