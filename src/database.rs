@@ -886,7 +886,8 @@ impl SqliteDatabase {
         let result = conn
             .query_row(
                 "SELECT model_name, observed_max_tokens, ceiling_observations, compaction_count,
-                        last_observed_max, last_updated, confidence_score, first_seen
+                        last_observed_max, last_updated, confidence_score, first_seen,
+                        workspace_dir, device_id
                  FROM learned_context_windows
                  WHERE model_name = ?1",
                 params![model_name],
@@ -900,6 +901,8 @@ impl SqliteDatabase {
                         last_updated: row.get(5)?,
                         confidence_score: row.get(6)?,
                         first_seen: row.get(7)?,
+                        workspace_dir: row.get(8)?,
+                        device_id: row.get(9)?,
                     })
                 },
             )
@@ -917,8 +920,9 @@ impl SqliteDatabase {
         conn.execute(
             "INSERT INTO learned_context_windows
              (model_name, observed_max_tokens, ceiling_observations, compaction_count,
-              last_observed_max, last_updated, confidence_score, first_seen)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+              last_observed_max, last_updated, confidence_score, first_seen,
+              workspace_dir, device_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 &record.model_name,
                 record.observed_max_tokens as i64,
@@ -928,6 +932,8 @@ impl SqliteDatabase {
                 &record.last_updated,
                 record.confidence_score,
                 &record.first_seen,
+                &record.workspace_dir,
+                &record.device_id,
             ],
         )?;
         Ok(())
@@ -946,7 +952,9 @@ impl SqliteDatabase {
                  compaction_count = ?4,
                  last_observed_max = ?5,
                  last_updated = ?6,
-                 confidence_score = ?7
+                 confidence_score = ?7,
+                 workspace_dir = ?8,
+                 device_id = ?9
              WHERE model_name = ?1",
             params![
                 &record.model_name,
@@ -956,6 +964,8 @@ impl SqliteDatabase {
                 record.last_observed_max as i64,
                 &record.last_updated,
                 record.confidence_score,
+                &record.workspace_dir,
+                &record.device_id,
             ],
         )?;
         Ok(())
@@ -970,7 +980,8 @@ impl SqliteDatabase {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT model_name, observed_max_tokens, ceiling_observations, compaction_count,
-                    last_observed_max, last_updated, confidence_score, first_seen
+                    last_observed_max, last_updated, confidence_score, first_seen,
+                    workspace_dir, device_id
              FROM learned_context_windows
              ORDER BY confidence_score DESC, model_name ASC",
         )?;
@@ -985,6 +996,8 @@ impl SqliteDatabase {
                 last_updated: row.get(5)?,
                 confidence_score: row.get(6)?,
                 first_seen: row.get(7)?,
+                workspace_dir: row.get(8)?,
+                device_id: row.get(9)?,
             })
         })?;
 

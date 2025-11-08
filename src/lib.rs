@@ -183,12 +183,17 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
                 let db_path = get_data_dir().join("stats.db");
                 if let Ok(db) = SqliteDatabase::new(&db_path) {
                     let learner = ContextLearner::new(db);
+                    // Extract workspace_dir and device_id for audit trail
+                    let workspace_dir = input.workspace.as_ref().and_then(|w| w.current_dir.as_deref());
+                    let device_id = crate::common::get_device_id();
                     // Ignore errors from adaptive learning - it's experimental and shouldn't block statusline
                     let _ = learner.observe_usage(
                         model_name.unwrap(),
                         current_tokens as usize,
                         previous_tokens,
                         transcript_path,
+                        workspace_dir,
+                        Some(&device_id),
                     );
 
                     // Update session's max_tokens_observed (adaptive learning)

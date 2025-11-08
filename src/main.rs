@@ -359,12 +359,15 @@ fn main() -> Result<()> {
                                 let db_path = get_data_dir().join("stats.db");
                                 if let Ok(db) = SqliteDatabase::new(&db_path) {
                                     let learner = ContextLearner::new(db);
+                                    let device_id = common::get_device_id();
                                     // Ignore errors from adaptive learning - it's experimental
                                     let _ = learner.observe_usage(
                                         model_name,
                                         current_tokens as usize,
                                         previous_tokens,
                                         Some(transcript_path),
+                                        workspace_dir,
+                                        Some(&device_id),
                                     );
 
                                     // Update session's max_tokens_observed (adaptive learning)

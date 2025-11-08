@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Context Learning Audit Trail (Migration v6)
+- **Audit Fields for Learned Context Windows**: Track which sessions/systems observe context limits
+  - Added `workspace_dir` column to `learned_context_windows` table
+  - Added `device_id` column to `learned_context_windows` table
+  - Enables auditing for consistency across different sessions and systems
+  - Optional fields (nullable) for backward compatibility
+- **Database Migration v6**: `AddContextWindowAuditFields`
+  - Adds `workspace_dir TEXT` column for tracking which project observed limits
+  - Adds `device_id TEXT` column for tracking which machine/device recorded observations
+  - Creates composite index `idx_learned_workspace_model` for efficient workspace+model queries
+  - Creates index `idx_learned_device` for device-based queries
+- **Implementation Changes**:
+  - Updated `LearnedContextWindow` struct with optional `workspace_dir` and `device_id` fields
+  - Updated `observe_usage()` to accept and pass workspace_dir and device_id parameters
+  - Updated `record_compaction()` and `update_ceiling_observation()` with audit fields
+  - Updated all database queries (INSERT, UPDATE, SELECT) to include new columns
+  - Removed feature gate from `get_device_id()` function - now always available
+  - Main and library entry points now pass workspace_dir and device_id to observe_usage
+- **Device Identification**:
+  - Stable 16-character hex ID generated from hostname + username hash
+  - Privacy-preserving (doesn't leak actual hostname/username)
+  - Consistent across reboots on same machine
+- **Use Cases**:
+  - Audit context window observations across different Claude Code instances
+  - Debug discrepancies in learned limits between projects
+  - Track which environments observe specific context limits
+  - Verify consistency across API tiers or deployment environments
+
 ### Added - Auto-Compact Warning System
 - **Context Usage Enhancements**: Better understanding of Claude Code's auto-compact behavior
   - Added `buffer_size` config (default: 40,000 tokens) - Claude Code reserves ~40-45K for responses

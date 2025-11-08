@@ -89,6 +89,7 @@ impl MigrationRunner {
             Box::new(AddSyncMetadata),
             Box::new(AddLearnedContextWindows),
             Box::new(AddSessionMetadata),
+            Box::new(AddContextWindowAuditFields),
         ]
     }
 
@@ -473,6 +474,60 @@ impl Migration for AddSessionMetadata {
     }
 }
 
+/// Migration 006: Add workspace_dir and device_id to learned_context_windows for audit trail
+pub struct AddContextWindowAuditFields;
+
+impl Migration for AddContextWindowAuditFields {
+    fn version(&self) -> u32 {
+        6
+    }
+
+    fn description(&self) -> &str {
+        "Add workspace_dir and device_id to learned_context_windows for cross-session audit trail"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Add workspace_dir to track which project observed the limit
+        tx.execute(
+            "ALTER TABLE learned_context_windows ADD COLUMN workspace_dir TEXT",
+            [],
+        )?;
+
+        // Add device_id to track which system observed the limit
+        tx.execute(
+            "ALTER TABLE learned_context_windows ADD COLUMN device_id TEXT",
+            [],
+        )?;
+
+        // Create composite index for workspace+model queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_workspace_model
+             ON learned_context_windows(workspace_dir, model_name)",
+            [],
+        )?;
+
+        // Create index for device-based queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_device
+             ON learned_context_windows(device_id)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        // Drop indexes
+        tx.execute("DROP INDEX IF EXISTS idx_learned_workspace_model", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_learned_device", [])?;
+
+        // Note: SQLite doesn't support DROP COLUMN easily
+        // Columns remain but that's acceptable for backward compatibility
+
+        Ok(())
+    }
+}
+
 /// Run migrations on a specific database path
 /// Returns Err only on critical failures that prevent migrations from running
 pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
@@ -502,8 +557,8 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 5 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddLearnedContextWindows (v4), AddSessionMetadata (v5)
-        assert_eq!(runner.current_version().unwrap(), 5);
+        // We now have 6 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddLearnedContextWindows (v4), AddSessionMetadata (v5), AddContextWindowAuditFields (v6)
+        assert_eq!(runner.current_version().unwrap(), 6);
     }
 
     #[test]

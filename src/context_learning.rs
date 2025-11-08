@@ -75,6 +75,8 @@ impl ContextLearner {
         current_tokens: usize,
         previous_tokens: Option<usize>,
         transcript_path: Option<&str>,
+        workspace_dir: Option<&str>,
+        device_id: Option<&str>,
     ) -> Result<()> {
         // Normalize model name to canonical format to avoid duplicates
         // E.g., "Claude Sonnet 4.5" → "Sonnet 4.5", "claude-sonnet-4-5" → "Sonnet 4.5"
@@ -99,13 +101,13 @@ impl ContextLearner {
                     current_tokens,
                     ((prev - current_tokens) as f64 / prev as f64) * 100.0
                 );
-                self.record_compaction(&canonical_name, prev)?;
+                self.record_compaction(&canonical_name, prev, workspace_dir, device_id)?;
             }
         }
 
         // Update ceiling observation
         if current_tokens > MIN_COMPACTION_TOKENS {
-            self.update_ceiling_observation(&canonical_name, current_tokens)?;
+            self.update_ceiling_observation(&canonical_name, current_tokens, workspace_dir, device_id)?;
         }
 
         // Recalculate confidence score
@@ -255,7 +257,13 @@ impl ContextLearner {
     /// Record a compaction event in the database
     ///
     /// Updates the observed maximum and increments compaction count.
-    fn record_compaction(&self, model_name: &str, observed_max: usize) -> Result<()> {
+    fn record_compaction(
+        &self,
+        model_name: &str,
+        observed_max: usize,
+        workspace_dir: Option<&str>,
+        device_id: Option<&str>,
+    ) -> Result<()> {
         let now = Local::now().to_rfc3339();
 
         // Get existing record or create new one
@@ -282,6 +290,8 @@ impl ContextLearner {
                 last_updated: now.clone(),
                 confidence_score: 0.0,
                 first_seen: now,
+                workspace_dir: workspace_dir.map(|s| s.to_string()),
+                device_id: device_id.map(|s| s.to_string()),
             };
 
             self.db.insert_learned_context(&record)?;
@@ -294,7 +304,13 @@ impl ContextLearner {
     ///
     /// If the current tokens are within CEILING_VARIANCE_THRESHOLD of the
     /// observed maximum, increment ceiling_observations.
-    fn update_ceiling_observation(&self, model_name: &str, current_tokens: usize) -> Result<()> {
+    fn update_ceiling_observation(
+        &self,
+        model_name: &str,
+        current_tokens: usize,
+        workspace_dir: Option<&str>,
+        device_id: Option<&str>,
+    ) -> Result<()> {
         let now = Local::now().to_rfc3339();
 
         let existing = self.db.get_learned_context(model_name)?;
@@ -339,6 +355,8 @@ impl ContextLearner {
                 last_updated: now.clone(),
                 confidence_score: 0.0,
                 first_seen: now,
+                workspace_dir: workspace_dir.map(|s| s.to_string()),
+                device_id: device_id.map(|s| s.to_string()),
             };
 
             self.db.insert_learned_context(&record)?;
@@ -501,7 +519,7 @@ impl ContextLearner {
             let mut prev_tokens: Option<usize> = None;
             for (_session_id, current_tokens) in sessions {
                 // Simulate observation (no transcript path for historical replay)
-                self.observe_usage(&model_name, current_tokens, prev_tokens, None)?;
+                self.observe_usage(&model_name, current_tokens, prev_tokens, None, None, None)?;
                 prev_tokens = Some(current_tokens);
             }
         }
@@ -522,6 +540,8 @@ pub struct LearnedContextWindow {
     pub last_updated: String,
     pub confidence_score: f64,
     pub first_seen: String,
+    pub workspace_dir: Option<String>,
+    pub device_id: Option<String>,
 }
 
 #[cfg(test)]
@@ -602,7 +622,7 @@ mod tests {
 
         // Record first compaction
         learner
-            .record_compaction("Test Model", 195_000)
+            .record_compaction("Test Model", 195_000, None, None)
             .unwrap();
 
         // Verify it was recorded
@@ -619,7 +639,7 @@ mod tests {
 
         // Record second compaction with higher max
         learner
-            .record_compaction("Test Model", 199_000)
+            .record_compaction("Test Model", 199_000, None, None)
             .unwrap();
 
         let record = learner
@@ -638,7 +658,7 @@ mod tests {
 
         // Record first ceiling observation
         learner
-            .update_ceiling_observation("Test Model", 198_000)
+            .update_ceiling_observation("Test Model", 198_000, None, None)
             .unwrap();
 
         let record = learner
@@ -652,7 +672,7 @@ mod tests {
 
         // Record another near the ceiling (within 2%)
         learner
-            .update_ceiling_observation("Test Model", 199_000)
+            .update_ceiling_observation("Test Model", 199_000, None, None)
             .unwrap();
 
         let record = learner
@@ -675,13 +695,13 @@ mod tests {
 
         // Simulate approaching ceiling
         learner
-            .observe_usage(model_name, 198_000, None, None)
+            .observe_usage(model_name, 198_000, None, None, None, None)
             .unwrap();
         learner
-            .observe_usage(model_name, 199_000, Some(198_000), None)
+            .observe_usage(model_name, 199_000, Some(198_000), None, None, None)
             .unwrap();
         learner
-            .observe_usage(model_name, 197_000, Some(199_000), None)
+            .observe_usage(model_name, 197_000, Some(199_000), None, None, None)
             .unwrap();
 
         let record = learner
@@ -696,7 +716,7 @@ mod tests {
 
         // Now simulate compaction near the ceiling
         learner
-            .observe_usage(model_name, 120_000, Some(197_000), None)
+            .observe_usage(model_name, 120_000, Some(197_000), None, None, None)
             .unwrap();
 
         let record = learner
@@ -719,16 +739,16 @@ mod tests {
 
         // Record enough observations to reach threshold
         learner
-            .observe_usage(high_conf_model, 198_000, None, None)
+            .observe_usage(high_conf_model, 198_000, None, None, None, None)
             .unwrap();
         for _ in 0..4 {
             learner
-                .observe_usage(high_conf_model, 199_000, Some(198_000), None)
+                .observe_usage(high_conf_model, 199_000, Some(198_000), None, None, None)
                 .unwrap();
         }
         // Simulate compaction near ceiling
         learner
-            .observe_usage(high_conf_model, 120_000, Some(199_000), None)
+            .observe_usage(high_conf_model, 120_000, Some(199_000), None, None, None)
             .unwrap();
 
         // Should be above 0.7 threshold
@@ -740,7 +760,7 @@ mod tests {
 
         // Low confidence model (use proper model name to avoid normalization conflicts)
         learner
-            .observe_usage("Claude Haiku", 195_000, None, None)
+            .observe_usage("Claude Haiku", 195_000, None, None, None, None)
             .unwrap();
 
         let learned = learner
@@ -755,10 +775,10 @@ mod tests {
 
         // Add some data (use proper model names to avoid normalization conflicts)
         learner
-            .observe_usage("Claude Opus 3.5", 198_000, None, None)
+            .observe_usage("Claude Opus 3.5", 198_000, None, None, None, None)
             .unwrap();
         learner
-            .observe_usage("Claude Haiku 4.5", 195_000, None, None)
+            .observe_usage("Claude Haiku 4.5", 195_000, None, None, None, None)
             .unwrap();
 
         // Reset one model (normalization happens inside reset_model)
@@ -849,10 +869,10 @@ mod tests {
 
         // Establish an observed max of 200k
         learner
-            .observe_usage(model_name, 198_000, None, None)
+            .observe_usage(model_name, 198_000, None, None, None, None)
             .unwrap();
         learner
-            .observe_usage(model_name, 200_000, Some(198_000), None)
+            .observe_usage(model_name, 200_000, Some(198_000), None, None, None)
             .unwrap();
 
         let record = learner
@@ -864,7 +884,7 @@ mod tests {
 
         // Compaction at 180k (90% of 200k) should be filtered out
         learner
-            .observe_usage(model_name, 100_000, Some(180_000), None)
+            .observe_usage(model_name, 100_000, Some(180_000), None, None, None)
             .unwrap();
 
         let record = learner
@@ -877,7 +897,7 @@ mod tests {
 
         // Compaction at 195k (97.5% of 200k) should be recorded
         learner
-            .observe_usage(model_name, 100_000, Some(195_000), None)
+            .observe_usage(model_name, 100_000, Some(195_000), None, None, None)
             .unwrap();
 
         let record = learner

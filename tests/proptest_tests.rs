@@ -247,7 +247,11 @@ proptest! {
         let percentage = (total as f64 / 160000.0) * 100.0;
 
         // Context usage should have valid percentage
-        let context_usage = ContextUsage { percentage };
+        let context_usage = ContextUsage {
+            percentage,
+            approaching_limit: percentage > 80.0,
+            tokens_remaining: 160000_usize.saturating_sub(total as usize),
+        };
 
         // Verify percentage is non-negative
         prop_assert!(context_usage.percentage >= 0.0);
