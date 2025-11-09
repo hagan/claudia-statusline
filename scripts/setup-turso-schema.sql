@@ -95,6 +95,12 @@ CREATE INDEX idx_sessions_start_time ON sessions(start_time);
 
 CREATE INDEX idx_sessions_workspace ON sessions(workspace_dir);
 
+CREATE INDEX idx_sessions_device ON sessions(device_id);
+
+CREATE INDEX idx_daily_device ON daily_stats(device_id);
+
+CREATE INDEX idx_monthly_device ON monthly_stats(device_id);
+
 -- Indexes for better query performance
 -- (Indexes are included in the CREATE TABLE statements above)
 

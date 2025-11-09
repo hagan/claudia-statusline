@@ -88,8 +88,11 @@ CREATE INDEX IF NOT EXISTS idx_sessions_last_updated ON sessions(last_updated);
 CREATE INDEX IF NOT EXISTS idx_sessions_cost ON sessions(cost DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_model_name ON sessions(model_name);
 CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_dir);
+CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(device_id);
 CREATE INDEX IF NOT EXISTS idx_learned_confidence ON learned_context_windows(confidence_score DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_date_cost ON daily_stats(date DESC, total_cost DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_device ON daily_stats(device_id);
+CREATE INDEX IF NOT EXISTS idx_monthly_device ON monthly_stats(device_id);
 
 -- Migration tracking table
 CREATE TABLE IF NOT EXISTS schema_migrations (
