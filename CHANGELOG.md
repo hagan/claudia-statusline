@@ -292,6 +292,32 @@ auto_compact_threshold = 75.0        # Warning threshold percentage
 - **Root Cause**: MigrationRunner::new() calling SqliteDatabase::new()
 - **Fix**: Refactored to avoid circular dependency
 
+#### Rebuild Using Token Sum Instead of max_tokens_observed (Code Review)
+- **Problem**: `get_all_sessions_with_tokens()` calculated token sum instead of using actual context usage
+- **Impact**: Rebuild learned windows from total tokens (input+output+cache) instead of actual context window usage
+- **Fix**: Changed query to `COALESCE(max_tokens_observed, token_sum)` to prefer actual context usage
+- **Result**: Rebuild now uses accurate context window data with fallback for older sessions
+
+#### Rebuild and Reset Flags Not Combinable (Code Review)
+- **Problem**: `--rebuild` returned early, preventing `--reset-all` from running
+- **Impact**: Users couldn't do clean slate rebuilds in one command
+- **Fix**: Changed control flow to allow `--reset-all` to run before `--rebuild`
+- **Usage**: `statusline learn --reset-all --rebuild` now works correctly
+- **Result**: Enables fresh rebuilds without manual two-step process
+
+#### Rebuild Using Cross-Session Comparisons (Code Review)
+- **Problem**: `rebuild_from_sessions()` passed prev_tokens from previous session, not previous observation
+- **Impact**: Compaction detection triggered incorrectly between sessions
+- **Fix**: Changed to pass `None` for prev_tokens (disables compaction detection during rebuild)
+- **Rationale**: We only have per-session maxima, not full intra-session observation history
+- **Result**: Rebuild no longer generates false compaction signals
+
+#### Manual Compaction Check Documentation Mismatch (Code Review)
+- **Problem**: Code checked 5 messages but docs said 10
+- **Impact**: Less reliable manual compaction detection than documented
+- **Fix**: Changed `MANUAL_COMPACTION_CHECK_LINES` constant from 5 to 10
+- **Result**: Behavior now matches docs/ADAPTIVE_LEARNING.md specification
+
 ### Performance
 
 #### Optimized Manual Compaction Detection (v2.16.6)
