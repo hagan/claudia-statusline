@@ -708,20 +708,20 @@ impl SqliteDatabase {
     }
 
     /// Get all sessions with token data for rebuilding learned context windows
-    /// Uses migration v5 token breakdown fields to calculate total tokens
+    /// Prefers max_tokens_observed (actual context usage) over token sum
     /// Preserves device_id and last_updated for accurate historical replay
     pub fn get_all_sessions_with_tokens(&self) -> Result<Vec<SessionWithModel>> {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT
                 session_id,
-                total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens as total_tokens,
+                COALESCE(max_tokens_observed, total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) as total_tokens,
                 COALESCE(model_name, 'Unknown') as model_name,
                 workspace_dir,
                 device_id,
                 last_updated
              FROM sessions
-             WHERE (total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) > 0
+             WHERE COALESCE(max_tokens_observed, total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) > 0
              ORDER BY last_updated ASC",
         )?;
 

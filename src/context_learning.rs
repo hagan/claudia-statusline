@@ -39,7 +39,7 @@ const CEILING_VARIANCE_THRESHOLD: f64 = 0.02; // 2%
 const COMPACTION_PROXIMITY_THRESHOLD: f64 = 0.95;
 
 /// Number of recent messages to check for manual compaction commands
-const MANUAL_COMPACTION_CHECK_LINES: usize = 5;
+const MANUAL_COMPACTION_CHECK_LINES: usize = 10;
 
 /// Audit entry for session observations
 /// Format: (last_updated, session_id, tokens, workspace_dir, device_id)
@@ -557,6 +557,10 @@ impl ContextLearner {
     /// This recovery function replays all session token observations to rebuild
     /// the learned_context_windows table. Useful for recovering accidentally
     /// deleted learning data.
+    ///
+    /// **Note**: Compaction detection is disabled during rebuild since we only have
+    /// one observation per session (max_tokens_observed), not the full intra-session
+    /// observation history needed to detect token drops.
     pub fn rebuild_from_sessions(&self) -> Result<()> {
         info!("Rebuilding learned context windows from session history...");
 
@@ -603,19 +607,17 @@ impl ContextLearner {
                 model_name
             );
 
-            let mut prev_tokens: Option<usize> = None;
             for (_last_updated, _session_id, current_tokens, workspace_dir, device_id) in sessions {
                 // Replay observation with historical audit metadata
-                // No transcript path for historical replay, but preserve workspace_dir and device_id
+                // prev_tokens = None disables compaction detection (we lack intra-session history)
                 self.observe_usage(
                     &model_name,
                     current_tokens,
-                    prev_tokens,
+                    None, // Disable compaction detection - we only have per-session maxima
                     None, // transcript_path
                     workspace_dir.as_deref(),
                     device_id.as_deref(), // Use historical device_id, not current machine's ID
                 )?;
-                prev_tokens = Some(current_tokens);
             }
         }
 

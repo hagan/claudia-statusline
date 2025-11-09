@@ -1152,9 +1152,30 @@ fn handle_context_learning_command(
     let db = SqliteDatabase::new(&db_path)?;
     let learner = ContextLearner::new(db);
 
-    // Handle rebuild from session history
-    if rebuild {
+    // Handle reset before rebuild (allows --reset-all --rebuild combination)
+    if reset_all {
         println!();
+        println!(
+            "{}Resetting all learned context data...{}",
+            Colors::yellow(),
+            Colors::reset()
+        );
+        learner.reset_all()?;
+        println!(
+            "{}✓ All learning data cleared{}",
+            Colors::green(),
+            Colors::reset()
+        );
+        println!();
+
+        // Don't return if rebuild is also requested
+        if !rebuild {
+            return Ok(());
+        }
+    }
+
+    // Handle rebuild from session history (can be combined with --reset-all)
+    if rebuild {
         println!(
             "{}Rebuilding learned context windows from session history...{}",
             Colors::cyan(),
@@ -1173,22 +1194,6 @@ fn handle_context_learning_command(
             Colors::reset()
         );
         println!();
-        return Ok(());
-    }
-
-    // Handle reset all
-    if reset_all {
-        println!(
-            "{}Resetting all learned context data...{}",
-            Colors::yellow(),
-            Colors::reset()
-        );
-        learner.reset_all()?;
-        println!(
-            "{}✓ All learning data cleared{}",
-            Colors::green(),
-            Colors::reset()
-        );
         return Ok(());
     }
 
