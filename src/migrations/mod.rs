@@ -415,16 +415,10 @@ impl Migration for AddSessionMetadata {
 
     fn up(&self, tx: &Transaction) -> Result<()> {
         // Add model name for recovery and per-model analytics
-        tx.execute(
-            "ALTER TABLE sessions ADD COLUMN model_name TEXT",
-            [],
-        )?;
+        tx.execute("ALTER TABLE sessions ADD COLUMN model_name TEXT", [])?;
 
         // Add workspace directory for per-project analytics
-        tx.execute(
-            "ALTER TABLE sessions ADD COLUMN workspace_dir TEXT",
-            [],
-        )?;
+        tx.execute("ALTER TABLE sessions ADD COLUMN workspace_dir TEXT", [])?;
 
         // Add token breakdown for cost analysis and cache efficiency tracking
         tx.execute(

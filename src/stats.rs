@@ -239,7 +239,10 @@ impl StatsData {
                     log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
                 }
             } else {
-                log::warn!("Failed to open SQLite database at {:?} for session update", db_path);
+                log::warn!(
+                    "Failed to open SQLite database at {:?} for session update",
+                    db_path
+                );
             }
         } else {
             log::warn!("Failed to get SQLite path for session update");
@@ -280,7 +283,7 @@ impl StatsData {
                     lines_added,
                     lines_removed,
                     start_time: Some(now.clone()), // Track when session started
-                    max_tokens_observed: None, // Will be updated by adaptive learning
+                    max_tokens_observed: None,     // Will be updated by adaptive learning
                 },
             );
             self.all_time.sessions += 1;
@@ -391,10 +394,17 @@ impl StatsData {
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
                 if let Err(e) = db.update_max_tokens_observed(session_id, current_tokens) {
-                    log::warn!("Failed to update max_tokens_observed for session {} in SQLite: {}", session_id, e);
+                    log::warn!(
+                        "Failed to update max_tokens_observed for session {} in SQLite: {}",
+                        session_id,
+                        e
+                    );
                 }
             } else {
-                log::warn!("Failed to open SQLite database at {:?} for max_tokens update", db_path);
+                log::warn!(
+                    "Failed to open SQLite database at {:?} for max_tokens update",
+                    db_path
+                );
             }
         } else {
             log::warn!("Failed to get SQLite path for max_tokens update");
@@ -541,10 +551,10 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
             session.cost,
             session.lines_added,
             session.lines_removed,
-            None, // model_name not available in dual-write
-            None, // workspace_dir not available in dual-write
-            None, // device_id not available in dual-write
-            None, // token_breakdown not available in dual-write
+            None,                        // model_name not available in dual-write
+            None,                        // workspace_dir not available in dual-write
+            None,                        // device_id not available in dual-write
+            None,                        // token_breakdown not available in dual-write
             session.max_tokens_observed, // max_tokens_observed from in-memory stats
         ) {
             Ok((day_total, session_total)) => {
@@ -714,7 +724,8 @@ mod tests {
     #[test]
     fn test_stats_data_update_session() {
         let mut stats = StatsData::default();
-        let (daily, monthly) = stats.update_session("test-session", 10.0, 100, 50, None, None, None, None);
+        let (daily, monthly) =
+            stats.update_session("test-session", 10.0, 100, 50, None, None, None, None);
 
         assert_eq!(daily, 10.0);
         assert_eq!(monthly, 10.0);
@@ -818,7 +829,16 @@ mod tests {
                 // Ensure the thread uses the temp directory
                 env::set_var("XDG_DATA_HOME", &temp_path_clone);
                 let (daily, _) = update_stats_data(|stats| {
-                    stats.update_session(&format!("test-thread-{}", i), 1.0, 10, 5, None, None, None, None)
+                    stats.update_session(
+                        &format!("test-thread-{}", i),
+                        1.0,
+                        10,
+                        5,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
                 });
                 completed_clone.fetch_add(1, Ordering::SeqCst);
                 daily
@@ -884,7 +904,9 @@ mod tests {
         initial_stats.save().unwrap();
 
         // Create a session with a specific start time
-        update_stats_data(|stats| stats.update_session("duration-test-session", 1.0, 10, 5, None, None, None, None));
+        update_stats_data(|stats| {
+            stats.update_session("duration-test-session", 1.0, 10, 5, None, None, None, None)
+        });
 
         // Wait a bit to ensure some time passes
         thread::sleep(Duration::from_millis(100));

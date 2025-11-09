@@ -127,11 +127,21 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
         if let Some(ref cost) = input.cost {
             if let Some(total_cost) = cost.total_cost_usd {
                 // Extract model name and workspace directory
-                let model_name = input.model.as_ref().and_then(|m| m.display_name.as_ref()).map(|s| s.as_str());
-                let workspace_dir = input.workspace.as_ref().and_then(|w| w.current_dir.as_ref()).map(|s| s.as_str());
+                let model_name = input
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.display_name.as_ref())
+                    .map(|s| s.as_str());
+                let workspace_dir = input
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| w.current_dir.as_ref())
+                    .map(|s| s.as_str());
 
                 // Extract token breakdown from transcript if available
-                let token_breakdown = input.transcript.as_ref()
+                let token_breakdown = input
+                    .transcript
+                    .as_ref()
                     .and_then(|path| utils::get_token_breakdown_from_transcript(path));
 
                 // Get device ID for audit trail
@@ -166,52 +176,65 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
         stats::get_daily_total(&stats_data)
     };
 
-    // Adaptive context learning: observe token usage if enabled
-    if update_stats && transcript_path.is_some() && model_name.is_some() && session_id.is_some() {
-        let config = config::get_config();
-        if config.context.adaptive_learning {
-            if let Some(current_tokens) = utils::get_token_count_from_transcript(transcript_path.unwrap()) {
-                // Get previous token count from session stats
-                let stats_data = stats::get_or_load_stats_data();
-                let previous_tokens = stats_data
-                    .sessions
-                    .get(session_id.unwrap())
-                    .and_then(|s| s.max_tokens_observed)
-                    .map(|t| t as usize);
+    // Track max_tokens_observed for compaction detection
+    // This runs regardless of adaptive_learning setting
+    if update_stats && transcript_path.is_some() && session_id.is_some() {
+        if let Some(current_tokens) =
+            utils::get_token_count_from_transcript(transcript_path.unwrap())
+        {
+            // Update session's max_tokens_observed
+            // This updates both in-memory stats and SQLite database
+            stats::update_stats_data(|data| {
+                data.update_max_tokens(session_id.unwrap(), current_tokens);
+                // Return unchanged totals (we're just updating token tracking)
+                use crate::common::{current_date, current_month};
+                let today = current_date();
+                let month = current_month();
+                let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+                let monthly_total = data
+                    .monthly
+                    .get(&month)
+                    .map(|m| m.total_cost)
+                    .unwrap_or(0.0);
+                (daily_total, monthly_total)
+            });
 
-                // Create context learner and observe usage
-                use crate::common::get_data_dir;
-                use crate::context_learning::ContextLearner;
-                use crate::database::SqliteDatabase;
+            // Adaptive context learning: observe token usage if enabled
+            if model_name.is_some() {
+                let config = config::get_config();
+                if config.context.adaptive_learning {
+                    // Get previous token count from session stats
+                    let stats_data = stats::get_or_load_stats_data();
+                    let previous_tokens = stats_data
+                        .sessions
+                        .get(session_id.unwrap())
+                        .and_then(|s| s.max_tokens_observed)
+                        .map(|t| t as usize);
 
-                let db_path = get_data_dir().join("stats.db");
-                if let Ok(db) = SqliteDatabase::new(&db_path) {
-                    let learner = ContextLearner::new(db);
-                    // Extract workspace_dir and device_id for audit trail
-                    let workspace_dir = input.workspace.as_ref().and_then(|w| w.current_dir.as_deref());
-                    let device_id = crate::common::get_device_id();
-                    // Ignore errors from adaptive learning - it's experimental and shouldn't block statusline
-                    let _ = learner.observe_usage(
-                        model_name.unwrap(),
-                        current_tokens as usize,
-                        previous_tokens,
-                        transcript_path,
-                        workspace_dir,
-                        Some(&device_id),
-                    );
+                    // Create context learner and observe usage
+                    use crate::common::get_data_dir;
+                    use crate::context_learning::ContextLearner;
+                    use crate::database::SqliteDatabase;
 
-                    // Update session's max_tokens_observed (adaptive learning)
-                    // This updates both in-memory stats and SQLite database
-                    stats::update_stats_data(|data| {
-                        data.update_max_tokens(session_id.unwrap(), current_tokens);
-                        // Return unchanged totals (we're just updating token tracking)
-                        use crate::common::{current_date, current_month};
-                        let today = current_date();
-                        let month = current_month();
-                        let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-                        let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
-                        (daily_total, monthly_total)
-                    });
+                    let db_path = get_data_dir().join("stats.db");
+                    if let Ok(db) = SqliteDatabase::new(&db_path) {
+                        let learner = ContextLearner::new(db);
+                        // Extract workspace_dir and device_id for audit trail
+                        let workspace_dir = input
+                            .workspace
+                            .as_ref()
+                            .and_then(|w| w.current_dir.as_deref());
+                        let device_id = crate::common::get_device_id();
+                        // Ignore errors from adaptive learning - it's experimental and shouldn't block statusline
+                        let _ = learner.observe_usage(
+                            model_name.unwrap(),
+                            current_tokens as usize,
+                            previous_tokens,
+                            transcript_path,
+                            workspace_dir,
+                            Some(&device_id),
+                        );
+                    }
                 }
             }
         }

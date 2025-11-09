@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.8] - 2025-11-08
+
+### Fixed
+- **CRITICAL: Compaction detection wasn't working**
+  - **Problem**: Compaction detection feature (added in v2.16.7) didn't work on fresh sessions
+  - **Root cause**: `max_tokens_observed` was only tracked when `adaptive_learning = true` (disabled by default)
+  - **Impact**: Compaction detection completely broken for 99% of users (those not using experimental adaptive learning)
+  - **Solution**: Moved `max_tokens_observed` update outside the `adaptive_learning` conditional
+  - **Result**: Compaction detection now works for all users regardless of adaptive_learning setting
+  - **Files changed**: `src/main.rs` (lines 352-403), `src/lib.rs` (lines 169-222)
+  - **User benefit**: Spinner and checkmark animations now work as designed
+
+### Technical Details
+- Separated token tracking (required for compaction detection) from adaptive learning (experimental feature)
+- Token tracking now runs on every invocation when transcript_path and session_id are present
+- Adaptive learning observation still only runs when `config.context.adaptive_learning = true`
+- This fix restores the intended behavior where compaction detection is a core feature, not experimental
+
 ## [2.16.7] - 2025-11-08
 
 ### Added

@@ -92,7 +92,6 @@ pub fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
-
 /// Determines the context window size for a given model
 ///
 /// Uses intelligent defaults based on model family and version:
@@ -263,7 +262,9 @@ pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
 ///
 /// Implementation: Reads from the end of the file for efficiency with large transcripts.
 /// Only processes the last N lines (configured via transcript.buffer_lines).
-pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crate::models::TokenBreakdown> {
+pub fn get_token_breakdown_from_transcript(
+    transcript_path: &str,
+) -> Option<crate::models::TokenBreakdown> {
     use crate::models::TokenBreakdown;
     use std::io::{Seek, SeekFrom};
 
@@ -455,7 +456,8 @@ pub fn calculate_context_usage(
     let buffer_size = config.context.buffer_size;
 
     // Detect compaction state
-    let compaction_state = detect_compaction_state(transcript_path, total_tokens as usize, session_id);
+    let compaction_state =
+        detect_compaction_state(transcript_path, total_tokens as usize, session_id);
 
     // Get base context window from model detection (may be learned or advertised)
     let base_window = get_context_window_for_model(model_name, config);
@@ -496,7 +498,12 @@ pub fn calculate_context_usage(
             // - With learning: shows proximity to learned compaction point (e.g., 150K / 156K = 96%)
             // - Without learning: shows proximity to advertised working window (e.g., 150K / 160K = 94%)
             let pct = (total_tokens as f64 / working_window as f64) * 100.0;
-            log::debug!("Using 'working' mode: {} / {} = {:.2}%", total_tokens, working_window, pct);
+            log::debug!(
+                "Using 'working' mode: {} / {} = {:.2}%",
+                total_tokens,
+                working_window,
+                pct
+            );
             pct
         }
         _ => {
@@ -504,7 +511,12 @@ pub fn calculate_context_usage(
             // - With learning: uses learned total (compaction + buffer, e.g., 150K / 196K = 77%)
             // - Without learning: uses advertised total (e.g., 150K / 200K = 75%)
             let pct = (total_tokens as f64 / full_window as f64) * 100.0;
-            log::debug!("Using 'full' mode: {} / {} = {:.2}%", total_tokens, full_window, pct);
+            log::debug!(
+                "Using 'full' mode: {} / {} = {:.2}%",
+                total_tokens,
+                full_window,
+                pct
+            );
             pct
         }
     };
@@ -866,15 +878,21 @@ mod tests {
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
         // Test Sonnet 4.5 (200k window, default "full" mode)
-        let result =
-            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude Sonnet 4.5"), None);
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Claude Sonnet 4.5"),
+            None,
+        );
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
 
         // Test Sonnet 3.5 (200k window, default "full" mode)
-        let result =
-            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Sonnet"), None);
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Claude 3.5 Sonnet"),
+            None,
+        );
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%

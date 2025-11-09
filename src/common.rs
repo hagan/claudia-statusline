@@ -5,7 +5,7 @@
 
 use crate::error::Result;
 use chrono::Local;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 
 /// Gets the application data directory using XDG Base Directory specification.
@@ -166,7 +166,10 @@ pub fn get_device_id() -> String {
     let result = hasher.finalize();
 
     // Return first 64 bits (8 bytes) as 16-character hex string
-    format!("{:016x}", u64::from_be_bytes(result[0..8].try_into().unwrap()))
+    format!(
+        "{:016x}",
+        u64::from_be_bytes(result[0..8].try_into().unwrap())
+    )
 }
 
 #[cfg(test)]

@@ -409,7 +409,7 @@ impl Default for ContextConfig {
             model_windows: std::collections::HashMap::new(),
             adaptive_learning: false, // Disabled by default (experimental feature)
             learning_confidence_threshold: 0.7, // Require 70% confidence before using learned values
-            buffer_size: 40_000, // Claude Code reserves ~40-45K tokens for responses
+            buffer_size: 40_000,                // Claude Code reserves ~40-45K tokens for responses
             auto_compact_threshold: 75.0, // Mode-aware: 75% for "full", auto-adjusted to 94% for "working"
             percentage_mode: default_percentage_mode(), // Default to "full" for user expectations
         }
@@ -483,9 +483,7 @@ impl Default for RetrySettings {
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
-        TranscriptConfig {
-            buffer_lines: 50,
-        }
+        TranscriptConfig { buffer_lines: 50 }
     }
 }
 

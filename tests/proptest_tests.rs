@@ -251,6 +251,7 @@ proptest! {
             percentage,
             approaching_limit: percentage > 80.0,
             tokens_remaining: 160000_usize.saturating_sub(total as usize),
+            compaction_state: statusline::models::CompactionState::Normal,
         };
 
         // Verify percentage is non-negative

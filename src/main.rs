@@ -245,9 +245,13 @@ fn main() -> Result<()> {
                     println!("Usage: statusline migrate [OPTIONS]");
                     println!("\nOptions:");
                     println!("  --run          Run schema migrations to latest version");
-                    println!("  --finalize     Complete the migration from JSON to SQLite-only mode");
+                    println!(
+                        "  --finalize     Complete the migration from JSON to SQLite-only mode"
+                    );
                     println!("  --delete-json  Delete the JSON file instead of archiving it (use with --finalize)");
-                    println!("  --dump-schema  Dump current database schema for Turso/documentation");
+                    println!(
+                        "  --dump-schema  Dump current database schema for Turso/documentation"
+                    );
                     return Ok(());
                 }
             }
@@ -325,11 +329,21 @@ fn main() -> Result<()> {
         if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
             if let Some(total_cost) = cost.total_cost_usd {
                 // Extract model name and workspace directory
-                let model_name = input.model.as_ref().and_then(|m| m.display_name.as_ref()).map(|s| s.as_str());
-                let workspace_dir = input.workspace.as_ref().and_then(|w| w.current_dir.as_ref()).map(|s| s.as_str());
+                let model_name = input
+                    .model
+                    .as_ref()
+                    .and_then(|m| m.display_name.as_ref())
+                    .map(|s| s.as_str());
+                let workspace_dir = input
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| w.current_dir.as_ref())
+                    .map(|s| s.as_str());
 
                 // Extract token breakdown from transcript if available
-                let token_breakdown = input.transcript.as_ref()
+                let token_breakdown = input
+                    .transcript
+                    .as_ref()
                     .and_then(|path| utils::get_token_breakdown_from_transcript(path));
 
                 // Get device ID for audit trail
@@ -349,12 +363,36 @@ fn main() -> Result<()> {
                     )
                 });
 
-                // Adaptive context learning: observe token usage if enabled
+                // Track max_tokens_observed for compaction detection
+                // This runs regardless of adaptive_learning setting
                 if let Some(ref transcript_path) = input.transcript {
-                    if let Some(ref model_name) = input.model.as_ref().and_then(|m| m.display_name.as_ref()) {
-                        let config = config::get_config();
-                        if config.context.adaptive_learning {
-                            if let Some(current_tokens) = utils::get_token_count_from_transcript(transcript_path) {
+                    if let Some(current_tokens) =
+                        utils::get_token_count_from_transcript(transcript_path)
+                    {
+                        // Update session's max_tokens_observed
+                        // This updates both in-memory stats and SQLite database
+                        update_stats_data(|data| {
+                            data.update_max_tokens(session_id, current_tokens);
+                            // Return unchanged totals
+                            use common::{current_date, current_month};
+                            let today = current_date();
+                            let month = current_month();
+                            let daily_total =
+                                data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
+                            let monthly_total = data
+                                .monthly
+                                .get(&month)
+                                .map(|m| m.total_cost)
+                                .unwrap_or(0.0);
+                            (daily_total, monthly_total)
+                        });
+
+                        // Adaptive context learning: observe token usage if enabled
+                        if let Some(ref model_name) =
+                            input.model.as_ref().and_then(|m| m.display_name.as_ref())
+                        {
+                            let config = config::get_config();
+                            if config.context.adaptive_learning {
                                 // Get previous token count from session stats
                                 let stats_data = get_or_load_stats_data();
                                 let previous_tokens = stats_data
@@ -381,19 +419,6 @@ fn main() -> Result<()> {
                                         workspace_dir,
                                         Some(&device_id),
                                     );
-
-                                    // Update session's max_tokens_observed (adaptive learning)
-                                    // This updates both in-memory stats and SQLite database
-                                    update_stats_data(|data| {
-                                        data.update_max_tokens(session_id, current_tokens);
-                                        // Return unchanged totals
-                                        use common::{current_date, current_month};
-                                        let today = current_date();
-                                        let month = current_month();
-                                        let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-                                        let monthly_total = data.monthly.get(&month).map(|m| m.total_cost).unwrap_or(0.0);
-                                        (daily_total, monthly_total)
-                                    });
                                 }
                             }
                         }
@@ -470,32 +495,50 @@ fn check_migration_status() {
 /// Finalize the migration from JSON to SQLite-only mode
 fn run_schema_migrations() -> Result<()> {
     use crate::common::get_data_dir;
-    use crate::migrations::MigrationRunner;
     use crate::display::Colors;
+    use crate::migrations::MigrationRunner;
 
-    println!("{}Running database schema migrations...{}", Colors::cyan(), Colors::reset());
+    println!(
+        "{}Running database schema migrations...{}",
+        Colors::cyan(),
+        Colors::reset()
+    );
     println!();
 
     let db_path = get_data_dir().join("stats.db");
-    let mut runner = MigrationRunner::new(&db_path)
-        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+    let mut runner =
+        MigrationRunner::new(&db_path).map_err(|e| crate::error::StatuslineError::Database(e))?;
 
-    let current_version = runner.current_version()
+    let current_version = runner
+        .current_version()
         .map_err(|e| crate::error::StatuslineError::Database(e))?;
 
     println!("Current schema version: {}", current_version);
 
-    runner.migrate()
+    runner
+        .migrate()
         .map_err(|e| crate::error::StatuslineError::Database(e))?;
 
-    let new_version = runner.current_version()
+    let new_version = runner
+        .current_version()
         .map_err(|e| crate::error::StatuslineError::Database(e))?;
 
     println!();
     if new_version > current_version {
-        println!("{}✓ Migrated from version {} to {}{}", Colors::green(), current_version, new_version, Colors::reset());
+        println!(
+            "{}✓ Migrated from version {} to {}{}",
+            Colors::green(),
+            current_version,
+            new_version,
+            Colors::reset()
+        );
     } else {
-        println!("{}✓ Database already at latest version ({}){}", Colors::green(), new_version, Colors::reset());
+        println!(
+            "{}✓ Database already at latest version ({}){}",
+            Colors::green(),
+            new_version,
+            Colors::reset()
+        );
     }
     println!();
 
@@ -506,7 +549,11 @@ fn dump_database_schema() -> Result<()> {
     use crate::display::Colors;
 
     // Print status to stderr so it doesn't pollute the SQL output on stdout
-    eprintln!("{}Generating database schema...{}", Colors::cyan(), Colors::reset());
+    eprintln!(
+        "{}Generating database schema...{}",
+        Colors::cyan(),
+        Colors::reset()
+    );
     eprintln!();
 
     // Run all migrations on this temporary database
@@ -522,7 +569,9 @@ fn dump_database_schema() -> Result<()> {
     // Open the file to read schema and dump it
     let schemas: Vec<String> = {
         let conn = rusqlite::Connection::open(&temp_path)?;
-        let mut stmt = conn.prepare("SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type DESC, name")?;
+        let mut stmt = conn.prepare(
+            "SELECT sql FROM sqlite_schema WHERE sql IS NOT NULL ORDER BY type DESC, name",
+        )?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
 
         let mut result = Vec::new();
@@ -533,7 +582,10 @@ fn dump_database_schema() -> Result<()> {
     };
 
     println!("-- Turso Database Schema Setup for Claudia Statusline");
-    println!("-- Auto-generated from migrations on {}", chrono::Local::now().format("%Y-%m-%d"));
+    println!(
+        "-- Auto-generated from migrations on {}",
+        chrono::Local::now().format("%Y-%m-%d")
+    );
     println!("-- This script creates the necessary tables for cloud sync");
     println!();
 
@@ -1099,7 +1151,11 @@ fn handle_context_learning_command(
     // Handle rebuild from session history
     if rebuild {
         println!();
-        println!("{}Rebuilding learned context windows from session history...{}", Colors::cyan(), Colors::reset());
+        println!(
+            "{}Rebuilding learned context windows from session history...{}",
+            Colors::cyan(),
+            Colors::reset()
+        );
         println!();
 
         learner.rebuild_from_sessions()?;
@@ -1107,24 +1163,46 @@ fn handle_context_learning_command(
         println!();
         println!("{}✓ Rebuild complete{}", Colors::green(), Colors::reset());
         println!();
-        println!("{}Use --status to see the results{}", Colors::cyan(), Colors::reset());
+        println!(
+            "{}Use --status to see the results{}",
+            Colors::cyan(),
+            Colors::reset()
+        );
         println!();
         return Ok(());
     }
 
     // Handle reset all
     if reset_all {
-        println!("{}Resetting all learned context data...{}", Colors::yellow(), Colors::reset());
+        println!(
+            "{}Resetting all learned context data...{}",
+            Colors::yellow(),
+            Colors::reset()
+        );
         learner.reset_all()?;
-        println!("{}✓ All learning data cleared{}", Colors::green(), Colors::reset());
+        println!(
+            "{}✓ All learning data cleared{}",
+            Colors::green(),
+            Colors::reset()
+        );
         return Ok(());
     }
 
     // Handle reset for specific model
     if let Some(model_name) = reset {
-        println!("{}Resetting learned context data for: {}{}", Colors::yellow(), model_name, Colors::reset());
+        println!(
+            "{}Resetting learned context data for: {}{}",
+            Colors::yellow(),
+            model_name,
+            Colors::reset()
+        );
         learner.reset_model(&model_name)?;
-        println!("{}✓ Learning data cleared for {}{}", Colors::green(), model_name, Colors::reset());
+        println!(
+            "{}✓ Learning data cleared for {}{}",
+            Colors::green(),
+            model_name,
+            Colors::reset()
+        );
         return Ok(());
     }
 
@@ -1132,31 +1210,68 @@ fn handle_context_learning_command(
     if let Some(model_name) = details {
         if let Some(record) = learner.get_learned_window_details(&model_name)? {
             println!();
-            println!("{}Learned Context Window Details for {}{}", Colors::cyan(), model_name, Colors::reset());
+            println!(
+                "{}Learned Context Window Details for {}{}",
+                Colors::cyan(),
+                model_name,
+                Colors::reset()
+            );
             println!("{}", "=".repeat(60));
             println!();
-            println!("  Observed Max Tokens:     {}{}{}", Colors::green(), record.observed_max_tokens, Colors::reset());
-            println!("  Confidence Score:        {}{:.1}%{}", Colors::green(), record.confidence_score * 100.0, Colors::reset());
+            println!(
+                "  Observed Max Tokens:     {}{}{}",
+                Colors::green(),
+                record.observed_max_tokens,
+                Colors::reset()
+            );
+            println!(
+                "  Confidence Score:        {}{:.1}%{}",
+                Colors::green(),
+                record.confidence_score * 100.0,
+                Colors::reset()
+            );
             println!("  Ceiling Observations:    {}", record.ceiling_observations);
             println!("  Compaction Count:        {}", record.compaction_count);
             println!("  First Seen:              {}", record.first_seen);
             println!("  Last Updated:            {}", record.last_updated);
             println!();
             println!("{}Audit Trail:{}", Colors::cyan(), Colors::reset());
-            println!("  Workspace:               {}", record.workspace_dir.as_deref().unwrap_or("<unknown>"));
-            println!("  Device ID:               {}", record.device_id.as_deref().unwrap_or("<unknown>"));
+            println!(
+                "  Workspace:               {}",
+                record.workspace_dir.as_deref().unwrap_or("<unknown>")
+            );
+            println!(
+                "  Device ID:               {}",
+                record.device_id.as_deref().unwrap_or("<unknown>")
+            );
             println!();
 
             let config = crate::config::get_config();
             if record.confidence_score >= config.context.learning_confidence_threshold {
-                println!("  {}✓ Confidence threshold met - using learned value{}", Colors::green(), Colors::reset());
+                println!(
+                    "  {}✓ Confidence threshold met - using learned value{}",
+                    Colors::green(),
+                    Colors::reset()
+                );
             } else {
-                println!("  {}⚠ Confidence too low - using default value{}", Colors::yellow(), Colors::reset());
-                println!("    Threshold: {:.1}%", config.context.learning_confidence_threshold * 100.0);
+                println!(
+                    "  {}⚠ Confidence too low - using default value{}",
+                    Colors::yellow(),
+                    Colors::reset()
+                );
+                println!(
+                    "    Threshold: {:.1}%",
+                    config.context.learning_confidence_threshold * 100.0
+                );
             }
             println!();
         } else {
-            println!("{}No learning data found for: {}{}", Colors::yellow(), model_name, Colors::reset());
+            println!(
+                "{}No learning data found for: {}{}",
+                Colors::yellow(),
+                model_name,
+                Colors::reset()
+            );
         }
         return Ok(());
     }
@@ -1167,9 +1282,17 @@ fn handle_context_learning_command(
 
         if all_records.is_empty() {
             println!();
-            println!("{}No learned context windows yet{}", Colors::yellow(), Colors::reset());
+            println!(
+                "{}No learned context windows yet{}",
+                Colors::yellow(),
+                Colors::reset()
+            );
             println!();
-            println!("{}To enable adaptive learning:{}", Colors::cyan(), Colors::reset());
+            println!(
+                "{}To enable adaptive learning:{}",
+                Colors::cyan(),
+                Colors::reset()
+            );
             println!("  1. Edit config: statusline generate-config");
             println!("  2. Set [context] adaptive_learning = true");
             println!("  3. Use Claude normally - learning happens automatically");
@@ -1178,10 +1301,17 @@ fn handle_context_learning_command(
         }
 
         println!();
-        println!("{}Learned Context Windows{}", Colors::cyan(), Colors::reset());
+        println!(
+            "{}Learned Context Windows{}",
+            Colors::cyan(),
+            Colors::reset()
+        );
         println!("{}", "=".repeat(80));
         println!();
-        println!("{:<25} {:>12} {:>10} {:>10} {:>12}", "Model", "Max Tokens", "Confidence", "Compactions", "Observations");
+        println!(
+            "{:<25} {:>12} {:>10} {:>10} {:>12}",
+            "Model", "Max Tokens", "Confidence", "Compactions", "Observations"
+        );
         println!("{}", "-".repeat(80));
 
         for record in all_records {
@@ -1208,13 +1338,28 @@ fn handle_context_learning_command(
 
         let config = crate::config::get_config();
         if config.context.adaptive_learning {
-            println!("{}✓ Adaptive learning is enabled{}", Colors::green(), Colors::reset());
+            println!(
+                "{}✓ Adaptive learning is enabled{}",
+                Colors::green(),
+                Colors::reset()
+            );
         } else {
-            println!("{}⚠ Adaptive learning is disabled in config{}", Colors::yellow(), Colors::reset());
+            println!(
+                "{}⚠ Adaptive learning is disabled in config{}",
+                Colors::yellow(),
+                Colors::reset()
+            );
         }
-        println!("  Confidence threshold: {:.1}%", config.context.learning_confidence_threshold * 100.0);
+        println!(
+            "  Confidence threshold: {:.1}%",
+            config.context.learning_confidence_threshold * 100.0
+        );
         println!();
-        println!("{}Use --details <model> to see audit trail (workspace/device){}", Colors::cyan(), Colors::reset());
+        println!(
+            "{}Use --details <model> to see audit trail (workspace/device){}",
+            Colors::cyan(),
+            Colors::reset()
+        );
         println!();
 
         return Ok(());
@@ -1222,7 +1367,11 @@ fn handle_context_learning_command(
 
     // No flags specified - show help
     println!();
-    println!("{}Adaptive Context Learning Commands{}", Colors::cyan(), Colors::reset());
+    println!(
+        "{}Adaptive Context Learning Commands{}",
+        Colors::cyan(),
+        Colors::reset()
+    );
     println!();
     println!("  statusline context-learning --status");
     println!("    Show all learned context windows");

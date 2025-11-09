@@ -89,7 +89,10 @@ impl ContextLearner {
 
         // Get observed max for proximity checking
         let existing = self.db.get_learned_context(&canonical_name)?;
-        let observed_max = existing.as_ref().map(|r| r.observed_max_tokens).unwrap_or(0);
+        let observed_max = existing
+            .as_ref()
+            .map(|r| r.observed_max_tokens)
+            .unwrap_or(0);
 
         // Detect compaction event
         if let Some(prev) = previous_tokens {
@@ -107,7 +110,12 @@ impl ContextLearner {
 
         // Update ceiling observation
         if current_tokens > MIN_COMPACTION_TOKENS {
-            self.update_ceiling_observation(&canonical_name, current_tokens, workspace_dir, device_id)?;
+            self.update_ceiling_observation(
+                &canonical_name,
+                current_tokens,
+                workspace_dir,
+                device_id,
+            )?;
         }
 
         // Recalculate confidence score
@@ -432,15 +440,17 @@ impl ContextLearner {
     /// - Total confidence capped at 1.0
     fn update_confidence(&self, model_name: &str) -> Result<()> {
         if let Some(mut record) = self.db.get_learned_context(model_name)? {
-            let confidence = self.calculate_confidence(
-                record.ceiling_observations,
-                record.compaction_count,
-            );
+            let confidence =
+                self.calculate_confidence(record.ceiling_observations, record.compaction_count);
 
             if confidence != record.confidence_score {
                 debug!(
                     "Updated confidence for {}: {:.2} → {:.2} (ceiling={}, compaction={})",
-                    model_name, record.confidence_score, confidence, record.ceiling_observations, record.compaction_count
+                    model_name,
+                    record.confidence_score,
+                    confidence,
+                    record.ceiling_observations,
+                    record.compaction_count
                 );
 
                 record.confidence_score = confidence;
@@ -458,11 +468,7 @@ impl ContextLearner {
     /// - Ceiling score: min(ceiling_observations * 0.1, 0.5)
     /// - Compaction score: min(compaction_count * 0.3, 0.5)
     /// - Total: min(ceiling_score + compaction_score, 1.0)
-    pub fn calculate_confidence(
-        &self,
-        ceiling_observations: i32,
-        compaction_count: i32,
-    ) -> f64 {
+    pub fn calculate_confidence(&self, ceiling_observations: i32, compaction_count: i32) -> f64 {
         let ceiling_score = (ceiling_observations as f64 * 0.1).min(0.5);
         let compaction_score = (compaction_count as f64 * 0.3).min(0.5);
         (ceiling_score + compaction_score).min(1.0)
@@ -505,7 +511,10 @@ impl ContextLearner {
     }
 
     /// Get detailed learning information for a specific model
-    pub fn get_learned_window_details(&self, model_name: &str) -> Result<Option<LearnedContextWindow>> {
+    pub fn get_learned_window_details(
+        &self,
+        model_name: &str,
+    ) -> Result<Option<LearnedContextWindow>> {
         // Normalize model name to canonical format
         let canonical_name = ModelType::from_name(model_name).canonical_name();
         Ok(self.db.get_learned_context(&canonical_name)?)
@@ -525,7 +534,10 @@ impl ContextLearner {
     pub fn reset_model(&self, model_name: &str) -> Result<()> {
         // Normalize model name to canonical format
         let canonical_name = ModelType::from_name(model_name).canonical_name();
-        warn!("Resetting learned context data for: {} (canonical: {})", model_name, canonical_name);
+        warn!(
+            "Resetting learned context data for: {} (canonical: {})",
+            model_name, canonical_name
+        );
         Ok(self.db.delete_learned_context(&canonical_name)?)
     }
 
@@ -541,7 +553,6 @@ impl ContextLearner {
     /// the learned_context_windows table. Useful for recovering accidentally
     /// deleted learning data.
     pub fn rebuild_from_sessions(&self) -> Result<()> {
-
         info!("Rebuilding learned context windows from session history...");
 
         // Get all sessions with token data ordered by time
@@ -556,8 +567,10 @@ impl ContextLearner {
 
         // Group by model and replay observations, preserving full audit trail
         // Tuple: (last_updated, session_id, tokens, workspace_dir, device_id)
-        let mut model_sessions: std::collections::HashMap<String, Vec<(String, String, usize, Option<String>, Option<String>)>> =
-            std::collections::HashMap::new();
+        let mut model_sessions: std::collections::HashMap<
+            String,
+            Vec<(String, String, usize, Option<String>, Option<String>)>,
+        > = std::collections::HashMap::new();
 
         for session in sessions {
             if let Some(tokens) = session.max_tokens_observed {
@@ -581,7 +594,11 @@ impl ContextLearner {
             // Sort by last_updated timestamp, not session_id (which may not be monotonic)
             sessions.sort_by(|a, b| a.0.cmp(&b.0));
 
-            info!("Processing {} sessions for model: {}", sessions.len(), model_name);
+            info!(
+                "Processing {} sessions for model: {}",
+                sessions.len(),
+                model_name
+            );
 
             let mut prev_tokens: Option<usize> = None;
             for (_last_updated, _session_id, current_tokens, workspace_dir, device_id) in sessions {
@@ -827,9 +844,7 @@ mod tests {
             .unwrap();
 
         // Should be above 0.7 threshold
-        let learned = learner
-            .get_learned_window(high_conf_model, 0.7)
-            .unwrap();
+        let learned = learner.get_learned_window(high_conf_model, 0.7).unwrap();
         assert!(learned.is_some());
         assert_eq!(learned.unwrap(), 199_000);
 
@@ -838,9 +853,7 @@ mod tests {
             .observe_usage("Claude Haiku", 195_000, None, None, None, None)
             .unwrap();
 
-        let learned = learner
-            .get_learned_window("Claude Haiku", 0.7)
-            .unwrap();
+        let learned = learner.get_learned_window("Claude Haiku", 0.7).unwrap();
         assert!(learned.is_none()); // Below threshold
     }
 

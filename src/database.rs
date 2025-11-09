@@ -223,7 +223,9 @@ impl SqliteDatabase {
 
         // Run migrations only if not already done for this database file
         // This avoids redundant migration checks on hot paths (update_session, etc.)
-        let canonical_path = db_path.canonicalize().unwrap_or_else(|_| db_path.to_path_buf());
+        let canonical_path = db_path
+            .canonicalize()
+            .unwrap_or_else(|_| db_path.to_path_buf());
         let migrated_dbs = MIGRATED_DBS.get_or_init(|| Mutex::new(HashSet::new()));
 
         let needs_migration = {
@@ -305,11 +307,7 @@ impl SqliteDatabase {
 
     /// Update only max_tokens_observed for a session (for adaptive learning)
     /// Only updates if new value is greater than current value
-    pub fn update_max_tokens_observed(
-        &self,
-        session_id: &str,
-        current_tokens: u32,
-    ) -> Result<()> {
+    pub fn update_max_tokens_observed(&self, session_id: &str, current_tokens: u32) -> Result<()> {
         let retry_config = RetryConfig::for_db_ops();
 
         retry_if_retryable(&retry_config, || {
@@ -395,14 +393,17 @@ impl SqliteDatabase {
             };
 
         // Extract token breakdown values (0 if not provided)
-        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = token_breakdown
-            .map(|tb| (
-                tb.input_tokens as i64,
-                tb.output_tokens as i64,
-                tb.cache_read_tokens as i64,
-                tb.cache_creation_tokens as i64,
-            ))
-            .unwrap_or((0, 0, 0, 0));
+        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) =
+            token_breakdown
+                .map(|tb| {
+                    (
+                        tb.input_tokens as i64,
+                        tb.output_tokens as i64,
+                        tb.cache_read_tokens as i64,
+                        tb.cache_creation_tokens as i64,
+                    )
+                })
+                .unwrap_or((0, 0, 0, 0));
 
         // Convert max_tokens_observed to i64 for SQLite
         let max_tokens = max_tokens_observed.map(|t| t as i64);
@@ -1300,12 +1301,16 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let db = SqliteDatabase::new(&db_path).unwrap();
 
-        let (day_total, session_total) = db.update_session("test-session", 10.0, 100, 50, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("test-session", 10.0, 100, 50, None, None, None, None, None)
+            .unwrap();
         assert_eq!(day_total, 10.0);
         assert_eq!(session_total, 10.0);
 
         // Update same session - should REPLACE not accumulate
-        let (day_total, session_total) = db.update_session("test-session", 5.0, 50, 25, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("test-session", 5.0, 50, 25, None, None, None, None, None)
+            .unwrap();
         assert_eq!(
             day_total, 5.0,
             "Day total should be replaced, not accumulated"
@@ -1326,17 +1331,23 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // First update: session cost = 10.0
-        let (day_total, session_total) = db.update_session("session1", 10.0, 100, 50, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("session1", 10.0, 100, 50, None, None, None, None, None)
+            .unwrap();
         assert_eq!(session_total, 10.0);
         assert_eq!(day_total, 10.0);
 
         // Second session on same day
-        let (day_total, session_total) = db.update_session("session2", 20.0, 200, 100, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("session2", 20.0, 200, 100, None, None, None, None, None)
+            .unwrap();
         assert_eq!(session_total, 20.0);
         assert_eq!(day_total, 30.0); // 10 + 20
 
         // Update first session with LOWER value - should decrease day total
-        let (day_total, session_total) = db.update_session("session1", 8.0, 80, 40, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("session1", 8.0, 80, 40, None, None, None, None, None)
+            .unwrap();
         assert_eq!(session_total, 8.0, "Session should have new value");
         assert_eq!(
             day_total, 28.0,
@@ -1344,7 +1355,9 @@ mod tests {
         );
 
         // Update first session with HIGHER value - should increase day total
-        let (day_total, session_total) = db.update_session("session1", 15.0, 150, 75, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("session1", 15.0, 150, 75, None, None, None, None, None)
+            .unwrap();
         assert_eq!(session_total, 15.0, "Session should have new value");
         assert_eq!(
             day_total, 35.0,
@@ -1352,7 +1365,9 @@ mod tests {
         );
 
         // Update second session to zero - should decrease day total
-        let (day_total, session_total) = db.update_session("session2", 0.0, 0, 0, None, None, None, None, None).unwrap();
+        let (day_total, session_total) = db
+            .update_session("session2", 0.0, 0, 0, None, None, None, None, None)
+            .unwrap();
         assert_eq!(session_total, 0.0, "Session should be zero");
         assert_eq!(
             day_total, 15.0,
@@ -1377,7 +1392,17 @@ mod tests {
                 let path = db_path.clone();
                 thread::spawn(move || {
                     let db = SqliteDatabase::new(&path).unwrap();
-                    db.update_session(&format!("session-{}", i), 1.0, 10, 5, None, None, None, None, None)
+                    db.update_session(
+                        &format!("session-{}", i),
+                        1.0,
+                        10,
+                        5,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
                 })
             })
             .collect();
@@ -1402,9 +1427,12 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions
-        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None).unwrap();
-        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None).unwrap();
-        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None).unwrap();
+        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None)
+            .unwrap();
+        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None)
+            .unwrap();
+        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None)
+            .unwrap();
 
         // Check totals
         assert_eq!(db.get_today_total().unwrap(), 60.0);
@@ -1483,9 +1511,14 @@ mod tests {
         // Step 2.5: Check what version we're at and what columns exist
         let conn = db.get_connection().unwrap();
         let version: Option<u32> = conn
-            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row.get(0))
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
             .unwrap_or(None);
-        eprintln!("Database version after SqliteDatabase::new(): {:?}", version.unwrap_or(0));
+        eprintln!(
+            "Database version after SqliteDatabase::new(): {:?}",
+            version.unwrap_or(0)
+        );
 
         let columns: Vec<String> = conn
             .prepare("PRAGMA table_info(sessions)")
@@ -1564,8 +1597,18 @@ mod tests {
 
         // Step 5: Verify the database can be used normally after upgrade
         drop(conn);
-        db.update_session("new-session-after-upgrade", 3.0, 50, 25, None, None, None, None, None)
-            .unwrap();
+        db.update_session(
+            "new-session-after-upgrade",
+            3.0,
+            50,
+            25,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
 
         let today_total = db.get_today_total().unwrap();
         assert!(
@@ -1581,9 +1624,12 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions with different dates
-        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None).unwrap();
-        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None).unwrap();
-        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None).unwrap();
+        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None)
+            .unwrap();
+        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None)
+            .unwrap();
+        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None)
+            .unwrap();
 
         // Check all-time stats methods
         assert_eq!(db.get_all_time_total().unwrap(), 60.0);

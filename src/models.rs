@@ -376,10 +376,7 @@ mod tests {
         );
 
         // Test Opus
-        assert_eq!(
-            ModelType::from_name("Claude Opus").canonical_name(),
-            "Opus"
-        );
+        assert_eq!(ModelType::from_name("Claude Opus").canonical_name(), "Opus");
 
         assert_eq!(
             ModelType::from_name("Claude 3.5 Opus").canonical_name(),
