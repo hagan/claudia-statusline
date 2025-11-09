@@ -240,6 +240,24 @@ pub struct ContextUsage {
     /// This represents the actual space available for conversation before hitting
     /// the buffer zone reserved for responses.
     pub tokens_remaining: usize,
+
+    /// Compaction state detection
+    pub compaction_state: CompactionState,
+}
+
+/// Compaction state detection
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompactionState {
+    /// Normal operation - no recent compaction
+    Normal,
+
+    /// Compaction in progress (transcript being rewritten)
+    /// Detected by: file modified in last 10s + token drop expected
+    InProgress,
+
+    /// Compaction recently completed (within last 30s)
+    /// Detected by: significant token count drop (>50%)
+    RecentlyCompleted,
 }
 
 #[cfg(test)]

@@ -538,6 +538,19 @@ impl SqliteDatabase {
         }
     }
 
+    /// Get max tokens observed for a specific session (for compaction detection)
+    pub fn get_session_max_tokens(&self, session_id: &str) -> Option<usize> {
+        let conn = self.get_connection().ok()?;
+        let max_tokens: i64 = conn
+            .query_row(
+                "SELECT max_tokens_observed FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .ok()?;
+        Some(max_tokens as usize)
+    }
+
     /// Get all-time total cost
     #[allow(dead_code)]
     pub fn get_all_time_total(&self) -> Result<f64> {

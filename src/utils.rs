@@ -354,14 +354,108 @@ pub fn get_token_breakdown_from_transcript(transcript_path: &str) -> Option<crat
     }
 }
 
+/// Detect compaction state based on token count changes and file modification time
+fn detect_compaction_state(
+    transcript_path: &str,
+    current_tokens: usize,
+    session_id: Option<&str>,
+) -> crate::models::CompactionState {
+    use crate::common::get_data_dir;
+    use crate::database::SqliteDatabase;
+    use crate::models::CompactionState;
+    use std::fs;
+    use std::time::SystemTime;
+
+    // Get last known token count from database
+    let last_known_tokens = if let Some(sid) = session_id {
+        let db_path = get_data_dir().join("stats.db");
+        if let Ok(db) = SqliteDatabase::new(&db_path) {
+            db.get_session_max_tokens(sid)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // Check file modification time
+    let recently_modified = if let Ok(safe_path) = validate_transcript_file(transcript_path) {
+        if let Ok(metadata) = fs::metadata(&safe_path) {
+            if let Ok(modified) = metadata.modified() {
+                if let Ok(elapsed) = SystemTime::now().duration_since(modified) {
+                    elapsed.as_secs() < 10 // Modified in last 10 seconds
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    // Detect compaction state
+    if let Some(last_tokens) = last_known_tokens {
+        // Check for significant token drop (>50% reduction indicates compaction)
+        let token_drop_ratio = if last_tokens > 0 {
+            (last_tokens.saturating_sub(current_tokens)) as f64 / last_tokens as f64
+        } else {
+            0.0
+        };
+
+        if token_drop_ratio > 0.5 {
+            // Significant drop detected
+            if recently_modified {
+                // File just modified + token drop = compaction in progress
+                log::debug!(
+                    "Compaction in progress: tokens {} -> {} ({:.1}% drop), file modified <10s ago",
+                    last_tokens,
+                    current_tokens,
+                    token_drop_ratio * 100.0
+                );
+                CompactionState::InProgress
+            } else {
+                // Token drop but file not recently modified = recently completed
+                log::debug!(
+                    "Compaction recently completed: tokens {} -> {} ({:.1}% drop)",
+                    last_tokens,
+                    current_tokens,
+                    token_drop_ratio * 100.0
+                );
+                CompactionState::RecentlyCompleted
+            }
+        } else if recently_modified && last_tokens > current_tokens * 2 {
+            // File recently modified but we haven't seen the new token count yet
+            // This happens when Claude is still writing the compacted transcript
+            log::debug!(
+                "Compaction in progress: file modified recently, expecting token drop from {}",
+                last_tokens
+            );
+            CompactionState::InProgress
+        } else {
+            CompactionState::Normal
+        }
+    } else {
+        // No history available, can't detect compaction
+        CompactionState::Normal
+    }
+}
+
 pub fn calculate_context_usage(
     transcript_path: &str,
     model_name: Option<&str>,
+    session_id: Option<&str>,
 ) -> Option<ContextUsage> {
     let total_tokens = get_token_count_from_transcript(transcript_path)?;
 
     let config = config::get_config();
     let buffer_size = config.context.buffer_size;
+
+    // Detect compaction state
+    let compaction_state = detect_compaction_state(transcript_path, total_tokens as usize, session_id);
 
     // Get base context window from model detection (may be learned or advertised)
     let base_window = get_context_window_for_model(model_name, config);
@@ -426,6 +520,7 @@ pub fn calculate_context_usage(
         percentage: percentage.min(100.0),
         approaching_limit,
         tokens_remaining,
+        compaction_state,
     })
 }
 
@@ -504,22 +599,22 @@ mod tests {
     #[test]
     fn test_malicious_transcript_paths() {
         // Directory traversal attempts
-        assert!(calculate_context_usage("../../../etc/passwd", None).is_none());
+        assert!(calculate_context_usage("../../../etc/passwd", None, None).is_none());
         assert!(parse_duration("../../../../../../etc/shadow").is_none());
 
         // Command injection attempts
-        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /", None).is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /", None, None).is_none());
         assert!(parse_duration("/tmp/test.jsonl && echo hacked").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd", None).is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd", None, None).is_none());
         assert!(parse_duration("/tmp/test.jsonl`whoami`").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)", None).is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)", None, None).is_none());
 
         // Null byte injection
-        assert!(calculate_context_usage("/tmp/test\0.jsonl", None).is_none());
+        assert!(calculate_context_usage("/tmp/test\0.jsonl", None, None).is_none());
         assert!(parse_duration("/tmp\0/test.jsonl").is_none());
 
         // Special characters that might cause issues
-        assert!(calculate_context_usage("/tmp/test\n.jsonl", None).is_none());
+        assert!(calculate_context_usage("/tmp/test\n.jsonl", None, None).is_none());
         assert!(parse_duration("/tmp/test\r.jsonl").is_none());
     }
 
@@ -595,26 +690,31 @@ mod tests {
 
     #[test]
     fn test_context_usage_levels() {
+        use crate::models::CompactionState;
         // Test various percentage levels with approaching_limit logic
         let low = ContextUsage {
             percentage: 10.0,
             approaching_limit: false,
             tokens_remaining: 180_000,
+            compaction_state: CompactionState::Normal,
         };
         let medium = ContextUsage {
             percentage: 55.0,
             approaching_limit: false,
             tokens_remaining: 90_000,
+            compaction_state: CompactionState::Normal,
         };
         let high = ContextUsage {
             percentage: 75.0,
             approaching_limit: false,
             tokens_remaining: 50_000,
+            compaction_state: CompactionState::Normal,
         };
         let critical = ContextUsage {
             percentage: 95.0,
             approaching_limit: true, // Above 80% threshold
             tokens_remaining: 10_000,
+            compaction_state: CompactionState::Normal,
         };
 
         assert_eq!(low.percentage, 10.0);
@@ -636,14 +736,14 @@ mod tests {
         use tempfile::NamedTempFile;
 
         // Test with non-existent file
-        assert!(calculate_context_usage("/tmp/nonexistent.jsonl", None).is_none());
+        assert!(calculate_context_usage("/tmp/nonexistent.jsonl", None, None).is_none());
 
         // Test with valid transcript (string timestamp and string content)
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":120000,"output_tokens":5000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"question"}},"timestamp":"2025-08-22T18:33:00.000Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 62.5).abs() < 0.01); // 125000/200000 * 100 (default "full" mode)
@@ -658,7 +758,7 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100,"cache_read_input_tokens":30000,"cache_creation_input_tokens":200,"output_tokens":500}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
         assert!(result.is_some());
         let usage = result.unwrap();
         // Total: 100 + 30000 + 200 + 500 = 30800
@@ -674,7 +774,7 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":[{{"type":"text","text":"response"}}],"usage":{{"input_tokens":50000,"output_tokens":1000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 25.5).abs() < 0.01); // 51000/200000 * 100 (default "full" mode)
@@ -767,27 +867,27 @@ mod tests {
 
         // Test Sonnet 4.5 (200k window, default "full" mode)
         let result =
-            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude Sonnet 4.5"));
+            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude Sonnet 4.5"), None);
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
 
         // Test Sonnet 3.5 (200k window, default "full" mode)
         let result =
-            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Sonnet"));
+            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Sonnet"), None);
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
 
         // Test Opus 3.5 (200k window, default "full" mode)
         let result =
-            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Opus"));
+            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Opus"), None);
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%
 
         // Test unknown model (default 200k window, default "full" mode)
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None);
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
         assert!(result.is_some());
         let usage = result.unwrap();
         assert!((usage.percentage - 50.0).abs() < 0.01); // 100000/200000 * 100 = 50%

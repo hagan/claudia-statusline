@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [2.16.7] - 2025-11-08
 
+### Added
+- **Real-time compaction detection with animated spinner**
+  - **Feature**: Shows visual feedback when auto-compact is in progress
+  - **Display states**:
+    - Normal: `79% [========>-] ⚠` (standard progress bar with warning)
+    - In Progress: `Compacting... ⠋` (rotating braille spinner)
+    - Recently Completed: `35% [===>------] ✓` (green checkmark, ~30s after compact)
+  - **Detection logic**: Compares current tokens with last known value from database
+    - >50% token drop = compaction detected
+    - File modified <10s + expected drop = in progress
+  - **Implementation**: New CompactionState enum, smart detection in utils.rs
+  - **User benefit**: No more confusion about "79% warning after compaction"
+
+- **Device indexes for sync performance**
+  - Added indexes on device_id for sessions, daily_stats, monthly_stats
+  - Prevents full table scans during cloud sync operations
+  - Applied to both local (database.rs) and Turso (setup-turso-schema.sql) schemas
+
 ### Fixed
 - **Critical: Synchronized SCHEMA constant with migration v6**
   - **Problem**: Fresh installs created learned_context_windows without workspace_dir/device_id columns
