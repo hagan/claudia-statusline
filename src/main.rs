@@ -350,16 +350,20 @@ fn main() -> Result<()> {
                 let device_id = common::get_device_id();
 
                 // Update stats with new cost data
+                use database::SessionUpdate;
                 let result = update_stats_data(|data| {
                     data.update_session(
                         session_id,
-                        total_cost,
-                        cost.total_lines_added.unwrap_or(0),
-                        cost.total_lines_removed.unwrap_or(0),
-                        model_name,
-                        workspace_dir,
-                        Some(&device_id),
-                        token_breakdown.as_ref(),
+                        SessionUpdate {
+                            cost: total_cost,
+                            lines_added: cost.total_lines_added.unwrap_or(0),
+                            lines_removed: cost.total_lines_removed.unwrap_or(0),
+                            model_name: model_name.map(|s| s.to_string()),
+                            workspace_dir: workspace_dir.map(|s| s.to_string()),
+                            device_id: Some(device_id.clone()),
+                            token_breakdown,
+                            max_tokens_observed: None, // updated separately
+                        },
                     )
                 });
 

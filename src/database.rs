@@ -110,6 +110,19 @@ CREATE TABLE IF NOT EXISTS meta (
 );
 "#;
 
+/// Parameters for updating a session in the database
+#[derive(Clone)]
+pub struct SessionUpdate {
+    pub cost: f64,
+    pub lines_added: u64,
+    pub lines_removed: u64,
+    pub model_name: Option<String>,
+    pub workspace_dir: Option<String>,
+    pub device_id: Option<String>,
+    pub token_breakdown: Option<crate::models::TokenBreakdown>,
+    pub max_tokens_observed: Option<u32>,
+}
+
 pub struct SqliteDatabase {
     #[allow(dead_code)]
     path: PathBuf,
@@ -261,18 +274,7 @@ impl SqliteDatabase {
     }
 
     /// Update or insert a session with atomic transaction
-    pub fn update_session(
-        &self,
-        session_id: &str,
-        cost: f64,
-        lines_added: u64,
-        lines_removed: u64,
-        model_name: Option<&str>,
-        workspace_dir: Option<&str>,
-        device_id: Option<&str>,
-        token_breakdown: Option<&crate::models::TokenBreakdown>,
-        max_tokens_observed: Option<u32>,
-    ) -> Result<(f64, f64)> {
+    pub fn update_session(&self, session_id: &str, update: SessionUpdate) -> Result<(f64, f64)> {
         let retry_config = RetryConfig::for_db_ops();
 
         // Wrap the entire transaction in retry logic
@@ -280,18 +282,7 @@ impl SqliteDatabase {
             let mut conn = self.get_connection()?;
             let tx = conn.transaction()?;
 
-            let result = self.update_session_tx(
-                &tx,
-                session_id,
-                cost,
-                lines_added,
-                lines_removed,
-                model_name,
-                workspace_dir,
-                device_id,
-                token_breakdown,
-                max_tokens_observed,
-            )?;
+            let result = self.update_session_tx(&tx, session_id, update.clone())?;
 
             tx.commit()?;
             Ok(result)
@@ -356,18 +347,19 @@ impl SqliteDatabase {
         &self,
         tx: &Transaction,
         session_id: &str,
-        cost: f64,
-        lines_added: u64,
-        lines_removed: u64,
-        model_name: Option<&str>,
-        workspace_dir: Option<&str>,
-        device_id: Option<&str>,
-        token_breakdown: Option<&crate::models::TokenBreakdown>,
-        max_tokens_observed: Option<u32>,
+        update: SessionUpdate,
     ) -> Result<(f64, f64)> {
         let now = current_timestamp();
         let today = current_date();
         let month = current_month();
+
+        // Extract values from update struct
+        let cost = update.cost;
+        let lines_added = update.lines_added;
+        let lines_removed = update.lines_removed;
+        let model_name = update.model_name.as_deref();
+        let workspace_dir = update.workspace_dir.as_deref();
+        let device_id = update.device_id.as_deref();
 
         // Check if session already exists and get old values
         let old_values: Option<(f64, i64, i64)> = tx
@@ -393,20 +385,21 @@ impl SqliteDatabase {
             };
 
         // Extract token breakdown values (0 if not provided)
-        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) =
-            token_breakdown
-                .map(|tb| {
-                    (
-                        tb.input_tokens as i64,
-                        tb.output_tokens as i64,
-                        tb.cache_read_tokens as i64,
-                        tb.cache_creation_tokens as i64,
-                    )
-                })
-                .unwrap_or((0, 0, 0, 0));
+        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = update
+            .token_breakdown
+            .as_ref()
+            .map(|tb| {
+                (
+                    tb.input_tokens as i64,
+                    tb.output_tokens as i64,
+                    tb.cache_read_tokens as i64,
+                    tb.cache_creation_tokens as i64,
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
 
         // Convert max_tokens_observed to i64 for SQLite
-        let max_tokens = max_tokens_observed.map(|t| t as i64);
+        let max_tokens = update.max_tokens_observed.map(|t| t as i64);
 
         // UPSERT session (atomic operation)
         // Note: On conflict, we REPLACE the values, not accumulate them
@@ -1302,14 +1295,38 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         let (day_total, session_total) = db
-            .update_session("test-session", 10.0, 100, 50, None, None, None, None, None)
+            .update_session(
+                "test-session",
+                SessionUpdate {
+                    cost: 10.0,
+                    lines_added: 100,
+                    lines_removed: 50,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(day_total, 10.0);
         assert_eq!(session_total, 10.0);
 
         // Update same session - should REPLACE not accumulate
         let (day_total, session_total) = db
-            .update_session("test-session", 5.0, 50, 25, None, None, None, None, None)
+            .update_session(
+                "test-session",
+                SessionUpdate {
+                    cost: 5.0,
+                    lines_added: 50,
+                    lines_removed: 25,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(
             day_total, 5.0,
@@ -1332,21 +1349,57 @@ mod tests {
 
         // First update: session cost = 10.0
         let (day_total, session_total) = db
-            .update_session("session1", 10.0, 100, 50, None, None, None, None, None)
+            .update_session(
+                "session1",
+                SessionUpdate {
+                    cost: 10.0,
+                    lines_added: 100,
+                    lines_removed: 50,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(session_total, 10.0);
         assert_eq!(day_total, 10.0);
 
         // Second session on same day
         let (day_total, session_total) = db
-            .update_session("session2", 20.0, 200, 100, None, None, None, None, None)
+            .update_session(
+                "session2",
+                SessionUpdate {
+                    cost: 20.0,
+                    lines_added: 200,
+                    lines_removed: 100,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(session_total, 20.0);
         assert_eq!(day_total, 30.0); // 10 + 20
 
         // Update first session with LOWER value - should decrease day total
         let (day_total, session_total) = db
-            .update_session("session1", 8.0, 80, 40, None, None, None, None, None)
+            .update_session(
+                "session1",
+                SessionUpdate {
+                    cost: 8.0,
+                    lines_added: 80,
+                    lines_removed: 40,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(session_total, 8.0, "Session should have new value");
         assert_eq!(
@@ -1356,7 +1409,19 @@ mod tests {
 
         // Update first session with HIGHER value - should increase day total
         let (day_total, session_total) = db
-            .update_session("session1", 15.0, 150, 75, None, None, None, None, None)
+            .update_session(
+                "session1",
+                SessionUpdate {
+                    cost: 15.0,
+                    lines_added: 150,
+                    lines_removed: 75,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(session_total, 15.0, "Session should have new value");
         assert_eq!(
@@ -1366,7 +1431,19 @@ mod tests {
 
         // Update second session to zero - should decrease day total
         let (day_total, session_total) = db
-            .update_session("session2", 0.0, 0, 0, None, None, None, None, None)
+            .update_session(
+                "session2",
+                SessionUpdate {
+                    cost: 0.0,
+                    lines_added: 0,
+                    lines_removed: 0,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
             .unwrap();
         assert_eq!(session_total, 0.0, "Session should be zero");
         assert_eq!(
@@ -1394,14 +1471,16 @@ mod tests {
                     let db = SqliteDatabase::new(&path).unwrap();
                     db.update_session(
                         &format!("session-{}", i),
-                        1.0,
-                        10,
-                        5,
-                        None,
-                        None,
-                        None,
-                        None,
-                        None,
+                        SessionUpdate {
+                            cost: 1.0,
+                            lines_added: 10,
+                            lines_removed: 5,
+                            model_name: None,
+                            workspace_dir: None,
+                            device_id: None,
+                            token_breakdown: None,
+                            max_tokens_observed: None,
+                        },
                     )
                 })
             })
@@ -1427,12 +1506,48 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions
-        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None)
-            .unwrap();
-        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None)
-            .unwrap();
-        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None)
-            .unwrap();
+        db.update_session(
+            "session-1",
+            SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-2",
+            SessionUpdate {
+                cost: 20.0,
+                lines_added: 200,
+                lines_removed: 100,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-3",
+            SessionUpdate {
+                cost: 30.0,
+                lines_added: 300,
+                lines_removed: 150,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
 
         // Check totals
         assert_eq!(db.get_today_total().unwrap(), 60.0);
@@ -1599,14 +1714,16 @@ mod tests {
         drop(conn);
         db.update_session(
             "new-session-after-upgrade",
-            3.0,
-            50,
-            25,
-            None,
-            None,
-            None,
-            None,
-            None,
+            SessionUpdate {
+                cost: 3.0,
+                lines_added: 50,
+                lines_removed: 25,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
         )
         .unwrap();
 
@@ -1624,12 +1741,48 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions with different dates
-        db.update_session("session-1", 10.0, 100, 50, None, None, None, None, None)
-            .unwrap();
-        db.update_session("session-2", 20.0, 200, 100, None, None, None, None, None)
-            .unwrap();
-        db.update_session("session-3", 30.0, 300, 150, None, None, None, None, None)
-            .unwrap();
+        db.update_session(
+            "session-1",
+            SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-2",
+            SessionUpdate {
+                cost: 20.0,
+                lines_added: 200,
+                lines_removed: 100,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-3",
+            SessionUpdate {
+                cost: 30.0,
+                lines_added: 300,
+                lines_removed: 150,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
 
         // Check all-time stats methods
         assert_eq!(db.get_all_time_total().unwrap(), 60.0);

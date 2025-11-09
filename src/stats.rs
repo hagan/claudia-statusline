@@ -207,13 +207,7 @@ impl StatsData {
     pub fn update_session(
         &mut self,
         session_id: &str,
-        session_cost: f64,
-        lines_added: u64,
-        lines_removed: u64,
-        model_name: Option<&str>,
-        workspace_dir: Option<&str>,
-        device_id: Option<&str>,
-        token_breakdown: Option<&crate::models::TokenBreakdown>,
+        update: crate::database::SessionUpdate,
     ) -> (f64, f64) {
         let today = current_date();
         let month = current_month();
@@ -225,17 +219,7 @@ impl StatsData {
         // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
-                if let Err(e) = db.update_session(
-                    session_id,
-                    session_cost,
-                    lines_added,
-                    lines_removed,
-                    model_name,
-                    workspace_dir,
-                    device_id,
-                    token_breakdown,
-                    None, // max_tokens_observed updated separately
-                ) {
+                if let Err(e) = db.update_session(session_id, update.clone()) {
                     log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
                 }
             } else {
@@ -251,7 +235,7 @@ impl StatsData {
         // Calculate delta from last known session cost
         let last_cost = self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0);
 
-        let cost_delta = session_cost - last_cost;
+        let cost_delta = update.cost - last_cost;
 
         // Calculate line deltas from previous values
         let last_lines_added = self
@@ -264,24 +248,24 @@ impl StatsData {
             .get(session_id)
             .map(|s| s.lines_removed)
             .unwrap_or(0);
-        let lines_added_delta = (lines_added as i64) - (last_lines_added as i64);
-        let lines_removed_delta = (lines_removed as i64) - (last_lines_removed as i64);
+        let lines_added_delta = (update.lines_added as i64) - (last_lines_added as i64);
+        let lines_removed_delta = (update.lines_removed as i64) - (last_lines_removed as i64);
 
         // Always update session metadata (even with zero/negative deltas)
         // This ensures cost corrections and metadata refreshes are persisted
         if let Some(session) = self.sessions.get_mut(session_id) {
-            session.cost = session_cost;
-            session.lines_added = lines_added;
-            session.lines_removed = lines_removed;
+            session.cost = update.cost;
+            session.lines_added = update.lines_added;
+            session.lines_removed = update.lines_removed;
             session.last_updated = now.clone();
         } else {
             self.sessions.insert(
                 session_id.to_string(),
                 SessionStats {
                     last_updated: now.clone(),
-                    cost: session_cost,
-                    lines_added,
-                    lines_removed,
+                    cost: update.cost,
+                    lines_added: update.lines_added,
+                    lines_removed: update.lines_removed,
                     start_time: Some(now.clone()), // Track when session started
                     max_tokens_observed: None,     // Will be updated by adaptive learning
                 },
@@ -547,16 +531,19 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
         .iter()
         .max_by_key(|(_, s)| &s.last_updated)
     {
+        use crate::database::SessionUpdate;
         match db.update_session(
             session_id,
-            session.cost,
-            session.lines_added,
-            session.lines_removed,
-            None,                        // model_name not available in dual-write
-            None,                        // workspace_dir not available in dual-write
-            None,                        // device_id not available in dual-write
-            None,                        // token_breakdown not available in dual-write
-            session.max_tokens_observed, // max_tokens_observed from in-memory stats
+            SessionUpdate {
+                cost: session.cost,
+                lines_added: session.lines_added,
+                lines_removed: session.lines_removed,
+                model_name: None,                    // not available in dual-write
+                workspace_dir: None,                 // not available in dual-write
+                device_id: None,                     // not available in dual-write
+                token_breakdown: None,               // not available in dual-write
+                max_tokens_observed: session.max_tokens_observed, // from in-memory stats
+            },
         ) {
             Ok((day_total, session_total)) => {
                 debug!(
@@ -622,9 +609,22 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
 ///
 /// ```rust,no_run
 /// use statusline::stats::update_stats_data;
+/// use statusline::database::SessionUpdate;
 ///
 /// let (daily, monthly) = update_stats_data(|stats| {
-///     stats.update_session("session-123", 1.50, 100, 50, None, None, None, None)
+///     stats.update_session(
+///         "session-123",
+///         SessionUpdate {
+///             cost: 1.50,
+///             lines_added: 100,
+///             lines_removed: 50,
+///             model_name: None,
+///             workspace_dir: None,
+///             device_id: None,
+///             token_breakdown: None,
+///             max_tokens_observed: None,
+///         },
+///     )
 /// });
 /// ```
 pub fn update_stats_data<F>(updater: F) -> (f64, f64)
@@ -724,9 +724,21 @@ mod tests {
 
     #[test]
     fn test_stats_data_update_session() {
+        use crate::database::SessionUpdate;
         let mut stats = StatsData::default();
-        let (daily, monthly) =
-            stats.update_session("test-session", 10.0, 100, 50, None, None, None, None);
+        let (daily, monthly) = stats.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         assert_eq!(daily, 10.0);
         assert_eq!(monthly, 10.0);
@@ -750,11 +762,24 @@ mod tests {
     #[test]
     #[serial]
     fn test_stats_save_and_load() {
+        use crate::database::SessionUpdate;
         let temp_dir = TempDir::new().unwrap();
         env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
 
         let mut stats = StatsData::default();
-        stats.update_session("test", 5.0, 50, 25, None, None, None, None);
+        stats.update_session(
+            "test",
+            SessionUpdate {
+                cost: 5.0,
+                lines_added: 50,
+                lines_removed: 25,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         let save_result = stats.save();
         assert!(save_result.is_ok());
@@ -777,10 +802,23 @@ mod tests {
     #[test]
     #[serial]
     fn test_session_start_time_tracking() {
+        use crate::database::SessionUpdate;
         let mut stats = StatsData::default();
 
         // First update creates session with start_time
-        stats.update_session("test-session", 1.0, 10, 5, None, None, None, None);
+        stats.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 1.0,
+                lines_added: 10,
+                lines_removed: 5,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         // Check that start_time was set
         let session = stats.sessions.get("test-session").unwrap();
@@ -788,7 +826,19 @@ mod tests {
 
         // Second update to same session shouldn't change start_time
         let original_start = session.start_time.clone();
-        stats.update_session("test-session", 2.0, 20, 10, None, None, None, None);
+        stats.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 2.0,
+                lines_added: 20,
+                lines_removed: 10,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         let session = stats.sessions.get("test-session").unwrap();
         assert_eq!(session.start_time, original_start);
@@ -828,17 +878,21 @@ mod tests {
             let temp_path_clone = temp_path.clone();
             let handle = thread::spawn(move || {
                 // Ensure the thread uses the temp directory
+                use crate::database::SessionUpdate;
                 env::set_var("XDG_DATA_HOME", &temp_path_clone);
                 let (daily, _) = update_stats_data(|stats| {
                     stats.update_session(
                         &format!("test-thread-{}", i),
-                        1.0,
-                        10,
-                        5,
-                        None,
-                        None,
-                        None,
-                        None,
+                        SessionUpdate {
+                            cost: 1.0,
+                            lines_added: 10,
+                            lines_removed: 5,
+                            model_name: None,
+                            workspace_dir: None,
+                            device_id: None,
+                            token_breakdown: None,
+                            max_tokens_observed: None,
+                        },
                     )
                 });
                 completed_clone.fetch_add(1, Ordering::SeqCst);
@@ -905,8 +959,21 @@ mod tests {
         initial_stats.save().unwrap();
 
         // Create a session with a specific start time
+        use crate::database::SessionUpdate;
         update_stats_data(|stats| {
-            stats.update_session("duration-test-session", 1.0, 10, 5, None, None, None, None)
+            stats.update_session(
+                "duration-test-session",
+                SessionUpdate {
+                    cost: 1.0,
+                    lines_added: 10,
+                    lines_removed: 5,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
         });
 
         // Wait a bit to ensure some time passes

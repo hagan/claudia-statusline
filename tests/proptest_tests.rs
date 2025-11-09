@@ -209,8 +209,21 @@ proptest! {
         lines_added in 0u64..10000,
         lines_removed in 0u64..10000,
     ) {
+        use statusline::database::SessionUpdate;
         let mut stats = StatsData::default();
-        stats.update_session(&session_id, cost, lines_added, lines_removed, None, None, None, None);
+        stats.update_session(
+            &session_id,
+            SessionUpdate {
+                cost,
+                lines_added,
+                lines_removed,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         // Serialize to JSON
         let json = serde_json::to_string(&stats);
