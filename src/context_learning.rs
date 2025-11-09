@@ -41,6 +41,10 @@ const COMPACTION_PROXIMITY_THRESHOLD: f64 = 0.95;
 /// Number of recent messages to check for manual compaction commands
 const MANUAL_COMPACTION_CHECK_LINES: usize = 5;
 
+/// Audit entry for session observations
+/// Format: (last_updated, session_id, tokens, workspace_dir, device_id)
+type SessionAuditEntry = (String, String, usize, Option<String>, Option<String>);
+
 /// Context window learning manager
 pub struct ContextLearner {
     db: SqliteDatabase,
@@ -567,10 +571,8 @@ impl ContextLearner {
 
         // Group by model and replay observations, preserving full audit trail
         // Tuple: (last_updated, session_id, tokens, workspace_dir, device_id)
-        let mut model_sessions: std::collections::HashMap<
-            String,
-            Vec<(String, String, usize, Option<String>, Option<String>)>,
-        > = std::collections::HashMap::new();
+        let mut model_sessions: std::collections::HashMap<String, Vec<SessionAuditEntry>> =
+            std::collections::HashMap::new();
 
         for session in sessions {
             if let Some(tokens) = session.max_tokens_observed {

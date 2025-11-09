@@ -540,6 +540,7 @@ fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
 }
 
 // Write the current session to SQLite
+#[allow(dead_code)]
 fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
     if let Some((session_id, session)) = stats_data
         .sessions

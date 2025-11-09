@@ -153,10 +153,8 @@ fn get_context_window_for_model(model_name: Option<&str>, config: &config::Confi
 
         // Priority 2: Learned values (if adaptive learning enabled and confident)
         if config.context.adaptive_learning {
-            if let Ok(learned_window) = get_learned_context_window(model, config) {
-                if let Some(window) = learned_window {
-                    return window;
-                }
+            if let Ok(Some(window)) = get_learned_context_window(model, config) {
+                return window;
             }
         }
 
