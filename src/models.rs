@@ -239,6 +239,7 @@ pub struct ContextUsage {
     ///
     /// This represents the actual space available for conversation before hitting
     /// the buffer zone reserved for responses.
+    #[allow(dead_code)]
     pub tokens_remaining: usize,
 
     /// Compaction state detection

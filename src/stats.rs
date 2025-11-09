@@ -538,10 +538,10 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
                 cost: session.cost,
                 lines_added: session.lines_added,
                 lines_removed: session.lines_removed,
-                model_name: None,                    // not available in dual-write
-                workspace_dir: None,                 // not available in dual-write
-                device_id: None,                     // not available in dual-write
-                token_breakdown: None,               // not available in dual-write
+                model_name: None,      // not available in dual-write
+                workspace_dir: None,   // not available in dual-write
+                device_id: None,       // not available in dual-write
+                token_breakdown: None, // not available in dual-write
                 max_tokens_observed: session.max_tokens_observed, // from in-memory stats
             },
         ) {

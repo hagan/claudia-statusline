@@ -530,6 +530,7 @@ impl ContextLearner {
     }
 
     /// Get all learned context windows with their details (alias for compatibility)
+    #[allow(dead_code)]
     pub fn get_all_learned(&self) -> Result<Vec<LearnedContextWindow>> {
         self.get_all_learned_windows()
     }

@@ -320,7 +320,7 @@ impl Migration for AddSyncMetadata {
     }
 }
 
-// Stub migration for when turso-sync feature is disabled
+// Migration for when turso-sync feature is disabled - still adds device_id for analytics
 #[cfg(not(feature = "turso-sync"))]
 pub struct AddSyncMetadata;
 
@@ -331,16 +331,22 @@ impl Migration for AddSyncMetadata {
     }
 
     fn description(&self) -> &str {
-        "Add sync metadata (disabled - turso-sync feature not enabled)"
+        "Add device_id for analytics (sync features disabled)"
     }
 
-    fn up(&self, _tx: &Transaction) -> Result<()> {
-        // No-op when feature is disabled
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Always add device_id - used by analytics and learning features even without sync
+        tx.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT", [])?;
+        tx.execute("ALTER TABLE daily_stats ADD COLUMN device_id TEXT", [])?;
+        tx.execute("ALTER TABLE monthly_stats ADD COLUMN device_id TEXT", [])?;
+
+        // Note: sync_timestamp and sync_meta table are NOT added (turso-sync disabled)
         Ok(())
     }
 
     fn down(&self, _tx: &Transaction) -> Result<()> {
-        // No-op when feature is disabled
+        // SQLite doesn't support DROP COLUMN
+        // device_id columns remain but are nullable
         Ok(())
     }
 }

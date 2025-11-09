@@ -392,7 +392,7 @@ fn main() -> Result<()> {
                         });
 
                         // Adaptive context learning: observe token usage if enabled
-                        if let Some(ref model_name) =
+                        if let Some(model_name) =
                             input.model.as_ref().and_then(|m| m.display_name.as_ref())
                         {
                             let config = config::get_config();
@@ -511,21 +511,21 @@ fn run_schema_migrations() -> Result<()> {
 
     let db_path = get_data_dir().join("stats.db");
     let mut runner =
-        MigrationRunner::new(&db_path).map_err(|e| crate::error::StatuslineError::Database(e))?;
+        MigrationRunner::new(&db_path).map_err(crate::error::StatuslineError::Database)?;
 
     let current_version = runner
         .current_version()
-        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+        .map_err(crate::error::StatuslineError::Database)?;
 
     println!("Current schema version: {}", current_version);
 
     runner
         .migrate()
-        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+        .map_err(crate::error::StatuslineError::Database)?;
 
     let new_version = runner
         .current_version()
-        .map_err(|e| crate::error::StatuslineError::Database(e))?;
+        .map_err(crate::error::StatuslineError::Database)?;
 
     println!();
     if new_version > current_version {

@@ -470,7 +470,6 @@ pub fn format_output_to_string(
 
 fn format_context_bar(context: &ContextUsage) -> String {
     use crate::models::CompactionState;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     let config = config::get_config();
     let bar_width = config.display.progress_bar_width;
@@ -478,22 +477,10 @@ fn format_context_bar(context: &ContextUsage) -> String {
     // Handle different compaction states
     match context.compaction_state {
         CompactionState::InProgress => {
-            // Rotating spinner: use current time to select frame
-            // Changes every 250ms - will show different spinner each time statusline is called
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_millis();
-            let frame = ((now / 250) % 10) as usize;
-
-            // Braille spinner characters - creates rotating effect
-            let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-            let spinner = spinner_chars[frame];
-
+            // Simple static indicator - statusline doesn't update frequently enough for animation
             format!(
-                "{}Compacting... {}{}",
+                "{}Compacting...{}",
                 Colors::yellow(),
-                spinner,
                 Colors::reset()
             )
         }
