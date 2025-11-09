@@ -447,10 +447,11 @@ pub fn calculate_context_usage(
     transcript_path: &str,
     model_name: Option<&str>,
     session_id: Option<&str>,
+    config_override: Option<&crate::config::Config>,
 ) -> Option<ContextUsage> {
     let total_tokens = get_token_count_from_transcript(transcript_path)?;
 
-    let config = config::get_config();
+    let config = config_override.unwrap_or_else(|| config::get_config());
     let buffer_size = config.context.buffer_size;
 
     // Detect compaction state
@@ -576,6 +577,16 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test helper: Create deterministic config for testing
+    // Uses default config with known values:
+    // - adaptive_learning: false
+    // - percentage_mode: "full"
+    // - buffer_size: 40000
+    // - context_window (via model defaults): 200000
+    fn test_config() -> crate::config::Config {
+        crate::config::Config::default()
+    }
     use std::fs;
 
     #[test]
@@ -608,23 +619,25 @@ mod tests {
 
     #[test]
     fn test_malicious_transcript_paths() {
+        let cfg = test_config();
+
         // Directory traversal attempts
-        assert!(calculate_context_usage("../../../etc/passwd", None, None).is_none());
+        assert!(calculate_context_usage("../../../etc/passwd", None, None, Some(&cfg)).is_none());
         assert!(parse_duration("../../../../../../etc/shadow").is_none());
 
         // Command injection attempts
-        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /", None, None).is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /", None, None, Some(&cfg)).is_none());
         assert!(parse_duration("/tmp/test.jsonl && echo hacked").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd", None, None).is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd", None, None, Some(&cfg)).is_none());
         assert!(parse_duration("/tmp/test.jsonl`whoami`").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)", None, None).is_none());
+        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)", None, None, Some(&cfg)).is_none());
 
         // Null byte injection
-        assert!(calculate_context_usage("/tmp/test\0.jsonl", None, None).is_none());
+        assert!(calculate_context_usage("/tmp/test\0.jsonl", None, None, Some(&cfg)).is_none());
         assert!(parse_duration("/tmp\0/test.jsonl").is_none());
 
         // Special characters that might cause issues
-        assert!(calculate_context_usage("/tmp/test\n.jsonl", None, None).is_none());
+        assert!(calculate_context_usage("/tmp/test\n.jsonl", None, None, Some(&cfg)).is_none());
         assert!(parse_duration("/tmp/test\r.jsonl").is_none());
     }
 
@@ -746,26 +759,22 @@ mod tests {
         use tempfile::NamedTempFile;
 
         // Test with non-existent file
-        assert!(calculate_context_usage("/tmp/nonexistent.jsonl", None, None).is_none());
+        let cfg = test_config();
+        assert!(calculate_context_usage("/tmp/nonexistent.jsonl", None, None, Some(&cfg)).is_none());
 
         // Test with valid transcript (string timestamp and string content)
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":120000,"output_tokens":5000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
         writeln!(file, r#"{{"message":{{"role":"user","content":"question"}},"timestamp":"2025-08-22T18:33:00.000Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
+        let cfg = test_config();
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None, Some(&cfg));
         assert!(result.is_some());
         let usage = result.unwrap();
 
         // Total tokens: 120000 + 5000 = 125000
-        // Percentage varies by config mode:
-        // - Default (200K): 62.5%, Adaptive (240K): 52.08%
-        // Test accepts either to avoid config dependency
-        assert!(
-            usage.percentage >= 52.0 && usage.percentage <= 63.0,
-            "Expected 52-63%, got {}",
-            usage.percentage
-        );
+        // With test config (200K full mode, no adaptive learning): 125000 / 200000 = 62.5%
+        assert_eq!(usage.percentage, 62.5);
     }
 
     #[test]
@@ -777,18 +786,14 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100,"cache_read_input_tokens":30000,"cache_creation_input_tokens":200,"output_tokens":500}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
+        let cfg = test_config();
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None, Some(&cfg));
         assert!(result.is_some());
         let usage = result.unwrap();
 
         // Total: 100 + 30000 + 200 + 500 = 30800
-        // Percentage varies by config mode:
-        // - Default (200K): 15.4%, Adaptive (240K): 12.83%
-        assert!(
-            usage.percentage >= 12.8 && usage.percentage <= 15.5,
-            "Expected 12.8-15.5%, got {}",
-            usage.percentage
-        );
+        // With test config (200K full mode): 30800 / 200000 = 15.4%
+        assert_eq!(usage.percentage, 15.4);
     }
 
     #[test]
@@ -800,18 +805,14 @@ mod tests {
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
         writeln!(file, r#"{{"message":{{"role":"assistant","content":[{{"type":"text","text":"response"}}],"usage":{{"input_tokens":50000,"output_tokens":1000}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
+        let cfg = test_config();
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None, Some(&cfg));
         assert!(result.is_some());
         let usage = result.unwrap();
 
         // Total: 50000 + 1000 = 51000
-        // Percentage varies by config mode:
-        // - Default (200K): 25.5%, Adaptive (240K): 21.25%
-        assert!(
-            usage.percentage >= 21.2 && usage.percentage <= 25.6,
-            "Expected 21.2-25.6%, got {}",
-            usage.percentage
-        );
+        // With test config (200K full mode): 51000 / 200000 = 25.5%
+        assert_eq!(usage.percentage, 25.5);
     }
 
     #[test]
@@ -900,57 +901,48 @@ mod tests {
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
         // Total: 100000 tokens
-        // Percentage varies by config mode:
-        // - Default (200K): 50.0%, Adaptive (240K): 41.67%
+        // With test config (200K full mode): 100000 / 200000 = 50.0%
         // All models use same 200K window, so all should get same result
+
+        let cfg = test_config();
 
         // Test Sonnet 4.5 (200k window)
         let result = calculate_context_usage(
             file.path().to_str().unwrap(),
             Some("Claude Sonnet 4.5"),
             None,
+            Some(&cfg),
         );
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!(
-            usage.percentage >= 41.6 && usage.percentage <= 50.1,
-            "Expected 41.6-50.1%, got {}",
-            usage.percentage
-        );
+        assert_eq!(usage.percentage, 50.0);
 
         // Test Sonnet 3.5 (200k window)
         let result = calculate_context_usage(
             file.path().to_str().unwrap(),
             Some("Claude 3.5 Sonnet"),
             None,
+            Some(&cfg),
         );
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!(
-            usage.percentage >= 41.6 && usage.percentage <= 50.1,
-            "Expected 41.6-50.1%, got {}",
-            usage.percentage
-        );
+        assert_eq!(usage.percentage, 50.0);
 
         // Test Opus 3.5 (200k window)
-        let result =
-            calculate_context_usage(file.path().to_str().unwrap(), Some("Claude 3.5 Opus"), None);
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Claude 3.5 Opus"),
+            None,
+            Some(&cfg),
+        );
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!(
-            usage.percentage >= 41.6 && usage.percentage <= 50.1,
-            "Expected 41.6-50.1%, got {}",
-            usage.percentage
-        );
+        assert_eq!(usage.percentage, 50.0);
 
         // Test unknown model (default 200k window)
-        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None);
+        let result = calculate_context_usage(file.path().to_str().unwrap(), None, None, Some(&cfg));
         assert!(result.is_some());
         let usage = result.unwrap();
-        assert!(
-            usage.percentage >= 41.6 && usage.percentage <= 50.1,
-            "Expected 41.6-50.1%, got {}",
-            usage.percentage
-        );
+        assert_eq!(usage.percentage, 50.0);
     }
 }
