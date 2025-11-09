@@ -30,6 +30,10 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - **Current directory** with `~` shorthand
 - **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
 - **Context usage** with progress bar (45% [====------])
+- **Real-time compaction detection** - shows when auto-compact is happening
+  - Normal: `79% [========>-] ⚠` (warning when approaching limit)
+  - In Progress: `Compacting... ⠋` (rotating spinner)
+  - Completed: `35% [===>------] ✓` (checkmark after successful compact)
 - **Claude model** (Opus/S3.5/S4.5/Haiku)
 - **Session duration** (1h 23m)
 - **Cost tracking** ($3.50 session, $2.54/hour burn rate)
@@ -41,6 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - Dark/light theme support
 - SQLite database for reliability
 - **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
+- **Compaction state tracking** - detects and displays when Claude is compacting the conversation
 - No configuration needed
 
 ## Documentation

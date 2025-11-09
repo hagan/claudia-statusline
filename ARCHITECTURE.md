@@ -49,6 +49,7 @@ When compiled with `turso-sync`, the optional sync subcommand pulls data from `s
 - **Resilient git integration** – git subprocesses run with timeouts, explicit args, and sanitised output to defend against malicious repos.
 - **Composable library API** – formatting logic is exposed through `render_statusline`/`render_from_json` so third parties can reuse the renderer without shelling out.
 - **Adaptive context learning** (experimental) – learns actual context limits by observing compaction events, with priority: user overrides > learned values > intelligent defaults > global fallback.
+- **Real-time compaction detection** (v2.16.7+) – detects Claude's auto-compact process by comparing token counts across invocations, showing visual feedback with rotating spinner animation.
 
 ## Storage & Configuration
 - Config: `~/.config/claudia-statusline/config.toml` (or `$XDG_CONFIG_HOME`)
@@ -76,6 +77,36 @@ strip = true
 panic = "abort"
 ```
 The `Makefile` wraps common flows (`make debug`, `make release`, `make dev`, `make check-code`). In practice the hot path completes in a few milliseconds and the CLI stays CPU-light because most work is simple parsing, small SQLite transactions, and a short git status command.
+
+## Compaction Detection (v2.16.7+)
+Real-time detection of Claude Code's auto-compact process provides visual feedback to users:
+
+### Detection Algorithm
+- **Session tracking**: Stores `max_tokens_observed` for each session in SQLite
+- **Comparison**: Compares current token count with last known value on each invocation
+- **States**:
+  - `Normal`: Standard operation, show percentage and optional warning
+  - `InProgress`: Token drop >50% + file modified <10s = compaction happening now
+  - `RecentlyCompleted`: Token drop >50% but file not recently modified = just finished
+
+### Visual Feedback
+- **Normal**: `79% [========>-] ⚠` (progress bar with warning)
+- **InProgress**: `Compacting... ⠋` (rotating braille spinner)
+- **RecentlyCompleted**: `35% [===>------] ✓` (green checkmark)
+
+### Implementation
+- `CompactionState` enum in `models.rs`
+- `detect_compaction_state()` in `utils.rs` - queries database, checks file mtime
+- `get_session_max_tokens()` in `database.rs` - retrieves last known token count
+- `format_context_bar()` in `display.rs` - renders appropriate state
+
+### Animation Strategy
+Uses system time to cycle through spinner characters regardless of invocation frequency:
+```rust
+let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let frame = ((now_millis / 250) % 10) as usize;
+```
+Each statusline call shows a different frame, creating perceived animation even with irregular timing.
 
 ## Color Palette
 `display.rs` centralises the ANSI palette and honours `NO_COLOR`/theme settings.
