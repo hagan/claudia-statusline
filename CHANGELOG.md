@@ -44,33 +44,33 @@ auto_compact_threshold = 75.0        # Warning threshold percentage
   - `/compact`, `/summarize`, "summarize conversation", etc.
 - **Confidence Scoring**: `ceiling_observations * 0.1 + compactions * 0.3` (max 1.0)
 
-### Added - Database Schema Migrations (v4, v5, v6)
+### Added - Database Schema Migration (v4)
 
-#### Migration v4: Adaptive Context Window Learning
-- **New Table**: `learned_context_windows`
-  - Columns: model_name (PK), observed_max_tokens, ceiling_observations, compaction_count, last_observed_max, last_updated, confidence_score, first_seen
-  - Index: idx_learned_confidence for confidence-based queries
-- **Sessions Table**: Added `max_tokens_observed` column for tracking token progression
+**Single Comprehensive Migration**: Consolidated all adaptive learning features into one migration for simpler upgrade path.
 
-#### Migration v5: Session Metadata for Analytics and Recovery
-- **Recovery Capability**: Added `model_name` column to enable recovery from accidental deletions
-- **Per-Project Analytics**: Added `workspace_dir` column for tracking costs by project
-- **Token Breakdown**: Added 4 columns for detailed cost analysis
-  - `total_input_tokens` - Input tokens excluding cache
-  - `total_output_tokens` - Output tokens generated
-  - `total_cache_read_tokens` - Cache hits (saves money)
-  - `total_cache_creation_tokens` - Cache writes (initial cost)
-- **Query Optimization**: Added 2 indexes
-  - `idx_sessions_model_name` - Fast per-model queries
-  - `idx_sessions_workspace` - Fast per-project queries
+#### Migration v4: Adaptive Context Learning with Analytics and Audit Trail
+- **New Table**: `learned_context_windows` - Tracks observed context limits per model
+  - Core columns: model_name (PK), observed_max_tokens, ceiling_observations, compaction_count, last_observed_max, last_updated, confidence_score, first_seen
+  - Audit columns: workspace_dir, device_id (track which project/device observed limits)
+  - Indexes:
+    - `idx_learned_confidence` - Confidence-based queries
+    - `idx_learned_workspace_model` - Composite workspace+model queries
+    - `idx_learned_device` - Device-based queries
 
-#### Migration v6: Context Learning Audit Trail
-- **Audit Fields**: Added to `learned_context_windows` table
-  - `workspace_dir` - Track which project observed limits
-  - `device_id` - Track which machine/device recorded observations
-- **Indexes**: Added for efficient audit queries
-  - `idx_learned_workspace_model` - Composite workspace+model index
-  - `idx_learned_device` - Device-based queries
+- **Sessions Table Enhancements**: Added 8 columns for analytics and recovery
+  - `max_tokens_observed` - Token progression tracking for compaction detection
+  - `model_name` - Recovery capability (rebuild learned_context_windows from sessions)
+  - `workspace_dir` - Per-project cost analytics
+  - Token breakdown (4 columns):
+    - `total_input_tokens` - Input tokens excluding cache
+    - `total_output_tokens` - Output tokens generated
+    - `total_cache_read_tokens` - Cache hits (saves money)
+    - `total_cache_creation_tokens` - Cache writes (initial cost)
+  - Indexes:
+    - `idx_sessions_model_name` - Fast per-model queries
+    - `idx_sessions_workspace` - Fast per-project queries
+
+**Upgrade Path**: Single migration from v3 → v4 (users on v2.15.0 at schema v3)
 
 ### Added - Real-Time Compaction Detection
 
@@ -326,12 +326,12 @@ auto_compact_threshold = 75.0        # Warning threshold percentage
 ### Migration Notes for Users Upgrading from v2.15.0
 
 #### Database Migrations
-- **Automatic**: Migrations run automatically when you first use v2.17.0
-- **Schema Version**: Database upgraded from v3 to v6 (3 new migrations)
+- **Automatic**: Migration runs automatically when you first use v2.17.0
+- **Schema Version**: Database upgraded from v3 to v4 (single comprehensive migration)
 - **Data Preserved**: All existing sessions, daily, and monthly stats preserved
 - **New Tables**: `learned_context_windows` table created
-- **New Columns**: 13+ new columns added across existing tables
-- **Indexes**: 6+ new indexes created for performance
+- **New Columns**: 10 new columns added across existing tables
+- **Indexes**: 5 new indexes created for performance
 
 #### Configuration Changes
 - **Default Behavior Change**: Context percentage now shows "full" mode (lower percentages)

@@ -87,9 +87,7 @@ impl MigrationRunner {
             Box::new(InitialJsonToSqlite),
             Box::new(AddMetaTable),
             Box::new(AddSyncMetadata),
-            Box::new(AddLearnedContextWindows),
-            Box::new(AddSessionMetadata),
-            Box::new(AddContextWindowAuditFields),
+            Box::new(AddAdaptiveLearning),
         ]
     }
 
@@ -351,20 +349,20 @@ impl Migration for AddSyncMetadata {
     }
 }
 
-/// Migration 004: Add adaptive context window learning tables and columns
-pub struct AddLearnedContextWindows;
+/// Migration 004: Add adaptive context window learning (consolidated from v4, v5, v6)
+pub struct AddAdaptiveLearning;
 
-impl Migration for AddLearnedContextWindows {
+impl Migration for AddAdaptiveLearning {
     fn version(&self) -> u32 {
         4
     }
 
     fn description(&self) -> &str {
-        "Add learned_context_windows table and max_tokens_observed to sessions for adaptive learning"
+        "Add adaptive context learning with session metadata and audit trail"
     }
 
     fn up(&self, tx: &Transaction) -> Result<()> {
-        // Create learned_context_windows table for tracking observed limits
+        // Create learned_context_windows table with ALL fields (including audit trail)
         tx.execute(
             "CREATE TABLE IF NOT EXISTS learned_context_windows (
                 model_name TEXT PRIMARY KEY,
@@ -374,86 +372,59 @@ impl Migration for AddLearnedContextWindows {
                 last_observed_max INTEGER NOT NULL,
                 last_updated TEXT NOT NULL,
                 confidence_score REAL DEFAULT 0.0,
-                first_seen TEXT NOT NULL
+                first_seen TEXT NOT NULL,
+                workspace_dir TEXT,
+                device_id TEXT
             )",
             [],
         )?;
 
-        // Create index for confidence-based queries
+        // Indexes for learned_context_windows
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_learned_confidence
              ON learned_context_windows(confidence_score DESC)",
             [],
         )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_workspace_model
+             ON learned_context_windows(workspace_dir, model_name)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_device
+             ON learned_context_windows(device_id)",
+            [],
+        )?;
 
-        // Add max_tokens_observed column to sessions table for tracking previous values
+        // Add ALL session columns for adaptive learning and analytics
         tx.execute(
             "ALTER TABLE sessions ADD COLUMN max_tokens_observed INTEGER DEFAULT 0",
             [],
         )?;
-
-        Ok(())
-    }
-
-    fn down(&self, tx: &Transaction) -> Result<()> {
-        // Drop the learned context windows table
-        tx.execute("DROP TABLE IF EXISTS learned_context_windows", [])?;
-        tx.execute("DROP INDEX IF EXISTS idx_learned_confidence", [])?;
-
-        // Note: SQLite doesn't support DROP COLUMN easily, so max_tokens_observed remains
-        // This is acceptable since it's nullable and doesn't affect existing functionality
-
-        Ok(())
-    }
-}
-
-/// Migration 005: Add session metadata for analytics and recovery
-pub struct AddSessionMetadata;
-
-impl Migration for AddSessionMetadata {
-    fn version(&self) -> u32 {
-        5
-    }
-
-    fn description(&self) -> &str {
-        "Add model_name, workspace_dir, and token breakdown columns to sessions table"
-    }
-
-    fn up(&self, tx: &Transaction) -> Result<()> {
-        // Add model name for recovery and per-model analytics
         tx.execute("ALTER TABLE sessions ADD COLUMN model_name TEXT", [])?;
-
-        // Add workspace directory for per-project analytics
         tx.execute("ALTER TABLE sessions ADD COLUMN workspace_dir TEXT", [])?;
-
-        // Add token breakdown for cost analysis and cache efficiency tracking
         tx.execute(
             "ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0",
             [],
         )?;
-
         tx.execute(
             "ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
             [],
         )?;
-
         tx.execute(
             "ALTER TABLE sessions ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0",
             [],
         )?;
-
         tx.execute(
             "ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0",
             [],
         )?;
 
-        // Create index for model-based queries
+        // Indexes for sessions table
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_model_name ON sessions(model_name)",
             [],
         )?;
-
-        // Create index for workspace-based queries
         tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_dir)",
             [],
@@ -463,63 +434,15 @@ impl Migration for AddSessionMetadata {
     }
 
     fn down(&self, tx: &Transaction) -> Result<()> {
-        // Drop indexes
-        tx.execute("DROP INDEX IF EXISTS idx_sessions_model_name", [])?;
-        tx.execute("DROP INDEX IF EXISTS idx_sessions_workspace", [])?;
-
-        // Note: SQLite doesn't support DROP COLUMN easily
-        // Columns remain but that's acceptable for backward compatibility
-
-        Ok(())
-    }
-}
-
-/// Migration 006: Add workspace_dir and device_id to learned_context_windows for audit trail
-pub struct AddContextWindowAuditFields;
-
-impl Migration for AddContextWindowAuditFields {
-    fn version(&self) -> u32 {
-        6
-    }
-
-    fn description(&self) -> &str {
-        "Add workspace_dir and device_id to learned_context_windows for cross-session audit trail"
-    }
-
-    fn up(&self, tx: &Transaction) -> Result<()> {
-        // Add workspace_dir to track which project observed the limit
-        tx.execute(
-            "ALTER TABLE learned_context_windows ADD COLUMN workspace_dir TEXT",
-            [],
-        )?;
-
-        // Add device_id to track which system observed the limit
-        tx.execute(
-            "ALTER TABLE learned_context_windows ADD COLUMN device_id TEXT",
-            [],
-        )?;
-
-        // Create composite index for workspace+model queries
-        tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_learned_workspace_model
-             ON learned_context_windows(workspace_dir, model_name)",
-            [],
-        )?;
-
-        // Create index for device-based queries
-        tx.execute(
-            "CREATE INDEX IF NOT EXISTS idx_learned_device
-             ON learned_context_windows(device_id)",
-            [],
-        )?;
-
-        Ok(())
-    }
-
-    fn down(&self, tx: &Transaction) -> Result<()> {
-        // Drop indexes
+        // Drop learned_context_windows table and indexes
+        tx.execute("DROP TABLE IF EXISTS learned_context_windows", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_learned_confidence", [])?;
         tx.execute("DROP INDEX IF EXISTS idx_learned_workspace_model", [])?;
         tx.execute("DROP INDEX IF EXISTS idx_learned_device", [])?;
+
+        // Drop session indexes
+        tx.execute("DROP INDEX IF EXISTS idx_sessions_model_name", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_sessions_workspace", [])?;
 
         // Note: SQLite doesn't support DROP COLUMN easily
         // Columns remain but that's acceptable for backward compatibility
@@ -557,8 +480,8 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 6 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddLearnedContextWindows (v4), AddSessionMetadata (v5), AddContextWindowAuditFields (v6)
-        assert_eq!(runner.current_version().unwrap(), 6);
+        // We now have 4 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddAdaptiveLearning (v4 - consolidated from old v4, v5, v6)
+        assert_eq!(runner.current_version().unwrap(), 4);
     }
 
     #[test]
