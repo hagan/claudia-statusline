@@ -13,9 +13,9 @@ CREATE TABLE daily_stats (
 );
 
 CREATE TABLE learned_context_windows (
-    device_id TEXT NOT NULL,
+    device_id TEXT,
     model_name TEXT NOT NULL,
-    workspace_dir TEXT NOT NULL,
+    workspace_dir TEXT,
     observed_max_tokens INTEGER NOT NULL,
     ceiling_observations INTEGER DEFAULT 0,
     compaction_count INTEGER DEFAULT 0,
@@ -23,7 +23,7 @@ CREATE TABLE learned_context_windows (
     last_updated TEXT NOT NULL,
     confidence_score REAL DEFAULT 0.0,
     first_seen TEXT NOT NULL,
-    PRIMARY KEY (device_id, model_name, workspace_dir)
+    PRIMARY KEY (model_name)
 );
 
 CREATE TABLE meta (

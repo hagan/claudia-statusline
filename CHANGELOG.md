@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.16.7] - 2025-11-08
+
+### Fixed
+- **Critical: Synchronized SCHEMA constant with migration v6**
+  - **Problem**: Fresh installs created learned_context_windows without workspace_dir/device_id columns
+  - **Root cause**: SCHEMA constant was outdated (missing v6 columns and indexes)
+  - **Solution**: Updated SCHEMA to include workspace_dir, device_id, and all v6 indexes
+  - **Result**: New databases now created with complete schema (version 6) without running migrations
+
+- **Critical: Fixed Turso schema mismatch for learned_context_windows**
+  - **Problem**: Turso schema enforced NOT NULL on workspace_dir/device_id, but local allows NULL
+  - **Impact**: Syncing rows with NULL workspace_dir would fail with constraint violation
+  - **Solution**: Relaxed Turso schema to allow NULL values, matching local schema
+  - **Result**: Backward compatible - can sync historical data without workspace/device info
+
+### Technical Details
+- **Local schema** (src/database.rs):
+  - Added workspace_dir and device_id columns to learned_context_windows table in SCHEMA
+  - Added three indexes: idx_learned_workspace_model, idx_learned_device, idx_learned_confidence
+  - Updated schema version marker from 5 to 6 for fresh installations
+  - Single-column primary key: model_name
+- **Turso schema** (scripts/setup-turso-schema.sql):
+  - Changed workspace_dir and device_id from NOT NULL to nullable
+  - Changed composite key (device_id, model_name, workspace_dir) to single-column (model_name)
+  - Matches local schema for compatibility
+- Old databases continue to migrate properly through v6 migration
+
 ## [2.16.6] - 2025-11-08
 
 ### Fixed

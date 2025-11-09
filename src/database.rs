@@ -61,8 +61,18 @@ CREATE TABLE IF NOT EXISTS learned_context_windows (
     last_observed_max INTEGER NOT NULL,
     last_updated TEXT NOT NULL,
     confidence_score REAL DEFAULT 0.0,
-    first_seen TEXT NOT NULL
+    first_seen TEXT NOT NULL,
+    workspace_dir TEXT,
+    device_id TEXT
 );
+
+-- Indexes for learned_context_windows (from migration v6)
+CREATE INDEX IF NOT EXISTS idx_learned_workspace_model
+    ON learned_context_windows(workspace_dir, model_name);
+CREATE INDEX IF NOT EXISTS idx_learned_device
+    ON learned_context_windows(device_id);
+CREATE INDEX IF NOT EXISTS idx_learned_confidence
+    ON learned_context_windows(confidence_score DESC);
 
 -- Sync metadata table (migration v3 - turso-sync feature)
 CREATE TABLE IF NOT EXISTS sync_meta (
@@ -168,11 +178,11 @@ impl SqliteDatabase {
             // NEW DATABASE: Create complete schema with all migration columns
             conn.execute_batch(SCHEMA)?;
 
-            // Mark as fully migrated to skip migration v1 JSON import
+            // Mark as fully migrated (v6 includes workspace_dir and device_id columns)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
-                 VALUES (?1, ?2, '', 'New database with complete schema', 0)",
-                params![5, chrono::Local::now().to_rfc3339()],
+                 VALUES (?1, ?2, '', 'New database with complete schema (v6)', 0)",
+                params![6, chrono::Local::now().to_rfc3339()],
             )?;
         } else {
             // OLD DATABASE: Only ensure base tables exist, let migrations add columns/indexes
