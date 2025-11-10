@@ -8,6 +8,7 @@
 
 # Claude-specific files (local development context)
 CLAUDE.md
+AGENTS.md
 .claude/
 
 # Temporary files
