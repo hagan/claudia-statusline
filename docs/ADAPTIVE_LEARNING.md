@@ -229,6 +229,32 @@ statusline context-learning --reset-all
 **When to reset:**
 - Anthropic announces context limit changes
 - You notice incorrect context percentage calculations
+
+### Rebuild Learned Data
+
+Rebuild learned context windows from session history (recovery):
+```bash
+statusline context-learning --rebuild
+```
+
+**When to use:**
+- After database restore or corruption
+- After accidentally deleting learned data
+- To rebuild from scratch with existing session history
+
+**How it works:**
+- Reads all historical sessions from database
+- Replays observations in chronological order
+- Rebuilds `learned_context_windows` table
+- Uses `max_tokens_observed` from each session
+
+**Best practice:**
+```bash
+# For a clean rebuild
+statusline context-learning --reset-all --rebuild
+```
+
+This clears existing data first, then rebuilds from session history.
 - After upgrading to a new major model version
 - Testing or debugging adaptive learning
 

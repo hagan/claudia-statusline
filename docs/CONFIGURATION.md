@@ -615,6 +615,15 @@ statusline context-learning --reset "Claude Sonnet 4.5"
 statusline context-learning --reset-all
 ```
 
+**Rebuild learned data (recovery):**
+```bash
+# Rebuild from session history
+statusline context-learning --rebuild
+
+# Clean rebuild (reset first, then rebuild)
+statusline context-learning --reset-all --rebuild
+```
+
 For detailed information, see [Adaptive Learning Guide](ADAPTIVE_LEARNING.md).
 
 #### Context Percentage Display Mode
