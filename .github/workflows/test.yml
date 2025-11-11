@@ -410,6 +410,9 @@ jobs:
         # Verify SQLite database was created
         test -f $XDG_DATA_HOME/claudia-statusline/stats.db
 
+        # Brief pause to allow database connection to close
+        sleep 0.5
+
         # Verify both sessions exist in SQLite
         sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions;" | grep -q "2"
 

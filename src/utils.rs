@@ -626,11 +626,21 @@ mod tests {
         assert!(parse_duration("../../../../../../etc/shadow").is_none());
 
         // Command injection attempts
-        assert!(calculate_context_usage("/tmp/test.jsonl; rm -rf /", None, None, Some(&cfg)).is_none());
+        assert!(
+            calculate_context_usage("/tmp/test.jsonl; rm -rf /", None, None, Some(&cfg)).is_none()
+        );
         assert!(parse_duration("/tmp/test.jsonl && echo hacked").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl | cat /etc/passwd", None, None, Some(&cfg)).is_none());
+        assert!(calculate_context_usage(
+            "/tmp/test.jsonl | cat /etc/passwd",
+            None,
+            None,
+            Some(&cfg)
+        )
+        .is_none());
         assert!(parse_duration("/tmp/test.jsonl`whoami`").is_none());
-        assert!(calculate_context_usage("/tmp/test.jsonl$(whoami)", None, None, Some(&cfg)).is_none());
+        assert!(
+            calculate_context_usage("/tmp/test.jsonl$(whoami)", None, None, Some(&cfg)).is_none()
+        );
 
         // Null byte injection
         assert!(calculate_context_usage("/tmp/test\0.jsonl", None, None, Some(&cfg)).is_none());
@@ -760,7 +770,9 @@ mod tests {
 
         // Test with non-existent file
         let cfg = test_config();
-        assert!(calculate_context_usage("/tmp/nonexistent.jsonl", None, None, Some(&cfg)).is_none());
+        assert!(
+            calculate_context_usage("/tmp/nonexistent.jsonl", None, None, Some(&cfg)).is_none()
+        );
 
         // Test with valid transcript (string timestamp and string content)
         let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();

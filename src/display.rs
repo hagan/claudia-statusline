@@ -281,7 +281,8 @@ fn format_statusline_string(
     // 3. Context usage from transcript
     if display_config.show_context {
         if let Some(transcript) = transcript_path {
-            if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None) {
+            if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None)
+            {
                 parts.push(format_context_bar(&context));
             }
         }
@@ -478,11 +479,7 @@ fn format_context_bar(context: &ContextUsage) -> String {
     match context.compaction_state {
         CompactionState::InProgress => {
             // Simple static indicator - statusline doesn't update frequently enough for animation
-            format!(
-                "{}Compacting...{}",
-                Colors::yellow(),
-                Colors::reset()
-            )
+            format!("{}Compacting...{}", Colors::yellow(), Colors::reset())
         }
 
         CompactionState::RecentlyCompleted => {
