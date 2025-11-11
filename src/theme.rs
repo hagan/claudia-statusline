@@ -29,6 +29,9 @@ use std::sync::{Arc, Mutex, OnceLock};
 // Embedded theme files compiled into binary
 const EMBEDDED_DARK_THEME: &str = include_str!("../themes/dark.toml");
 const EMBEDDED_LIGHT_THEME: &str = include_str!("../themes/light.toml");
+const EMBEDDED_MONOKAI_THEME: &str = include_str!("../themes/monokai.toml");
+const EMBEDDED_SOLARIZED_THEME: &str = include_str!("../themes/solarized.toml");
+const EMBEDDED_HIGH_CONTRAST_THEME: &str = include_str!("../themes/high-contrast.toml");
 
 /// Main theme structure containing all color definitions.
 ///
@@ -364,10 +367,14 @@ impl Theme {
         let content = match name.to_lowercase().as_str() {
             "dark" => EMBEDDED_DARK_THEME,
             "light" => EMBEDDED_LIGHT_THEME,
+            "monokai" => EMBEDDED_MONOKAI_THEME,
+            "solarized" => EMBEDDED_SOLARIZED_THEME,
+            "high-contrast" => EMBEDDED_HIGH_CONTRAST_THEME,
             _ => {
                 return Err(toml::de::Error::custom(format!(
-                    "Unknown embedded theme '{}'. Available: dark, light",
-                    name
+                    "Unknown embedded theme '{}'. Available: {}",
+                    name,
+                    Self::embedded_themes().join(", ")
                 )));
             }
         };
@@ -387,7 +394,7 @@ impl Theme {
     /// assert!(themes.contains(&"light"));
     /// ```
     pub fn embedded_themes() -> Vec<&'static str> {
-        vec!["dark", "light"]
+        vec!["dark", "light", "monokai", "solarized", "high-contrast"]
     }
 
     /// Resolves a color name to its ANSI escape code.
@@ -571,7 +578,10 @@ mod tests {
         let themes = manager.list_themes();
         assert!(themes.contains(&"dark".to_string()));
         assert!(themes.contains(&"light".to_string()));
-        assert_eq!(themes.len(), 2); // Only embedded themes in test env
+        assert!(themes.contains(&"monokai".to_string()));
+        assert!(themes.contains(&"solarized".to_string()));
+        assert!(themes.contains(&"high-contrast".to_string()));
+        assert_eq!(themes.len(), 5); // All embedded themes in test env
     }
 
     #[test]
@@ -645,9 +655,12 @@ mod tests {
     #[test]
     fn test_embedded_themes_list() {
         let themes = Theme::embedded_themes();
-        assert_eq!(themes.len(), 2);
+        assert_eq!(themes.len(), 5);
         assert!(themes.contains(&"dark"));
         assert!(themes.contains(&"light"));
+        assert!(themes.contains(&"monokai"));
+        assert!(themes.contains(&"solarized"));
+        assert!(themes.contains(&"high-contrast"));
     }
 
     #[test]
