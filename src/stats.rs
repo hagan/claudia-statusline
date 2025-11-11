@@ -513,43 +513,6 @@ fn save_stats_data(file: &mut File, stats_data: &StatsData) {
     }
 }
 
-// Check if we should migrate sessions from JSON to SQLite
-fn should_migrate_sessions(db: &SqliteDatabase, stats_data: &StatsData) -> bool {
-    !db.has_sessions() && !stats_data.sessions.is_empty()
-}
-
-// Migrate existing sessions from JSON to SQLite
-fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
-    // Find the most recently updated session to exclude from migration
-    let current_session = stats_data
-        .sessions
-        .iter()
-        .max_by_key(|(_, s)| &s.last_updated)
-        .map(|(id, _)| id.clone());
-
-    // Collect sessions to migrate (excluding current session)
-    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> = stats_data
-        .sessions
-        .iter()
-        .filter(|(id, _)| current_session.as_ref() != Some(id))
-        .map(|(id, session)| (id.clone(), session.clone()))
-        .collect();
-
-    if !sessions_to_migrate.is_empty() {
-        match db.import_sessions(&sessions_to_migrate) {
-            Ok(_) => {
-                debug!(
-                    "Migrated {} existing sessions from JSON to SQLite",
-                    sessions_to_migrate.len()
-                );
-            }
-            Err(e) => {
-                warn!("Failed to migrate sessions to SQLite: {}", e);
-            }
-        }
-    }
-}
-
 // Write the current session to SQLite
 #[allow(dead_code)]
 fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
@@ -586,7 +549,7 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
 }
 
 // Helper function to write to SQLite (primary storage)
-fn perform_sqlite_dual_write(stats_data: &StatsData) {
+fn perform_sqlite_dual_write(_stats_data: &StatsData) {
     // Write to SQLite (primary storage as of Phase 2)
     let db_path = match StatsData::get_sqlite_path() {
         Ok(p) => p,
@@ -596,7 +559,7 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
         }
     };
 
-    let db = match SqliteDatabase::new(&db_path) {
+    let _db = match SqliteDatabase::new(&db_path) {
         Ok(d) => d,
         Err(e) => {
             error!(
