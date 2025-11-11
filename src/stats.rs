@@ -168,17 +168,26 @@ impl StatsData {
         let db = SqliteDatabase::new(&db_path)?;
 
         log::debug!("migrate_to_sqlite: Checking if migration needed");
-        log::debug!("migrate_to_sqlite: JSON has {} sessions", data.sessions.len());
+        log::debug!(
+            "migrate_to_sqlite: JSON has {} sessions",
+            data.sessions.len()
+        );
 
         // Check if we've already migrated by looking for existing sessions
         let has_sessions = db.has_sessions();
         log::debug!("migrate_to_sqlite: DB has_sessions = {}", has_sessions);
 
         if !has_sessions {
-            log::info!("Migrating {} sessions from JSON to SQLite", data.sessions.len());
+            log::info!(
+                "Migrating {} sessions from JSON to SQLite",
+                data.sessions.len()
+            );
             // Perform migration
             db.import_sessions(&data.sessions)?;
-            log::info!("Successfully migrated {} sessions to SQLite", data.sessions.len());
+            log::info!(
+                "Successfully migrated {} sessions to SQLite",
+                data.sessions.len()
+            );
         } else {
             log::debug!("Skipping migration - database already has sessions");
         }
