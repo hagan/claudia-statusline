@@ -152,6 +152,7 @@ pub fn clear_state(session_id: &str) -> Result<()> {
 }
 
 /// Clean up all stale state files in the cache directory
+#[allow(dead_code)]
 pub fn cleanup_stale_states() -> Result<usize> {
     let cache_dir = get_cache_dir()?;
     let mut cleaned = 0;
