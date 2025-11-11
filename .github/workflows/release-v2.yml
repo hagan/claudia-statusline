@@ -12,7 +12,36 @@ on:
         type: string
 
 jobs:
+  check-branch:
+    name: Verify tag is on main branch
+    runs-on: ubuntu-latest
+    outputs:
+      on-main: ${{ steps.check.outputs.on-main }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history to check branch
+
+      - name: Check if tag is on main
+        id: check
+        run: |
+          # Get the commit the tag points to
+          TAG_COMMIT=$(git rev-list -n 1 ${{ github.ref }})
+
+          # Check if this commit is on main
+          if git branch -r --contains $TAG_COMMIT | grep -q 'origin/main'; then
+            echo "on-main=true" >> $GITHUB_OUTPUT
+            echo "✅ Tag is on main branch"
+          else
+            echo "on-main=false" >> $GITHUB_OUTPUT
+            echo "❌ Tag is NOT on main branch"
+            echo "ERROR: Releases can only be created from tags on the main branch"
+            exit 1
+          fi
+
   build:
+    needs: check-branch
+    if: needs.check-branch.outputs.on-main == 'true'
     strategy:
       matrix:
         include:
@@ -102,6 +131,8 @@ jobs:
             ${{ matrix.artifact }}.*
 
   build-turso:
+    needs: check-branch
+    if: needs.check-branch.outputs.on-main == 'true'
     strategy:
       matrix:
         include:

@@ -248,6 +248,12 @@ fn format_statusline_string(
     session_id: Option<&str>,
     display_config: &config::DisplayConfig,
 ) -> String {
+    log::debug!(
+        "format_statusline_string called: model_name={:?}, transcript_path={:?}, show_context={}",
+        model_name,
+        transcript_path,
+        display_config.show_context
+    );
     let mut parts = Vec::new();
 
     // 1. Directory (always first if shown)
@@ -275,7 +281,8 @@ fn format_statusline_string(
     // 3. Context usage from transcript
     if display_config.show_context {
         if let Some(transcript) = transcript_path {
-            if let Some(context) = calculate_context_usage(transcript, model_name) {
+            if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None)
+            {
                 parts.push(format_context_bar(&context));
             }
         }
@@ -463,36 +470,86 @@ pub fn format_output_to_string(
 }
 
 fn format_context_bar(context: &ContextUsage) -> String {
-    let percentage = context.percentage;
+    use crate::models::CompactionState;
 
-    // Get theme-aware color based on percentage
-    let color = Colors::context_color(percentage);
-    let percentage_color = color.clone();
-
-    // Create progress bar with configured width
     let config = config::get_config();
     let bar_width = config.display.progress_bar_width;
-    let filled_ratio = percentage / 100.0;
-    let filled = (filled_ratio * bar_width as f64).round() as usize;
-    let filled = filled.min(bar_width);
-    let empty = bar_width - filled;
 
-    let bar = format!(
-        "{}{}{}",
-        "=".repeat(filled),
-        if filled < bar_width { ">" } else { "" },
-        "-".repeat(empty.saturating_sub(if filled < bar_width { 1 } else { 0 }))
-    );
+    // Handle different compaction states
+    match context.compaction_state {
+        CompactionState::InProgress => {
+            // Simple static indicator - statusline doesn't update frequently enough for animation
+            format!("{}Compacting...{}", Colors::yellow(), Colors::reset())
+        }
 
-    format!(
-        "{}{}%{} {}[{}]{}",
-        percentage_color,
-        percentage.round() as u32,
-        Colors::reset(),
-        color,
-        bar,
-        Colors::reset()
-    )
+        CompactionState::RecentlyCompleted => {
+            // Show percentage with checkmark instead of warning
+            let percentage = context.percentage;
+            let color = Colors::context_color(percentage);
+            let percentage_color = color.clone();
+
+            let filled_ratio = percentage / 100.0;
+            let filled = (filled_ratio * bar_width as f64).round() as usize;
+            let filled = filled.min(bar_width);
+            let empty = bar_width - filled;
+
+            let bar = format!(
+                "{}{}{}",
+                "=".repeat(filled),
+                if filled < bar_width { ">" } else { "" },
+                "-".repeat(empty.saturating_sub(if filled < bar_width { 1 } else { 0 }))
+            );
+
+            format!(
+                "{}{}%{} {}[{}]{} {}✓{}",
+                percentage_color,
+                percentage.round() as u32,
+                Colors::reset(),
+                color,
+                bar,
+                Colors::reset(),
+                Colors::green(),
+                Colors::reset()
+            )
+        }
+
+        CompactionState::Normal => {
+            // Normal display with optional warning
+            let percentage = context.percentage;
+            let color = Colors::context_color(percentage);
+            let percentage_color = color.clone();
+
+            let filled_ratio = percentage / 100.0;
+            let filled = (filled_ratio * bar_width as f64).round() as usize;
+            let filled = filled.min(bar_width);
+            let empty = bar_width - filled;
+
+            let bar = format!(
+                "{}{}{}",
+                "=".repeat(filled),
+                if filled < bar_width { ">" } else { "" },
+                "-".repeat(empty.saturating_sub(if filled < bar_width { 1 } else { 0 }))
+            );
+
+            // Add warning indicator if approaching auto-compact threshold
+            let warning = if context.approaching_limit {
+                format!(" {}⚠{}", Colors::orange(), Colors::reset())
+            } else {
+                String::new()
+            };
+
+            format!(
+                "{}{}%{} {}[{}]{}{}",
+                percentage_color,
+                percentage.round() as u32,
+                Colors::reset(),
+                color,
+                bar,
+                Colors::reset(),
+                warning
+            )
+        }
+    }
 }
 
 fn get_cost_color(cost: f64) -> String {
@@ -556,16 +613,29 @@ mod tests {
 
     #[test]
     fn test_format_context_bar() {
-        let low = ContextUsage { percentage: 10.0 };
+        use crate::models::CompactionState;
+        let low = ContextUsage {
+            percentage: 10.0,
+            approaching_limit: false,
+            tokens_remaining: 180_000,
+            compaction_state: CompactionState::Normal,
+        };
         let bar = format_context_bar(&low);
         assert!(bar.contains("10%"));
         assert!(bar.contains("[=>"));
         assert!(!bar.contains('•'));
+        assert!(!bar.contains('⚠')); // No warning at 10%
 
-        let high = ContextUsage { percentage: 95.0 };
+        let high = ContextUsage {
+            percentage: 95.0,
+            approaching_limit: true,
+            tokens_remaining: 10_000,
+            compaction_state: CompactionState::Normal,
+        };
         let bar = format_context_bar(&high);
         assert!(bar.contains("95%"));
         assert!(!bar.contains('•'));
+        assert!(bar.contains('⚠')); // Warning at 95%
     }
 
     #[test]

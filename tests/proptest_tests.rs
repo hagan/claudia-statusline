@@ -209,8 +209,21 @@ proptest! {
         lines_added in 0u64..10000,
         lines_removed in 0u64..10000,
     ) {
+        use statusline::database::SessionUpdate;
         let mut stats = StatsData::default();
-        stats.update_session(&session_id, cost, lines_added, lines_removed);
+        stats.update_session(
+            &session_id,
+            SessionUpdate {
+                cost,
+                lines_added,
+                lines_removed,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         // Serialize to JSON
         let json = serde_json::to_string(&stats);
@@ -247,7 +260,12 @@ proptest! {
         let percentage = (total as f64 / 160000.0) * 100.0;
 
         // Context usage should have valid percentage
-        let context_usage = ContextUsage { percentage };
+        let context_usage = ContextUsage {
+            percentage,
+            approaching_limit: percentage > 80.0,
+            tokens_remaining: 160000_usize.saturating_sub(total as usize),
+            compaction_state: statusline::models::CompactionState::Normal,
+        };
 
         // Verify percentage is non-negative
         prop_assert!(context_usage.percentage >= 0.0);

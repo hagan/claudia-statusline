@@ -151,6 +151,72 @@ statusline migrate --finalize --delete-json
 - Smaller memory footprint
 - No JSON file I/O overhead
 
+### Context Learning Commands
+
+*(Experimental feature - requires `adaptive_learning = true` in config)*
+
+```bash
+# Show all learned context windows
+statusline context-learning --status
+
+# Example output:
+# Learned Context Windows:
+#
+# Model: Claude Sonnet 4.5
+#   Observed Max: 200000 tokens
+#   Confidence: 0.8 (80%)
+#   Ceiling Observations: 5
+#   Compaction Events: 2
+#   Last Updated: 2025-10-19T14:30:00Z
+#
+# Total models with learned data: 1
+
+# Show detailed learning data for specific model
+statusline context-learning --details "Claude Sonnet 4.5"
+
+# Example output:
+# Model: Claude Sonnet 4.5
+# ======================
+#
+# Observed Maximum: 200000 tokens
+# Confidence Score: 0.8 (80%)
+# Ceiling Observations: 5
+# Compaction Events: 2
+# Last Observed Max: 199847 tokens
+# First Seen: 2025-10-15T10:00:00Z
+# Last Updated: 2025-10-19T14:30:00Z
+#
+# Learning Status: ACTIVE (confidence ≥ threshold)
+# Currently used for context calculations
+
+# Reset learning data for specific model
+statusline context-learning --reset "Claude Sonnet 4.5"
+
+# Example output:
+# Reset learning data for model: Claude Sonnet 4.5
+
+# Reset all learning data
+statusline context-learning --reset-all
+
+# Example output:
+# Reset learning data for all models
+```
+
+**How it works:**
+- Monitors token usage from transcript files
+- Detects automatic compaction events (>10% token drop after 150k)
+- Filters out manual compactions (ignores `/compact` commands)
+- Builds confidence through multiple observations
+- Uses learned value when confidence ≥ threshold (default 70%)
+
+**When to use:**
+- Enable in config: `adaptive_learning = true`
+- Check status to see what's been learned
+- Reset if you notice incorrect context limits
+- Reset all when upgrading to new model versions
+
+See [CONFIGURATION.md](CONFIGURATION.md#adaptive-context-learning-experimental) for setup details.
+
 ### Cloud Sync Commands
 
 *(Requires Turso variant binary)*

@@ -57,6 +57,28 @@ pub struct Cost {
     pub total_lines_removed: Option<u64>,
 }
 
+/// Token usage breakdown from transcript.
+///
+/// Contains detailed token counts for cost analysis and cache efficiency tracking.
+#[derive(Debug, Clone, Default)]
+pub struct TokenBreakdown {
+    /// Input tokens (excluding cache)
+    pub input_tokens: u32,
+    /// Output tokens generated
+    pub output_tokens: u32,
+    /// Cache read tokens (cache hits - saves money)
+    pub cache_read_tokens: u32,
+    /// Cache creation tokens (initial cache write cost)
+    pub cache_creation_tokens: u32,
+}
+
+impl TokenBreakdown {
+    /// Returns the total token count (sum of all token types)
+    pub fn total(&self) -> u32 {
+        self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
+    }
+}
+
 /// Claude model type enumeration
 #[derive(Debug, PartialEq)]
 pub enum ModelType {
@@ -144,6 +166,25 @@ impl ModelType {
             ModelType::Unknown => "Claude".to_string(),
         }
     }
+
+    /// Returns the canonical model name for database storage
+    /// This normalizes different display name variations to a consistent format
+    /// Examples:
+    /// - "Claude 3.5 Sonnet" → "Sonnet 3.5"
+    /// - "Sonnet 4.5" → "Sonnet 4.5"
+    /// - "claude-sonnet-4-5-20250929" → "Sonnet 4.5"
+    pub fn canonical_name(&self) -> String {
+        match self {
+            ModelType::Model { family, version } => {
+                if version.is_empty() {
+                    family.clone()
+                } else {
+                    format!("{} {}", family, version)
+                }
+            }
+            ModelType::Unknown => "Unknown".to_string(),
+        }
+    }
 }
 
 /// Entry in the Claude transcript file (JSONL format)
@@ -187,6 +228,37 @@ pub struct Usage {
 pub struct ContextUsage {
     /// Percentage of context window used (0-100)
     pub percentage: f64,
+
+    /// Warning: approaching auto-compact threshold
+    ///
+    /// True when context usage exceeds the auto_compact_threshold (default 80%).
+    /// Claude Code will automatically compact the conversation at this point.
+    pub approaching_limit: bool,
+
+    /// Number of tokens remaining in working window (context_window - buffer - used)
+    ///
+    /// This represents the actual space available for conversation before hitting
+    /// the buffer zone reserved for responses.
+    #[allow(dead_code)]
+    pub tokens_remaining: usize,
+
+    /// Compaction state detection
+    pub compaction_state: CompactionState,
+}
+
+/// Compaction state detection
+#[derive(Debug, Clone, PartialEq)]
+pub enum CompactionState {
+    /// Normal operation - no recent compaction
+    Normal,
+
+    /// Compaction in progress (transcript being rewritten)
+    /// Detected by: file modified in last 10s + token drop expected
+    InProgress,
+
+    /// Compaction recently completed (within last 30s)
+    /// Detected by: significant token count drop (>50%)
+    RecentlyCompleted,
 }
 
 #[cfg(test)]
@@ -268,6 +340,66 @@ mod tests {
 
         // Test unknown
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
+    }
+
+    #[test]
+    fn test_canonical_name_normalization() {
+        // Test that different display names normalize to the same canonical name
+        assert_eq!(
+            ModelType::from_name("Claude Sonnet 4.5").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Sonnet 4.5").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("claude-sonnet-4-5-20250929").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Claude 4.5 Sonnet").canonical_name(),
+            "Sonnet 4.5"
+        );
+
+        // Test Sonnet 3.5 variations
+        assert_eq!(
+            ModelType::from_name("Claude 3.5 Sonnet").canonical_name(),
+            "Sonnet 3.5"
+        );
+
+        assert_eq!(
+            ModelType::from_name("claude-3-5-sonnet-20240620").canonical_name(),
+            "Sonnet 3.5"
+        );
+
+        // Test Opus
+        assert_eq!(ModelType::from_name("Claude Opus").canonical_name(), "Opus");
+
+        assert_eq!(
+            ModelType::from_name("Claude 3.5 Opus").canonical_name(),
+            "Opus 3.5"
+        );
+
+        // Test Haiku
+        assert_eq!(
+            ModelType::from_name("Claude Haiku").canonical_name(),
+            "Haiku"
+        );
+
+        assert_eq!(
+            ModelType::from_name("Claude 4.5 Haiku").canonical_name(),
+            "Haiku 4.5"
+        );
+
+        // Test Unknown
+        assert_eq!(
+            ModelType::from_name("Unknown Model").canonical_name(),
+            "Unknown"
+        );
     }
 
     #[test]

@@ -569,6 +569,116 @@ window_size = 200000
 - Custom model configurations
 - Testing purposes
 
+#### Adaptive Context Learning (Experimental)
+
+The statusline can **learn actual context limits** by observing your real usage patterns. When enabled, it automatically detects when Claude compacts the conversation and builds confidence in the true limit over time.
+
+**Enable adaptive learning** in `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[context]
+window_size = 200000
+
+# Adaptive Learning (Experimental)
+# Learns actual context limits by observing compaction events
+# Default: false (disabled)
+adaptive_learning = true
+
+# Minimum confidence score to use learned values (0.0-1.0)
+# Higher = more observations required before using learned limit
+# Default: 0.7 (70% confidence)
+learning_confidence_threshold = 0.7
+```
+
+**How it works:**
+1. Monitors token usage from Claude's transcript files
+2. Detects **automatic compaction** (sudden >10% token drop after >150k tokens)
+3. Filters out **manual compactions** (when you use `/compact` commands)
+4. Builds **confidence** through multiple observations
+5. Uses learned value when confidence ≥ threshold (default 70%)
+
+**Priority system:**
+1. **User config overrides** (`[context.model_windows]`) - highest priority
+2. **Learned values** (when confident) - used if no override
+3. **Intelligent defaults** (based on model family/version)
+4. **Global fallback** (`window_size`) - lowest priority
+
+**View learned data:**
+```bash
+statusline context-learning --status
+statusline context-learning --details "Claude Sonnet 4.5"
+```
+
+**Reset learning data:**
+```bash
+statusline context-learning --reset "Claude Sonnet 4.5"
+statusline context-learning --reset-all
+```
+
+**Rebuild learned data (recovery):**
+```bash
+# Rebuild from session history
+statusline context-learning --rebuild
+
+# Clean rebuild (reset first, then rebuild)
+statusline context-learning --reset-all --rebuild
+```
+
+For detailed information, see [Adaptive Learning Guide](ADAPTIVE_LEARNING.md).
+
+#### Context Percentage Display Mode
+
+**Updated in v2.16.5**: Choose how context percentage is calculated and displayed.
+
+The statusline can show percentage of either the **total context window** ("full" mode) or the **working window** ("working" mode). The calculations automatically adapt based on your `adaptive_learning` setting.
+
+**Configure display mode** in `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[context]
+# Context percentage display mode
+# Options: "full" (default) or "working"
+# Default: "full"
+percentage_mode = "full"
+
+# Buffer reserved for Claude's responses (default: 40000)
+buffer_size = 40000
+
+# Auto-compact warning threshold (default: 75.0)
+# Mode-aware: adjusts automatically based on percentage_mode
+auto_compact_threshold = 75.0
+
+# Enable adaptive learning to automatically detect actual context limits
+# Default: false
+adaptive_learning = false
+```
+
+**Mode comparison** (example with 150K tokens):
+
+**With Adaptive Learning DISABLED** (uses Anthropic's advertised values):
+| Mode | Calculation | Display | Description |
+|------|-------------|---------|-------------|
+| **"full"** (default) | 150K / 200K = **75%** | Uses advertised total (200K) | Matches Anthropic's specs ✅ |
+| **"working"** | 150K / 160K = **94%** | Uses advertised working (160K) | Shows usable conversation space |
+
+**With Adaptive Learning ENABLED** (refines based on 557 observations showing compaction at ~156K):
+| Mode | Calculation | Display | Description |
+|------|-------------|---------|-------------|
+| **"full"** | 150K / 196K = **77%** | Uses learned total (156K + 40K buffer) | Refined estimate of actual total |
+| **"working"** | 150K / 156K = **96%** | Uses learned compaction point (156K) | Precise proximity to compaction ⚠ |
+
+**Key difference**: Adaptive learning refines BOTH modes by learning the actual compaction point from observations, then calculating the total window as `compaction_point + buffer`.
+
+**When to use "working" mode:**
+- You want to track proximity to auto-compaction
+- You have adaptive learning enabled and need precise compaction warnings
+- You're optimizing for maximum context usage
+
+**When to use "full" mode (recommended):**
+- You want intuitive percentages (100% = full context)
+- You prefer consistency with Anthropic's advertised specifications
+- You're using adaptive learning and want to see refined total window estimate
+
 ### Progress Bar Width
 
 Default is 10 characters. To change, edit `src/display.rs` and rebuild:

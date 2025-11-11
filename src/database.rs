@@ -5,18 +5,31 @@ use chrono::Local;
 use r2d2::{Pool, PooledConnection};
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 
-const SCHEMA: &str = r#"
--- Sessions table
+// Track which database files have been migrated to avoid redundant migration checks
+static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+pub const SCHEMA: &str = r#"
+-- Sessions table (includes all migration v3, v4, v5 columns)
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     start_time TEXT NOT NULL,
     last_updated TEXT NOT NULL,
     cost REAL DEFAULT 0.0,
     lines_added INTEGER DEFAULT 0,
-    lines_removed INTEGER DEFAULT 0
+    lines_removed INTEGER DEFAULT 0,
+    max_tokens_observed INTEGER DEFAULT 0,
+    device_id TEXT,
+    sync_timestamp INTEGER,
+    model_name TEXT,
+    workspace_dir TEXT,
+    total_input_tokens INTEGER DEFAULT 0,
+    total_output_tokens INTEGER DEFAULT 0,
+    total_cache_read_tokens INTEGER DEFAULT 0,
+    total_cache_creation_tokens INTEGER DEFAULT 0
 );
 
 -- Daily aggregates (materialized for performance)
@@ -25,7 +38,8 @@ CREATE TABLE IF NOT EXISTS daily_stats (
     total_cost REAL DEFAULT 0.0,
     total_lines_added INTEGER DEFAULT 0,
     total_lines_removed INTEGER DEFAULT 0,
-    session_count INTEGER DEFAULT 0
+    session_count INTEGER DEFAULT 0,
+    device_id TEXT
 );
 
 -- Monthly aggregates
@@ -34,14 +48,51 @@ CREATE TABLE IF NOT EXISTS monthly_stats (
     total_cost REAL DEFAULT 0.0,
     total_lines_added INTEGER DEFAULT 0,
     total_lines_removed INTEGER DEFAULT 0,
-    session_count INTEGER DEFAULT 0
+    session_count INTEGER DEFAULT 0,
+    device_id TEXT
+);
+
+-- Learned context windows table (migration v4)
+CREATE TABLE IF NOT EXISTS learned_context_windows (
+    model_name TEXT PRIMARY KEY,
+    observed_max_tokens INTEGER NOT NULL,
+    ceiling_observations INTEGER DEFAULT 0,
+    compaction_count INTEGER DEFAULT 0,
+    last_observed_max INTEGER NOT NULL,
+    last_updated TEXT NOT NULL,
+    confidence_score REAL DEFAULT 0.0,
+    first_seen TEXT NOT NULL,
+    workspace_dir TEXT,
+    device_id TEXT
+);
+
+-- Indexes for learned_context_windows (from migration v4)
+CREATE INDEX IF NOT EXISTS idx_learned_workspace_model
+    ON learned_context_windows(workspace_dir, model_name);
+CREATE INDEX IF NOT EXISTS idx_learned_device
+    ON learned_context_windows(device_id);
+CREATE INDEX IF NOT EXISTS idx_learned_confidence
+    ON learned_context_windows(confidence_score DESC);
+
+-- Sync metadata table (migration v3 - turso-sync feature)
+CREATE TABLE IF NOT EXISTS sync_meta (
+    device_id TEXT PRIMARY KEY,
+    last_sync_push INTEGER,
+    last_sync_pull INTEGER,
+    hostname_hash TEXT
 );
 
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_sessions_start_time ON sessions(start_time);
 CREATE INDEX IF NOT EXISTS idx_sessions_last_updated ON sessions(last_updated);
 CREATE INDEX IF NOT EXISTS idx_sessions_cost ON sessions(cost DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_model_name ON sessions(model_name);
+CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_dir);
+CREATE INDEX IF NOT EXISTS idx_sessions_device ON sessions(device_id);
+CREATE INDEX IF NOT EXISTS idx_learned_confidence ON learned_context_windows(confidence_score DESC);
 CREATE INDEX IF NOT EXISTS idx_daily_date_cost ON daily_stats(date DESC, total_cost DESC);
+CREATE INDEX IF NOT EXISTS idx_daily_device ON daily_stats(device_id);
+CREATE INDEX IF NOT EXISTS idx_monthly_device ON monthly_stats(device_id);
 
 -- Migration tracking table
 CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -58,6 +109,19 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT NOT NULL
 );
 "#;
+
+/// Parameters for updating a session in the database
+#[derive(Clone)]
+pub struct SessionUpdate {
+    pub cost: f64,
+    pub lines_added: u64,
+    pub lines_removed: u64,
+    pub model_name: Option<String>,
+    pub workspace_dir: Option<String>,
+    pub device_id: Option<String>,
+    pub token_breakdown: Option<crate::models::TokenBreakdown>,
+    pub max_tokens_observed: Option<u32>,
+}
 
 pub struct SqliteDatabase {
     #[allow(dead_code)]
@@ -111,23 +175,106 @@ impl SqliteDatabase {
             )
         })?;
 
-        // Create tables and indexes
-        conn.execute_batch(SCHEMA)?;
+        // Check if this is a new database by looking for existing sessions table
+        // A truly new database has no tables at all
+        let has_sessions_table: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+                [],
+                |row| {
+                    let count: i64 = row.get(0)?;
+                    Ok(count > 0)
+                },
+            )
+            .unwrap_or(false);
 
-        Ok(Self {
+        let is_new_db = !has_sessions_table;
+
+        if is_new_db {
+            // NEW DATABASE: Create complete schema with all migration columns
+            conn.execute_batch(SCHEMA)?;
+
+            // Mark as fully migrated (v4 includes all adaptive learning features)
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
+                 VALUES (?1, ?2, '', 'New database with complete schema (v4)', 0)",
+                params![4, chrono::Local::now().to_rfc3339()],
+            )?;
+        } else {
+            // OLD DATABASE: Only ensure base tables exist, let migrations add columns/indexes
+            // This prevents "no such column" errors when creating indexes
+            conn.execute_batch(
+                r#"
+                CREATE TABLE IF NOT EXISTS sessions (
+                    session_id TEXT PRIMARY KEY,
+                    start_time TEXT NOT NULL,
+                    last_updated TEXT NOT NULL,
+                    cost REAL DEFAULT 0.0,
+                    lines_added INTEGER DEFAULT 0,
+                    lines_removed INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS daily_stats (
+                    date TEXT PRIMARY KEY,
+                    total_cost REAL DEFAULT 0.0,
+                    total_lines_added INTEGER DEFAULT 0,
+                    total_lines_removed INTEGER DEFAULT 0,
+                    session_count INTEGER DEFAULT 0
+                );
+                CREATE TABLE IF NOT EXISTS monthly_stats (
+                    month TEXT PRIMARY KEY,
+                    total_cost REAL DEFAULT 0.0,
+                    total_lines_added INTEGER DEFAULT 0,
+                    total_lines_removed INTEGER DEFAULT 0,
+                    session_count INTEGER DEFAULT 0
+                );
+                "#,
+            )?;
+        }
+
+        // Drop the connection before running migrations (migrations need exclusive access)
+        drop(conn);
+
+        // Run migrations only if not already done for this database file
+        // This avoids redundant migration checks on hot paths (update_session, etc.)
+        let canonical_path = db_path
+            .canonicalize()
+            .unwrap_or_else(|_| db_path.to_path_buf());
+        let migrated_dbs = MIGRATED_DBS.get_or_init(|| Mutex::new(HashSet::new()));
+
+        let needs_migration = {
+            let guard = migrated_dbs.lock().unwrap();
+            !guard.contains(&canonical_path)
+        };
+
+        if needs_migration {
+            log::debug!(
+                "Running migrations for database: {}",
+                canonical_path.display()
+            );
+            // Run pending migrations and mark as migrated
+            crate::migrations::run_migrations_on_db(db_path)?;
+
+            let mut guard = migrated_dbs.lock().unwrap();
+            guard.insert(canonical_path.clone());
+            log::debug!("Marked database as migrated: {}", canonical_path.display());
+        } else {
+            log::debug!(
+                "Skipping migrations (already migrated): {}",
+                canonical_path.display()
+            );
+        }
+
+        // Create the database wrapper with correct schema
+        let db = Self {
             path: db_path.to_path_buf(),
             pool: Arc::new(pool),
-        })
+        };
+
+        Ok(db)
     }
 
     /// Update or insert a session with atomic transaction
-    pub fn update_session(
-        &self,
-        session_id: &str,
-        cost: f64,
-        lines_added: u64,
-        lines_removed: u64,
-    ) -> Result<(f64, f64)> {
+    pub fn update_session(&self, session_id: &str, update: SessionUpdate) -> Result<(f64, f64)> {
         let retry_config = RetryConfig::for_db_ops();
 
         // Wrap the entire transaction in retry logic
@@ -135,11 +282,35 @@ impl SqliteDatabase {
             let mut conn = self.get_connection()?;
             let tx = conn.transaction()?;
 
-            let result =
-                self.update_session_tx(&tx, session_id, cost, lines_added, lines_removed)?;
+            let result = self.update_session_tx(&tx, session_id, update.clone())?;
 
             tx.commit()?;
             Ok(result)
+        })
+        .map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(e.to_string()),
+            ),
+        })
+    }
+
+    /// Update only max_tokens_observed for a session (for adaptive learning)
+    /// Only updates if new value is greater than current value
+    pub fn update_max_tokens_observed(&self, session_id: &str, current_tokens: u32) -> Result<()> {
+        let retry_config = RetryConfig::for_db_ops();
+
+        retry_if_retryable(&retry_config, || {
+            let conn = self.get_connection()?;
+            conn.execute(
+                "UPDATE sessions
+                 SET max_tokens_observed = ?2
+                 WHERE session_id = ?1
+                   AND (max_tokens_observed IS NULL OR max_tokens_observed < ?2)",
+                params![session_id, current_tokens as i64],
+            )?;
+            Ok(())
         })
         .map_err(|e| match e {
             crate::error::StatuslineError::Database(db_err) => db_err,
@@ -176,13 +347,19 @@ impl SqliteDatabase {
         &self,
         tx: &Transaction,
         session_id: &str,
-        cost: f64,
-        lines_added: u64,
-        lines_removed: u64,
+        update: SessionUpdate,
     ) -> Result<(f64, f64)> {
         let now = current_timestamp();
         let today = current_date();
         let month = current_month();
+
+        // Extract values from update struct
+        let cost = update.cost;
+        let lines_added = update.lines_added;
+        let lines_removed = update.lines_removed;
+        let model_name = update.model_name.as_deref();
+        let workspace_dir = update.workspace_dir.as_deref();
+        let device_id = update.device_id.as_deref();
 
         // Check if session already exists and get old values
         let old_values: Option<(f64, i64, i64)> = tx
@@ -207,17 +384,56 @@ impl SqliteDatabase {
                 (cost, lines_added as i64, lines_removed as i64)
             };
 
+        // Extract token breakdown values (0 if not provided)
+        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = update
+            .token_breakdown
+            .as_ref()
+            .map(|tb| {
+                (
+                    tb.input_tokens as i64,
+                    tb.output_tokens as i64,
+                    tb.cache_read_tokens as i64,
+                    tb.cache_creation_tokens as i64,
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
+
+        // Convert max_tokens_observed to i64 for SQLite
+        let max_tokens = update.max_tokens_observed.map(|t| t as i64);
+
         // UPSERT session (atomic operation)
         // Note: On conflict, we REPLACE the values, not accumulate them
         tx.execute(
-            "INSERT INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "INSERT INTO sessions (
+                session_id, start_time, last_updated, cost, lines_added, lines_removed,
+                model_name, workspace_dir, device_id,
+                total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
+                max_tokens_observed
+             )
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
              ON CONFLICT(session_id) DO UPDATE SET
                 last_updated = ?3,
                 cost = ?4,
                 lines_added = ?5,
-                lines_removed = ?6",
-            params![session_id, &now, &now, cost, lines_added as i64, lines_removed as i64],
+                lines_removed = ?6,
+                model_name = ?7,
+                workspace_dir = ?8,
+                device_id = ?9,
+                total_input_tokens = ?10,
+                total_output_tokens = ?11,
+                total_cache_read_tokens = ?12,
+                total_cache_creation_tokens = ?13,
+                max_tokens_observed = CASE
+                    WHEN ?14 IS NOT NULL AND ?14 > COALESCE(max_tokens_observed, 0)
+                    THEN ?14
+                    ELSE max_tokens_observed
+                END",
+            params![
+                session_id, &now, &now, cost, lines_added as i64, lines_removed as i64,
+                model_name, workspace_dir, device_id,
+                input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
+                max_tokens
+            ],
         )?;
 
         // Proper session counting: We need to track which sessions we've seen for each period
@@ -314,6 +530,19 @@ impl SqliteDatabase {
         } else {
             None
         }
+    }
+
+    /// Get max tokens observed for a specific session (for compaction detection)
+    pub fn get_session_max_tokens(&self, session_id: &str) -> Option<usize> {
+        let conn = self.get_connection().ok()?;
+        let max_tokens: i64 = conn
+            .query_row(
+                "SELECT max_tokens_observed FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .ok()?;
+        Some(max_tokens as usize)
     }
 
     /// Get all-time total cost
@@ -443,7 +672,7 @@ impl SqliteDatabase {
 
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed
+            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed, max_tokens_observed
              FROM sessions",
         )?;
 
@@ -454,6 +683,7 @@ impl SqliteDatabase {
             let cost: f64 = row.get(3)?;
             let lines_added: i64 = row.get(4)?;
             let lines_removed: i64 = row.get(5)?;
+            let max_tokens_observed: Option<i64> = row.get(6).ok();
 
             Ok((
                 session_id.clone(),
@@ -463,6 +693,7 @@ impl SqliteDatabase {
                     lines_removed: lines_removed as u64,
                     last_updated,
                     start_time,
+                    max_tokens_observed: max_tokens_observed.map(|t| t as u32),
                 },
             ))
         })?;
@@ -471,6 +702,43 @@ impl SqliteDatabase {
         for session in session_iter {
             let (id, stats) = session?;
             sessions.insert(id, stats);
+        }
+
+        Ok(sessions)
+    }
+
+    /// Get all sessions with token data for rebuilding learned context windows
+    /// Prefers max_tokens_observed (actual context usage) over token sum
+    /// Preserves device_id and last_updated for accurate historical replay
+    pub fn get_all_sessions_with_tokens(&self) -> Result<Vec<SessionWithModel>> {
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT
+                session_id,
+                COALESCE(max_tokens_observed, total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) as total_tokens,
+                COALESCE(model_name, 'Unknown') as model_name,
+                workspace_dir,
+                device_id,
+                last_updated
+             FROM sessions
+             WHERE COALESCE(max_tokens_observed, total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) > 0
+             ORDER BY last_updated ASC",
+        )?;
+
+        let session_iter = stmt.query_map([], |row| {
+            Ok(SessionWithModel {
+                session_id: row.get(0)?,
+                max_tokens_observed: row.get(1)?,
+                model_name: row.get(2)?,
+                workspace_dir: row.get(3)?,
+                device_id: row.get(4)?,
+                last_updated: row.get(5)?,
+            })
+        })?;
+
+        let mut sessions = Vec::new();
+        for session in session_iter {
+            sessions.push(session?);
         }
 
         Ok(sessions)
@@ -658,6 +926,161 @@ impl SqliteDatabase {
         )?;
         Ok(())
     }
+
+    // ========================================================================
+    // Adaptive Context Learning Methods
+    // ========================================================================
+
+    /// Get learned context window data for a specific model
+    pub fn get_learned_context(
+        &self,
+        model_name: &str,
+    ) -> Result<Option<crate::context_learning::LearnedContextWindow>> {
+        use crate::context_learning::LearnedContextWindow;
+
+        let conn = self.get_connection()?;
+        let result = conn
+            .query_row(
+                "SELECT model_name, observed_max_tokens, ceiling_observations, compaction_count,
+                        last_observed_max, last_updated, confidence_score, first_seen,
+                        workspace_dir, device_id
+                 FROM learned_context_windows
+                 WHERE model_name = ?1",
+                params![model_name],
+                |row| {
+                    Ok(LearnedContextWindow {
+                        model_name: row.get(0)?,
+                        observed_max_tokens: row.get::<_, i64>(1)? as usize,
+                        ceiling_observations: row.get(2)?,
+                        compaction_count: row.get(3)?,
+                        last_observed_max: row.get::<_, i64>(4)? as usize,
+                        last_updated: row.get(5)?,
+                        confidence_score: row.get(6)?,
+                        first_seen: row.get(7)?,
+                        workspace_dir: row.get(8)?,
+                        device_id: row.get(9)?,
+                    })
+                },
+            )
+            .optional()?;
+
+        Ok(result)
+    }
+
+    /// Insert a new learned context window record
+    pub fn insert_learned_context(
+        &self,
+        record: &crate::context_learning::LearnedContextWindow,
+    ) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "INSERT INTO learned_context_windows
+             (model_name, observed_max_tokens, ceiling_observations, compaction_count,
+              last_observed_max, last_updated, confidence_score, first_seen,
+              workspace_dir, device_id)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                &record.model_name,
+                record.observed_max_tokens as i64,
+                record.ceiling_observations,
+                record.compaction_count,
+                record.last_observed_max as i64,
+                &record.last_updated,
+                record.confidence_score,
+                &record.first_seen,
+                &record.workspace_dir,
+                &record.device_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Update an existing learned context window record
+    pub fn update_learned_context(
+        &self,
+        record: &crate::context_learning::LearnedContextWindow,
+    ) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "UPDATE learned_context_windows
+             SET observed_max_tokens = ?2,
+                 ceiling_observations = ?3,
+                 compaction_count = ?4,
+                 last_observed_max = ?5,
+                 last_updated = ?6,
+                 confidence_score = ?7,
+                 workspace_dir = ?8,
+                 device_id = ?9
+             WHERE model_name = ?1",
+            params![
+                &record.model_name,
+                record.observed_max_tokens as i64,
+                record.ceiling_observations,
+                record.compaction_count,
+                record.last_observed_max as i64,
+                &record.last_updated,
+                record.confidence_score,
+                &record.workspace_dir,
+                &record.device_id,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Get all learned context windows
+    pub fn get_all_learned_contexts(
+        &self,
+    ) -> Result<Vec<crate::context_learning::LearnedContextWindow>> {
+        use crate::context_learning::LearnedContextWindow;
+
+        let conn = self.get_connection()?;
+        let mut stmt = conn.prepare(
+            "SELECT model_name, observed_max_tokens, ceiling_observations, compaction_count,
+                    last_observed_max, last_updated, confidence_score, first_seen,
+                    workspace_dir, device_id
+             FROM learned_context_windows
+             ORDER BY confidence_score DESC, model_name ASC",
+        )?;
+
+        let records_iter = stmt.query_map([], |row| {
+            Ok(LearnedContextWindow {
+                model_name: row.get(0)?,
+                observed_max_tokens: row.get::<_, i64>(1)? as usize,
+                ceiling_observations: row.get(2)?,
+                compaction_count: row.get(3)?,
+                last_observed_max: row.get::<_, i64>(4)? as usize,
+                last_updated: row.get(5)?,
+                confidence_score: row.get(6)?,
+                first_seen: row.get(7)?,
+                workspace_dir: row.get(8)?,
+                device_id: row.get(9)?,
+            })
+        })?;
+
+        let mut records = Vec::new();
+        for record in records_iter {
+            records.push(record?);
+        }
+
+        Ok(records)
+    }
+
+    /// Delete learned context data for a specific model
+    pub fn delete_learned_context(&self, model_name: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "DELETE FROM learned_context_windows WHERE model_name = ?1",
+            params![model_name],
+        )?;
+        Ok(())
+    }
+
+    /// Delete all learned context data
+    pub fn delete_all_learned_contexts(&self) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute("DELETE FROM learned_context_windows", [])?;
+        Ok(())
+    }
 }
 
 /// Results from database maintenance operations
@@ -668,6 +1091,17 @@ pub struct MaintenanceResult {
     pub prune_done: bool,
     pub records_pruned: usize,
     pub integrity_ok: bool,
+}
+
+/// Session data with model name for rebuilding learned context windows
+#[derive(Debug)]
+pub struct SessionWithModel {
+    pub session_id: String,
+    pub max_tokens_observed: Option<i64>,
+    pub model_name: String,
+    pub workspace_dir: Option<String>,
+    pub device_id: Option<String>,
+    pub last_updated: String,
 }
 
 /// Perform database maintenance operations
@@ -860,12 +1294,40 @@ mod tests {
         let db_path = temp_dir.path().join("test.db");
         let db = SqliteDatabase::new(&db_path).unwrap();
 
-        let (day_total, session_total) = db.update_session("test-session", 10.0, 100, 50).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "test-session",
+                SessionUpdate {
+                    cost: 10.0,
+                    lines_added: 100,
+                    lines_removed: 50,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(day_total, 10.0);
         assert_eq!(session_total, 10.0);
 
         // Update same session - should REPLACE not accumulate
-        let (day_total, session_total) = db.update_session("test-session", 5.0, 50, 25).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "test-session",
+                SessionUpdate {
+                    cost: 5.0,
+                    lines_added: 50,
+                    lines_removed: 25,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(
             day_total, 5.0,
             "Day total should be replaced, not accumulated"
@@ -886,17 +1348,59 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // First update: session cost = 10.0
-        let (day_total, session_total) = db.update_session("session1", 10.0, 100, 50).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "session1",
+                SessionUpdate {
+                    cost: 10.0,
+                    lines_added: 100,
+                    lines_removed: 50,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(session_total, 10.0);
         assert_eq!(day_total, 10.0);
 
         // Second session on same day
-        let (day_total, session_total) = db.update_session("session2", 20.0, 200, 100).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "session2",
+                SessionUpdate {
+                    cost: 20.0,
+                    lines_added: 200,
+                    lines_removed: 100,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(session_total, 20.0);
         assert_eq!(day_total, 30.0); // 10 + 20
 
         // Update first session with LOWER value - should decrease day total
-        let (day_total, session_total) = db.update_session("session1", 8.0, 80, 40).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "session1",
+                SessionUpdate {
+                    cost: 8.0,
+                    lines_added: 80,
+                    lines_removed: 40,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(session_total, 8.0, "Session should have new value");
         assert_eq!(
             day_total, 28.0,
@@ -904,7 +1408,21 @@ mod tests {
         );
 
         // Update first session with HIGHER value - should increase day total
-        let (day_total, session_total) = db.update_session("session1", 15.0, 150, 75).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "session1",
+                SessionUpdate {
+                    cost: 15.0,
+                    lines_added: 150,
+                    lines_removed: 75,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(session_total, 15.0, "Session should have new value");
         assert_eq!(
             day_total, 35.0,
@@ -912,7 +1430,21 @@ mod tests {
         );
 
         // Update second session to zero - should decrease day total
-        let (day_total, session_total) = db.update_session("session2", 0.0, 0, 0).unwrap();
+        let (day_total, session_total) = db
+            .update_session(
+                "session2",
+                SessionUpdate {
+                    cost: 0.0,
+                    lines_added: 0,
+                    lines_removed: 0,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+            .unwrap();
         assert_eq!(session_total, 0.0, "Session should be zero");
         assert_eq!(
             day_total, 15.0,
@@ -937,7 +1469,19 @@ mod tests {
                 let path = db_path.clone();
                 thread::spawn(move || {
                     let db = SqliteDatabase::new(&path).unwrap();
-                    db.update_session(&format!("session-{}", i), 1.0, 10, 5)
+                    db.update_session(
+                        &format!("session-{}", i),
+                        SessionUpdate {
+                            cost: 1.0,
+                            lines_added: 10,
+                            lines_removed: 5,
+                            model_name: None,
+                            workspace_dir: None,
+                            device_id: None,
+                            token_breakdown: None,
+                            max_tokens_observed: None,
+                        },
+                    )
                 })
             })
             .collect();
@@ -962,14 +1506,232 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions
-        db.update_session("session-1", 10.0, 100, 50).unwrap();
-        db.update_session("session-2", 20.0, 200, 100).unwrap();
-        db.update_session("session-3", 30.0, 300, 150).unwrap();
+        db.update_session(
+            "session-1",
+            SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-2",
+            SessionUpdate {
+                cost: 20.0,
+                lines_added: 200,
+                lines_removed: 100,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-3",
+            SessionUpdate {
+                cost: 30.0,
+                lines_added: 300,
+                lines_removed: 150,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
 
         // Check totals
         assert_eq!(db.get_today_total().unwrap(), 60.0);
         assert_eq!(db.get_month_total().unwrap(), 60.0);
         assert_eq!(db.get_all_time_total().unwrap(), 60.0);
+    }
+
+    #[test]
+    fn test_automatic_database_upgrade() {
+        // This test verifies that an old database (v0 schema) is automatically
+        // upgraded to the latest schema when SqliteDatabase::new() is called
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("old_db.db");
+
+        // Step 1: Create an OLD database with v0 schema (basic tables only, no migration columns)
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                r#"
+                CREATE TABLE sessions (
+                    session_id TEXT PRIMARY KEY,
+                    start_time TEXT NOT NULL,
+                    last_updated TEXT NOT NULL,
+                    cost REAL DEFAULT 0.0,
+                    lines_added INTEGER DEFAULT 0,
+                    lines_removed INTEGER DEFAULT 0
+                );
+                CREATE TABLE daily_stats (
+                    date TEXT PRIMARY KEY,
+                    total_cost REAL DEFAULT 0.0,
+                    total_lines_added INTEGER DEFAULT 0,
+                    total_lines_removed INTEGER DEFAULT 0,
+                    session_count INTEGER DEFAULT 0
+                );
+                CREATE TABLE monthly_stats (
+                    month TEXT PRIMARY KEY,
+                    total_cost REAL DEFAULT 0.0,
+                    total_lines_added INTEGER DEFAULT 0,
+                    total_lines_removed INTEGER DEFAULT 0,
+                    session_count INTEGER DEFAULT 0
+                );
+                CREATE TABLE schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL,
+                    checksum TEXT NOT NULL,
+                    description TEXT,
+                    execution_time_ms INTEGER
+                );
+                "#,
+            )
+            .unwrap();
+
+            // Insert test data to verify preservation during upgrade
+            conn.execute(
+                "INSERT INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
+                 VALUES ('old-session-1', '2025-01-01T10:00:00Z', '2025-01-01T10:30:00Z', 5.0, 100, 50)",
+                [],
+            )
+            .unwrap();
+
+            conn.execute(
+                "INSERT INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
+                 VALUES ('2025-01-01', 5.0, 100, 50, 1)",
+                [],
+            )
+            .unwrap();
+
+            // Mark database as v0 (no migrations applied)
+            // Don't insert any migration records - this simulates an old database
+        }
+
+        // Step 2: Open the old database with SqliteDatabase::new()
+        // This should trigger automatic migration to v5
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        // Step 2.5: Check what version we're at and what columns exist
+        let conn = db.get_connection().unwrap();
+        let version: Option<u32> = conn
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap_or(None);
+        eprintln!(
+            "Database version after SqliteDatabase::new(): {:?}",
+            version.unwrap_or(0)
+        );
+
+        let columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        eprintln!("Actual columns present: {:?}", columns);
+
+        // Step 3: Verify the schema was upgraded to v5
+
+        // Check that migration v4 and v5 columns exist
+        // Note: v3 columns (device_id, sync_timestamp) are behind turso-sync feature flag
+        let upgrade_columns: Vec<String> = conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        // v4 columns (always compiled)
+        assert!(
+            upgrade_columns.contains(&"max_tokens_observed".to_string()),
+            "Should have max_tokens_observed column from migration v4"
+        );
+
+        // v5 columns (always compiled)
+        assert!(
+            upgrade_columns.contains(&"model_name".to_string()),
+            "Should have model_name column from migration v5"
+        );
+        assert!(
+            upgrade_columns.contains(&"workspace_dir".to_string()),
+            "Should have workspace_dir column from migration v5"
+        );
+        assert!(
+            upgrade_columns.contains(&"total_input_tokens".to_string()),
+            "Should have total_input_tokens column from migration v5"
+        );
+        assert!(
+            upgrade_columns.contains(&"total_output_tokens".to_string()),
+            "Should have total_output_tokens column from migration v5"
+        );
+        assert!(
+            upgrade_columns.contains(&"total_cache_read_tokens".to_string()),
+            "Should have total_cache_read_tokens column from migration v5"
+        );
+        assert!(
+            upgrade_columns.contains(&"total_cache_creation_tokens".to_string()),
+            "Should have total_cache_creation_tokens column from migration v5"
+        );
+
+        // Step 4: Verify original data was preserved
+        let session_cost: f64 = conn
+            .query_row(
+                "SELECT cost FROM sessions WHERE session_id = 'old-session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            session_cost, 5.0,
+            "Original session data should be preserved"
+        );
+
+        let daily_cost: f64 = conn
+            .query_row(
+                "SELECT total_cost FROM daily_stats WHERE date = '2025-01-01'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(daily_cost, 5.0, "Original daily stats should be preserved");
+
+        // Step 5: Verify the database can be used normally after upgrade
+        drop(conn);
+        db.update_session(
+            "new-session-after-upgrade",
+            SessionUpdate {
+                cost: 3.0,
+                lines_added: 50,
+                lines_removed: 25,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+
+        let today_total = db.get_today_total().unwrap();
+        assert!(
+            today_total >= 3.0,
+            "Should be able to use database normally after upgrade"
+        );
     }
 
     #[test]
@@ -979,9 +1741,48 @@ mod tests {
         let db = SqliteDatabase::new(&db_path).unwrap();
 
         // Add multiple sessions with different dates
-        db.update_session("session-1", 10.0, 100, 50).unwrap();
-        db.update_session("session-2", 20.0, 200, 100).unwrap();
-        db.update_session("session-3", 30.0, 300, 150).unwrap();
+        db.update_session(
+            "session-1",
+            SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-2",
+            SessionUpdate {
+                cost: 20.0,
+                lines_added: 200,
+                lines_removed: 100,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
+        db.update_session(
+            "session-3",
+            SessionUpdate {
+                cost: 30.0,
+                lines_added: 300,
+                lines_removed: 150,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        )
+        .unwrap();
 
         // Check all-time stats methods
         assert_eq!(db.get_all_time_total().unwrap(), 60.0);

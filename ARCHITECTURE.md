@@ -8,6 +8,7 @@ Claudia Statusline is a Rust CLI and embeddable library that renders a richer st
 - `src/lib.rs` – public API surface for embedding (`render_statusline`, `render_from_json`)
 - `src/common.rs` – helpers for timestamps, device IDs, and path discovery (XDG locations)
 - `src/config.rs` – configuration loading/merging, defaults, retry settings, theme resolution
+- `src/context_learning.rs` – adaptive context window learning (experimental, opt-in)
 - `src/database.rs` – SQLite backend (schema creation, CRUD helpers, maintenance utilities)
 - `src/display.rs` – formatting helpers, color palette, context bar rendering
 - `src/error.rs` – shared error type built on `thiserror`
@@ -15,6 +16,7 @@ Claudia Statusline is a Rust CLI and embeddable library that renders a richer st
 - `src/models.rs` – serde-ready data structures for JSON input and transcripts
 - `src/retry.rs` – reusable retry/backoff primitives for transient failures
 - `src/stats.rs` – persistent stats tracking (JSON fallback, SQLite primary store)
+- `src/theme.rs` – theme system with TOML-based configuration and color resolution
 - `src/utils.rs` – path shortening, input sanitisation, transcript parsing, duration helpers
 - `src/version.rs` – build metadata exposed through `--version` and library helpers
 - `src/sync.rs` – cloud sync implementation (compiled when the `turso-sync` feature is enabled)
@@ -46,6 +48,8 @@ When compiled with `turso-sync`, the optional sync subcommand pulls data from `s
 - **XDG-aware paths** – data, config, and cache directories respect `$XDG_*` with sensible fallbacks on macOS/Windows.
 - **Resilient git integration** – git subprocesses run with timeouts, explicit args, and sanitised output to defend against malicious repos.
 - **Composable library API** – formatting logic is exposed through `render_statusline`/`render_from_json` so third parties can reuse the renderer without shelling out.
+- **Adaptive context learning** (experimental) – learns actual context limits by observing compaction events, with priority: user overrides > learned values > intelligent defaults > global fallback.
+- **Real-time compaction detection** (v2.16.7+) – detects Claude's auto-compact process by comparing token counts across invocations, showing visual feedback with rotating spinner animation.
 
 ## Storage & Configuration
 - Config: `~/.config/claudia-statusline/config.toml` (or `$XDG_CONFIG_HOME`)
@@ -73,6 +77,36 @@ strip = true
 panic = "abort"
 ```
 The `Makefile` wraps common flows (`make debug`, `make release`, `make dev`, `make check-code`). In practice the hot path completes in a few milliseconds and the CLI stays CPU-light because most work is simple parsing, small SQLite transactions, and a short git status command.
+
+## Compaction Detection (v2.16.7+)
+Real-time detection of Claude Code's auto-compact process provides visual feedback to users:
+
+### Detection Algorithm
+- **Session tracking**: Stores `max_tokens_observed` for each session in SQLite
+- **Comparison**: Compares current token count with last known value on each invocation
+- **States**:
+  - `Normal`: Standard operation, show percentage and optional warning
+  - `InProgress`: Token drop >50% + file modified <10s = compaction happening now
+  - `RecentlyCompleted`: Token drop >50% but file not recently modified = just finished
+
+### Visual Feedback
+- **Normal**: `79% [========>-] ⚠` (progress bar with warning)
+- **InProgress**: `Compacting... ⠋` (rotating braille spinner)
+- **RecentlyCompleted**: `35% [===>------] ✓` (green checkmark)
+
+### Implementation
+- `CompactionState` enum in `models.rs`
+- `detect_compaction_state()` in `utils.rs` - queries database, checks file mtime
+- `get_session_max_tokens()` in `database.rs` - retrieves last known token count
+- `format_context_bar()` in `display.rs` - renders appropriate state
+
+### Animation Strategy
+Uses system time to cycle through spinner characters regardless of invocation frequency:
+```rust
+let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+let frame = ((now_millis / 250) % 10) as usize;
+```
+Each statusline call shows a different frame, creating perceived animation even with irregular timing.
 
 ## Color Palette
 `display.rs` centralises the ANSI palette and honours `NO_COLOR`/theme settings.

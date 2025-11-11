@@ -86,6 +86,11 @@ pub struct DisplayConfig {
 /// - Unknown models: Uses `window_size` default (200k)
 ///
 /// Users can override detection for specific models using `model_windows` HashMap.
+///
+/// **Adaptive Learning (Experimental):**
+/// When enabled, the statusline learns actual context window sizes from usage patterns
+/// by detecting compaction events and token ceiling observations. This feature is
+/// **disabled by default** and requires explicit opt-in.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContextConfig {
@@ -109,6 +114,104 @@ pub struct ContextConfig {
     /// ```
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub model_windows: std::collections::HashMap<String, usize>,
+
+    /// Enable adaptive learning of context window sizes from usage patterns
+    ///
+    /// **Default: false (disabled)**
+    ///
+    /// When enabled, the statusline observes token patterns to learn actual context limits:
+    /// - Detects automatic compaction events (sudden token drops)
+    /// - Tracks repeated token ceiling observations
+    /// - Builds confidence scores based on multiple observations
+    ///
+    /// **Impact on percentage display (v2.16.5+)**:
+    /// Learned values refine BOTH "full" and "working" percentage modes:
+    /// - Learned value represents working window where compaction happens (e.g., 156K)
+    /// - Total window calculated as working + buffer (e.g., 156K + 40K = 196K)
+    /// - "full" mode: tokens / learned_total (e.g., 150K / 196K = 77%)
+    /// - "working" mode: tokens / learned_working (e.g., 150K / 156K = 96%)
+    ///
+    /// Learned values are only used when confidence >= `learning_confidence_threshold`.
+    /// User overrides in `model_windows` always take precedence.
+    ///
+    /// **Experimental feature** - disabled by default for stability.
+    pub adaptive_learning: bool,
+
+    /// Minimum confidence score required to use learned context window values
+    ///
+    /// **Default: 0.7 (70%)**
+    ///
+    /// Range: 0.0 (0%) to 1.0 (100%)
+    ///
+    /// Confidence increases with observations:
+    /// - 1 observation = ~0.1 confidence
+    /// - 3 observations = ~0.4 confidence
+    /// - 5+ observations = 0.7+ confidence
+    ///
+    /// Only applies when `adaptive_learning = true`.
+    pub learning_confidence_threshold: f64,
+
+    /// Claude Code buffer reserved for responses (not available for conversation)
+    ///
+    /// **Default: 40000 tokens (40K)**
+    ///
+    /// Claude Code reserves approximately 40-45K tokens as a buffer for generating
+    /// responses. This buffer is not available for the conversation context.
+    ///
+    /// This setting is used to:
+    /// - Calculate the "working window" (context_window - buffer)
+    /// - Determine when to show auto-compact warnings
+    /// - Provide accurate estimates of usable context space
+    ///
+    /// Reference: Claude Code auto-compact triggers when context reaches ~95% capacity
+    /// or when you have ~40-45K tokens remaining (the buffer zone).
+    pub buffer_size: usize,
+
+    /// Auto-compact warning threshold percentage (mode-aware)
+    ///
+    /// **Default: 75.0 (mode-aware)**
+    ///
+    /// Shows warning indicator (⚠) when context percentage exceeds this value.
+    ///
+    /// **Mode-aware behavior:**
+    /// - **"full" mode**: Default 75% = 150K tokens (warns ~6K before compaction at ~156K)
+    /// - **"working" mode**: Auto-adjusted to 94% = 150K tokens (same warning point)
+    ///
+    /// This ensures the warning appears before actual auto-compaction in both display modes.
+    ///
+    /// **Custom thresholds:**
+    /// Set any value between 0.0-100.0 to override the mode-aware defaults.
+    /// Custom values are respected as-is without adjustment.
+    ///
+    /// **Example:**
+    /// ```toml
+    /// [context]
+    /// auto_compact_threshold = 70.0  # Warn earlier (at 140K in "full" mode)
+    /// ```
+    ///
+    /// Range: 0.0 to 100.0
+    pub auto_compact_threshold: f64,
+
+    /// Context percentage display mode
+    ///
+    /// **Default: "full"**
+    ///
+    /// Controls how the context percentage is calculated and displayed:
+    ///
+    /// - **"full"**: Percentage of total advertised context window (e.g., 200K)
+    ///   - More intuitive: 100% = full 200K context as advertised by Anthropic
+    ///   - Example: 150K tokens = 75% of 200K window
+    ///   - **Recommended for most users**
+    ///
+    /// - **"working"**: Percentage of usable working window (context - buffer)
+    ///   - More accurate: accounts for Claude's 40K response buffer
+    ///   - Example: 150K tokens = 93.75% of 160K working window (200K - 40K)
+    ///   - Shows how close you are to actual auto-compact trigger
+    ///   - **Useful for power users tracking compaction**
+    ///
+    /// The buffer_size (default 40K) is only subtracted in "working" mode.
+    #[serde(default = "default_percentage_mode")]
+    pub percentage_mode: String,
 }
 
 /// Cost threshold configuration
@@ -255,11 +358,60 @@ impl Default for DisplayConfig {
     }
 }
 
+fn default_percentage_mode() -> String {
+    "full".to_string()
+}
+
+impl ContextConfig {
+    /// Get the effective auto-compact threshold based on percentage mode
+    ///
+    /// The threshold is automatically adjusted based on the display mode to ensure
+    /// the warning appears before actual compaction in both modes:
+    ///
+    /// - "full" mode: Uses the configured threshold directly (default 75%)
+    ///   - 75% of 200K = 150K tokens (warning ~6K before compaction at ~156K)
+    ///
+    /// - "working" mode: Adjusts threshold to account for buffer (default 94%)
+    ///   - 94% of 160K = 150K tokens (same warning point as full mode)
+    ///
+    /// Users can override with custom thresholds that will be respected in both modes.
+    pub fn get_effective_threshold(&self) -> f64 {
+        // If user has customized the threshold, use it as-is
+        // (We detect customization by checking if it's not the default 75% or legacy 80%)
+        let is_custom = (self.auto_compact_threshold - 75.0).abs() > 0.1
+            && (self.auto_compact_threshold - 80.0).abs() > 0.1;
+
+        if is_custom {
+            return self.auto_compact_threshold;
+        }
+
+        // Auto-adjust based on mode for default thresholds
+        match self.percentage_mode.as_str() {
+            "working" => {
+                // In working mode, adjust to show warning at same absolute token count
+                // Default: 75% of 200K = 150K tokens
+                // In working mode: 150K / 160K = 93.75%, round to 94%
+                94.0
+            }
+            _ => {
+                // "full" mode (default): use 75% to warn before typical compaction at 78%
+                // 75% of 200K = 150K tokens, compaction at ~156K (78%) gives ~6K warning buffer
+                75.0
+            }
+        }
+    }
+}
+
 impl Default for ContextConfig {
     fn default() -> Self {
         ContextConfig {
             window_size: 200_000, // Default for modern Claude models (Sonnet 3.5+, Opus 3.5+, Sonnet 4.5+)
             model_windows: std::collections::HashMap::new(),
+            adaptive_learning: false, // Disabled by default (experimental feature)
+            learning_confidence_threshold: 0.7, // Require 70% confidence before using learned values
+            buffer_size: 40_000,                // Claude Code reserves ~40-45K tokens for responses
+            auto_compact_threshold: 75.0, // Mode-aware: 75% for "full", auto-adjusted to 94% for "working"
+            percentage_mode: default_percentage_mode(), // Default to "full" for user expectations
         }
     }
 }
@@ -506,6 +658,16 @@ window_size = 200000
 # "Claude 3.5 Opus" = 200000
 # "Claude 3 Haiku" = 100000
 
+# Adaptive Learning (Experimental) - DISABLED BY DEFAULT
+# When enabled, the statusline learns actual context window sizes from usage patterns
+# by detecting compaction events and token ceiling observations
+adaptive_learning = false
+
+# Minimum confidence threshold (0.0-1.0) required to use learned values
+# Only applies when adaptive_learning = true
+# Confidence increases with more observations (0.7 = 70% confidence)
+learning_confidence_threshold = 0.7
+
 [cost]
 # Cost thresholds for color coding
 low_threshold = 5.0      # Green below this
@@ -524,7 +686,8 @@ retention_days_daily = 365      # Keep daily aggregates for N days
 retention_days_monthly = 0      # Keep monthly aggregates for N days (0 = forever)
 
 [transcript]
-# Number of transcript lines to keep in memory
+# Number of transcript lines to keep in memory (circular buffer)
+# For large files, only the last N lines are read (tail-reading optimization)
 buffer_lines = 50
 
 [retry.file_ops]

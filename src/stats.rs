@@ -38,6 +38,8 @@ pub struct SessionStats {
     pub lines_removed: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub start_time: Option<String>, // ISO 8601 timestamp of session start
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_tokens_observed: Option<u32>, // For adaptive context learning
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,7 +99,9 @@ impl StatsData {
                 match serde_json::from_str(&contents) {
                     Ok(data) => {
                         // Migrate JSON data to SQLite if needed
-                        let _ = Self::migrate_to_sqlite(&data);
+                        if let Err(e) = Self::migrate_to_sqlite(&data) {
+                            log::warn!("Failed to migrate JSON to SQLite: {}", e);
+                        }
                         return data;
                     }
                     Err(e) => {
@@ -163,10 +167,29 @@ impl StatsData {
         let db_path = Self::get_sqlite_path()?;
         let db = SqliteDatabase::new(&db_path)?;
 
+        log::debug!("migrate_to_sqlite: Checking if migration needed");
+        log::debug!(
+            "migrate_to_sqlite: JSON has {} sessions",
+            data.sessions.len()
+        );
+
         // Check if we've already migrated by looking for existing sessions
-        if !db.has_sessions() {
+        let has_sessions = db.has_sessions();
+        log::debug!("migrate_to_sqlite: DB has_sessions = {}", has_sessions);
+
+        if !has_sessions {
+            log::info!(
+                "Migrating {} sessions from JSON to SQLite",
+                data.sessions.len()
+            );
             // Perform migration
             db.import_sessions(&data.sessions)?;
+            log::info!(
+                "Successfully migrated {} sessions to SQLite",
+                data.sessions.len()
+            );
+        } else {
+            log::debug!("Skipping migration - database already has sessions");
         }
 
         Ok(())
@@ -205,18 +228,35 @@ impl StatsData {
     pub fn update_session(
         &mut self,
         session_id: &str,
-        session_cost: f64,
-        lines_added: u64,
-        lines_removed: u64,
+        update: crate::database::SessionUpdate,
     ) -> (f64, f64) {
         let today = current_date();
         let month = current_month();
         let now = current_timestamp();
 
+        // Update SQLite database directly with all parameters including new migration v5 fields
+        // This ensures model_name, workspace_dir, device_id, and token breakdown are persisted immediately
+        // SqliteDatabase::new() will create the database if it doesn't exist
+        // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if let Ok(db) = SqliteDatabase::new(&db_path) {
+                if let Err(e) = db.update_session(session_id, update.clone()) {
+                    log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
+                }
+            } else {
+                log::warn!(
+                    "Failed to open SQLite database at {:?} for session update",
+                    db_path
+                );
+            }
+        } else {
+            log::warn!("Failed to get SQLite path for session update");
+        }
+
         // Calculate delta from last known session cost
         let last_cost = self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0);
 
-        let cost_delta = session_cost - last_cost;
+        let cost_delta = update.cost - last_cost;
 
         // Calculate line deltas from previous values
         let last_lines_added = self
@@ -229,25 +269,26 @@ impl StatsData {
             .get(session_id)
             .map(|s| s.lines_removed)
             .unwrap_or(0);
-        let lines_added_delta = (lines_added as i64) - (last_lines_added as i64);
-        let lines_removed_delta = (lines_removed as i64) - (last_lines_removed as i64);
+        let lines_added_delta = (update.lines_added as i64) - (last_lines_added as i64);
+        let lines_removed_delta = (update.lines_removed as i64) - (last_lines_removed as i64);
 
         // Always update session metadata (even with zero/negative deltas)
         // This ensures cost corrections and metadata refreshes are persisted
         if let Some(session) = self.sessions.get_mut(session_id) {
-            session.cost = session_cost;
-            session.lines_added = lines_added;
-            session.lines_removed = lines_removed;
+            session.cost = update.cost;
+            session.lines_added = update.lines_added;
+            session.lines_removed = update.lines_removed;
             session.last_updated = now.clone();
         } else {
             self.sessions.insert(
                 session_id.to_string(),
                 SessionStats {
                     last_updated: now.clone(),
-                    cost: session_cost,
-                    lines_added,
-                    lines_removed,
+                    cost: update.cost,
+                    lines_added: update.lines_added,
+                    lines_removed: update.lines_removed,
                     start_time: Some(now.clone()), // Track when session started
+                    max_tokens_observed: None,     // Will be updated by adaptive learning
                 },
             );
             self.all_time.sessions += 1;
@@ -344,6 +385,36 @@ impl StatsData {
 
         (daily_total, monthly_total)
     }
+
+    /// Update max_tokens_observed for a session (adaptive learning)
+    /// This should be called after update_session when context usage is calculated
+    pub fn update_max_tokens(&mut self, session_id: &str, current_tokens: u32) {
+        // Update in-memory stats
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            let new_max = session.max_tokens_observed.unwrap_or(0).max(current_tokens);
+            session.max_tokens_observed = Some(new_max);
+        }
+
+        // Persist to SQLite database using dedicated method
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if let Ok(db) = SqliteDatabase::new(&db_path) {
+                if let Err(e) = db.update_max_tokens_observed(session_id, current_tokens) {
+                    log::warn!(
+                        "Failed to update max_tokens_observed for session {} in SQLite: {}",
+                        session_id,
+                        e
+                    );
+                }
+            } else {
+                log::warn!(
+                    "Failed to open SQLite database at {:?} for max_tokens update",
+                    db_path
+                );
+            }
+        } else {
+            log::warn!("Failed to get SQLite path for max_tokens update");
+        }
+    }
 }
 
 /// Loads or retrieves the current statistics data.
@@ -398,7 +469,13 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
     let mut contents = String::new();
     if file.read_to_string(&mut contents).is_ok() && !contents.is_empty() {
         match serde_json::from_str(&contents) {
-            Ok(data) => data,
+            Ok(data) => {
+                // Migrate JSON data to SQLite if needed
+                if let Err(e) = StatsData::migrate_to_sqlite(&data) {
+                    log::warn!("Failed to migrate JSON to SQLite: {}", e);
+                }
+                data
+            }
             Err(e) => {
                 warn!(
                     "Stats file corrupted: {}. Creating backup and starting fresh.",
@@ -436,55 +513,27 @@ fn save_stats_data(file: &mut File, stats_data: &StatsData) {
     }
 }
 
-// Check if we should migrate sessions from JSON to SQLite
-fn should_migrate_sessions(db: &SqliteDatabase, stats_data: &StatsData) -> bool {
-    !db.has_sessions() && !stats_data.sessions.is_empty()
-}
-
-// Migrate existing sessions from JSON to SQLite
-fn migrate_sessions_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
-    // Find the most recently updated session to exclude from migration
-    let current_session = stats_data
-        .sessions
-        .iter()
-        .max_by_key(|(_, s)| &s.last_updated)
-        .map(|(id, _)| id.clone());
-
-    // Collect sessions to migrate (excluding current session)
-    let sessions_to_migrate: std::collections::HashMap<String, SessionStats> = stats_data
-        .sessions
-        .iter()
-        .filter(|(id, _)| current_session.as_ref() != Some(id))
-        .map(|(id, session)| (id.clone(), session.clone()))
-        .collect();
-
-    if !sessions_to_migrate.is_empty() {
-        match db.import_sessions(&sessions_to_migrate) {
-            Ok(_) => {
-                debug!(
-                    "Migrated {} existing sessions from JSON to SQLite",
-                    sessions_to_migrate.len()
-                );
-            }
-            Err(e) => {
-                warn!("Failed to migrate sessions to SQLite: {}", e);
-            }
-        }
-    }
-}
-
 // Write the current session to SQLite
+#[allow(dead_code)]
 fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
     if let Some((session_id, session)) = stats_data
         .sessions
         .iter()
         .max_by_key(|(_, s)| &s.last_updated)
     {
+        use crate::database::SessionUpdate;
         match db.update_session(
             session_id,
-            session.cost,
-            session.lines_added,
-            session.lines_removed,
+            SessionUpdate {
+                cost: session.cost,
+                lines_added: session.lines_added,
+                lines_removed: session.lines_removed,
+                model_name: None,      // not available in dual-write
+                workspace_dir: None,   // not available in dual-write
+                device_id: None,       // not available in dual-write
+                token_breakdown: None, // not available in dual-write
+                max_tokens_observed: session.max_tokens_observed, // from in-memory stats
+            },
         ) {
             Ok((day_total, session_total)) => {
                 debug!(
@@ -500,7 +549,7 @@ fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) 
 }
 
 // Helper function to write to SQLite (primary storage)
-fn perform_sqlite_dual_write(stats_data: &StatsData) {
+fn perform_sqlite_dual_write(_stats_data: &StatsData) {
     // Write to SQLite (primary storage as of Phase 2)
     let db_path = match StatsData::get_sqlite_path() {
         Ok(p) => p,
@@ -510,7 +559,7 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
         }
     };
 
-    let db = match SqliteDatabase::new(&db_path) {
+    let _db = match SqliteDatabase::new(&db_path) {
         Ok(d) => d,
         Err(e) => {
             error!(
@@ -521,13 +570,9 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
         }
     };
 
-    // Check if we need to migrate existing sessions
-    if should_migrate_sessions(&db, stats_data) {
-        migrate_sessions_to_sqlite(&db, stats_data);
-    }
-
-    // Write the current session
-    write_current_session_to_sqlite(&db, stats_data);
+    // NOTE: Migration is now handled in load_stats_data() when JSON is loaded
+    // Current session is written directly in update_session() with all migration v5 fields
+    // No need to call write_current_session_to_sqlite() as that would overwrite model_name/workspace_dir/tokens with NULL
 }
 
 /// Updates the statistics data with process-safe file locking.
@@ -549,9 +594,22 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
 ///
 /// ```rust,no_run
 /// use statusline::stats::update_stats_data;
+/// use statusline::database::SessionUpdate;
 ///
 /// let (daily, monthly) = update_stats_data(|stats| {
-///     stats.update_session("session-123", 1.50, 100, 50)
+///     stats.update_session(
+///         "session-123",
+///         SessionUpdate {
+///             cost: 1.50,
+///             lines_added: 100,
+///             lines_removed: 50,
+///             model_name: None,
+///             workspace_dir: None,
+///             device_id: None,
+///             token_breakdown: None,
+///             max_tokens_observed: None,
+///         },
+///     )
 /// });
 /// ```
 pub fn update_stats_data<F>(updater: F) -> (f64, f64)
@@ -651,8 +709,21 @@ mod tests {
 
     #[test]
     fn test_stats_data_update_session() {
+        use crate::database::SessionUpdate;
         let mut stats = StatsData::default();
-        let (daily, monthly) = stats.update_session("test-session", 10.0, 100, 50);
+        let (daily, monthly) = stats.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         assert_eq!(daily, 10.0);
         assert_eq!(monthly, 10.0);
@@ -676,11 +747,24 @@ mod tests {
     #[test]
     #[serial]
     fn test_stats_save_and_load() {
+        use crate::database::SessionUpdate;
         let temp_dir = TempDir::new().unwrap();
         env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
 
         let mut stats = StatsData::default();
-        stats.update_session("test", 5.0, 50, 25);
+        stats.update_session(
+            "test",
+            SessionUpdate {
+                cost: 5.0,
+                lines_added: 50,
+                lines_removed: 25,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         let save_result = stats.save();
         assert!(save_result.is_ok());
@@ -703,10 +787,23 @@ mod tests {
     #[test]
     #[serial]
     fn test_session_start_time_tracking() {
+        use crate::database::SessionUpdate;
         let mut stats = StatsData::default();
 
         // First update creates session with start_time
-        stats.update_session("test-session", 1.0, 10, 5);
+        stats.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 1.0,
+                lines_added: 10,
+                lines_removed: 5,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         // Check that start_time was set
         let session = stats.sessions.get("test-session").unwrap();
@@ -714,7 +811,19 @@ mod tests {
 
         // Second update to same session shouldn't change start_time
         let original_start = session.start_time.clone();
-        stats.update_session("test-session", 2.0, 20, 10);
+        stats.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 2.0,
+                lines_added: 20,
+                lines_removed: 10,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            },
+        );
 
         let session = stats.sessions.get("test-session").unwrap();
         assert_eq!(session.start_time, original_start);
@@ -754,9 +863,22 @@ mod tests {
             let temp_path_clone = temp_path.clone();
             let handle = thread::spawn(move || {
                 // Ensure the thread uses the temp directory
+                use crate::database::SessionUpdate;
                 env::set_var("XDG_DATA_HOME", &temp_path_clone);
                 let (daily, _) = update_stats_data(|stats| {
-                    stats.update_session(&format!("test-thread-{}", i), 1.0, 10, 5)
+                    stats.update_session(
+                        &format!("test-thread-{}", i),
+                        SessionUpdate {
+                            cost: 1.0,
+                            lines_added: 10,
+                            lines_removed: 5,
+                            model_name: None,
+                            workspace_dir: None,
+                            device_id: None,
+                            token_breakdown: None,
+                            max_tokens_observed: None,
+                        },
+                    )
                 });
                 completed_clone.fetch_add(1, Ordering::SeqCst);
                 daily
@@ -822,7 +944,22 @@ mod tests {
         initial_stats.save().unwrap();
 
         // Create a session with a specific start time
-        update_stats_data(|stats| stats.update_session("duration-test-session", 1.0, 10, 5));
+        use crate::database::SessionUpdate;
+        update_stats_data(|stats| {
+            stats.update_session(
+                "duration-test-session",
+                SessionUpdate {
+                    cost: 1.0,
+                    lines_added: 10,
+                    lines_removed: 5,
+                    model_name: None,
+                    workspace_dir: None,
+                    device_id: None,
+                    token_breakdown: None,
+                    max_tokens_observed: None,
+                },
+            )
+        });
 
         // Wait a bit to ensure some time passes
         thread::sleep(Duration::from_millis(100));

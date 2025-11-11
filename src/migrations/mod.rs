@@ -1,4 +1,3 @@
-use crate::database::SqliteDatabase;
 use crate::stats::StatsData;
 use chrono::Local;
 use rusqlite::{params, Connection, Result, Transaction};
@@ -30,26 +29,50 @@ pub struct MigrationRunner {
 #[allow(dead_code)]
 impl MigrationRunner {
     pub fn new(db_path: &Path) -> Result<Self> {
-        // Initialize database
-        let _db = SqliteDatabase::new(db_path)?;
-
-        // Open connection for migrations
+        // Open connection for migrations (don't call SqliteDatabase::new to avoid infinite recursion)
         let conn = Connection::open(db_path)?;
 
         // Enable WAL for concurrent access
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 10000)?;
 
-        // Create migrations table
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS schema_migrations (
+        // Create minimal base schema (WITHOUT migration columns) for testing migrations
+        // This allows migrations to add columns without "duplicate column" errors
+        conn.execute_batch(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                session_id TEXT PRIMARY KEY,
+                start_time TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                cost REAL DEFAULT 0.0,
+                lines_added INTEGER DEFAULT 0,
+                lines_removed INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS daily_stats (
+                date TEXT PRIMARY KEY,
+                total_cost REAL DEFAULT 0.0,
+                total_lines_added INTEGER DEFAULT 0,
+                total_lines_removed INTEGER DEFAULT 0,
+                session_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS monthly_stats (
+                month TEXT PRIMARY KEY,
+                total_cost REAL DEFAULT 0.0,
+                total_lines_added INTEGER DEFAULT 0,
+                total_lines_removed INTEGER DEFAULT 0,
+                session_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS schema_migrations (
                 version INTEGER PRIMARY KEY,
                 applied_at TEXT NOT NULL,
                 checksum TEXT NOT NULL,
                 description TEXT,
                 execution_time_ms INTEGER
-            )",
-            [],
+            );
+            "#,
         )?;
 
         Ok(Self {
@@ -64,6 +87,7 @@ impl MigrationRunner {
             Box::new(InitialJsonToSqlite),
             Box::new(AddMetaTable),
             Box::new(AddSyncMetadata),
+            Box::new(AddAdaptiveLearning),
         ]
     }
 
@@ -294,7 +318,7 @@ impl Migration for AddSyncMetadata {
     }
 }
 
-// Stub migration for when turso-sync feature is disabled
+// Migration for when turso-sync feature is disabled - still adds device_id for analytics
 #[cfg(not(feature = "turso-sync"))]
 pub struct AddSyncMetadata;
 
@@ -305,27 +329,140 @@ impl Migration for AddSyncMetadata {
     }
 
     fn description(&self) -> &str {
-        "Add sync metadata (disabled - turso-sync feature not enabled)"
+        "Add device_id for analytics (sync features disabled)"
     }
 
-    fn up(&self, _tx: &Transaction) -> Result<()> {
-        // No-op when feature is disabled
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Always add device_id - used by analytics and learning features even without sync
+        tx.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT", [])?;
+        tx.execute("ALTER TABLE daily_stats ADD COLUMN device_id TEXT", [])?;
+        tx.execute("ALTER TABLE monthly_stats ADD COLUMN device_id TEXT", [])?;
+
+        // Note: sync_timestamp and sync_meta table are NOT added (turso-sync disabled)
         Ok(())
     }
 
     fn down(&self, _tx: &Transaction) -> Result<()> {
-        // No-op when feature is disabled
+        // SQLite doesn't support DROP COLUMN
+        // device_id columns remain but are nullable
         Ok(())
     }
+}
+
+/// Migration 004: Add adaptive context window learning (consolidated from v4, v5, v6)
+pub struct AddAdaptiveLearning;
+
+impl Migration for AddAdaptiveLearning {
+    fn version(&self) -> u32 {
+        4
+    }
+
+    fn description(&self) -> &str {
+        "Add adaptive context learning with session metadata and audit trail"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Create learned_context_windows table with ALL fields (including audit trail)
+        tx.execute(
+            "CREATE TABLE IF NOT EXISTS learned_context_windows (
+                model_name TEXT PRIMARY KEY,
+                observed_max_tokens INTEGER NOT NULL,
+                ceiling_observations INTEGER DEFAULT 0,
+                compaction_count INTEGER DEFAULT 0,
+                last_observed_max INTEGER NOT NULL,
+                last_updated TEXT NOT NULL,
+                confidence_score REAL DEFAULT 0.0,
+                first_seen TEXT NOT NULL,
+                workspace_dir TEXT,
+                device_id TEXT
+            )",
+            [],
+        )?;
+
+        // Indexes for learned_context_windows
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_confidence
+             ON learned_context_windows(confidence_score DESC)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_workspace_model
+             ON learned_context_windows(workspace_dir, model_name)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_learned_device
+             ON learned_context_windows(device_id)",
+            [],
+        )?;
+
+        // Add ALL session columns for adaptive learning and analytics
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN max_tokens_observed INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute("ALTER TABLE sessions ADD COLUMN model_name TEXT", [])?;
+        tx.execute("ALTER TABLE sessions ADD COLUMN workspace_dir TEXT", [])?;
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_input_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        // Indexes for sessions table
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_model_name ON sessions(model_name)",
+            [],
+        )?;
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_workspace ON sessions(workspace_dir)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        // Drop learned_context_windows table and indexes
+        tx.execute("DROP TABLE IF EXISTS learned_context_windows", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_learned_confidence", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_learned_workspace_model", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_learned_device", [])?;
+
+        // Drop session indexes
+        tx.execute("DROP INDEX IF EXISTS idx_sessions_model_name", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_sessions_workspace", [])?;
+
+        // Note: SQLite doesn't support DROP COLUMN easily
+        // Columns remain but that's acceptable for backward compatibility
+
+        Ok(())
+    }
+}
+
+/// Run migrations on a specific database path
+/// Returns Err only on critical failures that prevent migrations from running
+pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
+    let mut runner = MigrationRunner::new(db_path)?;
+    runner.migrate()
 }
 
 /// Run migrations on startup (best effort)
 #[allow(dead_code)]
 pub fn run_migrations() {
     if let Ok(db_path) = StatsData::get_sqlite_path() {
-        if let Ok(mut runner) = MigrationRunner::new(&db_path) {
-            let _ = runner.migrate();
-        }
+        let _ = run_migrations_on_db(&db_path);
     }
 }
 
@@ -343,8 +480,8 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 3 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3)
-        assert_eq!(runner.current_version().unwrap(), 3);
+        // We now have 4 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddAdaptiveLearning (v4 - consolidated from old v4, v5, v6)
+        assert_eq!(runner.current_version().unwrap(), 4);
     }
 
     #[test]
@@ -386,6 +523,56 @@ mod tests {
         assert!(
             sessions_columns.contains(&"sync_timestamp".to_string()),
             "sessions table should have sync_timestamp column"
+        );
+    }
+
+    #[test]
+    fn test_learned_context_windows_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_learned.db");
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.migrate().unwrap();
+
+        // Verify learned_context_windows table exists
+        let table_exists: bool = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='learned_context_windows'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+
+        assert!(table_exists, "learned_context_windows table should exist");
+
+        // Verify index exists
+        let index_exists: bool = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_learned_confidence'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+
+        assert!(index_exists, "idx_learned_confidence index should exist");
+
+        // Verify max_tokens_observed column was added to sessions
+        let sessions_columns: Vec<String> = runner
+            .conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            sessions_columns.contains(&"max_tokens_observed".to_string()),
+            "sessions table should have max_tokens_observed column"
         );
     }
 }

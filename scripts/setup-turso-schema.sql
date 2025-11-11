@@ -1,41 +1,106 @@
 -- Turso Database Schema Setup for Claudia Statusline
+-- Auto-generated from migrations on 2025-11-08
 -- This script creates the necessary tables for cloud sync
 
--- Sessions table: stores individual Claude session stats
-CREATE TABLE IF NOT EXISTS sessions (
-    device_id TEXT NOT NULL,
-    session_id TEXT NOT NULL,
-    start_time TEXT,
-    last_updated TEXT NOT NULL,
-    cost REAL NOT NULL DEFAULT 0.0,
-    lines_added INTEGER NOT NULL DEFAULT 0,
-    lines_removed INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (device_id, session_id)
-);
-
--- Daily stats table: aggregated daily statistics per device
-CREATE TABLE IF NOT EXISTS daily_stats (
+CREATE TABLE daily_stats (
     device_id TEXT NOT NULL,
     date TEXT NOT NULL,
-    total_cost REAL NOT NULL DEFAULT 0.0,
-    total_lines_added INTEGER NOT NULL DEFAULT 0,
-    total_lines_removed INTEGER NOT NULL DEFAULT 0,
-    session_count INTEGER NOT NULL DEFAULT 0,
+    total_cost REAL DEFAULT 0.0,
+    total_lines_added INTEGER DEFAULT 0,
+    total_lines_removed INTEGER DEFAULT 0,
+    session_count INTEGER DEFAULT 0,
     PRIMARY KEY (device_id, date)
 );
 
--- Monthly stats table: aggregated monthly statistics per device
-CREATE TABLE IF NOT EXISTS monthly_stats (
+CREATE TABLE learned_context_windows (
+    device_id TEXT,
+    model_name TEXT NOT NULL,
+    workspace_dir TEXT,
+    observed_max_tokens INTEGER NOT NULL,
+    ceiling_observations INTEGER DEFAULT 0,
+    compaction_count INTEGER DEFAULT 0,
+    last_observed_max INTEGER NOT NULL,
+    last_updated TEXT NOT NULL,
+    confidence_score REAL DEFAULT 0.0,
+    first_seen TEXT NOT NULL,
+    PRIMARY KEY (model_name)
+);
+
+CREATE TABLE meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE monthly_stats (
     device_id TEXT NOT NULL,
     month TEXT NOT NULL,
-    total_cost REAL NOT NULL DEFAULT 0.0,
-    total_lines_added INTEGER NOT NULL DEFAULT 0,
-    total_lines_removed INTEGER NOT NULL DEFAULT 0,
-    session_count INTEGER NOT NULL DEFAULT 0,
+    total_cost REAL DEFAULT 0.0,
+    total_lines_added INTEGER DEFAULT 0,
+    total_lines_removed INTEGER DEFAULT 0,
+    session_count INTEGER DEFAULT 0,
     PRIMARY KEY (device_id, month)
 );
 
+CREATE TABLE schema_migrations (
+    version INTEGER PRIMARY KEY,
+    applied_at TEXT NOT NULL,
+    checksum TEXT NOT NULL,
+    description TEXT,
+    execution_time_ms INTEGER
+);
+
+CREATE TABLE sessions (
+    device_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    last_updated TEXT NOT NULL,
+    cost REAL DEFAULT 0.0,
+    lines_added INTEGER DEFAULT 0,
+    lines_removed INTEGER DEFAULT 0,
+    max_tokens_observed INTEGER DEFAULT 0,
+    sync_timestamp INTEGER,
+    model_name TEXT,
+    workspace_dir TEXT,
+    total_input_tokens INTEGER DEFAULT 0,
+    total_output_tokens INTEGER DEFAULT 0,
+    total_cache_read_tokens INTEGER DEFAULT 0,
+    total_cache_creation_tokens INTEGER DEFAULT 0,
+    PRIMARY KEY (device_id, session_id)
+);
+
+CREATE TABLE sync_meta (
+    device_id TEXT PRIMARY KEY,
+    last_sync_push INTEGER,
+    last_sync_pull INTEGER,
+    hostname_hash TEXT
+);
+
+CREATE INDEX idx_daily_date_cost ON daily_stats(date DESC, total_cost DESC);
+
+CREATE INDEX idx_learned_confidence ON learned_context_windows(confidence_score DESC);
+
+CREATE INDEX idx_learned_device
+             ON learned_context_windows(device_id);
+
+CREATE INDEX idx_learned_workspace_model
+             ON learned_context_windows(workspace_dir, model_name);
+
+CREATE INDEX idx_sessions_cost ON sessions(cost DESC);
+
+CREATE INDEX idx_sessions_last_updated ON sessions(last_updated);
+
+CREATE INDEX idx_sessions_model_name ON sessions(model_name);
+
+CREATE INDEX idx_sessions_start_time ON sessions(start_time);
+
+CREATE INDEX idx_sessions_workspace ON sessions(workspace_dir);
+
+CREATE INDEX idx_sessions_device ON sessions(device_id);
+
+CREATE INDEX idx_daily_device ON daily_stats(device_id);
+
+CREATE INDEX idx_monthly_device ON monthly_stats(device_id);
+
 -- Indexes for better query performance
-CREATE INDEX IF NOT EXISTS idx_sessions_device_updated ON sessions(device_id, last_updated DESC);
-CREATE INDEX IF NOT EXISTS idx_daily_device_date ON daily_stats(device_id, date DESC);
-CREATE INDEX IF NOT EXISTS idx_monthly_device_month ON monthly_stats(device_id, month DESC);
+-- (Indexes are included in the CREATE TABLE statements above)
+
