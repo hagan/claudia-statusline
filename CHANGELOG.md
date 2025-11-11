@@ -87,6 +87,9 @@ auto_compact_threshold = 75.0        # Warning threshold percentage
 - File modified <10s + expected drop = in progress
 - Checkmark persists for ~30 seconds after completion
 
+#### Known Limitation
+**⚠️ Timing Accuracy**: Compaction detection is retrospective (reads transcript file). Due to statusline's reactive update pattern (only updates when Claude calls it), there may be 5-60 second delays before state changes are visible. This limitation will be addressed in v2.18.0 with real-time hook integration (tmux pane border status).
+
 ### Added - Context Percentage Display Modes
 
 **New Configuration Option**: Choose how context percentage is calculated
