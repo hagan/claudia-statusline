@@ -198,6 +198,35 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 </details>
 
 <details>
+<summary><b>Adaptive Context Learning</b></summary>
+
+Experimental feature that learns actual context window limits by observing usage:
+
+```bash
+# Check learning status
+statusline context-learning --status
+
+# View detailed observations
+statusline context-learning --details
+
+# Reset learned data
+statusline context-learning --reset
+
+# Rebuild from session history
+statusline context-learning --rebuild
+```
+
+**Enable in config:**
+```toml
+[context]
+adaptive_learning = true
+learning_confidence_threshold = 0.7
+```
+
+See [Adaptive Learning Guide](docs/ADAPTIVE_LEARNING.md) for complete documentation.
+</details>
+
+<details>
 <summary><b>Cloud Sync</b></summary>
 
 Track costs across multiple machines:
