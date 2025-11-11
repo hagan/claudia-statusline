@@ -99,7 +99,9 @@ impl StatsData {
                 match serde_json::from_str(&contents) {
                     Ok(data) => {
                         // Migrate JSON data to SQLite if needed
-                        let _ = Self::migrate_to_sqlite(&data);
+                        if let Err(e) = Self::migrate_to_sqlite(&data) {
+                            log::warn!("Failed to migrate JSON to SQLite: {}", e);
+                        }
                         return data;
                     }
                     Err(e) => {
@@ -165,10 +167,20 @@ impl StatsData {
         let db_path = Self::get_sqlite_path()?;
         let db = SqliteDatabase::new(&db_path)?;
 
+        log::debug!("migrate_to_sqlite: Checking if migration needed");
+        log::debug!("migrate_to_sqlite: JSON has {} sessions", data.sessions.len());
+
         // Check if we've already migrated by looking for existing sessions
-        if !db.has_sessions() {
+        let has_sessions = db.has_sessions();
+        log::debug!("migrate_to_sqlite: DB has_sessions = {}", has_sessions);
+
+        if !has_sessions {
+            log::info!("Migrating {} sessions from JSON to SQLite", data.sessions.len());
             // Perform migration
             db.import_sessions(&data.sessions)?;
+            log::info!("Successfully migrated {} sessions to SQLite", data.sessions.len());
+        } else {
+            log::debug!("Skipping migration - database already has sessions");
         }
 
         Ok(())
@@ -448,7 +460,13 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
     let mut contents = String::new();
     if file.read_to_string(&mut contents).is_ok() && !contents.is_empty() {
         match serde_json::from_str(&contents) {
-            Ok(data) => data,
+            Ok(data) => {
+                // Migrate JSON data to SQLite if needed
+                if let Err(e) = StatsData::migrate_to_sqlite(&data) {
+                    log::warn!("Failed to migrate JSON to SQLite: {}", e);
+                }
+                data
+            }
             Err(e) => {
                 warn!(
                     "Stats file corrupted: {}. Creating backup and starting fresh.",
@@ -580,14 +598,9 @@ fn perform_sqlite_dual_write(stats_data: &StatsData) {
         }
     };
 
-    // Check if we need to migrate existing sessions
-    if should_migrate_sessions(&db, stats_data) {
-        migrate_sessions_to_sqlite(&db, stats_data);
-    }
-
-    // NOTE: Current session is now written directly in update_session() with all migration v5 fields
-    // write_current_session_to_sqlite() has been disabled to avoid overwriting model_name/workspace_dir/tokens with NULL
-    // write_current_session_to_sqlite(&db, stats_data);
+    // NOTE: Migration is now handled in load_stats_data() when JSON is loaded
+    // Current session is written directly in update_session() with all migration v5 fields
+    // No need to call write_current_session_to_sqlite() as that would overwrite model_name/workspace_dir/tokens with NULL
 }
 
 /// Updates the statistics data with process-safe file locking.

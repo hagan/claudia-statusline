@@ -414,7 +414,14 @@ jobs:
         sleep 0.5
 
         # Verify both sessions exist in SQLite
-        sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions;" | grep -q "2"
+        session_count=$(sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT COUNT(*) FROM sessions;")
+        if [ "$session_count" != "2" ]; then
+          echo "ERROR: Expected 2 sessions, got $session_count"
+          echo "=== Sessions in database ==="
+          sqlite3 $XDG_DATA_HOME/claudia-statusline/stats.db "SELECT session_id, cost FROM sessions;"
+          exit 1
+        fi
+        echo "✅ Migration test passed: 2 sessions found in database"
 
   test-features:
     runs-on: ubuntu-latest
