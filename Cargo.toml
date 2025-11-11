@@ -24,7 +24,7 @@ path = "src/main.rs"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"  # TOML parsing and serialization
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 fs2 = "0.4"  # For file locking across processes
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }  # SQLite for concurrent stats
 r2d2 = "0.8"  # Connection pooling
@@ -43,7 +43,7 @@ libsql = { version = "0.6", optional = true }
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread", "time", "macros"], optional = true }
 
 [build-dependencies]
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 
 [dev-dependencies]
 tempfile = "3.8"

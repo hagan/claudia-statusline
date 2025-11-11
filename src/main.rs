@@ -34,9 +34,11 @@ mod display;
 mod error;
 mod git;
 mod git_utils;
+mod hook_handler;
 mod migrations;
 mod models;
 mod retry;
+mod state;
 mod stats;
 #[cfg(feature = "turso-sync")]
 mod sync;
@@ -171,6 +173,33 @@ enum Commands {
         #[arg(long)]
         rebuild: bool,
     },
+
+    /// Hook handlers for Claude Code events (called by hooks)
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// PreCompact hook - called when Claude starts compacting
+    Precompact {
+        /// Session ID from Claude
+        #[arg(long)]
+        session_id: String,
+
+        /// Trigger type: "auto" or "manual"
+        #[arg(long)]
+        trigger: String,
+    },
+
+    /// Stop hook - called when Claude session ends
+    Stop {
+        /// Session ID from Claude
+        #[arg(long)]
+        session_id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -284,6 +313,10 @@ fn main() -> Result<()> {
                 rebuild,
             } => {
                 return handle_context_learning_command(status, reset, details, reset_all, rebuild);
+            }
+
+            Commands::Hook { action } => {
+                return handle_hook_command(action);
             }
         }
     }
@@ -1395,6 +1428,21 @@ fn handle_context_learning_command(
     println!("    Reset all learning data");
     println!();
 
+    Ok(())
+}
+
+/// Handle hook command invocations from Claude Code
+fn handle_hook_command(action: HookAction) -> Result<()> {
+    match action {
+        HookAction::Precompact { session_id, trigger } => {
+            hook_handler::handle_precompact(&session_id, &trigger)?;
+            println!("PreCompact hook processed for session: {}", session_id);
+        }
+        HookAction::Stop { session_id } => {
+            hook_handler::handle_stop(&session_id)?;
+            println!("Stop hook processed for session: {}", session_id);
+        }
+    }
     Ok(())
 }
 

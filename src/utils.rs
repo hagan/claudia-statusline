@@ -365,6 +365,20 @@ fn detect_compaction_state(
     use std::fs;
     use std::time::SystemTime;
 
+    // Phase 1: Check for hook-based state (fastest, most accurate)
+    if let Some(sid) = session_id {
+        if let Some(hook_state) = crate::state::read_state(sid) {
+            // Hook state file exists and is fresh (not stale)
+            if hook_state.state == "compacting" {
+                log::debug!(
+                    "Compaction detected via hook (trigger: {})",
+                    hook_state.trigger
+                );
+                return CompactionState::InProgress;
+            }
+        }
+    }
+
     // Get last known token count from database
     let last_known_tokens = if let Some(sid) = session_id {
         let db_path = get_data_dir().join("stats.db");

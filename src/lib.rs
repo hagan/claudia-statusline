@@ -41,11 +41,15 @@ pub mod display;
 pub mod error;
 pub mod git;
 pub mod git_utils;
+/// Hook handlers for Claude Code PreCompact and Stop events
+pub mod hook_handler;
 /// Database schema migration system
 pub mod migrations;
 pub mod models;
 /// Retry logic with exponential backoff for transient failures
 pub mod retry;
+/// Hook-based state management for real-time event tracking
+pub mod state;
 pub mod stats;
 /// Cloud synchronization module (requires turso-sync feature)
 #[cfg(feature = "turso-sync")]
