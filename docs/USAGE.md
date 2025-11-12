@@ -233,8 +233,26 @@ statusline hook stop --session-id=<SESSION_ID>
 ```json
 {
   "hooks": {
-    "PreCompact": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}",
-    "Stop": "statusline hook stop --session-id=${SESSION_ID}"
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline hook stop --session-id=${SESSION_ID}"
+          }
+        ]
+      }
+    ]
   }
 }
 ```

@@ -266,12 +266,30 @@ See [Installation Guide](docs/INSTALLATION.md#building-from-source) for details.
 
 Get **instant real-time feedback** when Claude compacts your context (~600x faster than token-based detection):
 
-```bash
-# Configure Claude Code hooks (in settings.json):
+```json
+# Configure Claude Code hooks (in ~/.claude/settings.json or settings.local.json):
 {
   "hooks": {
-    "PreCompact": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}",
-    "Stop": "statusline hook stop --session-id=${SESSION_ID}"
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline hook stop --session-id=${SESSION_ID}"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
