@@ -36,9 +36,9 @@ const STALE_TIMEOUT_SECONDS: i64 = 120; // 2 minutes
 /// Get the cache directory for state files
 fn get_cache_dir() -> Result<PathBuf> {
     let cache_dir = dirs::cache_dir()
-        .ok_or_else(|| crate::error::StatuslineError::Config(
-            "Cannot determine cache directory".to_string()
-        ))?
+        .ok_or_else(|| {
+            crate::error::StatuslineError::Config("Cannot determine cache directory".to_string())
+        })?
         .join("claudia-statusline");
 
     // Ensure directory exists

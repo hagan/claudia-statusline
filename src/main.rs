@@ -543,9 +543,26 @@ fn show_migration_roadmap() -> Result<()> {
     let db_exists = db_path.exists();
 
     println!("📊 CURRENT STATUS:\n");
-    println!("   Database (SQLite):    {}", if db_exists { "✓ Exists" } else { "✗ Not found" });
-    println!("   Legacy JSON file:     {}", if json_exists { "✓ Exists" } else { "✗ Not found" });
-    println!("   JSON backup enabled:  {}", if json_backup_enabled { "Yes" } else { "No" });
+    println!(
+        "   Database (SQLite):    {}",
+        if db_exists {
+            "✓ Exists"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   Legacy JSON file:     {}",
+        if json_exists {
+            "✓ Exists"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   JSON backup enabled:  {}",
+        if json_backup_enabled { "Yes" } else { "No" }
+    );
 
     println!("\n─────────────────────────────────────────────────────────────\n");
 
@@ -1510,7 +1527,10 @@ fn handle_context_learning_command(
 /// Handle hook command invocations from Claude Code
 fn handle_hook_command(action: HookAction) -> Result<()> {
     match action {
-        HookAction::Precompact { session_id, trigger } => {
+        HookAction::Precompact {
+            session_id,
+            trigger,
+        } => {
             hook_handler::handle_precompact(&session_id, &trigger)?;
             println!("PreCompact hook processed for session: {}", session_id);
         }

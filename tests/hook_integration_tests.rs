@@ -98,7 +98,10 @@ fn test_hook_stop_clears_state_file() {
 
     let cache_dir = dirs::cache_dir().unwrap().join("claudia-statusline");
     let state_file = cache_dir.join(format!("state-{}.json", session_id));
-    assert!(state_file.exists(), "State file should exist after precompact");
+    assert!(
+        state_file.exists(),
+        "State file should exist after precompact"
+    );
 
     // Run stop hook
     let output = Command::new(&binary)
@@ -370,6 +373,9 @@ fn test_hook_idempotency() {
             .output()
             .expect("Failed to execute stop");
 
-        assert!(output.status.success(), "Stop should succeed even without state");
+        assert!(
+            output.status.success(),
+            "Stop should succeed even without state"
+        );
     }
 }
