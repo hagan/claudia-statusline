@@ -423,9 +423,11 @@ impl Theme {
 
     /// Converts a hex color (#RRGGBB) to ANSI 24-bit RGB escape code.
     ///
+    /// Internal helper function for theme color resolution.
+    ///
     /// # Examples
-    /// ```
-    /// # use statusline::theme::Theme;
+    /// ```ignore
+    /// // Private function - for internal use only
     /// let ansi = Theme::hex_to_ansi("#FF5733");
     /// assert_eq!(ansi, Some("\x1b[38;2;255;87;51m".to_string()));
     /// ```
