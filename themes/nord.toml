@@ -1,0 +1,45 @@
+# Nord Theme - Arctic, north-bluish color palette
+#
+# Designed by Arctic Ice Studio. Features a cool, northern-inspired
+# palette with blue and purple tones.
+
+name = "nord"
+description = "Arctic, north-bluish color palette"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#88C0D0"              # Frost blue - Current working directory
+git_branch = "#A3BE8C"             # Green - Git branch name
+model = "#B48EAD"                  # Purple - Claude model name
+duration = "#4C566A"               # Dark gray - Session duration
+separator = "#4C566A"              # Dark gray - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#A3BE8C"            # Green - Lines added
+lines_removed = "#BF616A"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#A3BE8C"               # Green - Cost < $5
+cost_medium = "#EBCB8B"            # Yellow - Cost $5-$20
+cost_high = "#BF616A"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#ECEFF4"         # Snow - < 50%
+context_caution = "#EBCB8B"        # Yellow - 50-70%
+context_warning = "#D08770"        # Orange - 70-90%
+context_critical = "#BF616A"       # Red - >= 90%
+
+# Nord color palette
+[palette.nord]
+background = "#2E3440"
+foreground = "#ECEFF4"
+black = "#3B4252"
+red = "#BF616A"
+green = "#A3BE8C"
+yellow = "#EBCB8B"
+blue = "#81A1C1"
+magenta = "#B48EAD"
+cyan = "#88C0D0"
+white = "#ECEFF4"
+gray = "#4C566A"
+orange = "#D08770"

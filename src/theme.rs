@@ -32,6 +32,12 @@ const EMBEDDED_LIGHT_THEME: &str = include_str!("../themes/light.toml");
 const EMBEDDED_MONOKAI_THEME: &str = include_str!("../themes/monokai.toml");
 const EMBEDDED_SOLARIZED_THEME: &str = include_str!("../themes/solarized.toml");
 const EMBEDDED_HIGH_CONTRAST_THEME: &str = include_str!("../themes/high-contrast.toml");
+const EMBEDDED_GRUVBOX_THEME: &str = include_str!("../themes/gruvbox.toml");
+const EMBEDDED_NORD_THEME: &str = include_str!("../themes/nord.toml");
+const EMBEDDED_DRACULA_THEME: &str = include_str!("../themes/dracula.toml");
+const EMBEDDED_ONE_DARK_THEME: &str = include_str!("../themes/one-dark.toml");
+const EMBEDDED_TOKYO_NIGHT_THEME: &str = include_str!("../themes/tokyo-night.toml");
+const EMBEDDED_CATPPUCCIN_THEME: &str = include_str!("../themes/catppuccin.toml");
 
 /// Main theme structure containing all color definitions.
 ///
@@ -370,6 +376,12 @@ impl Theme {
             "monokai" => EMBEDDED_MONOKAI_THEME,
             "solarized" => EMBEDDED_SOLARIZED_THEME,
             "high-contrast" => EMBEDDED_HIGH_CONTRAST_THEME,
+            "gruvbox" => EMBEDDED_GRUVBOX_THEME,
+            "nord" => EMBEDDED_NORD_THEME,
+            "dracula" => EMBEDDED_DRACULA_THEME,
+            "one-dark" => EMBEDDED_ONE_DARK_THEME,
+            "tokyo-night" => EMBEDDED_TOKYO_NIGHT_THEME,
+            "catppuccin" => EMBEDDED_CATPPUCCIN_THEME,
             _ => {
                 return Err(toml::de::Error::custom(format!(
                     "Unknown embedded theme '{}'. Available: {}",
@@ -394,12 +406,45 @@ impl Theme {
     /// assert!(themes.contains(&"light"));
     /// ```
     pub fn embedded_themes() -> Vec<&'static str> {
-        vec!["dark", "light", "monokai", "solarized", "high-contrast"]
+        vec![
+            "dark",
+            "light",
+            "monokai",
+            "solarized",
+            "high-contrast",
+            "gruvbox",
+            "nord",
+            "dracula",
+            "one-dark",
+            "tokyo-night",
+            "catppuccin",
+        ]
+    }
+
+    /// Converts a hex color (#RRGGBB) to ANSI 24-bit RGB escape code.
+    ///
+    /// # Examples
+    /// ```
+    /// # use statusline::theme::Theme;
+    /// let ansi = Theme::hex_to_ansi("#FF5733");
+    /// assert_eq!(ansi, Some("\x1b[38;2;255;87;51m".to_string()));
+    /// ```
+    fn hex_to_ansi(hex: &str) -> Option<String> {
+        if !hex.starts_with('#') || hex.len() != 7 {
+            return None;
+        }
+
+        let r = u8::from_str_radix(&hex[1..3], 16).ok()?;
+        let g = u8::from_str_radix(&hex[3..5], 16).ok()?;
+        let b = u8::from_str_radix(&hex[5..7], 16).ok()?;
+
+        Some(format!("\x1b[38;2;{};{};{}m", r, g, b))
     }
 
     /// Resolves a color name to its ANSI escape code.
     ///
     /// Supports:
+    /// - Hex colors: "#FF5733" (24-bit RGB)
     /// - Named colors: "cyan", "green", "red", etc.
     /// - Direct ANSI codes: "\x1b[36m"
     /// - Custom palette colors
@@ -412,6 +457,9 @@ impl Theme {
     /// let theme = Theme::default();
     /// let cyan = theme.resolve_color("cyan");
     /// assert_eq!(cyan, "\x1b[36m");
+    ///
+    /// let hex = theme.resolve_color("#FF5733");
+    /// assert_eq!(hex, "\x1b[38;2;255;87;51m");
     /// ```
     pub fn resolve_color(&self, name: &str) -> String {
         // Check if it's already an ANSI code (single backslash from Rust code)
@@ -425,12 +473,25 @@ impl Theme {
             return name.replace("\\x1b", "\x1b");
         }
 
+        // Check if it's a hex color (#RRGGBB)
+        if name.starts_with('#') && name.len() == 7 {
+            if let Some(ansi) = Self::hex_to_ansi(name) {
+                return ansi;
+            }
+        }
+
         // Check custom palette first
         if let Some(palette) = &self.palette {
             if let Some(custom_color) = palette.custom.get(name) {
                 // Handle escaped ANSI codes in palette
                 if custom_color.starts_with("\\x1b[") {
                     return custom_color.replace("\\x1b", "\x1b");
+                }
+                // Handle hex colors in palette
+                if custom_color.starts_with('#') && custom_color.len() == 7 {
+                    if let Some(ansi) = Self::hex_to_ansi(custom_color) {
+                        return ansi;
+                    }
                 }
                 return custom_color.clone();
             }
@@ -576,12 +637,20 @@ mod tests {
     fn test_theme_manager_list_themes() {
         let manager = ThemeManager::new();
         let themes = manager.list_themes();
+        // Original 5 themes
         assert!(themes.contains(&"dark".to_string()));
         assert!(themes.contains(&"light".to_string()));
         assert!(themes.contains(&"monokai".to_string()));
         assert!(themes.contains(&"solarized".to_string()));
         assert!(themes.contains(&"high-contrast".to_string()));
-        assert_eq!(themes.len(), 5); // All embedded themes in test env
+        // New 6 themes (v2.19.0)
+        assert!(themes.contains(&"gruvbox".to_string()));
+        assert!(themes.contains(&"nord".to_string()));
+        assert!(themes.contains(&"dracula".to_string()));
+        assert!(themes.contains(&"one-dark".to_string()));
+        assert!(themes.contains(&"tokyo-night".to_string()));
+        assert!(themes.contains(&"catppuccin".to_string()));
+        assert_eq!(themes.len(), 11); // All embedded themes in test env
     }
 
     #[test]
@@ -655,12 +724,18 @@ mod tests {
     #[test]
     fn test_embedded_themes_list() {
         let themes = Theme::embedded_themes();
-        assert_eq!(themes.len(), 5);
+        assert_eq!(themes.len(), 11);
         assert!(themes.contains(&"dark"));
         assert!(themes.contains(&"light"));
         assert!(themes.contains(&"monokai"));
         assert!(themes.contains(&"solarized"));
         assert!(themes.contains(&"high-contrast"));
+        assert!(themes.contains(&"gruvbox"));
+        assert!(themes.contains(&"nord"));
+        assert!(themes.contains(&"dracula"));
+        assert!(themes.contains(&"one-dark"));
+        assert!(themes.contains(&"tokyo-night"));
+        assert!(themes.contains(&"catppuccin"));
     }
 
     #[test]

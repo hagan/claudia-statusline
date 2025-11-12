@@ -1,0 +1,45 @@
+# Gruvbox Theme - Retro groove color scheme
+#
+# Designed by Pavel Pertsev. Features warm, retro colors designed
+# to be easy on the eyes with good contrast.
+
+name = "gruvbox"
+description = "Retro groove color scheme with warm, earthy tones"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#83A598"              # Blue - Current working directory
+git_branch = "#B8BB26"             # Green - Git branch name
+model = "#FB4934"                  # Red - Claude model name
+duration = "#928374"               # Gray - Session duration
+separator = "#928374"              # Gray - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#B8BB26"            # Green - Lines added
+lines_removed = "#FB4934"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#B8BB26"               # Green - Cost < $5
+cost_medium = "#FABD2F"            # Yellow - Cost $5-$20
+cost_high = "#FB4934"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#EBDBB2"         # Fg - < 50%
+context_caution = "#FABD2F"        # Yellow - 50-70%
+context_warning = "#FE8019"        # Orange - 70-90%
+context_critical = "#FB4934"       # Red - >= 90%
+
+# Gruvbox color palette (dark variant)
+[palette.gruvbox]
+background = "#282828"
+foreground = "#EBDBB2"
+black = "#282828"
+red = "#FB4934"
+green = "#B8BB26"
+yellow = "#FABD2F"
+blue = "#83A598"
+magenta = "#D3869B"
+cyan = "#8EC07C"
+white = "#EBDBB2"
+gray = "#928374"
+orange = "#FE8019"

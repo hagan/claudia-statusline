@@ -227,7 +227,7 @@ statusline --theme light < input.json
 
 ## Theme Customization
 
-Statusline includes **5 embedded themes** and supports custom TOML-based themes.
+Statusline includes **11 embedded themes** and supports custom TOML-based themes.
 
 ### Embedded Themes
 
@@ -263,19 +263,63 @@ WCAG AAA accessibility (7:1+ contrast):
 - Cost high: #FF0000 (pure red)
 - Maximum readability for visual impairments
 
+#### 6. Gruvbox
+Retro groove color scheme with warm, earthy tones:
+- Directory: #83A598 (blue)
+- Git branch: #B8BB26 (green)
+- Model: #FB4934 (red)
+- Warm, nostalgic palette inspired by vintage terminals
+
+#### 7. Nord
+Arctic, north-bluish color palette:
+- Directory: #88C0D0 (frost blue)
+- Git branch: #A3BE8C (green)
+- Model: #B48EAD (purple)
+- Cool, muted tones for reduced visual fatigue
+
+#### 8. Dracula
+Dark theme with vibrant purple and pink tones:
+- Directory: #8BE9FD (cyan)
+- Git branch: #50FA7B (green)
+- Model: #FF79C6 (pink)
+- Popular theme with bold, saturated colors
+
+#### 9. One Dark
+Atom editor's iconic balanced dark theme:
+- Directory: #61AFEF (blue)
+- Git branch: #98C379 (green)
+- Model: #C678DD (purple)
+- Professional, well-balanced color scheme
+
+#### 10. Tokyo Night
+Deep blue theme inspired by Tokyo's night skyline:
+- Directory: #7AA2F7 (blue)
+- Git branch: #9ECE6A (green)
+- Model: #BB9AF7 (purple)
+- Neon-inspired colors with deep blue background
+
+#### 11. Catppuccin
+Soothing pastel theme (Mocha variant):
+- Directory: #89B4FA (blue)
+- Git branch: #A6E3A1 (green)
+- Model: #F5C2E7 (pink)
+- Soft, warm pastel colors for comfortable viewing
+
 ### Using Themes
 
 **Via environment variable:**
 ```bash
 export STATUSLINE_THEME=monokai
 export STATUSLINE_THEME=solarized
-export STATUSLINE_THEME=high-contrast
+export STATUSLINE_THEME=gruvbox
+export STATUSLINE_THEME=dracula
+export STATUSLINE_THEME=catppuccin
 ```
 
 **Via config file:**
 ```toml
 [theme]
-name = "monokai"
+name = "nord"  # or any of the 11 embedded themes
 ```
 
 **Via CLI flag:**

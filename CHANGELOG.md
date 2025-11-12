@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.19.0] - 2025-11-12
+
+> **Minor Release**: 6 new professional themes + hex color support!
+
+### Added - New Themes
+
+Added 6 popular terminal themes inspired by the community's favorites:
+
+1. **Gruvbox** (`gruvbox`) - Retro groove color scheme with warm, earthy tones
+2. **Nord** (`nord`) - Arctic, north-bluish color palette with cool tones
+3. **Dracula** (`dracula`) - Dark theme with vibrant purple and pink tones
+4. **One Dark** (`one-dark`) - Atom editor's iconic balanced dark theme
+5. **Tokyo Night** (`tokyo-night`) - Deep blue theme inspired by Tokyo's night skyline
+6. **Catppuccin** (`catppuccin`) - Soothing pastel theme (Mocha dark variant)
+
+**Usage:**
+```bash
+export STATUSLINE_THEME=gruvbox       # or any of the above
+```
+
+**Total themes now:** 11 embedded themes (previously 5)
+
+### Fixed - Hex Color Support
+
+- Added hex color (`#RRGGBB`) support to theme system
+- Theme files can now use standard hex colors instead of ANSI codes
+- Automatically converts hex to 24-bit RGB ANSI escape sequences
+- All new themes use hex colors for better maintainability
+
+**Technical details:**
+- New `hex_to_ansi()` function converts `#FF5733` → `\x1b[38;2;255;87;51m`
+- Supports hex colors in both `[colors]` and `[palette]` sections
+- Maintains backward compatibility with ANSI codes and named colors
+
+### Documentation
+
+- Updated README.md with all 11 themes and descriptions
+- Added theme highlights for easy selection
+- All 6 new theme TOML files in `themes/` directory
+
 ## [2.18.1] - 2025-11-12
 
 > **Patch Release**: Simplified hook configuration - no wrapper scripts needed!

@@ -1,0 +1,45 @@
+# One Dark Theme - Atom's iconic dark theme
+#
+# Created for the Atom editor. Features a balanced, professional
+# dark color scheme that's easy on the eyes.
+
+name = "one-dark"
+description = "Atom's iconic dark theme with balanced colors"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#61AFEF"              # Blue - Current working directory
+git_branch = "#98C379"             # Green - Git branch name
+model = "#C678DD"                  # Purple - Claude model name
+duration = "#5C6370"               # Gray - Session duration
+separator = "#5C6370"              # Gray - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#98C379"            # Green - Lines added
+lines_removed = "#E06C75"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#98C379"               # Green - Cost < $5
+cost_medium = "#E5C07B"            # Yellow - Cost $5-$20
+cost_high = "#E06C75"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#ABB2BF"         # Foreground - < 50%
+context_caution = "#E5C07B"        # Yellow - 50-70%
+context_warning = "#D19A66"        # Orange - 70-90%
+context_critical = "#E06C75"       # Red - >= 90%
+
+# One Dark color palette
+[palette.one-dark]
+background = "#282C34"
+foreground = "#ABB2BF"
+black = "#282C34"
+red = "#E06C75"
+green = "#98C379"
+yellow = "#E5C07B"
+blue = "#61AFEF"
+magenta = "#C678DD"
+cyan = "#56B6C2"
+white = "#ABB2BF"
+gray = "#5C6370"
+orange = "#D19A66"

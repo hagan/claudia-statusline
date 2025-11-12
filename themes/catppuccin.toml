@@ -1,0 +1,46 @@
+# Catppuccin Theme - Soothing pastel theme (Mocha variant)
+#
+# Community-driven pastel theme. Features soft, warm colors
+# that are easy on the eyes. This is the Mocha (dark) variant.
+
+name = "catppuccin"
+description = "Soothing pastel theme with warm, soft colors (Mocha variant)"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#89B4FA"              # Blue - Current working directory
+git_branch = "#A6E3A1"             # Green - Git branch name
+model = "#F5C2E7"                  # Pink - Claude model name
+duration = "#6C7086"               # Surface2 - Session duration
+separator = "#6C7086"              # Surface2 - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#A6E3A1"            # Green - Lines added
+lines_removed = "#F38BA8"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#A6E3A1"               # Green - Cost < $5
+cost_medium = "#F9E2AF"            # Yellow - Cost $5-$20
+cost_high = "#F38BA8"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#CDD6F4"         # Text - < 50%
+context_caution = "#F9E2AF"        # Yellow - 50-70%
+context_warning = "#FAB387"        # Peach - 70-90%
+context_critical = "#F38BA8"       # Red - >= 90%
+
+# Catppuccin Mocha color palette
+[palette.catppuccin]
+background = "#1E1E2E"
+foreground = "#CDD6F4"
+black = "#45475A"
+red = "#F38BA8"
+green = "#A6E3A1"
+yellow = "#F9E2AF"
+blue = "#89B4FA"
+magenta = "#F5C2E7"
+cyan = "#94E2D5"
+white = "#CDD6F4"
+gray = "#6C7086"
+orange = "#FAB387"
+lavender = "#B4BEFE"

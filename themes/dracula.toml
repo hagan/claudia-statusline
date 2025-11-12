@@ -1,0 +1,46 @@
+# Dracula Theme - Dark theme with vibrant purple tones
+#
+# Created by Zeno Rocha. One of the most popular dark themes
+# featuring a purple-based color scheme.
+
+name = "dracula"
+description = "Dark theme with vibrant purple and pink tones"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#8BE9FD"              # Cyan - Current working directory
+git_branch = "#50FA7B"             # Green - Git branch name
+model = "#FF79C6"                  # Pink - Claude model name
+duration = "#6272A4"               # Comment gray - Session duration
+separator = "#6272A4"              # Comment gray - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#50FA7B"            # Green - Lines added
+lines_removed = "#FF5555"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#50FA7B"               # Green - Cost < $5
+cost_medium = "#F1FA8C"            # Yellow - Cost $5-$20
+cost_high = "#FF5555"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#F8F8F2"         # Foreground - < 50%
+context_caution = "#F1FA8C"        # Yellow - 50-70%
+context_warning = "#FFB86C"        # Orange - 70-90%
+context_critical = "#FF5555"       # Red - >= 90%
+
+# Dracula color palette
+[palette.dracula]
+background = "#282A36"
+foreground = "#F8F8F2"
+black = "#21222C"
+red = "#FF5555"
+green = "#50FA7B"
+yellow = "#F1FA8C"
+blue = "#BD93F9"
+magenta = "#FF79C6"
+cyan = "#8BE9FD"
+white = "#F8F8F2"
+gray = "#6272A4"
+orange = "#FFB86C"
+purple = "#BD93F9"

@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 **Automatic features:**
 - Persistent cost tracking across sessions
 - Multi-console safe (run multiple Claude instances)
-- **5 embedded themes** (dark, light, monokai, solarized, high-contrast)
+- **11 embedded themes** (dark, light, monokai, solarized, high-contrast, gruvbox, nord, dracula, one-dark, tokyo-night, catppuccin)
 - SQLite database for reliability
 - **Hook-based compaction detection** (opt-in) - instant real-time feedback via Claude Code hooks
 - **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
@@ -311,7 +311,7 @@ See [Hook Commands](docs/USAGE.md#hook-commands) in the Usage Guide for complete
 <details>
 <summary><b>Themes & Colors</b></summary>
 
-Choose from **5 embedded themes** or create your own:
+Choose from **11 embedded themes** or create your own:
 
 ```bash
 # Built-in themes
@@ -320,6 +320,12 @@ export STATUSLINE_THEME=light         # Light terminal optimized
 export STATUSLINE_THEME=monokai       # Vibrant Sublime Text colors
 export STATUSLINE_THEME=solarized     # Precision colors by Ethan Schoonover
 export STATUSLINE_THEME=high-contrast # WCAG AAA accessibility
+export STATUSLINE_THEME=gruvbox       # Retro groove with warm colors
+export STATUSLINE_THEME=nord          # Arctic, north-bluish palette
+export STATUSLINE_THEME=dracula       # Dark theme with vibrant purples
+export STATUSLINE_THEME=one-dark      # Atom's iconic dark theme
+export STATUSLINE_THEME=tokyo-night   # Deep blue inspired by Tokyo's skyline
+export STATUSLINE_THEME=catppuccin    # Soothing pastel (Mocha variant)
 
 # Disable colors entirely
 export NO_COLOR=1
@@ -329,6 +335,12 @@ export NO_COLOR=1
 - **Monokai**: Bold, saturated colors for visual impact
 - **Solarized**: Scientifically designed for reduced eye strain
 - **High-Contrast**: 7:1+ contrast ratios for accessibility
+- **Gruvbox**: Warm, retro-inspired earthy tones
+- **Nord**: Cool arctic color palette with muted blues
+- **Dracula**: Popular dark theme with vibrant purple and pink accents
+- **One Dark**: Balanced, professional colors from Atom editor
+- **Tokyo Night**: Deep blue neon-inspired colors
+- **Catppuccin**: Soft, warm pastel colors (Mocha dark variant)
 
 **Custom themes:**
 Create `~/.config/claudia-statusline/mytheme.toml`:

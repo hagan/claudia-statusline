@@ -1,0 +1,45 @@
+# Tokyo Night Theme - Clean, dark blue theme
+#
+# Inspired by Tokyo's night skyline. Features a deep blue background
+# with vibrant, neon-inspired accent colors.
+
+name = "tokyo-night"
+description = "Clean dark theme inspired by Tokyo's night skyline"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#7AA2F7"              # Blue - Current working directory
+git_branch = "#9ECE6A"             # Green - Git branch name
+model = "#BB9AF7"                  # Purple - Claude model name
+duration = "#565F89"               # Dark gray - Session duration
+separator = "#565F89"              # Dark gray - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#9ECE6A"            # Green - Lines added
+lines_removed = "#F7768E"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#9ECE6A"               # Green - Cost < $5
+cost_medium = "#E0AF68"            # Yellow - Cost $5-$20
+cost_high = "#F7768E"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#C0CAF5"         # Foreground - < 50%
+context_caution = "#E0AF68"        # Yellow - 50-70%
+context_warning = "#FF9E64"        # Orange - 70-90%
+context_critical = "#F7768E"       # Red - >= 90%
+
+# Tokyo Night color palette
+[palette.tokyo-night]
+background = "#1A1B26"
+foreground = "#C0CAF5"
+black = "#15161E"
+red = "#F7768E"
+green = "#9ECE6A"
+yellow = "#E0AF68"
+blue = "#7AA2F7"
+magenta = "#BB9AF7"
+cyan = "#7DCFFF"
+white = "#C0CAF5"
+gray = "#565F89"
+orange = "#FF9E64"
