@@ -227,51 +227,124 @@ statusline --theme light < input.json
 
 ## Theme Customization
 
-### Dark Theme (Default)
+Statusline includes **5 embedded themes** and supports custom TOML-based themes.
 
-Optimized for dark terminals and Claude's dark theme:
+### Embedded Themes
 
-- **Directory**: Cyan
-- **Git branch**: Green
-- **Context usage**:
-  - Red (≥90%) - Critical
-  - Orange (≥70%) - Warning
-  - Yellow (≥50%) - Caution
-  - White (<50%) - Normal
-- **Model name**: Cyan
-- **Session duration**: Light gray
-- **Lines changed**: Green (+) / Red (-)
-- **Cost**:
-  - Green (<$5)
-  - Yellow ($5-$20)
-  - Red (≥$20)
+#### 1. Dark (Default)
+Optimized for dark terminals:
+- Directory: Cyan
+- Git branch: Green
+- Context: White (normal) → Yellow (50%) → Orange (70%) → Red (90%+)
+- Cost: Green (<$5) → Yellow ($5-$20) → Red (≥$20)
 
-### Light Theme
-
+#### 2. Light
 Optimized for light backgrounds:
+- Same as dark but uses gray instead of white for better visibility
 
-- Same as dark theme except context <50% uses gray instead of white
+#### 3. Monokai
+Vibrant Sublime Text-inspired colors:
+- Directory: #66D9EF (cyan)
+- Git branch: #A6E22E (green)
+- Model: #F92672 (magenta)
+- Bold, saturated palette for maximum visual impact
 
-### Customizing Colors
+#### 4. Solarized
+Precision colors by Ethan Schoonover:
+- Directory: #268BD2 (blue)
+- Git branch: #859900 (green)
+- Model: #2AA198 (cyan)
+- Scientifically designed for reduced eye strain
 
-Colors are hardcoded in `src/display.rs`. To change:
+#### 5. High-Contrast
+WCAG AAA accessibility (7:1+ contrast):
+- Directory: #00FFFF (bright cyan)
+- Git branch: #00FF00 (bright green)
+- Cost high: #FF0000 (pure red)
+- Maximum readability for visual impairments
 
-1. Clone the repository
-2. Edit `src/display.rs`:
-   ```rust
-   impl Colors {
-       const CYAN: &'static str = "\x1b[36m";      // Directory, model
-       const GREEN: &'static str = "\x1b[32m";     // Git, +lines, low cost
-       const RED: &'static str = "\x1b[31m";       // Critical, -lines, high cost
-       const ORANGE: &'static str = "\x1b[38;5;208m";  // Warning
-       const YELLOW: &'static str = "\x1b[33m";    // Caution, medium cost
-       const WHITE: &'static str = "\x1b[37m";     // Normal (dark theme)
-       const GRAY: &'static str = "\x1b[90m";      // Normal (light theme)
-       const LIGHT_GRAY: &'static str = "\x1b[38;5;245m";  // Duration
-       const RESET: &'static str = "\x1b[0m";      // Reset
-   }
-   ```
-3. Rebuild: `cargo build --release`
+### Using Themes
+
+**Via environment variable:**
+```bash
+export STATUSLINE_THEME=monokai
+export STATUSLINE_THEME=solarized
+export STATUSLINE_THEME=high-contrast
+```
+
+**Via config file:**
+```toml
+[theme]
+name = "monokai"
+```
+
+**Via CLI flag:**
+```bash
+statusline --theme solarized
+```
+
+### Creating Custom Themes
+
+Create `~/.config/claudia-statusline/mytheme.toml`:
+
+```toml
+name = "mytheme"
+description = "My custom theme"
+
+[colors]
+# Component colors
+directory = "#00AAFF"           # Hex color
+git_branch = "green"            # Named color
+model = "cyan"
+duration = "light_gray"
+separator = "light_gray"
+
+# State-based colors
+lines_added = "green"
+lines_removed = "red"
+
+# Cost threshold colors
+cost_low = "green"              # < $5
+cost_medium = "yellow"          # $5-$20
+cost_high = "red"               # ≥ $20
+
+# Context usage threshold colors
+context_normal = "white"        # < 50%
+context_caution = "yellow"      # 50-70%
+context_warning = "orange"      # 70-90%
+context_critical = "red"        # ≥ 90%
+
+# Optional: Custom palette with hex colors
+[palette.custom]
+my_blue = "#0088FF"
+my_purple = "#AA00FF"
+```
+
+**Supported color formats:**
+- **Named colors**: `red`, `green`, `blue`, `cyan`, `magenta`, `yellow`, `white`, `gray`, `light_gray`, `orange`
+- **Hex colors**: `#RRGGBB` (e.g., `#FF0000`)
+- **ANSI escape codes**: `\x1b[31m` (advanced)
+
+**Load custom theme:**
+```bash
+export STATUSLINE_THEME=mytheme
+```
+
+### Theme Priority
+
+1. CLI flag: `--theme <name>`
+2. Environment: `$STATUSLINE_THEME` or `$CLAUDE_THEME`
+3. Config file: `theme.name`
+4. Default: `dark`
+
+### Examples
+
+See `themes/` directory for complete theme examples:
+- `themes/dark.toml`
+- `themes/light.toml`
+- `themes/monokai.toml`
+- `themes/solarized.toml`
+- `themes/high-contrast.toml`
 
 ## Display Component Customization
 
