@@ -275,7 +275,7 @@ Get **instant real-time feedback** when Claude compacts your context (~600x fast
         "hooks": [
           {
             "type": "command",
-            "command": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}"
+            "command": "statusline hook precompact"
           }
         ]
       }
@@ -285,7 +285,7 @@ Get **instant real-time feedback** when Claude compacts your context (~600x fast
         "hooks": [
           {
             "type": "command",
-            "command": "statusline hook stop --session-id=${SESSION_ID}"
+            "command": "statusline hook stop"
           }
         ]
       }

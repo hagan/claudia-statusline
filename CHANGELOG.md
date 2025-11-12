@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.1] - 2025-11-12
+
+> **Patch Release**: Simplified hook configuration - no wrapper scripts needed!
+
+### Fixed - Hook Configuration UX
+
+**Dramatically simplified hook setup** - removed need for wrapper scripts:
+
+#### Before (v2.18.0)
+Required creating 2 bash wrapper scripts to parse JSON from stdin:
+```bash
+# ~/.local/bin/statusline-precompact-hook.sh
+#!/bin/bash
+input=$(cat)
+session_id=$(echo "$input" | jq -r '.session_id // empty')
+trigger=$(echo "$input" | jq -r '.trigger // "auto"')
+statusline hook precompact --session-id="$session_id" --trigger="$trigger"
+```
+
+#### After (v2.18.1)
+Just one line per hook - no external files needed:
+```json
+{
+  "hooks": {
+    "PreCompact": [{
+      "hooks": [{
+        "type": "command",
+        "command": "statusline hook precompact"
+      }]
+    }]
+  }
+}
+```
+
+#### How It Works
+- Hook commands now accept JSON from stdin automatically
+- Falls back to CLI arguments if provided (for manual testing)
+- Parses `session_id` and `trigger` from Claude Code's hook payload
+- Zero configuration overhead - works out of the box
+
+### Changed
+- Made `--session-id` and `--trigger` arguments optional
+- Added `read_hook_json_from_stdin()` function to parse Claude Code JSON
+- Updated README.md and docs/USAGE.md with simplified examples
+
+### Technical Details
+- CLI arguments take precedence over stdin (enables manual testing)
+- Graceful error messages for malformed JSON
+- All 396+ tests passing
+- Zero clippy warnings
+
 ## [2.18.0] - 2025-11-11
 
 > **Feature Release**: Real-time hook-based compaction detection and expanded theme library!

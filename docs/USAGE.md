@@ -238,7 +238,7 @@ statusline hook stop --session-id=<SESSION_ID>
         "hooks": [
           {
             "type": "command",
-            "command": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}"
+            "command": "statusline hook precompact"
           }
         ]
       }
@@ -248,7 +248,7 @@ statusline hook stop --session-id=<SESSION_ID>
         "hooks": [
           {
             "type": "command",
-            "command": "statusline hook stop --session-id=${SESSION_ID}"
+            "command": "statusline hook stop"
           }
         ]
       }
@@ -258,6 +258,7 @@ statusline hook stop --session-id=<SESSION_ID>
 ```
 
 **How it works:**
+- Claude Code sends hook data as JSON via stdin (no wrapper scripts needed!)
 - Hooks create ephemeral state files in `~/.cache/claudia-statusline/`
 - State files are session-scoped: `state-{session-id}.json`
 - Statusline checks state file on render (<1ms)

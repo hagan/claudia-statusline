@@ -53,7 +53,7 @@ fn test_hook_precompact_creates_state_file() {
 
     // Run precompact hook
     let output = Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_id),
@@ -87,7 +87,7 @@ fn test_hook_stop_clears_state_file() {
 
     // Create state first
     Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_id),
@@ -105,7 +105,7 @@ fn test_hook_stop_clears_state_file() {
 
     // Run stop hook
     let output = Command::new(&binary)
-        .args(&["hook", "stop", &format!("--session-id={}", session_id)])
+        .args(["hook", "stop", &format!("--session-id={}", session_id)])
         .output()
         .expect("Failed to execute stop hook");
 
@@ -125,7 +125,7 @@ fn test_statusline_detects_hook_compaction() {
 
     // Set hook state
     Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_id),
@@ -245,7 +245,7 @@ fn test_hook_state_transition() {
 
     // State 2: Trigger precompact
     Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_id),
@@ -262,7 +262,7 @@ fn test_hook_state_transition() {
 
     // State 3: Trigger stop
     Command::new(&binary)
-        .args(&["hook", "stop", &format!("--session-id={}", session_id)])
+        .args(["hook", "stop", &format!("--session-id={}", session_id)])
         .output()
         .expect("Failed to trigger stop");
 
@@ -285,7 +285,7 @@ fn test_multiple_sessions_isolated() {
 
     // Set hook for session A only
     Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_a),
@@ -316,7 +316,7 @@ fn test_hook_trigger_types() {
 
     // Test auto trigger
     Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_id),
@@ -330,7 +330,7 @@ fn test_hook_trigger_types() {
 
     // Test manual trigger
     Command::new(&binary)
-        .args(&[
+        .args([
             "hook",
             "precompact",
             &format!("--session-id={}", session_id),
@@ -354,7 +354,7 @@ fn test_hook_idempotency() {
     // Call precompact multiple times
     for _ in 0..3 {
         let output = Command::new(&binary)
-            .args(&[
+            .args([
                 "hook",
                 "precompact",
                 &format!("--session-id={}", session_id),
@@ -369,7 +369,7 @@ fn test_hook_idempotency() {
     // Call stop multiple times (should not error)
     for _ in 0..3 {
         let output = Command::new(&binary)
-            .args(&["hook", "stop", &format!("--session-id={}", session_id)])
+            .args(["hook", "stop", &format!("--session-id={}", session_id)])
             .output()
             .expect("Failed to execute stop");
 
