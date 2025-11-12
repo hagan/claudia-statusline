@@ -305,7 +305,7 @@ Get **instant real-time feedback** when Claude compacts your context (~600x fast
 - Real-time visual feedback
 - Zero overhead (event-driven)
 
-See [Hooks Documentation](docs/HOOKS.md) for complete setup guide.
+See [Hook Commands](docs/USAGE.md#hook-commands) in the Usage Guide for complete setup details.
 </details>
 
 <details>
