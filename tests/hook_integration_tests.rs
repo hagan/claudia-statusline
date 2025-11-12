@@ -5,7 +5,7 @@
 
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -38,7 +38,7 @@ fn create_test_transcript(dir: &TempDir) -> PathBuf {
 }
 
 /// Create test input JSON
-fn create_test_input(session_id: &str, transcript: &PathBuf) -> String {
+fn create_test_input(session_id: &str, transcript: &Path) -> String {
     format!(
         r#"{{"workspace":{{"current_dir":"/test"}},"model":{{"display_name":"Sonnet"}},"session_id":"{}","transcript":"{}"}}"#,
         session_id,
