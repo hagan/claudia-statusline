@@ -1,7 +1,12 @@
 # Gruvbox Theme - Retro groove color scheme
 #
-# Designed by Pavel Pertsev. Features warm, retro colors designed
-# to be easy on the eyes with good contrast.
+# Original design by Pavel Pertsev (morhetz)
+# https://github.com/morhetz/gruvbox
+# Licensed under MIT License
+#
+# This is a derivative work adapting the Gruvbox color scheme
+# for use in claudia-statusline. Features warm, retro colors
+# designed to be easy on the eyes with good contrast.
 
 name = "gruvbox"
 description = "Retro groove color scheme with warm, earthy tones"

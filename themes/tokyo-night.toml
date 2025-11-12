@@ -1,7 +1,12 @@
 # Tokyo Night Theme - Clean, dark blue theme
 #
-# Inspired by Tokyo's night skyline. Features a deep blue background
-# with vibrant, neon-inspired accent colors.
+# Original design by enkia
+# https://github.com/enkia/tokyo-night-vscode-theme
+# Licensed under MIT License
+#
+# This is a derivative work adapting the Tokyo Night color scheme
+# for use in claudia-statusline. Inspired by Tokyo's night skyline
+# with deep blue background and vibrant, neon-inspired accents.
 
 name = "tokyo-night"
 description = "Clean dark theme inspired by Tokyo's night skyline"

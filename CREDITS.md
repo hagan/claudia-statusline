@@ -1,46 +1,50 @@
-# Credits and Acknowledgments
+# Credits
 
-## Original Inspiration
-- **Peter Steinberger** (@steipete) - Created the original statusline.rs gist that inspired this project
-  - Source: https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e
-  - The original concept of a Claude Code statusline in Rust
+## Theme Attributions
 
-## Current Implementation
-Claudia Statusline is now a complete, independent implementation with extensive enhancements.
+This project includes color themes inspired by popular open-source terminal themes. All original themes are licensed under the MIT License and are used with proper attribution.
 
-## Main Contributors
-- **Claudia Statusline Team** - Complete rewrite and feature implementation
-  - Persistent statistics tracking with dual storage backend
-  - Security hardening and input validation (v2.2.1)
-  - Multi-console support with process-safe locking
-  - SQLite integration with migration framework (v2.2.0)
-  - Progress bars and burn rate calculations
-  - Cross-platform CI/CD automation
-  - Comprehensive test suite (79+ tests)
+### Gruvbox
+- **Original Creator**: Pavel Pertsev (morhetz)
+- **Repository**: https://github.com/morhetz/gruvbox
+- **License**: MIT License
+- **Description**: Retro groove color scheme with warm, earthy tones designed to be easy on the eyes
 
-## Technical Assistance
-- **Claude Code Assistant** - Code review, security analysis, and implementation guidance
-  - Identified critical security vulnerabilities (fixed in v2.2.1)
-  - Helped design the SQLite migration framework
-  - Assisted with test coverage improvements
+### Nord
+- **Original Creator**: Arctic Ice Studio / Sven Greb
+- **Repository**: https://github.com/nordtheme/nord
+- **License**: MIT License
+- **Description**: Arctic, north-bluish color palette inspired by the beauty of the arctic
 
-## Dependencies and Libraries
-We gratefully acknowledge the authors of these excellent Rust crates:
-- **serde** and **serde_json** - JSON serialization
-- **rusqlite** - SQLite database integration
-- **fs2** - Cross-platform file locking
-- **chrono** - Date and time handling
-- **tempfile** - Temporary file management (testing)
+### Dracula
+- **Original Creator**: Zeno Rocha
+- **Repository**: https://github.com/dracula/dracula-theme
+- **License**: MIT License
+- **Description**: Dark theme with vibrant purple and pink tones, one of the most popular dark themes
 
-## Community
-- All GitHub contributors who have submitted issues, PRs, or feedback
-- Claude Code users who have tested and provided feedback
+### One Dark
+- **Original Creator**: Atom team
+- **Repository**: https://github.com/atom/atom
+- **License**: MIT License
+- **Description**: Atom editor's iconic dark theme with balanced, professional colors
 
-## Special Thanks
-- The Rust community for excellent documentation and tooling
-- The SQLite team for the embedded database engine
-- GitHub Actions team for CI/CD infrastructure
+### Tokyo Night
+- **Original Creator**: enkia
+- **Repository**: https://github.com/enkia/tokyo-night-vscode-theme
+- **License**: MIT License
+- **Description**: Clean dark theme inspired by Tokyo's night skyline with deep blue and neon accents
 
----
+### Catppuccin
+- **Original Creator**: Catppuccin organization
+- **Repository**: https://github.com/catppuccin/catppuccin
+- **License**: MIT License
+- **Description**: Community-driven soothing pastel theme (Mocha variant) with soft, warm colors
 
-This project stands on the shoulders of giants. While we've built something new and comprehensive, we honor the original inspiration and all who have contributed to making Claudia Statusline what it is today.
+## MIT License Summary
+
+All themes listed above are derivative works of their original designs, adapted for use in claudia-statusline. Each maintains attribution to the original creators and adheres to the MIT License terms, which permit modification and redistribution with proper credit.
+
+## Other Acknowledgments
+
+- **Original Statusline Inspiration**: Peter Steinberger's [statusline.rs](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e)
+- **Claude Code**: Anthropic's official CLI for Claude AI

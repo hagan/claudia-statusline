@@ -1,7 +1,12 @@
 # Dracula Theme - Dark theme with vibrant purple tones
 #
-# Created by Zeno Rocha. One of the most popular dark themes
-# featuring a purple-based color scheme.
+# Original design by Zeno Rocha
+# https://github.com/dracula/dracula-theme
+# Licensed under MIT License
+#
+# This is a derivative work adapting the Dracula color scheme
+# for use in claudia-statusline. Features vibrant purple and
+# pink tones with high contrast.
 
 name = "dracula"
 description = "Dark theme with vibrant purple and pink tones"

@@ -1,7 +1,12 @@
 # Catppuccin Theme - Soothing pastel theme (Mocha variant)
 #
-# Community-driven pastel theme. Features soft, warm colors
-# that are easy on the eyes. This is the Mocha (dark) variant.
+# Original design by Catppuccin organization
+# https://github.com/catppuccin/catppuccin
+# Licensed under MIT License
+#
+# This is a derivative work adapting the Catppuccin Mocha color scheme
+# for use in claudia-statusline. Community-driven pastel theme with
+# soft, warm colors that are easy on the eyes.
 
 name = "catppuccin"
 description = "Soothing pastel theme with warm, soft colors (Mocha variant)"

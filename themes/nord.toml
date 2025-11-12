@@ -1,6 +1,11 @@
 # Nord Theme - Arctic, north-bluish color palette
 #
-# Designed by Arctic Ice Studio. Features a cool, northern-inspired
+# Original design by Arctic Ice Studio / Sven Greb
+# https://github.com/nordtheme/nord
+# Licensed under MIT License
+#
+# This is a derivative work adapting the Nord color scheme
+# for use in claudia-statusline. Features a cool, northern-inspired
 # palette with blue and purple tones.
 
 name = "nord"

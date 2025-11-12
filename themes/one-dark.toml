@@ -1,6 +1,11 @@
 # One Dark Theme - Atom's iconic dark theme
 #
-# Created for the Atom editor. Features a balanced, professional
+# Original design by Atom team
+# https://github.com/atom/atom
+# Licensed under MIT License
+#
+# This is a derivative work adapting the One Dark color scheme
+# for use in claudia-statusline. Features a balanced, professional
 # dark color scheme that's easy on the eyes.
 
 name = "one-dark"
