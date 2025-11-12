@@ -1,0 +1,50 @@
+# Solarized Dark Theme - Precision colors for machines and people
+#
+# Created by Ethan Schoonover. Features carefully chosen contrast
+# relationships and perceptually uniform color spaces.
+# See: https://ethanschoonover.com/solarized/
+
+name = "solarized"
+description = "Solarized Dark - precision colors by Ethan Schoonover"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#268BD2"              # Blue - Current working directory
+git_branch = "#859900"             # Green - Git branch name
+model = "#2AA198"                  # Cyan - Claude model name
+duration = "#586E75"               # Base01 - Session duration
+separator = "#586E75"              # Base01 - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#859900"            # Green - Lines added
+lines_removed = "#DC322F"          # Red - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#859900"               # Green - Cost < $5
+cost_medium = "#B58900"            # Yellow - Cost $5-$20
+cost_high = "#DC322F"              # Red - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#93A1A1"         # Base1 - < 50%
+context_caution = "#B58900"        # Yellow - 50-70%
+context_warning = "#CB4B16"        # Orange - 70-90%
+context_critical = "#DC322F"       # Red - >= 90%
+
+# Solarized Dark color palette
+[palette.solarized]
+base03 = "#002B36"    # Background tone (darkest)
+base02 = "#073642"    # Background highlights
+base01 = "#586E75"    # Optional emphasized content
+base00 = "#657B83"    # Body text / default code
+base0 = "#839496"     # Primary content
+base1 = "#93A1A1"     # Comments / secondary content
+base2 = "#EEE8D5"     # Background highlights (light)
+base3 = "#FDF6E3"     # Background tone (lightest)
+yellow = "#B58900"
+orange = "#CB4B16"
+red = "#DC322F"
+magenta = "#D33682"
+violet = "#6C71C4"
+blue = "#268BD2"
+cyan = "#2AA198"
+green = "#859900"

@@ -1,0 +1,45 @@
+# Monokai Theme - Popular dark theme with vibrant colors
+#
+# Inspired by Wimer Hazenberg's Monokai color scheme.
+# Features vibrant, saturated colors on a dark background.
+
+name = "monokai"
+description = "Vibrant dark theme inspired by Sublime Text's Monokai"
+
+[colors]
+# Component colors - what each part of the statusline looks like
+directory = "#66D9EF"              # Cyan - Current working directory
+git_branch = "#A6E22E"             # Green - Git branch name
+model = "#F92672"                  # Magenta - Claude model name
+duration = "#75715E"               # Gray - Session duration
+separator = "#75715E"              # Gray - Bullet separator
+
+# State-based colors - dynamic based on content
+lines_added = "#A6E22E"            # Green - Lines added
+lines_removed = "#F92672"          # Magenta - Lines removed
+
+# Cost threshold colors - based on session cost
+cost_low = "#A6E22E"               # Green - Cost < $5
+cost_medium = "#E6DB74"            # Yellow - Cost $5-$20
+cost_high = "#F92672"              # Magenta - Cost >= $20
+
+# Context usage threshold colors - based on % of context window used
+context_normal = "#F8F8F2"         # White - < 50%
+context_caution = "#E6DB74"        # Yellow - 50-70%
+context_warning = "#FD971F"        # Orange - 70-90%
+context_critical = "#F92672"       # Magenta - >= 90%
+
+# Monokai color palette
+[palette.monokai]
+background = "#272822"
+foreground = "#F8F8F2"
+black = "#272822"
+red = "#F92672"
+green = "#A6E22E"
+yellow = "#E6DB74"
+blue = "#66D9EF"
+magenta = "#AE81FF"
+cyan = "#66D9EF"
+white = "#F8F8F2"
+gray = "#75715E"
+orange = "#FD971F"

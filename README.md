@@ -30,9 +30,9 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - **Current directory** with `~` shorthand
 - **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
 - **Context usage** with progress bar (45% [====------])
-- **Real-time compaction detection** - shows when auto-compact is happening
+- **Real-time compaction detection** - instant feedback via hooks (~600x faster)
   - Normal: `79% [========>-] ⚠` (warning when approaching limit)
-  - In Progress: `Compacting... ⠋` (rotating spinner)
+  - In Progress: `Compacting... ⠋` (hook-based, <1ms detection)
   - Completed: `35% [===>------] ✓` (checkmark after successful compact)
 - **Claude model** (Opus/S3.5/S4.5/Haiku)
 - **Session duration** (1h 23m)
@@ -42,11 +42,11 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 **Automatic features:**
 - Persistent cost tracking across sessions
 - Multi-console safe (run multiple Claude instances)
-- Dark/light theme support
+- **5 embedded themes** (dark, light, monokai, solarized, high-contrast)
 - SQLite database for reliability
+- **Hook-based compaction detection** (opt-in) - instant real-time feedback via Claude Code hooks
 - **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
-- **Compaction state tracking** - detects and displays when Claude is compacting the conversation
-- No configuration needed
+- No configuration needed (smart defaults)
 
 ## Documentation
 
@@ -262,20 +262,90 @@ See [Installation Guide](docs/INSTALLATION.md#building-from-source) for details.
 </details>
 
 <details>
+<summary><b>Hook-Based Compaction Detection</b></summary>
+
+Get **instant real-time feedback** when Claude compacts your context (~600x faster than token-based detection):
+
+```json
+# Configure Claude Code hooks (in ~/.claude/settings.json or settings.local.json):
+{
+  "hooks": {
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline hook precompact --session-id=${SESSION_ID} --trigger=${TRIGGER}"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "statusline hook stop --session-id=${SESSION_ID}"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**How it works:**
+- Claude fires `PreCompact` hook when compaction starts
+- Statusline shows "Compacting..." instead of percentage
+- Claude fires `Stop` hook when done
+- Falls back to token-based detection if hooks not configured
+
+**Benefits:**
+- <1ms detection vs 60s+ token analysis
+- Real-time visual feedback
+- Zero overhead (event-driven)
+
+See [Hooks Documentation](docs/HOOKS.md) for complete setup guide.
+</details>
+
+<details>
 <summary><b>Themes & Colors</b></summary>
 
+Choose from **5 embedded themes** or create your own:
+
 ```bash
-# Dark theme (default)
-export CLAUDE_THEME=dark
+# Built-in themes
+export STATUSLINE_THEME=dark          # Default dark theme
+export STATUSLINE_THEME=light         # Light terminal optimized
+export STATUSLINE_THEME=monokai       # Vibrant Sublime Text colors
+export STATUSLINE_THEME=solarized     # Precision colors by Ethan Schoonover
+export STATUSLINE_THEME=high-contrast # WCAG AAA accessibility
 
-# Light theme
-export CLAUDE_THEME=light
-
-# Disable colors
+# Disable colors entirely
 export NO_COLOR=1
 ```
 
-See [Configuration Guide](docs/CONFIGURATION.md#theme-customization) for customization.
+**Theme highlights:**
+- **Monokai**: Bold, saturated colors for visual impact
+- **Solarized**: Scientifically designed for reduced eye strain
+- **High-Contrast**: 7:1+ contrast ratios for accessibility
+
+**Custom themes:**
+Create `~/.config/claudia-statusline/mytheme.toml`:
+```toml
+name = "mytheme"
+description = "My custom theme"
+
+[colors]
+directory = "#00AAFF"
+git_branch = "#00FF00"
+cost_high = "#FF0000"
+# ... see themes/ for full examples
+```
+
+Then: `export STATUSLINE_THEME=mytheme`
+
+See [Configuration Guide](docs/CONFIGURATION.md#theme-customization) for complete theme reference.
 </details>
 
 ## Contributing

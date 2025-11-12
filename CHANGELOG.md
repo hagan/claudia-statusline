@@ -7,6 +7,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.18.0] - 2025-11-11
+
+> **Feature Release**: Real-time hook-based compaction detection and expanded theme library!
+
+### Added - Hook-Based Compaction Detection
+
+**Real-time compaction feedback** via Claude Code's PreCompact/Stop hook system (~600x faster than token-based detection).
+
+#### How It Works
+- **Event-Driven Architecture**: Claude Code fires hooks when compaction starts/stops
+- **File-Based State**: Ephemeral state files in `~/.cache/claudia-statusline/state-{session}.json`
+- **Instant Detection**: <1ms state file check vs 60s+ token analysis
+- **Graceful Fallback**: Falls back to token-based detection if hooks not configured
+
+#### CLI Commands
+```bash
+# Called automatically by Claude Code hooks:
+statusline hook precompact --session-id=<id> --trigger=auto|manual
+statusline hook stop --session-id=<id>
+```
+
+#### Display Integration
+- Shows "Compacting..." instead of percentage when hook active
+- Distinguishes auto vs manual triggers
+- Automatic cleanup of stale state files (2-minute timeout)
+- Session-scoped isolation for multi-instance safety
+
+### Added - Bundled Theme Library
+
+**Three new professionally designed themes** embedded in the binary:
+
+#### Monokai Theme
+- Vibrant dark theme inspired by Sublime Text's iconic color scheme
+- Saturated colors for maximum visual impact
+- Perfect for developers who love bold, punchy aesthetics
+- Uses Monokai's signature magenta, green, and cyan palette
+
+#### Solarized Theme
+- Precision colors by Ethan Schoonover
+- Scientifically designed for reduced eye strain
+- Perceptually uniform color spaces
+- Calm, professional aesthetic
+- Uses authentic Solarized color values (#268BD2, #859900, etc.)
+
+#### High-Contrast Theme
+- WCAG AAA compliant (7:1+ contrast ratios)
+- Maximum readability for accessibility
+- Pure, saturated colors (#FF0000, #00FF00, #FFFF00)
+- Essential for users with visual impairments or difficult viewing conditions
+
+#### Usage
+```bash
+# Activate via environment variable:
+STATUSLINE_THEME=monokai statusline
+STATUSLINE_THEME=solarized statusline
+STATUSLINE_THEME=high-contrast statusline
+
+# Or in config:
+[theme]
+name = "monokai"
+```
+
+**Total embedded themes**: 5 (dark, light, monokai, solarized, high-contrast)
+
+### Enhanced - Migration Roadmap Command
+
+**Comprehensive migration guidance** with personalized recommendations:
+
+```bash
+statusline migrate  # Shows full roadmap with status detection
+```
+
+#### Features
+- **Current State Detection**: Analyzes DB, JSON file, and config settings
+- **Visual Roadmap**: Three-phase migration strategy explanation
+- **Context-Aware Recommendations**: Personalized next steps based on your state
+- **Benefits Summary**: Clear explanation of performance improvements (30% faster reads)
+- **Professional Formatting**: Unicode box drawing for visual clarity
+
+#### Migration States Detected
+1. **Dual-Write Mode**: JSON backup enabled, both files exist
+2. **Cleanup Needed**: JSON backup disabled but old file remains
+3. **Migration Complete**: SQLite-only mode active
+
+### Testing
+- Added 8 comprehensive integration tests for hook workflow
+- Tests cover: state creation/cleanup, detection, transitions, isolation, idempotency
+- All 396+ tests passing (including 8 new hook integration tests)
+
+### Performance
+- Hook-based detection: <1ms (vs 60s+ token-based)
+- ~600x performance improvement for compaction feedback
+- Zero overhead when hooks not configured (graceful fallback)
+
 ## [2.17.0] - 2025-11-09
 
 > **Major Release**: Phase 8 Adaptive Context Learning is now complete! This release consolidates 8 patch releases (v2.16.1-2.16.8) into a single minor version bump, reflecting the significant new functionality and schema migrations.

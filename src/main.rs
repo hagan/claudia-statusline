@@ -34,9 +34,11 @@ mod display;
 mod error;
 mod git;
 mod git_utils;
+mod hook_handler;
 mod migrations;
 mod models;
 mod retry;
+mod state;
 mod stats;
 #[cfg(feature = "turso-sync")]
 mod sync;
@@ -171,6 +173,33 @@ enum Commands {
         #[arg(long)]
         rebuild: bool,
     },
+
+    /// Hook handlers for Claude Code events (called by hooks)
+    Hook {
+        #[command(subcommand)]
+        action: HookAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum HookAction {
+    /// PreCompact hook - called when Claude starts compacting
+    Precompact {
+        /// Session ID from Claude
+        #[arg(long)]
+        session_id: String,
+
+        /// Trigger type: "auto" or "manual"
+        #[arg(long)]
+        trigger: String,
+    },
+
+    /// Stop hook - called when Claude session ends
+    Stop {
+        /// Session ID from Claude
+        #[arg(long)]
+        session_id: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -242,17 +271,7 @@ fn main() -> Result<()> {
                 } else if finalize {
                     return finalize_migration(delete_json);
                 } else {
-                    println!("Usage: statusline migrate [OPTIONS]");
-                    println!("\nOptions:");
-                    println!("  --run          Run schema migrations to latest version");
-                    println!(
-                        "  --finalize     Complete the migration from JSON to SQLite-only mode"
-                    );
-                    println!("  --delete-json  Delete the JSON file instead of archiving it (use with --finalize)");
-                    println!(
-                        "  --dump-schema  Dump current database schema for Turso/documentation"
-                    );
-                    return Ok(());
+                    return show_migration_roadmap();
                 }
             }
             Commands::DbMaintain {
@@ -284,6 +303,10 @@ fn main() -> Result<()> {
                 rebuild,
             } => {
                 return handle_context_learning_command(status, reset, details, reset_all, rebuild);
+            }
+
+            Commands::Hook { action } => {
+                return handle_hook_command(action);
             }
         }
     }
@@ -494,6 +517,109 @@ fn check_migration_status() {
             }
         }
     }
+}
+
+/// Show migration roadmap and current status
+fn show_migration_roadmap() -> Result<()> {
+    use crate::common::get_data_dir;
+    use crate::config::Config;
+
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("          SQLite Migration Roadmap for Statusline");
+    println!("═══════════════════════════════════════════════════════════════\n");
+
+    // Detect current state
+    let data_dir = get_data_dir();
+    let json_path = data_dir.join("stats.json");
+    let db_path = data_dir.join("stats.db");
+
+    let config = Config::load().ok();
+    let json_backup_enabled = config
+        .as_ref()
+        .map(|c| c.database.json_backup)
+        .unwrap_or(true);
+
+    let json_exists = json_path.exists();
+    let db_exists = db_path.exists();
+
+    println!("📊 CURRENT STATUS:\n");
+    println!(
+        "   Database (SQLite):    {}",
+        if db_exists {
+            "✓ Exists"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   Legacy JSON file:     {}",
+        if json_exists {
+            "✓ Exists"
+        } else {
+            "✗ Not found"
+        }
+    );
+    println!(
+        "   JSON backup enabled:  {}",
+        if json_backup_enabled { "Yes" } else { "No" }
+    );
+
+    println!("\n─────────────────────────────────────────────────────────────\n");
+
+    println!("📚 THREE-PHASE MIGRATION STRATEGY:\n");
+
+    println!("   Phase 1: Dual-Write (v2.2.0 - v2.6.x)");
+    println!("   ├─ JSON remains primary data source");
+    println!("   ├─ SQLite writes are best-effort (for testing)");
+    println!("   └─ Safe fallback if issues occur\n");
+
+    println!("   Phase 2: SQLite-First ★ CURRENT (v2.7.0+)");
+    println!("   ├─ SQLite is now the primary data source");
+    println!("   ├─ Reads from SQLite with automatic JSON fallback");
+    println!("   ├─ Optional JSON backup writes (configurable)");
+    println!("   └─ Better concurrency, 30% faster reads\n");
+
+    println!("   Phase 3: SQLite-Only (v3.0.0+)");
+    println!("   ├─ Remove all JSON code and dependencies");
+    println!("   ├─ Smaller binary, cleaner codebase");
+    println!("   └─ Full SQLite-native operations\n");
+
+    println!("─────────────────────────────────────────────────────────────\n");
+
+    if json_backup_enabled && json_exists {
+        println!("💡 RECOMMENDED NEXT STEPS:\n");
+        println!("   You're still writing to both SQLite and JSON.");
+        println!("   Consider finalizing your migration for better performance:\n");
+        println!("   1. Verify data integrity:");
+        println!("      $ statusline health --json\n");
+        println!("   2. Finalize migration (archives JSON):");
+        println!("      $ statusline migrate --finalize\n");
+        println!("   3. Or permanently delete JSON:");
+        println!("      $ statusline migrate --finalize --delete-json\n");
+        println!("   ✨ Benefits: 30% faster, no write overhead, cleaner storage\n");
+    } else if !json_backup_enabled && json_exists {
+        println!("⚠️  NOTICE:\n");
+        println!("   JSON backup is disabled but old file still exists.");
+        println!("   You can safely archive or delete it:\n");
+        println!("      $ statusline migrate --finalize\n");
+    } else if !json_exists {
+        println!("✅ MIGRATION COMPLETE:\n");
+        println!("   You're running in SQLite-only mode!");
+        println!("   No further action needed.\n");
+    }
+
+    println!("─────────────────────────────────────────────────────────────\n");
+
+    println!("🔧 AVAILABLE COMMANDS:\n");
+    println!("   --run          Run schema migrations to latest version");
+    println!("   --finalize     Complete migration (archives JSON)");
+    println!("   --delete-json  Delete JSON instead of archiving (use with --finalize)");
+    println!("   --dump-schema  Dump current database schema\n");
+
+    println!("📖 For more information:");
+    println!("   https://github.com/yourusername/claudia-statusline#migration\n");
+
+    Ok(())
 }
 
 /// Finalize the migration from JSON to SQLite-only mode
@@ -1395,6 +1521,24 @@ fn handle_context_learning_command(
     println!("    Reset all learning data");
     println!();
 
+    Ok(())
+}
+
+/// Handle hook command invocations from Claude Code
+fn handle_hook_command(action: HookAction) -> Result<()> {
+    match action {
+        HookAction::Precompact {
+            session_id,
+            trigger,
+        } => {
+            hook_handler::handle_precompact(&session_id, &trigger)?;
+            println!("PreCompact hook processed for session: {}", session_id);
+        }
+        HookAction::Stop { session_id } => {
+            hook_handler::handle_stop(&session_id)?;
+            println!("Stop hook processed for session: {}", session_id);
+        }
+    }
     Ok(())
 }
 
