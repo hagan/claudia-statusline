@@ -21,6 +21,11 @@ use std::path::PathBuf;
 /// let stats_file = data_dir.join("stats.json");
 /// ```
 pub fn get_data_dir() -> PathBuf {
+    // Check XDG_DATA_HOME environment variable first (for testing and user overrides)
+    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
+        return PathBuf::from(xdg_data_home).join("claudia-statusline");
+    }
+
     // Use dirs crate for proper XDG handling
     let base_dir = dirs::data_dir().unwrap_or_else(|| {
         // Fallback if dirs crate fails
@@ -44,6 +49,11 @@ pub fn get_data_dir() -> PathBuf {
 /// let config_file = config_dir.join("config.toml");
 /// ```
 pub fn get_config_dir() -> PathBuf {
+    // Check XDG_CONFIG_HOME environment variable first (for testing and user overrides)
+    if let Ok(xdg_config_home) = std::env::var("XDG_CONFIG_HOME") {
+        return PathBuf::from(xdg_config_home).join("claudia-statusline");
+    }
+
     // Use dirs crate for proper XDG handling
     let base_dir = dirs::config_dir().unwrap_or_else(|| {
         // Fallback if dirs crate fails
@@ -191,12 +201,13 @@ mod tests {
         // Should contain our app name
         assert!(config_dir.to_string_lossy().contains("claudia-statusline"));
 
-        // On Windows, both config_dir and data_dir map to %APPDATA%
-        // On Unix/macOS, they should be different
-        #[cfg(not(target_os = "windows"))]
+        // On Windows and macOS, both config_dir and data_dir map to the same location
+        // (Windows: %APPDATA%, macOS: ~/Library/Application Support)
+        // On Linux, they should be different (~/.config vs ~/.local/share)
+        #[cfg(target_os = "linux")]
         assert_ne!(
             config_dir, data_dir,
-            "Config directory should be different from data directory"
+            "Config directory should be different from data directory on Linux"
         );
 
         // Should end with claudia-statusline (platform-agnostic)

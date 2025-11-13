@@ -40,6 +40,7 @@ fn setup_test_database() -> (TempDir, PathBuf) {
     // Use a session_id and higher cost to ensure database creation
     let mut child = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -154,6 +155,8 @@ fn test_db_maintain_basic_execution() {
 
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .arg("--quiet")
         .output()
@@ -168,6 +171,7 @@ fn test_db_maintain_verbose_output() {
 
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .output()
         .expect("Failed to execute command");
@@ -192,6 +196,7 @@ fn test_db_maintain_force_vacuum() {
 
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .arg("--force-vacuum")
         .arg("--quiet")
@@ -207,6 +212,7 @@ fn test_db_maintain_no_prune() {
 
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .arg("--no-prune")
         .output()
@@ -224,10 +230,17 @@ fn test_db_maintain_missing_database() {
 
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .arg("--quiet")
         .output()
         .expect("Failed to execute command");
+
+    if output.status.success() {
+        println!("Exit code: {:?}", output.status.code());
+        println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
+    }
 
     assert!(
         !output.status.success(),
@@ -308,6 +321,7 @@ fn test_db_maintain_pruning() {
     // Run maintenance with pruning
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .output()
         .expect("Failed to execute command");

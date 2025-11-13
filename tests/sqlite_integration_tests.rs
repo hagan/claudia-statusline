@@ -32,8 +32,10 @@ fn test_dual_write_creates_both_files() {
     let json_path = data_dir.join("stats.json");
     let db_path = data_dir.join("stats.db");
 
-    // Set environment to use temp directory
+    // Set environment to use temp directory for both data and config
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Create test input with cost data to trigger stats update
     let input = r#"{
@@ -50,6 +52,8 @@ fn test_dual_write_creates_both_files() {
     // Run statusline with the input
     let mut child = std::process::Command::new(get_test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
+        .env("STATUSLINE_JSON_BACKUP", "true")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -64,13 +68,23 @@ fn test_dual_write_creates_both_files() {
         .unwrap();
 
     // Wait for process to complete
-    let status = child.wait().unwrap();
+    let output = child.wait_with_output().unwrap();
 
     // Debug output if test fails
     if !json_path.exists() {
         println!("Expected JSON path: {:?}", json_path);
-        println!("Data dir contents: {:?}", fs::read_dir(&data_dir).ok());
-        println!("Process exited with: {:?}", status);
+        println!("Data dir: {:?}", data_dir);
+        if let Ok(entries) = fs::read_dir(&data_dir) {
+            println!("Data dir files:");
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    println!("  - {:?}", entry.file_name());
+                }
+            }
+        }
+        println!("Process exited with: {:?}", output.status);
+        println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
+        println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     // Both files should exist
@@ -493,6 +507,7 @@ fn test_cost_reduction_updates_correctly() {
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Session 1: Initial cost of $10
     let input1 = r#"{
@@ -504,6 +519,7 @@ fn test_cost_reduction_updates_correctly() {
     let mut output1 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("--no-color")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -529,6 +545,7 @@ fn test_cost_reduction_updates_correctly() {
     let mut output2 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("--no-color")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -554,6 +571,7 @@ fn test_unchanged_cost_updates_metadata() {
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Session 1: Initial
     let input1 = r#"{
@@ -565,6 +583,7 @@ fn test_unchanged_cost_updates_metadata() {
     let mut cmd1 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -586,6 +605,7 @@ fn test_unchanged_cost_updates_metadata() {
     let mut cmd2 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -610,6 +630,7 @@ fn test_multiple_sessions_increment_count() {
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Create 3 different sessions on the same day
     for i in 1..=3 {
@@ -625,6 +646,7 @@ fn test_multiple_sessions_increment_count() {
         let mut cmd = std::process::Command::new(get_test_binary())
             .env("NO_COLOR", "1")
             .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -640,6 +662,7 @@ fn test_multiple_sessions_increment_count() {
     // Check health output to verify session count
     let health_output = std::process::Command::new(get_test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("health")
         .arg("--json")
         .output()
@@ -659,6 +682,7 @@ fn test_line_counts_use_deltas() {
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Session 1: 200 lines added
     let input1 = r#"{
@@ -670,6 +694,7 @@ fn test_line_counts_use_deltas() {
     let mut cmd1 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -693,6 +718,7 @@ fn test_line_counts_use_deltas() {
     let mut cmd2 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -716,6 +742,7 @@ fn test_multi_day_session_counts_correctly() {
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Day 1: Start a long session
     let input_day1 = r#"{
@@ -727,6 +754,7 @@ fn test_multi_day_session_counts_correctly() {
     let mut cmd1 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -749,6 +777,7 @@ fn test_multi_day_session_counts_correctly() {
     let mut cmd2 = std::process::Command::new(get_test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .spawn()
@@ -764,6 +793,7 @@ fn test_multi_day_session_counts_correctly() {
     // The session should be counted once globally but may appear in multiple days
     let health_output = std::process::Command::new(get_test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("health")
         .arg("--json")
         .output()
@@ -786,6 +816,7 @@ fn test_monthly_sessions_no_overcount() {
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
+    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Create a session that appears on 3 different days in the same month
     // Monthly session count should be 1, not 3
@@ -802,6 +833,7 @@ fn test_monthly_sessions_no_overcount() {
         let mut cmd = std::process::Command::new(get_test_binary())
             .env("NO_COLOR", "1")
             .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .spawn()
@@ -817,6 +849,7 @@ fn test_monthly_sessions_no_overcount() {
     // Health check should show 1 session total (not 3)
     let health_output = std::process::Command::new(get_test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("health")
         .arg("--json")
         .output()
