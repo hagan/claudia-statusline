@@ -92,6 +92,31 @@ pub fn shorten_path(path: &str) -> String {
     path.to_string()
 }
 
+/// Formats a token count with "k" suffix for thousands
+///
+/// Examples:
+/// - 1234 → "1k"
+/// - 179000 → "179k"
+/// - 1500 → "2k" (rounds to nearest thousand)
+/// - 999 → "1k" (rounds up)
+/// - 0 → "0"
+///
+/// # Arguments
+///
+/// * `tokens` - The token count to format
+///
+/// # Returns
+///
+/// A string with the token count in thousands with "k" suffix
+pub fn format_token_count(tokens: usize) -> String {
+    if tokens == 0 {
+        "0".to_string()
+    } else {
+        let k = (tokens as f64 / 1000.0).round() as usize;
+        format!("{}k", k.max(1)) // Always show at least "1k" for non-zero values
+    }
+}
+
 /// Determines the context window size for a given model
 ///
 /// Uses intelligent defaults based on model family and version:
@@ -144,7 +169,7 @@ fn get_learned_context_window(
 /// # Returns
 ///
 /// Context window size in tokens
-fn get_context_window_for_model(model_name: Option<&str>, config: &config::Config) -> usize {
+pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::Config) -> usize {
     if let Some(model) = model_name {
         // Priority 1: User config overrides (highest priority)
         if let Some(&custom_size) = config.context.model_windows.get(model) {
@@ -970,5 +995,26 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
         assert_eq!(usage.percentage, 50.0);
+    }
+
+    #[test]
+    fn test_format_token_count() {
+        // Test zero
+        assert_eq!(format_token_count(0), "0");
+
+        // Test rounding edge cases
+        assert_eq!(format_token_count(500), "1k"); // Rounds up
+        assert_eq!(format_token_count(999), "1k"); // Rounds up
+        assert_eq!(format_token_count(1234), "1k"); // Rounds down
+        assert_eq!(format_token_count(1500), "2k"); // Rounds up
+
+        // Test typical values
+        assert_eq!(format_token_count(179000), "179k");
+        assert_eq!(format_token_count(200000), "200k");
+        assert_eq!(format_token_count(1000000), "1000k");
+
+        // Test that non-zero values always show at least "1k"
+        assert_eq!(format_token_count(1), "1k");
+        assert_eq!(format_token_count(100), "1k");
     }
 }
