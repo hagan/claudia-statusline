@@ -75,6 +75,9 @@ pub struct DisplayConfig {
 
     /// Show session cost and burn rate
     pub show_cost: bool,
+
+    /// Show token counts in context bar (e.g., "179k/1000k")
+    pub show_context_tokens: bool,
 }
 
 /// Context window configuration
@@ -354,6 +357,8 @@ impl Default for DisplayConfig {
             show_duration: true,
             show_lines_changed: true,
             show_cost: true,
+            // Token counts opt-in (new feature, default off for minimal statusline)
+            show_context_tokens: false,
         }
     }
 }
@@ -637,6 +642,18 @@ context_caution_threshold = 50.0     # Yellow color above this
 
 # Theme: "dark" or "light"
 theme = "dark"
+
+# Component visibility toggles (all default to true except show_context_tokens)
+# show_directory = true
+# show_git = true
+# show_context = true
+# show_model = true
+# show_duration = true
+# show_lines_changed = true
+# show_cost = true
+
+# Show token counts in context bar (e.g., "179k/1000k")
+# show_context_tokens = false
 
 [context]
 # Default context window size in tokens (modern Claude models use 200k)
