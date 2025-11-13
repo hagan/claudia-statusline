@@ -196,6 +196,7 @@ mod tests {
     #[test]
     fn test_get_config_dir() {
         let config_dir = get_config_dir();
+        #[cfg(target_os = "linux")]
         let data_dir = get_data_dir();
 
         // Should contain our app name
