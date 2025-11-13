@@ -283,7 +283,13 @@ fn format_statusline_string(
         if let Some(transcript) = transcript_path {
             if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None)
             {
-                parts.push(format_context_bar(&context));
+                let current_tokens = crate::utils::get_token_count_from_transcript(transcript);
+                let full_config = config::get_config();
+                let window_size = Some(crate::utils::get_context_window_for_model(
+                    model_name,
+                    full_config,
+                ));
+                parts.push(format_context_bar(&context, current_tokens, window_size));
             }
         }
     }
@@ -469,17 +475,43 @@ pub fn format_output_to_string(
     )
 }
 
-fn format_context_bar(context: &ContextUsage) -> String {
+fn format_context_bar(
+    context: &ContextUsage,
+    current_tokens: Option<u32>,
+    window_size: Option<usize>,
+) -> String {
     use crate::models::CompactionState;
 
     let config = config::get_config();
     let bar_width = config.display.progress_bar_width;
 
+    // Format token counts if enabled and data available
+    let token_display = if let (Some(current), Some(window)) = (current_tokens, window_size) {
+        if config.display.show_context_tokens {
+            format!(
+                " {}{}/{}{}",
+                Colors::light_gray(),
+                crate::utils::format_token_count(current as usize),
+                crate::utils::format_token_count(window),
+                Colors::reset()
+            )
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     // Handle different compaction states
     match context.compaction_state {
         CompactionState::InProgress => {
             // Simple static indicator - statusline doesn't update frequently enough for animation
-            format!("{}Compacting...{}", Colors::yellow(), Colors::reset())
+            format!(
+                "{}Compacting...{}{}",
+                Colors::yellow(),
+                Colors::reset(),
+                token_display
+            )
         }
 
         CompactionState::RecentlyCompleted => {
@@ -501,7 +533,7 @@ fn format_context_bar(context: &ContextUsage) -> String {
             );
 
             format!(
-                "{}{}%{} {}[{}]{} {}✓{}",
+                "{}{}%{} {}[{}]{} {}✓{}{}",
                 percentage_color,
                 percentage.round() as u32,
                 Colors::reset(),
@@ -509,7 +541,8 @@ fn format_context_bar(context: &ContextUsage) -> String {
                 bar,
                 Colors::reset(),
                 Colors::green(),
-                Colors::reset()
+                Colors::reset(),
+                token_display
             )
         }
 
@@ -539,14 +572,15 @@ fn format_context_bar(context: &ContextUsage) -> String {
             };
 
             format!(
-                "{}{}%{} {}[{}]{}{}",
+                "{}{}%{} {}[{}]{}{}{}",
                 percentage_color,
                 percentage.round() as u32,
                 Colors::reset(),
                 color,
                 bar,
                 Colors::reset(),
-                warning
+                warning,
+                token_display
             )
         }
     }
@@ -649,7 +683,7 @@ mod tests {
             tokens_remaining: 180_000,
             compaction_state: CompactionState::Normal,
         };
-        let bar = format_context_bar(&low);
+        let bar = format_context_bar(&low, None, None);
         assert!(bar.contains("10%"));
         assert!(bar.contains("[=>"));
         assert!(!bar.contains('•'));
@@ -661,7 +695,7 @@ mod tests {
             tokens_remaining: 10_000,
             compaction_state: CompactionState::Normal,
         };
-        let bar = format_context_bar(&high);
+        let bar = format_context_bar(&high, None, None);
         assert!(bar.contains("95%"));
         assert!(!bar.contains('•'));
         assert!(bar.contains('⚠')); // Warning at 95%
