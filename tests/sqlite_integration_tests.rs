@@ -76,10 +76,8 @@ fn test_dual_write_creates_both_files() {
         println!("Data dir: {:?}", data_dir);
         if let Ok(entries) = fs::read_dir(&data_dir) {
             println!("Data dir files:");
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    println!("  - {:?}", entry.file_name());
-                }
+            for entry in entries.flatten() {
+                println!("  - {:?}", entry.file_name());
             }
         }
         println!("Process exited with: {:?}", output.status);
