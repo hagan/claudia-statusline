@@ -158,7 +158,13 @@ fn get_context_window_for_model(model_name: Option<&str>, config: &config::Confi
             }
         }
 
-        // Priority 3: Smart defaults based on model family and version
+        // Priority 3: Check for explicit context window markers in display name
+        // E.g., "Sonnet 4.5 (1M context)" → 1M tokens
+        if model.contains("(1M context)") || model.contains("(1M)") {
+            return 1_000_000;
+        }
+
+        // Priority 4: Smart defaults based on model family and version
         use crate::models::ModelType;
         let model_type = ModelType::from_name(model);
 
@@ -927,12 +933,13 @@ mod tests {
         writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":100000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
 
         // Total: 100000 tokens
-        // With test config (200K full mode): 100000 / 200000 = 50.0%
-        // All models use same 200K window, so all should get same result
+        // Sonnet 4.5: 100000 / 200000 = 50.0% (standard 200k window)
+        // Sonnet 4.5 (1M context): 100000 / 1000000 = 10.0% (extended 1M window)
+        // Sonnet 3.5/Opus 3.5: 100000 / 200000 = 50.0%
 
         let cfg = test_config();
 
-        // Test Sonnet 4.5 (200k window)
+        // Test Sonnet 4.5 standard (200k window)
         let result = calculate_context_usage(
             file.path().to_str().unwrap(),
             Some("Claude Sonnet 4.5"),
@@ -942,6 +949,17 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
         assert_eq!(usage.percentage, 50.0);
+
+        // Test Sonnet 4.5 with 1M context (1M window)
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Sonnet 4.5 (1M context)"),
+            None,
+            Some(&cfg),
+        );
+        assert!(result.is_some());
+        let usage = result.unwrap();
+        assert_eq!(usage.percentage, 10.0);
 
         // Test Sonnet 3.5 (200k window)
         let result = calculate_context_usage(
