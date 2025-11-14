@@ -80,7 +80,8 @@ pub struct DisplayConfig {
 /// Context window configuration
 ///
 /// The statusline intelligently detects context window size based on model family and version:
-/// - Sonnet 3.5+, 4.5+: 200k tokens
+/// - Sonnet 4.5 (1M context): 1M tokens (auto-detected from display name)
+/// - Sonnet 3.5+, 4.5: 200k tokens
 /// - Opus 3.5+: 200k tokens
 /// - Older models (Sonnet 3.0, etc.): 160k tokens
 /// - Unknown models: Uses `window_size` default (200k)
@@ -96,8 +97,11 @@ pub struct DisplayConfig {
 pub struct ContextConfig {
     /// Default context window size in tokens (fallback for unknown models)
     ///
-    /// Modern Claude models (Sonnet 3.5+, Opus 3.5+, Sonnet 4.5+) use 200k tokens.
-    /// This default is used when model-specific detection fails or for unknown models.
+    /// Modern Claude models use varying context windows:
+    /// - Sonnet 4.5 (1M context): 1M tokens (auto-detected)
+    /// - Sonnet 3.5+, 4.5, Opus 3.5+: 200k tokens (auto-detected)
+    ///
+    /// This default (200k) is used when model-specific detection fails or for unknown models.
     pub window_size: usize,
 
     /// Optional overrides for specific model display names
@@ -645,16 +649,19 @@ context_caution_threshold = 50.0     # Yellow color above this
 theme = "dark"
 
 [context]
-# Default context window size in tokens (modern Claude models use 200k)
-# This is used as fallback when model-specific window is not configured
+# Default context window size in tokens (fallback for unknown models)
+# Auto-detection: Sonnet 4.5 (1M context) uses 1M, Sonnet 3.5+/4.5/Opus 3.5+ use 200k
+# This fallback is used when model-specific detection fails
 window_size = 200000
 
 # Model-specific context windows (optional overrides)
 # The statusline intelligently detects context window size based on model family/version
+# and display name patterns (e.g., "(1M context)" suffix)
 # You can override detection here for specific models by display name
 # [context.model_windows]
 # "Claude 3.5 Sonnet" = 200000
 # "Claude Sonnet 4.5" = 200000
+# "Sonnet 4.5 (1M context)" = 1000000  # Auto-detected, override not needed
 # "Claude 3.5 Opus" = 200000
 # "Claude 3 Haiku" = 100000
 
