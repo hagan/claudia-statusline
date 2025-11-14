@@ -258,7 +258,11 @@ fn test_no_double_separators_regression() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_with_no_color_env() {
+    // Save original state
+    let original_no_color = std::env::var("NO_COLOR").ok();
+
     // Set NO_COLOR to test that it disables colors
     std::env::set_var("NO_COLOR", "1");
 
@@ -281,6 +285,9 @@ fn test_with_no_color_env() {
     assert!(output.contains("/test/path"), "Should show directory");
     assert!(output.contains("S3.5"), "Should show model");
 
-    // Clean up
-    std::env::remove_var("NO_COLOR");
+    // Restore original state
+    match original_no_color {
+        Some(val) => std::env::set_var("NO_COLOR", val),
+        None => std::env::remove_var("NO_COLOR"),
+    }
 }
