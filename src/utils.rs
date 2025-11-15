@@ -12,6 +12,7 @@ use std::env;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::sync::OnceLock;
 
 /// Sanitizes a string for safe terminal output by removing control characters
 /// and ANSI escape sequences. This prevents malicious strings from manipulating
@@ -23,11 +24,17 @@ use std::path::PathBuf;
 ///
 /// # Returns
 ///
+/// Static ANSI regex pattern, initialized once
+static ANSI_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+
 /// A sanitized string safe for terminal output
 pub fn sanitize_for_terminal(input: &str) -> String {
     // Remove ANSI escape sequences (e.g., \x1b[31m for colors)
     // Pattern matches: ESC [ ... m where ... is any sequence of digits and semicolons
-    let ansi_regex = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+    let ansi_regex = ANSI_REGEX.get_or_init(|| {
+        regex::Regex::new(r"\x1b\[[0-9;]*m")
+            .expect("ANSI regex pattern should be valid")
+    });
     let mut sanitized = ansi_regex.replace_all(input, "").to_string();
 
     // Remove control characters (0x00-0x1F and 0x7F-0x9F) except for:

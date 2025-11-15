@@ -513,41 +513,6 @@ fn save_stats_data(file: &mut File, stats_data: &StatsData) {
     }
 }
 
-// Write the current session to SQLite
-#[allow(dead_code)]
-fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
-    if let Some((session_id, session)) = stats_data
-        .sessions
-        .iter()
-        .max_by_key(|(_, s)| &s.last_updated)
-    {
-        use crate::database::SessionUpdate;
-        match db.update_session(
-            session_id,
-            SessionUpdate {
-                cost: session.cost,
-                lines_added: session.lines_added,
-                lines_removed: session.lines_removed,
-                model_name: None,      // not available in dual-write
-                workspace_dir: None,   // not available in dual-write
-                device_id: None,       // not available in dual-write
-                token_breakdown: None, // not available in dual-write
-                max_tokens_observed: session.max_tokens_observed, // from in-memory stats
-            },
-        ) {
-            Ok((day_total, session_total)) => {
-                debug!(
-                    "SQLite dual-write successful: day=${:.2}, session=${:.2}",
-                    day_total, session_total
-                );
-            }
-            Err(e) => {
-                warn!("SQLite dual-write failed: {}", e);
-            }
-        }
-    }
-}
-
 // Helper function to write to SQLite (primary storage)
 fn perform_sqlite_dual_write(_stats_data: &StatsData) {
     // Write to SQLite (primary storage as of Phase 2)
