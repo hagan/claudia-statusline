@@ -702,6 +702,60 @@ mod tests {
     }
 
     #[test]
+    fn test_format_context_bar_compaction_states() {
+        use crate::models::CompactionState;
+
+        // Test InProgress state - should show "Compacting..." message
+        let in_progress = ContextUsage {
+            percentage: 50.0,
+            approaching_limit: false,
+            tokens_remaining: 80_000,
+            compaction_state: CompactionState::InProgress,
+        };
+        let bar = format_context_bar(&in_progress, None, None);
+        assert!(
+            bar.contains("Compacting"),
+            "InProgress should show 'Compacting' message"
+        );
+        // Should NOT show percentage or progress bar during compaction
+        assert!(
+            !bar.contains('%'),
+            "InProgress should not show percentage"
+        );
+        // Check for progress bar pattern (not ANSI escape codes which also contain '[')
+        assert!(
+            !bar.contains("[=") && !bar.contains("[>") && !bar.contains("[-"),
+            "InProgress should not show progress bar"
+        );
+
+        // Test RecentlyCompleted state - should show checkmark
+        let recently_completed = ContextUsage {
+            percentage: 35.0,
+            approaching_limit: false,
+            tokens_remaining: 104_000,
+            compaction_state: CompactionState::RecentlyCompleted,
+        };
+        let bar = format_context_bar(&recently_completed, None, None);
+        assert!(bar.contains("35%"), "Should show correct percentage");
+        assert!(
+            bar.contains('✓'),
+            "RecentlyCompleted should show checkmark"
+        );
+
+        // Test Normal state with warning
+        let normal_warning = ContextUsage {
+            percentage: 85.0,
+            approaching_limit: true,
+            tokens_remaining: 24_000,
+            compaction_state: CompactionState::Normal,
+        };
+        let bar = format_context_bar(&normal_warning, None, None);
+        assert!(bar.contains("85%"), "Should show correct percentage");
+        assert!(bar.contains('⚠'), "Normal with high usage should show warning");
+        assert!(!bar.contains('✓'), "Normal should not show checkmark");
+    }
+
+    #[test]
     fn test_burn_rate_calculation() {
         use std::io::Write;
         use tempfile::NamedTempFile;

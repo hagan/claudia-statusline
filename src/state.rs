@@ -495,4 +495,102 @@ mod tests {
         // Should fail to write
         assert!(write_state(&state).is_err());
     }
+
+    #[test]
+    fn test_session_id_special_characters_rejected() {
+        // Special characters should be rejected
+        let dangerous_chars = vec![
+            "test@session",     // @ symbol
+            "test#session",     // # symbol
+            "test$session",     // $ symbol
+            "test session",     // space
+            "test;session",     // semicolon
+            "test|session",     // pipe
+            "test&session",     // ampersand
+            "test`session",     // backtick
+            "test'session",     // single quote
+            "test\"session",    // double quote
+            "test<session",     // less than
+            "test>session",     // greater than
+            "test(session",     // parenthesis
+            "test)session",     // parenthesis
+        ];
+
+        for session_id in dangerous_chars {
+            let state = HookState {
+                state: "compacting".to_string(),
+                trigger: "auto".to_string(),
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                pid: None,
+            };
+
+            assert!(
+                write_state(&state).is_err(),
+                "Session ID with '{}' should be rejected",
+                session_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_id_valid_formats() {
+        // Test various valid session ID formats
+        let valid_ids = vec![
+            "simple",
+            "with-dashes",
+            "with_underscores",
+            "with.dots",
+            "MixedCase123",
+            "uuid-like-abc123-def456",
+            "session.2024-01-15",
+            "test-session_001.backup",
+        ];
+
+        for session_id in valid_ids {
+            let test_id = format!("{}-{}", test_session_id(), session_id);
+            let state = HookState {
+                state: "compacting".to_string(),
+                trigger: "auto".to_string(),
+                session_id: test_id.clone(),
+                started_at: Utc::now(),
+                pid: None,
+            };
+
+            assert!(
+                write_state(&state).is_ok(),
+                "Valid session ID '{}' should be accepted",
+                session_id
+            );
+
+            // Cleanup
+            clear_state(&test_id).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_session_id_control_characters_rejected() {
+        // Control characters should be rejected
+        let control_chars = vec![
+            "test\x00session",  // Null byte
+            "test\x01session",  // SOH
+            "test\x1Bsession",  // Escape
+            "test\x7Fsession",  // Delete
+        ];
+
+        for session_id in control_chars {
+            let state = HookState {
+                state: "compacting".to_string(),
+                trigger: "auto".to_string(),
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                pid: None,
+            };
+
+            assert!(
+                write_state(&state).is_err(),
+                "Session ID with control character should be rejected"
+            );
+        }
+    }
 }
