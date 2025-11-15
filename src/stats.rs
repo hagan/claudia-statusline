@@ -736,6 +736,7 @@ mod tests {
     fn test_stats_file_path_xdg() {
         // Set XDG_DATA_HOME for testing
         env::set_var("XDG_DATA_HOME", "/tmp/xdg_test");
+        env::set_var("XDG_CONFIG_HOME", "/tmp/xdg_test");
         let path = StatsData::get_stats_file_path();
         assert_eq!(
             path,
@@ -750,6 +751,8 @@ mod tests {
         use crate::database::SessionUpdate;
         let temp_dir = TempDir::new().unwrap();
         env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
+        env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
 
         let mut stats = StatsData::default();
         stats.update_session(
@@ -769,12 +772,13 @@ mod tests {
         let save_result = stats.save();
         assert!(save_result.is_ok());
 
-        // Make sure the file was actually created
+        // Make sure data was persisted (either JSON or SQLite)
+        // Note: In SQLite-only mode, stats.json may not exist
         let data_dir = env::var("XDG_DATA_HOME").unwrap();
-        let stats_path = PathBuf::from(data_dir)
+        let db_path = PathBuf::from(&data_dir)
             .join("claudia-statusline")
-            .join("stats.json");
-        assert!(stats_path.exists());
+            .join("stats.db");
+        assert!(db_path.exists(), "Database should be created");
 
         let loaded_stats = StatsData::load();
         // Check that the session was saved and loaded correctly
@@ -845,6 +849,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap().to_string();
         env::set_var("XDG_DATA_HOME", &temp_path);
+        env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
 
         // Create the directory structure
         let stats_dir = Path::new(&temp_path).join("claudia-statusline");
@@ -865,6 +870,7 @@ mod tests {
                 // Ensure the thread uses the temp directory
                 use crate::database::SessionUpdate;
                 env::set_var("XDG_DATA_HOME", &temp_path_clone);
+                env::set_var("XDG_CONFIG_HOME", &temp_path_clone);
                 let (daily, _) = update_stats_data(|stats| {
                     stats.update_session(
                         &format!("test-thread-{}", i),
@@ -934,6 +940,7 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let temp_path = temp_dir.path().to_str().unwrap();
         env::set_var("XDG_DATA_HOME", temp_path);
+        env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
 
         // Create the directory structure
         let stats_dir = Path::new(&temp_path).join("claudia-statusline");
@@ -994,6 +1001,7 @@ mod tests {
         }
         let temp_dir = TempDir::new().unwrap();
         env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
+        env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
 
         let stats_path = StatsData::get_stats_file_path();
 

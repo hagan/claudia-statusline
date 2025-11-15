@@ -605,11 +605,10 @@ impl Config {
         }
 
         // 3. XDG config directory
-        if let Some(config_dir) = dirs::config_dir() {
-            let path = config_dir.join("claudia-statusline").join("config.toml");
-            if path.exists() {
-                return Some(path);
-            }
+        let config_dir = crate::common::get_config_dir();
+        let path = config_dir.join("config.toml");
+        if path.exists() {
+            return Some(path);
         }
 
         // 4. Home directory
@@ -625,13 +624,8 @@ impl Config {
 
     /// Get default config file path (for creating new config)
     pub fn default_config_path() -> Result<PathBuf> {
-        if let Some(config_dir) = dirs::config_dir() {
-            Ok(config_dir.join("claudia-statusline").join("config.toml"))
-        } else {
-            Err(StatuslineError::Config(
-                "Could not determine config directory".into(),
-            ))
-        }
+        let config_dir = crate::common::get_config_dir();
+        Ok(config_dir.join("config.toml"))
     }
 
     /// Generate example config file content
@@ -779,6 +773,11 @@ pub fn get_config() -> &'static Config {
             config.display.theme = theme;
         } else if let Ok(theme) = env::var("STATUSLINE_THEME") {
             config.display.theme = theme;
+        }
+
+        // Override json_backup from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_JSON_BACKUP") {
+            config.database.json_backup = val == "true" || val == "1";
         }
 
         config
