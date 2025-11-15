@@ -7,6 +7,7 @@ use std::sync::Mutex;
 static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_statusline_basic() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -38,6 +39,7 @@ fn test_render_statusline_basic() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_from_json_basic() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -64,6 +66,7 @@ fn test_render_from_json_basic() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_with_cost() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -92,6 +95,7 @@ fn test_render_with_cost() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_without_stats_update() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -121,6 +125,7 @@ fn test_render_without_stats_update() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_with_git_repo() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -159,6 +164,7 @@ fn test_render_with_git_repo() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_minimal_input() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -190,6 +196,7 @@ fn test_render_invalid_json() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_no_color_environment() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
@@ -210,6 +217,7 @@ fn test_no_color_environment() {
 }
 
 #[test]
+#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 fn test_render_with_context_usage() {
     let _lock = ENV_MUTEX.lock().unwrap();
 
