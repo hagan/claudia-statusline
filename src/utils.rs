@@ -94,12 +94,16 @@ pub fn shorten_path(path: &str) -> String {
 
 /// Formats a token count with "k" suffix for thousands
 ///
+/// For values under 1000, shows the actual number for precision.
+/// For values 1000+, shows rounded thousands with "k" suffix.
+///
 /// Examples:
-/// - 1234 → "1k"
-/// - 179000 → "179k"
-/// - 1500 → "2k" (rounds to nearest thousand)
-/// - 999 → "1k" (rounds up)
 /// - 0 → "0"
+/// - 1 → "1"
+/// - 999 → "999"
+/// - 1234 → "1k"
+/// - 1500 → "2k" (rounds to nearest thousand)
+/// - 179000 → "179k"
 ///
 /// # Arguments
 ///
@@ -107,13 +111,12 @@ pub fn shorten_path(path: &str) -> String {
 ///
 /// # Returns
 ///
-/// A string with the token count in thousands with "k" suffix
+/// A string with the token count, using "k" suffix for values >= 1000
 pub fn format_token_count(tokens: usize) -> String {
-    if tokens == 0 {
-        "0".to_string()
+    if tokens < 1000 {
+        tokens.to_string()
     } else {
-        let k = (tokens as f64 / 1000.0).round() as usize;
-        format!("{}k", k.max(1)) // Always show at least "1k" for non-zero values
+        format!("{}k", (tokens as f64 / 1000.0).round() as usize)
     }
 }
 
@@ -1020,9 +1023,13 @@ mod tests {
         // Test zero
         assert_eq!(format_token_count(0), "0");
 
-        // Test rounding edge cases
-        assert_eq!(format_token_count(500), "1k"); // Rounds up
-        assert_eq!(format_token_count(999), "1k"); // Rounds up
+        // Test values < 1000 show actual numbers for precision
+        assert_eq!(format_token_count(1), "1");
+        assert_eq!(format_token_count(100), "100");
+        assert_eq!(format_token_count(500), "500");
+        assert_eq!(format_token_count(999), "999");
+
+        // Test values >= 1000 use "k" suffix with rounding
         assert_eq!(format_token_count(1234), "1k"); // Rounds down
         assert_eq!(format_token_count(1500), "2k"); // Rounds up
 
@@ -1030,9 +1037,5 @@ mod tests {
         assert_eq!(format_token_count(179000), "179k");
         assert_eq!(format_token_count(200000), "200k");
         assert_eq!(format_token_count(1000000), "1000k");
-
-        // Test that non-zero values always show at least "1k"
-        assert_eq!(format_token_count(1), "1k");
-        assert_eq!(format_token_count(100), "1k");
     }
 }
