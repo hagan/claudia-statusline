@@ -1387,7 +1387,7 @@ fn handle_context_learning_command(
             println!(
                 "{}Learned Context Window Details for {}{}",
                 Colors::cyan(),
-                model_name,
+                crate::utils::sanitize_for_terminal(&model_name),
                 Colors::reset()
             );
             println!("{}", "=".repeat(60));
@@ -1412,11 +1412,15 @@ fn handle_context_learning_command(
             println!("{}Audit Trail:{}", Colors::cyan(), Colors::reset());
             println!(
                 "  Workspace:               {}",
-                record.workspace_dir.as_deref().unwrap_or("<unknown>")
+                crate::utils::sanitize_for_terminal(
+                    record.workspace_dir.as_deref().unwrap_or("<unknown>")
+                )
             );
             println!(
                 "  Device ID:               {}",
-                record.device_id.as_deref().unwrap_or("<unknown>")
+                crate::utils::sanitize_for_terminal(
+                    record.device_id.as_deref().unwrap_or("<unknown>")
+                )
             );
             println!();
 
@@ -1499,7 +1503,7 @@ fn handle_context_learning_command(
 
             println!(
                 "{:<25} {:>12} {}{:>9.1}%{} {:>10} {:>12}",
-                record.model_name,
+                crate::utils::sanitize_for_terminal(&record.model_name),
                 record.observed_max_tokens,
                 confidence_color,
                 record.confidence_score * 100.0,
