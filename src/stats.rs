@@ -109,6 +109,18 @@ impl StatsData {
                         warn!("Failed to parse stats file: {}", e);
                         let backup_path = path.with_extension("backup");
                         let _ = fs::copy(&path, &backup_path);
+
+                        // Fix permissions on backup (fs::copy preserves source permissions)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = fs::metadata(&backup_path) {
+                                let mut perms = metadata.permissions();
+                                perms.set_mode(0o600);
+                                let _ = fs::set_permissions(&backup_path, perms);
+                            }
+                        }
+
                         warn!("Backed up corrupted stats to: {:?}", backup_path);
                     }
                 }
@@ -465,7 +477,7 @@ fn acquire_stats_file(path: &Path) -> Result<File> {
                 .write(true)
                 .create(true)
                 .truncate(false)
-                .mode(0o600) // Owner read/write only on Unix
+                .mode(0o600) // Owner read/write only on Unix (for new files)
                 .open(path)
                 .map_err(StatuslineError::from)
         }
@@ -481,6 +493,17 @@ fn acquire_stats_file(path: &Path) -> Result<File> {
                 .map_err(StatuslineError::from)
         }
     })?;
+
+    // Fix permissions on existing files (mode flag only applies to new files)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(path, perms); // Best effort - don't fail if it doesn't work
+        }
+    }
 
     // Try to acquire exclusive lock with retry
     retry_if_retryable(&retry_config, || {
@@ -514,6 +537,17 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
                     if let Err(e) = std::fs::copy(path, &backup_path) {
                         error!("Failed to backup corrupted stats file: {}", e);
                     } else {
+                        // Fix permissions on backup (fs::copy preserves source permissions)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = fs::metadata(&backup_path) {
+                                let mut perms = metadata.permissions();
+                                perms.set_mode(0o600);
+                                let _ = fs::set_permissions(&backup_path, perms);
+                            }
+                        }
+
                         warn!("Corrupted stats backed up to: {:?}", backup_path);
                     }
                 }

@@ -163,29 +163,6 @@ impl SqliteDatabase {
             }
         }
 
-        // Set secure file permissions for database file (0o600 on Unix) if it exists
-        #[cfg(unix)]
-        {
-            if db_path.exists() {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(db_path)
-                    .map_err(|e| {
-                        rusqlite::Error::SqliteFailure(
-                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-                            Some(format!("Failed to get database file metadata: {}", e)),
-                        )
-                    })?
-                    .permissions();
-                perms.set_mode(0o600);
-                std::fs::set_permissions(db_path, perms).map_err(|e| {
-                    rusqlite::Error::SqliteFailure(
-                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-                        Some(format!("Failed to set database file permissions: {}", e)),
-                    )
-                })?;
-            }
-        }
-
         // Get configuration
         let config = config::get_config();
 
@@ -303,6 +280,39 @@ impl SqliteDatabase {
                 "Skipping migrations (already migrated): {}",
                 canonical_path.display()
             );
+        }
+
+        // Set secure file permissions for database file (0o600 on Unix)
+        // Do this AFTER creating the pool/schema so first-run databases get secured
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = std::fs::metadata(db_path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o600);
+                // Best effort - log warning but don't fail
+                if let Err(e) = std::fs::set_permissions(db_path, perms) {
+                    log::warn!(
+                        "Failed to set database file permissions to 0o600: {}",
+                        e
+                    );
+                }
+            }
+
+            // Also fix permissions for WAL and SHM files if they exist
+            let wal_path = db_path.with_extension("db-wal");
+            if let Ok(metadata) = std::fs::metadata(&wal_path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&wal_path, perms);
+            }
+
+            let shm_path = db_path.with_extension("db-shm");
+            if let Ok(metadata) = std::fs::metadata(&shm_path) {
+                let mut perms = metadata.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&shm_path, perms);
+            }
         }
 
         // Create the database wrapper with correct schema
