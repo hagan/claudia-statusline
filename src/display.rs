@@ -593,9 +593,38 @@ mod tests {
     fn test_get_cost_color() {
         // The test should work whether or not NO_COLOR is set
         if Colors::enabled() {
-            assert_eq!(get_cost_color(2.5), "\x1b[32m".to_string()); // green
-            assert_eq!(get_cost_color(10.0), "\x1b[33m".to_string()); // yellow
-            assert_eq!(get_cost_color(25.0), "\x1b[31m".to_string()); // red
+            // Cost colors are now theme-dependent, so we can't check for specific ANSI codes
+            // Instead, verify that:
+            // 1. Colors are returned (non-empty strings with ANSI escape sequences)
+            // 2. Different cost levels return different colors
+            let low_cost = get_cost_color(2.5); // < $5 (low threshold)
+            let medium_cost = get_cost_color(10.0); // $5-$20 (medium threshold)
+            let high_cost = get_cost_color(25.0); // >= $20 (high threshold)
+
+            // All should have ANSI escape codes
+            assert!(low_cost.starts_with("\x1b["), "Low cost should have color");
+            assert!(
+                medium_cost.starts_with("\x1b["),
+                "Medium cost should have color"
+            );
+            assert!(
+                high_cost.starts_with("\x1b["),
+                "High cost should have color"
+            );
+
+            // Different costs should have different colors
+            assert_ne!(
+                low_cost, medium_cost,
+                "Low and medium costs should have different colors"
+            );
+            assert_ne!(
+                medium_cost, high_cost,
+                "Medium and high costs should have different colors"
+            );
+            assert_ne!(
+                low_cost, high_cost,
+                "Low and high costs should have different colors"
+            );
         } else {
             // When NO_COLOR is set, all colors return empty strings
             assert_eq!(get_cost_color(2.5), String::new());
