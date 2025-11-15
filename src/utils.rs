@@ -38,15 +38,15 @@ pub fn sanitize_for_terminal(input: &str) -> String {
     let mut sanitized = ansi_regex.replace_all(input, "").to_string();
 
     // Remove control characters (0x00-0x1F and 0x7F-0x9F) except for:
-    // - Tab (0x09)
-    // - Line feed (0x0A)
-    // - Carriage return (0x0D)
+    // - Tab (0x09) - safe for terminal output
+    // NOTE: Newline (\n) and carriage return (\r) are NOT preserved to prevent
+    // terminal injection attacks where malicious paths can inject fake output
     sanitized = sanitized
         .chars()
         .filter(|c| {
             let code = *c as u32;
-            // Allow printable ASCII and Unicode, tab, newline, carriage return
-            (*c == '\t' || *c == '\n' || *c == '\r')
+            // Allow printable ASCII and Unicode, plus tab character only
+            (*c == '\t')
                 || (code >= 0x20 && code != 0x7F && !(0x80..=0x9F).contains(&code))
         })
         .collect();
@@ -729,20 +729,20 @@ mod tests {
             "BellSound"
         );
 
-        // Test preservation of allowed control characters
+        // Test removal of newlines and carriage returns (security: prevent terminal injection)
         assert_eq!(
             sanitize_for_terminal("Line1\nLine2\tTabbed"),
-            "Line1\nLine2\tTabbed"
+            "Line1Line2\tTabbed" // \n removed, \t preserved
         );
         assert_eq!(
             sanitize_for_terminal("Windows\r\nLineEnd"),
-            "Windows\r\nLineEnd"
+            "WindowsLineEnd" // Both \r and \n removed
         );
 
-        // Test complex mixed input
+        // Test complex mixed input (newline removed for security)
         assert_eq!(
             sanitize_for_terminal("\x1b[31mDanger\x00\x07\x1b[0m\nSafe"),
-            "Danger\nSafe"
+            "DangerSafe" // \n removed to prevent terminal injection
         );
 
         // Test Unicode characters are preserved

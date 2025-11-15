@@ -41,16 +41,76 @@ fn get_cache_dir() -> Result<PathBuf> {
         })?
         .join("claudia-statusline");
 
-    // Ensure directory exists
-    fs::create_dir_all(&cache_dir)?;
+    // Ensure directory exists with secure permissions (0o700 - owner only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&cache_dir)?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(&cache_dir)?;
+    }
 
     Ok(cache_dir)
+}
+
+/// Sanitizes session ID to prevent path traversal attacks
+fn sanitize_session_id(session_id: &str) -> Result<String> {
+    // Only allow alphanumeric characters, dashes, and underscores
+    // Reject any session_id containing path separators, null bytes, or special chars
+    if session_id.is_empty() {
+        return Err(crate::error::StatuslineError::Config(
+            "Session ID cannot be empty".to_string(),
+        ));
+    }
+
+    if session_id.len() > 255 {
+        return Err(crate::error::StatuslineError::Config(
+            "Session ID exceeds maximum length (255 characters)".to_string(),
+        ));
+    }
+
+    // Check for dangerous characters
+    if session_id.contains('/') || session_id.contains('\\') || session_id.contains('\0') {
+        return Err(crate::error::StatuslineError::Config(format!(
+            "Invalid session ID: contains path separator or null byte: {}",
+            session_id
+        )));
+    }
+
+    // Allow only safe characters: alphanumeric, dash, underscore, dot
+    // Reject control characters and other special characters
+    if !session_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(crate::error::StatuslineError::Config(format!(
+            "Invalid session ID: contains unsafe characters: {}",
+            session_id
+        )));
+    }
+
+    // Prevent directory traversal attempts
+    if session_id.contains("..") {
+        return Err(crate::error::StatuslineError::Config(format!(
+            "Invalid session ID: contains directory traversal: {}",
+            session_id
+        )));
+    }
+
+    Ok(session_id.to_string())
 }
 
 /// Get the state file path for a session
 fn get_state_file_path(session_id: &str) -> Result<PathBuf> {
     let cache_dir = get_cache_dir()?;
-    Ok(cache_dir.join(format!("state-{}.json", session_id)))
+    let safe_session_id = sanitize_session_id(session_id)?;
+    Ok(cache_dir.join(format!("state-{}.json", safe_session_id)))
 }
 
 /// Write state to file atomically
@@ -324,5 +384,115 @@ mod tests {
 
         // Verify it's gone
         assert!(read_state(&session_id).is_none());
+    }
+
+    #[test]
+    fn test_session_id_path_traversal_rejected() {
+        // Path traversal attempts should be rejected
+        let session_id = "../../etc/passwd";
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_null_byte_rejected() {
+        // Null byte injection attempts should be rejected
+        let session_id = "test\0evil";
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_path_separator_rejected() {
+        // Path separators should be rejected
+        let session_id1 = "test/path";
+        let session_id2 = "test\\path";
+
+        let state1 = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id1.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        let state2 = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id2.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Both should fail to write
+        assert!(write_state(&state1).is_err());
+        assert!(write_state(&state2).is_err());
+    }
+
+    #[test]
+    fn test_session_id_safe_characters_allowed() {
+        // Safe characters should be allowed
+        let session_id = format!("{}-safe_session.123", test_session_id());
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id.clone(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should succeed
+        assert!(write_state(&state).is_ok());
+        assert!(read_state(&session_id).is_some());
+
+        // Cleanup
+        clear_state(&session_id).unwrap();
+    }
+
+    #[test]
+    fn test_session_id_empty_rejected() {
+        // Empty session_id should be rejected
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: "".to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_too_long_rejected() {
+        // Session IDs longer than 255 characters should be rejected
+        let session_id = "a".repeat(256);
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id,
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
     }
 }

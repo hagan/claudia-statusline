@@ -247,13 +247,40 @@ fn main() -> Result<()> {
                 let config_path = config::Config::default_config_path()?;
                 println!("Generating example config file at: {:?}", config_path);
 
-                // Create parent directories
+                // Create parent directories with secure permissions (0o700 on Unix)
                 if let Some(parent) = config_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::DirBuilderExt;
+                        std::fs::DirBuilder::new()
+                            .mode(0o700)
+                            .recursive(true)
+                            .create(parent)?;
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        std::fs::create_dir_all(parent)?;
+                    }
                 }
 
-                // Write example config
-                std::fs::write(&config_path, config::Config::example_toml())?;
+                // Write example config with secure permissions (0o600 on Unix)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&config_path)?;
+                    std::io::Write::write_all(&mut file, config::Config::example_toml().as_bytes())?;
+                }
+
+                #[cfg(not(unix))]
+                {
+                    std::fs::write(&config_path, config::Config::example_toml())?;
+                }
                 println!("Config file generated successfully!");
                 println!("Edit {} to customize settings", config_path.display());
                 return Ok(());
@@ -811,9 +838,21 @@ fn finalize_migration(delete_json: bool) -> Result<()> {
     println!("\n📝 Updating configuration...");
     let config_path = config::Config::default_config_path()?;
 
-    // Create config directory if it doesn't exist
+    // Create config directory if it doesn't exist with secure permissions (0o700 on Unix)
     if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .recursive(true)
+                .create(parent)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(parent)?;
+        }
     }
 
     // Load existing config or create new one

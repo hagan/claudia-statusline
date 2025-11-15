@@ -435,23 +435,51 @@ fn get_stats_backup_path() -> Result<PathBuf> {
 
 // Helper function to acquire and lock the stats file with retry
 fn acquire_stats_file(path: &Path) -> Result<File> {
-    // Ensure directory exists
+    // Ensure directory exists with secure permissions (0o700 on Unix)
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .recursive(true)
+                .create(parent)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(parent)?;
+        }
     }
 
     // Use retry configuration for file operations
     let retry_config = RetryConfig::for_file_ops();
 
-    // Try to open the file with retry
+    // Try to open the file with retry and secure permissions (0o600 on Unix)
     let file = retry_if_retryable(&retry_config, || {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(StatuslineError::from)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600) // Owner read/write only on Unix
+                .open(path)
+                .map_err(StatuslineError::from)
+        }
+
+        #[cfg(not(unix))]
+        {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .map_err(StatuslineError::from)
+        }
     })?;
 
     // Try to acquire exclusive lock with retry

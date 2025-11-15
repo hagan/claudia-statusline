@@ -135,14 +135,55 @@ type DbConnection = PooledConnection<SqliteConnectionManager>;
 
 impl SqliteDatabase {
     pub fn new(db_path: &Path) -> Result<Self> {
-        // Ensure parent directory exists
+        // Ensure parent directory exists with secure permissions (0o700 on Unix)
         if let Some(parent) = db_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-                    Some(format!("Failed to create directory: {}", e)),
-                )
-            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .recursive(true)
+                    .create(parent)
+                    .map_err(|e| {
+                        rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                            Some(format!("Failed to create directory: {}", e)),
+                        )
+                    })?;
+            }
+
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                        Some(format!("Failed to create directory: {}", e)),
+                    )
+                })?;
+            }
+        }
+
+        // Set secure file permissions for database file (0o600 on Unix) if it exists
+        #[cfg(unix)]
+        {
+            if db_path.exists() {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(db_path)
+                    .map_err(|e| {
+                        rusqlite::Error::SqliteFailure(
+                            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                            Some(format!("Failed to get database file metadata: {}", e)),
+                        )
+                    })?
+                    .permissions();
+                perms.set_mode(0o600);
+                std::fs::set_permissions(db_path, perms).map_err(|e| {
+                    rusqlite::Error::SqliteFailure(
+                        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+                        Some(format!("Failed to set database file permissions: {}", e)),
+                    )
+                })?;
+            }
         }
 
         // Get configuration
