@@ -156,7 +156,6 @@ fn test_db_maintain_basic_execution() {
     let output = Command::new(get_binary_path())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
-        .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
         .arg("--quiet")
         .output()

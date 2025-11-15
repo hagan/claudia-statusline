@@ -35,7 +35,6 @@ fn test_dual_write_creates_both_files() {
     // Set environment to use temp directory for both data and config
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
     std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
-    std::env::set_var("XDG_CONFIG_HOME", temp_dir.path());
 
     // Create test input with cost data to trigger stats update
     let input = r#"{
