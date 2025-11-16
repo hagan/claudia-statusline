@@ -1050,4 +1050,115 @@ mod tests {
 
         env::remove_var("XDG_DATA_HOME");
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_stats_file_permissions_on_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        // Create new stats file
+        let stats = StatsData::default();
+        stats.save().unwrap();
+
+        // Verify stats.json has 0o600 permissions
+        let stats_path = get_data_dir().join("stats.json");
+        let metadata = fs::metadata(&stats_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "stats.json should have 0o600 permissions, got: {:o}",
+            mode & 0o777
+        );
+
+        env::remove_var("STATUSLINE_JSON_BACKUP");
+        env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_stats_file_permissions_fixed_on_save() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        let stats_path = get_data_dir().join("stats.json");
+
+        // Create stats file with world-readable permissions (0o644)
+        let stats = StatsData::default();
+        let json = serde_json::to_string_pretty(&stats).unwrap();
+        fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
+        fs::write(&stats_path, json).unwrap();
+
+        let mut perms = fs::metadata(&stats_path).unwrap().permissions();
+        perms.set_mode(0o644); // World-readable
+        fs::set_permissions(&stats_path, perms).unwrap();
+
+        // Verify it's world-readable before fix
+        let mode_before = fs::metadata(&stats_path).unwrap().permissions().mode();
+        assert_eq!(mode_before & 0o777, 0o644, "Setup: file should be 0o644");
+
+        // Directly call acquire_stats_file to fix permissions (bypasses config cache)
+        let _ = acquire_stats_file(&stats_path).unwrap();
+
+        // Verify permissions were fixed to 0o600
+        let metadata = fs::metadata(&stats_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "stats.json should be fixed to 0o600 on save, got: {:o}",
+            mode & 0o777
+        );
+
+        env::remove_var("STATUSLINE_JSON_BACKUP");
+        env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_backup_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        let stats_path = get_data_dir().join("stats.json");
+
+        // Create corrupted stats file
+        fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
+        fs::write(&stats_path, "not valid json {").unwrap();
+
+        // Load stats (triggers backup creation)
+        let _stats = StatsData::load();
+
+        // Verify backup file has 0o600 permissions
+        let backup_path = stats_path.with_extension("backup");
+        assert!(backup_path.exists(), "Backup should be created");
+
+        let metadata = fs::metadata(&backup_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "Backup file should have 0o600 permissions, got: {:o}",
+            mode & 0o777
+        );
+
+        env::remove_var("STATUSLINE_JSON_BACKUP");
+        env::remove_var("XDG_DATA_HOME");
+    }
 }

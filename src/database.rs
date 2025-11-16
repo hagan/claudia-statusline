@@ -1847,4 +1847,120 @@ mod tests {
         assert!(date_str.contains('-')); // Date separators
         assert!(date_str.len() > 10); // At least YYYY-MM-DD
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_database_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create new database
+        let _db = SqliteDatabase::new(&db_path).unwrap();
+
+        // Verify main database file has 0o600 permissions
+        let metadata = std::fs::metadata(&db_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "Database file should have 0o600 permissions, got: {:o}",
+            mode & 0o777
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_database_wal_shm_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create database and insert data to trigger WAL creation
+        {
+            let db = SqliteDatabase::new(&db_path).unwrap();
+            let update = SessionUpdate {
+                cost: 10.0,
+                lines_added: 100,
+                lines_removed: 50,
+                model_name: Some("Test Model".to_string()),
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+            };
+            db.update_session("test-session", update).unwrap();
+        } // Drop db to ensure WAL/SHM files are created
+
+        // Check WAL file permissions
+        let wal_path = db_path.with_extension("db-wal");
+        if wal_path.exists() {
+            let metadata = std::fs::metadata(&wal_path).unwrap();
+            let mode = metadata.permissions().mode();
+
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "WAL file should have 0o600 permissions, got: {:o}",
+                mode & 0o777
+            );
+        }
+
+        // Check SHM file permissions
+        let shm_path = db_path.with_extension("db-shm");
+        if shm_path.exists() {
+            let metadata = std::fs::metadata(&shm_path).unwrap();
+            let mode = metadata.permissions().mode();
+
+            assert_eq!(
+                mode & 0o777,
+                0o600,
+                "SHM file should have 0o600 permissions, got: {:o}",
+                mode & 0o777
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_existing_database_permissions_fixed() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        // Create database with world-readable permissions
+        {
+            let _db = SqliteDatabase::new(&db_path).unwrap();
+        }
+
+        // Manually change permissions to world-readable
+        let mut perms = std::fs::metadata(&db_path).unwrap().permissions();
+        perms.set_mode(0o644);
+        std::fs::set_permissions(&db_path, perms).unwrap();
+
+        // Verify it's world-readable before fix
+        let mode_before = std::fs::metadata(&db_path).unwrap().permissions().mode();
+        assert_eq!(mode_before & 0o777, 0o644, "Setup: DB should be 0o644");
+
+        // Re-open database (should fix permissions)
+        let _db = SqliteDatabase::new(&db_path).unwrap();
+
+        // Verify permissions were fixed
+        let metadata = std::fs::metadata(&db_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "Existing database should be fixed to 0o600, got: {:o}",
+            mode & 0o777
+        );
+    }
 }
