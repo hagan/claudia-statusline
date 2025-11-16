@@ -292,10 +292,7 @@ impl SqliteDatabase {
                 perms.set_mode(0o600);
                 // Best effort - log warning but don't fail
                 if let Err(e) = std::fs::set_permissions(db_path, perms) {
-                    log::warn!(
-                        "Failed to set database file permissions to 0o600: {}",
-                        e
-                    );
+                    log::warn!("Failed to set database file permissions to 0o600: {}", e);
                 }
             }
 

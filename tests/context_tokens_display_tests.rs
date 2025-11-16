@@ -23,7 +23,10 @@ fn get_test_binary() -> String {
 
 /// Create a config file with show_context_tokens setting
 fn create_config(show_context_tokens: bool) -> std::path::PathBuf {
-    let path = std::env::temp_dir().join(format!("statusline_test_config_{}.toml", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "statusline_test_config_{}.toml",
+        std::process::id()
+    ));
 
     std::fs::write(
         &path,
@@ -43,8 +46,15 @@ show_context_tokens = {}
 /// Create a transcript file with specified token usage
 fn create_transcript(input_tokens: u32, output_tokens: u32) -> std::path::PathBuf {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let path = std::env::temp_dir().join(format!("statusline_test_transcript_{}_{}.jsonl", std::process::id(), timestamp));
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let path = std::env::temp_dir().join(format!(
+        "statusline_test_transcript_{}_{}.jsonl",
+        std::process::id(),
+        timestamp
+    ));
 
     std::fs::write(
         &path,
@@ -78,11 +88,7 @@ fn test_context_tokens_shown_when_enabled() {
         .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(json.as_bytes())?;
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute binary");
@@ -130,11 +136,7 @@ fn test_context_tokens_hidden_when_disabled() {
         .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(json.as_bytes())?;
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute binary");
@@ -171,8 +173,8 @@ fn test_context_tokens_formatting() {
 
     // Test various token sizes to verify formatting
     let test_cases = vec![
-        (1000, 500, "2k"),      // Small numbers (1.5k total → rounds to 2k)
-        (85000, 1000, "86k"),   // Medium (86k total)
+        (1000, 500, "2k"),       // Small numbers (1.5k total → rounds to 2k)
+        (85000, 1000, "86k"),    // Medium (86k total)
         (500000, 10000, "510k"), // Large
     ];
 
@@ -193,11 +195,7 @@ fn test_context_tokens_formatting() {
             .stderr(Stdio::piped())
             .spawn()
             .and_then(|mut child| {
-                child
-                    .stdin
-                    .as_mut()
-                    .unwrap()
-                    .write_all(json.as_bytes())?;
+                child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
                 child.wait_with_output()
             })
             .expect("Failed to execute binary");
@@ -233,11 +231,7 @@ fn test_context_tokens_without_transcript() {
         .stderr(Stdio::piped())
         .spawn()
         .and_then(|mut child| {
-            child
-                .stdin
-                .as_mut()
-                .unwrap()
-                .write_all(json.as_bytes())?;
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
             child.wait_with_output()
         })
         .expect("Failed to execute binary");

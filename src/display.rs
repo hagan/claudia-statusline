@@ -718,10 +718,7 @@ mod tests {
             "InProgress should show 'Compacting' message"
         );
         // Should NOT show percentage or progress bar during compaction
-        assert!(
-            !bar.contains('%'),
-            "InProgress should not show percentage"
-        );
+        assert!(!bar.contains('%'), "InProgress should not show percentage");
         // Check for progress bar pattern (not ANSI escape codes which also contain '[')
         assert!(
             !bar.contains("[=") && !bar.contains("[>") && !bar.contains("[-"),
@@ -737,10 +734,7 @@ mod tests {
         };
         let bar = format_context_bar(&recently_completed, None, None);
         assert!(bar.contains("35%"), "Should show correct percentage");
-        assert!(
-            bar.contains('✓'),
-            "RecentlyCompleted should show checkmark"
-        );
+        assert!(bar.contains('✓'), "RecentlyCompleted should show checkmark");
 
         // Test Normal state with warning
         let normal_warning = ContextUsage {
@@ -751,7 +745,10 @@ mod tests {
         };
         let bar = format_context_bar(&normal_warning, None, None);
         assert!(bar.contains("85%"), "Should show correct percentage");
-        assert!(bar.contains('⚠'), "Normal with high usage should show warning");
+        assert!(
+            bar.contains('⚠'),
+            "Normal with high usage should show warning"
+        );
         assert!(!bar.contains('✓'), "Normal should not show checkmark");
     }
 

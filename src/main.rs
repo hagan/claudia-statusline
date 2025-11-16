@@ -274,7 +274,10 @@ fn main() -> Result<()> {
                         .truncate(true)
                         .mode(0o600)
                         .open(&config_path)?;
-                    std::io::Write::write_all(&mut file, config::Config::example_toml().as_bytes())?;
+                    std::io::Write::write_all(
+                        &mut file,
+                        config::Config::example_toml().as_bytes(),
+                    )?;
                 }
 
                 #[cfg(not(unix))]

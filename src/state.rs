@@ -500,20 +500,20 @@ mod tests {
     fn test_session_id_special_characters_rejected() {
         // Special characters should be rejected
         let dangerous_chars = vec![
-            "test@session",     // @ symbol
-            "test#session",     // # symbol
-            "test$session",     // $ symbol
-            "test session",     // space
-            "test;session",     // semicolon
-            "test|session",     // pipe
-            "test&session",     // ampersand
-            "test`session",     // backtick
-            "test'session",     // single quote
-            "test\"session",    // double quote
-            "test<session",     // less than
-            "test>session",     // greater than
-            "test(session",     // parenthesis
-            "test)session",     // parenthesis
+            "test@session",  // @ symbol
+            "test#session",  // # symbol
+            "test$session",  // $ symbol
+            "test session",  // space
+            "test;session",  // semicolon
+            "test|session",  // pipe
+            "test&session",  // ampersand
+            "test`session",  // backtick
+            "test'session",  // single quote
+            "test\"session", // double quote
+            "test<session",  // less than
+            "test>session",  // greater than
+            "test(session",  // parenthesis
+            "test)session",  // parenthesis
         ];
 
         for session_id in dangerous_chars {
@@ -572,10 +572,10 @@ mod tests {
     fn test_session_id_control_characters_rejected() {
         // Control characters should be rejected
         let control_chars = vec![
-            "test\x00session",  // Null byte
-            "test\x01session",  // SOH
-            "test\x1Bsession",  // Escape
-            "test\x7Fsession",  // Delete
+            "test\x00session", // Null byte
+            "test\x01session", // SOH
+            "test\x1Bsession", // Escape
+            "test\x7Fsession", // Delete
         ];
 
         for session_id in control_chars {

@@ -32,8 +32,7 @@ pub fn sanitize_for_terminal(input: &str) -> String {
     // Remove ANSI escape sequences (e.g., \x1b[31m for colors)
     // Pattern matches: ESC [ ... m where ... is any sequence of digits and semicolons
     let ansi_regex = ANSI_REGEX.get_or_init(|| {
-        regex::Regex::new(r"\x1b\[[0-9;]*m")
-            .expect("ANSI regex pattern should be valid")
+        regex::Regex::new(r"\x1b\[[0-9;]*m").expect("ANSI regex pattern should be valid")
     });
     let mut sanitized = ansi_regex.replace_all(input, "").to_string();
 
@@ -46,8 +45,7 @@ pub fn sanitize_for_terminal(input: &str) -> String {
         .filter(|c| {
             let code = *c as u32;
             // Allow printable ASCII and Unicode, plus tab character only
-            (*c == '\t')
-                || (code >= 0x20 && code != 0x7F && !(0x80..=0x9F).contains(&code))
+            (*c == '\t') || (code >= 0x20 && code != 0x7F && !(0x80..=0x9F).contains(&code))
         })
         .collect();
 

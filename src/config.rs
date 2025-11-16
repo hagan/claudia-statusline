@@ -604,15 +604,19 @@ impl Config {
                 .truncate(true)
                 .mode(0o600)
                 .open(path)
-                .map_err(|e| StatuslineError::Config(format!("Failed to write config file: {}", e)))?;
-            std::io::Write::write_all(&mut file, toml_string.as_bytes())
-                .map_err(|e| StatuslineError::Config(format!("Failed to write config file: {}", e)))?;
+                .map_err(|e| {
+                    StatuslineError::Config(format!("Failed to write config file: {}", e))
+                })?;
+            std::io::Write::write_all(&mut file, toml_string.as_bytes()).map_err(|e| {
+                StatuslineError::Config(format!("Failed to write config file: {}", e))
+            })?;
         }
 
         #[cfg(not(unix))]
         {
-            fs::write(path, toml_string)
-                .map_err(|e| StatuslineError::Config(format!("Failed to write config file: {}", e)))?;
+            fs::write(path, toml_string).map_err(|e| {
+                StatuslineError::Config(format!("Failed to write config file: {}", e))
+            })?;
         }
 
         Ok(())

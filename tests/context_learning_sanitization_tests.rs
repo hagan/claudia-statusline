@@ -69,15 +69,15 @@ fn setup_test_database_with_malicious_data() -> TempDir {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
             "Claude\x1b[31mFAKE\x1b[0m Sonnet", // ANSI escape in model name
-            156000,                               // observed_max_tokens
-            10,                                   // ceiling_observations
-            5,                                    // compaction_count
-            156000,                               // last_observed_max
-            "2025-01-15T12:00:00Z",              // last_updated
-            0.95,                                 // confidence_score
-            "2025-01-01T00:00:00Z",              // first_seen
+            156000,                             // observed_max_tokens
+            10,                                 // ceiling_observations
+            5,                                  // compaction_count
+            156000,                             // last_observed_max
+            "2025-01-15T12:00:00Z",             // last_updated
+            0.95,                               // confidence_score
+            "2025-01-01T00:00:00Z",             // first_seen
             "/home/user\nFAKE: System compromised\r\n", // Newlines in workspace
-            "device\x1b[1mBOLD\x1b[0m123",             // ANSI escape in device_id
+            "device\x1b[1mBOLD\x1b[0m123",      // ANSI escape in device_id
         ],
     )
     .expect("Failed to insert malicious data");
@@ -90,16 +90,16 @@ fn setup_test_database_with_malicious_data() -> TempDir {
           workspace_dir, device_id)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
         rusqlite::params![
-            "Test Model",                         // Clean model name
-            150000,                               // observed_max_tokens
-            8,                                    // ceiling_observations
-            3,                                    // compaction_count
-            150000,                               // last_observed_max
-            "2025-01-10T10:00:00Z",              // last_updated
-            0.90,                                 // confidence_score
-            "2025-01-01T00:00:00Z",              // first_seen
-            "/workspace/test\nMALICIOUS\r\n",    // Newlines in workspace
-            "device\x1b[1m999\x1b[0m",           // ANSI in device_id
+            "Test Model",                     // Clean model name
+            150000,                           // observed_max_tokens
+            8,                                // ceiling_observations
+            3,                                // compaction_count
+            150000,                           // last_observed_max
+            "2025-01-10T10:00:00Z",           // last_updated
+            0.90,                             // confidence_score
+            "2025-01-01T00:00:00Z",           // first_seen
+            "/workspace/test\nMALICIOUS\r\n", // Newlines in workspace
+            "device\x1b[1m999\x1b[0m",        // ANSI in device_id
         ],
     )
     .expect("Failed to insert clean record");
@@ -188,7 +188,7 @@ fn test_context_learning_details_sanitizes_device_id() {
 
     assert!(output.status.success(), "Command should succeed");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let _stdout = String::from_utf8_lossy(&output.stdout);
 
     // The malicious input was "device\x1b[1m999\x1b[0m"
     // Even though the model might not be found, we verify the command doesn't crash
@@ -213,12 +213,17 @@ fn test_context_learning_handles_missing_model() {
         .output()
         .expect("Failed to execute command");
 
-    assert!(output.status.success(), "Command should succeed even with missing model");
+    assert!(
+        output.status.success(),
+        "Command should succeed even with missing model"
+    );
 
     // Should not crash and should show appropriate message
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("No learning data") || stdout.contains("not found") || stdout.contains("No learned"),
+        stdout.contains("No learning data")
+            || stdout.contains("not found")
+            || stdout.contains("No learned"),
         "Should handle missing model gracefully, got: {}",
         stdout
     );
