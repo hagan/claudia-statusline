@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.20.0] - 2025-11-16
+
+> **Minor Release**: Token count display feature + security hardening
+
+### Added - Context Token Display
+
+**New configurable token count suffix** (contributed by @marvin-j97 - thank you!)
+
+Shows current/total token usage next to the context bar (e.g., ` 179k/1000k`):
+
+```toml
+[display]
+show_context_tokens = true  # Enable token count display
+```
+
+**Features:**
+- Displays formatted token ratio: `180k/200k`, `1.2M/2M`
+- Honors `show_context` setting (no bar = no token count)
+- Optional display via config or `STATUSLINE_SHOW_CONTEXT_TOKENS` env var
+- Intelligent formatting based on token magnitude (k/M suffix)
+
+**Implementation:**
+- New test suite: `tests/context_tokens_display_tests.rs` (246 lines)
+- 4 comprehensive integration tests covering all scenarios
+- Tests enabled/disabled states, formatting, and edge cases
+
+### Security - Input Sanitization
+
+Enhanced security for context learning feature:
+
+- **Added comprehensive sanitization for all context learning inputs**
+  - Sanitizes workspace directories before storage
+  - Sanitizes device IDs in audit trail
+  - Sanitizes model names in learned windows
+  - Prevents injection attacks through malicious JSON input
+- **New sanitization test suite** (`tests/context_learning_sanitization_tests.rs`)
+  - 7 comprehensive tests for workspace_dir, device_id, and model_name
+  - Validates ANSI escape stripping, control character removal
+  - Tests path traversal prevention and null byte injection protection
+
+### Fixed - CI Test Failures
+
+- **Fixed `test_stats_save_and_load` failure in CI**
+  - Root cause: Config caching prevented test from using temp directory
+  - Solution: Query SQLite database directly instead of using `StatsData::load()`
+  - Avoids XDG_DATA_HOME dependency in CI environments
+- **Fixed `test_context_tokens_hidden_when_disabled` false positive**
+  - Root cause: CI working directory path (`/work/claudia-statusline/`) matched simple string check
+  - Solution: Use regex pattern `\d+[kKmM]/\d+[kKmM]` for accurate token detection
+  - Updated both enabled and disabled tests for consistency
+
+### Code Quality
+
+- Applied rustfmt formatting across all modified files
+- Zero clippy warnings
+- All 396+ tests passing in CI
+
+### Technical Details
+
+- Token count formatting uses existing `format_number()` utility
+- Sanitization uses existing `sanitize_for_terminal()` function from security module
+- Database queries use rusqlite::Connection directly for test isolation
+- Regex validation prevents directory paths from triggering false positives
+
 ## [2.19.0] - 2025-11-12
 
 > **Minor Release**: 6 new professional themes + hex color support!
