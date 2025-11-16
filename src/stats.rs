@@ -1066,7 +1066,8 @@ mod tests {
         stats.save().unwrap();
 
         // Verify stats.json has 0o600 permissions
-        let stats_path = get_data_dir().join("stats.json");
+        // Use temp_dir path directly since get_data_dir() uses cached config
+        let stats_path = temp_dir.path().join("claudia-statusline/stats.json");
         let metadata = fs::metadata(&stats_path).unwrap();
         let mode = metadata.permissions().mode();
 
