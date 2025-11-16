@@ -213,7 +213,13 @@ fn test_context_tokens_formatting() {
             output,
             stdout
         );
+
+        // Clean up transcript file for this iteration
+        let _ = std::fs::remove_file(&transcript);
     }
+
+    // Clean up config file
+    let _ = std::fs::remove_file(&config_file);
 }
 
 #[test]
