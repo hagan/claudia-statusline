@@ -805,10 +805,28 @@ mod tests {
         let db_path = temp_dir.path().join("claudia-statusline").join("stats.db");
         assert!(db_path.exists(), "Database should be created");
 
-        let loaded_stats = StatsData::load();
-        // Check that the session was saved and loaded correctly
-        assert!(loaded_stats.sessions.contains_key("test"));
-        assert!(loaded_stats.all_time.total_cost >= 5.0); // At least our cost
+        // Verify the session was saved to the database by querying directly
+        // We can't use StatsData::load() because it uses the cached global config
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path).unwrap();
+        let session_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sessions WHERE session_id = ?1",
+                [&"test"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(session_exists, "Session 'test' should exist in database");
+
+        // Verify the cost was saved
+        let total_cost: f64 = conn
+            .query_row(
+                "SELECT SUM(cost) FROM sessions WHERE session_id = ?1",
+                [&"test"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(total_cost >= 5.0, "Total cost should be at least 5.0");
 
         env::remove_var("XDG_DATA_HOME");
     }
