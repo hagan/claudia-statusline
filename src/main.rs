@@ -247,13 +247,43 @@ fn main() -> Result<()> {
                 let config_path = config::Config::default_config_path()?;
                 println!("Generating example config file at: {:?}", config_path);
 
-                // Create parent directories
+                // Create parent directories with secure permissions (0o700 on Unix)
                 if let Some(parent) = config_path.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::DirBuilderExt;
+                        std::fs::DirBuilder::new()
+                            .mode(0o700)
+                            .recursive(true)
+                            .create(parent)?;
+                    }
+
+                    #[cfg(not(unix))]
+                    {
+                        std::fs::create_dir_all(parent)?;
+                    }
                 }
 
-                // Write example config
-                std::fs::write(&config_path, config::Config::example_toml())?;
+                // Write example config with secure permissions (0o600 on Unix)
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::OpenOptionsExt;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create(true)
+                        .truncate(true)
+                        .mode(0o600)
+                        .open(&config_path)?;
+                    std::io::Write::write_all(
+                        &mut file,
+                        config::Config::example_toml().as_bytes(),
+                    )?;
+                }
+
+                #[cfg(not(unix))]
+                {
+                    std::fs::write(&config_path, config::Config::example_toml())?;
+                }
                 println!("Config file generated successfully!");
                 println!("Edit {} to customize settings", config_path.display());
                 return Ok(());
@@ -811,9 +841,21 @@ fn finalize_migration(delete_json: bool) -> Result<()> {
     println!("\n📝 Updating configuration...");
     let config_path = config::Config::default_config_path()?;
 
-    // Create config directory if it doesn't exist
+    // Create config directory if it doesn't exist with secure permissions (0o700 on Unix)
     if let Some(parent) = config_path.parent() {
-        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .recursive(true)
+                .create(parent)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(parent)?;
+        }
     }
 
     // Load existing config or create new one
@@ -1325,17 +1367,20 @@ fn handle_context_learning_command(
 
     // Handle reset for specific model
     if let Some(model_name) = reset {
+        // Sanitize model name for terminal output
+        let sanitized_model = crate::utils::sanitize_for_terminal(&model_name);
+
         println!(
             "{}Resetting learned context data for: {}{}",
             Colors::yellow(),
-            model_name,
+            sanitized_model,
             Colors::reset()
         );
         learner.reset_model(&model_name)?;
         println!(
             "{}✓ Learning data cleared for {}{}",
             Colors::green(),
-            model_name,
+            sanitized_model,
             Colors::reset()
         );
         return Ok(());
@@ -1343,12 +1388,15 @@ fn handle_context_learning_command(
 
     // Handle details for specific model
     if let Some(model_name) = details {
+        // Sanitize model name once up front for both success and error paths
+        let sanitized_model = crate::utils::sanitize_for_terminal(&model_name);
+
         if let Some(record) = learner.get_learned_window_details(&model_name)? {
             println!();
             println!(
                 "{}Learned Context Window Details for {}{}",
                 Colors::cyan(),
-                model_name,
+                sanitized_model,
                 Colors::reset()
             );
             println!("{}", "=".repeat(60));
@@ -1373,11 +1421,15 @@ fn handle_context_learning_command(
             println!("{}Audit Trail:{}", Colors::cyan(), Colors::reset());
             println!(
                 "  Workspace:               {}",
-                record.workspace_dir.as_deref().unwrap_or("<unknown>")
+                crate::utils::sanitize_for_terminal(
+                    record.workspace_dir.as_deref().unwrap_or("<unknown>")
+                )
             );
             println!(
                 "  Device ID:               {}",
-                record.device_id.as_deref().unwrap_or("<unknown>")
+                crate::utils::sanitize_for_terminal(
+                    record.device_id.as_deref().unwrap_or("<unknown>")
+                )
             );
             println!();
 
@@ -1404,7 +1456,7 @@ fn handle_context_learning_command(
             println!(
                 "{}No learning data found for: {}{}",
                 Colors::yellow(),
-                model_name,
+                sanitized_model,
                 Colors::reset()
             );
         }
@@ -1460,7 +1512,7 @@ fn handle_context_learning_command(
 
             println!(
                 "{:<25} {:>12} {}{:>9.1}%{} {:>10} {:>12}",
-                record.model_name,
+                crate::utils::sanitize_for_terminal(&record.model_name),
                 record.observed_max_tokens,
                 confidence_color,
                 record.confidence_score * 100.0,

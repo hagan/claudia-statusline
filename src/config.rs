@@ -572,15 +572,52 @@ impl Config {
         let toml_string = toml::to_string_pretty(self)
             .map_err(|e| StatuslineError::Config(format!("Failed to serialize config: {}", e)))?;
 
-        // Ensure parent directory exists
+        // Ensure parent directory exists with secure permissions (0o700 on Unix)
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                StatuslineError::Config(format!("Failed to create config directory: {}", e))
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .mode(0o700)
+                    .recursive(true)
+                    .create(parent)
+                    .map_err(|e| {
+                        StatuslineError::Config(format!("Failed to create config directory: {}", e))
+                    })?;
+            }
+
+            #[cfg(not(unix))]
+            {
+                fs::create_dir_all(parent).map_err(|e| {
+                    StatuslineError::Config(format!("Failed to create config directory: {}", e))
+                })?;
+            }
+        }
+
+        // Write config file with secure permissions (0o600 on Unix)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(path)
+                .map_err(|e| {
+                    StatuslineError::Config(format!("Failed to write config file: {}", e))
+                })?;
+            std::io::Write::write_all(&mut file, toml_string.as_bytes()).map_err(|e| {
+                StatuslineError::Config(format!("Failed to write config file: {}", e))
             })?;
         }
 
-        fs::write(path, toml_string)
-            .map_err(|e| StatuslineError::Config(format!("Failed to write config file: {}", e)))?;
+        #[cfg(not(unix))]
+        {
+            fs::write(path, toml_string).map_err(|e| {
+                StatuslineError::Config(format!("Failed to write config file: {}", e))
+            })?;
+        }
 
         Ok(())
     }
@@ -778,6 +815,11 @@ pub fn get_config() -> &'static Config {
         // Override json_backup from environment if set (for testing)
         if let Ok(val) = env::var("STATUSLINE_JSON_BACKUP") {
             config.database.json_backup = val == "true" || val == "1";
+        }
+
+        // Override show_context_tokens from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_SHOW_CONTEXT_TOKENS") {
+            config.display.show_context_tokens = val == "true" || val == "1";
         }
 
         config

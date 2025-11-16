@@ -41,16 +41,76 @@ fn get_cache_dir() -> Result<PathBuf> {
         })?
         .join("claudia-statusline");
 
-    // Ensure directory exists
-    fs::create_dir_all(&cache_dir)?;
+    // Ensure directory exists with secure permissions (0o700 - owner only)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(&cache_dir)?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(&cache_dir)?;
+    }
 
     Ok(cache_dir)
+}
+
+/// Sanitizes session ID to prevent path traversal attacks
+fn sanitize_session_id(session_id: &str) -> Result<String> {
+    // Only allow alphanumeric characters, dashes, and underscores
+    // Reject any session_id containing path separators, null bytes, or special chars
+    if session_id.is_empty() {
+        return Err(crate::error::StatuslineError::Config(
+            "Session ID cannot be empty".to_string(),
+        ));
+    }
+
+    if session_id.len() > 255 {
+        return Err(crate::error::StatuslineError::Config(
+            "Session ID exceeds maximum length (255 characters)".to_string(),
+        ));
+    }
+
+    // Check for dangerous characters
+    if session_id.contains('/') || session_id.contains('\\') || session_id.contains('\0') {
+        return Err(crate::error::StatuslineError::Config(format!(
+            "Invalid session ID: contains path separator or null byte: {}",
+            session_id
+        )));
+    }
+
+    // Allow only safe characters: alphanumeric, dash, underscore, dot
+    // Reject control characters and other special characters
+    if !session_id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.')
+    {
+        return Err(crate::error::StatuslineError::Config(format!(
+            "Invalid session ID: contains unsafe characters: {}",
+            session_id
+        )));
+    }
+
+    // Prevent directory traversal attempts
+    if session_id.contains("..") {
+        return Err(crate::error::StatuslineError::Config(format!(
+            "Invalid session ID: contains directory traversal: {}",
+            session_id
+        )));
+    }
+
+    Ok(session_id.to_string())
 }
 
 /// Get the state file path for a session
 fn get_state_file_path(session_id: &str) -> Result<PathBuf> {
     let cache_dir = get_cache_dir()?;
-    Ok(cache_dir.join(format!("state-{}.json", session_id)))
+    let safe_session_id = sanitize_session_id(session_id)?;
+    Ok(cache_dir.join(format!("state-{}.json", safe_session_id)))
 }
 
 /// Write state to file atomically
@@ -324,5 +384,328 @@ mod tests {
 
         // Verify it's gone
         assert!(read_state(&session_id).is_none());
+    }
+
+    #[test]
+    fn test_session_id_path_traversal_rejected() {
+        // Path traversal attempts should be rejected
+        let session_id = "../../etc/passwd";
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_null_byte_rejected() {
+        // Null byte injection attempts should be rejected
+        let session_id = "test\0evil";
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_path_separator_rejected() {
+        // Path separators should be rejected
+        let session_id1 = "test/path";
+        let session_id2 = "test\\path";
+
+        let state1 = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id1.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        let state2 = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id2.to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Both should fail to write
+        assert!(write_state(&state1).is_err());
+        assert!(write_state(&state2).is_err());
+    }
+
+    #[test]
+    fn test_session_id_safe_characters_allowed() {
+        // Safe characters should be allowed
+        let session_id = format!("{}-safe_session.123", test_session_id());
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: session_id.clone(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should succeed
+        assert!(write_state(&state).is_ok());
+        assert!(read_state(&session_id).is_some());
+
+        // Cleanup
+        clear_state(&session_id).unwrap();
+    }
+
+    #[test]
+    fn test_session_id_empty_rejected() {
+        // Empty session_id should be rejected
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id: "".to_string(),
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_too_long_rejected() {
+        // Session IDs longer than 255 characters should be rejected
+        let session_id = "a".repeat(256);
+        let state = HookState {
+            state: "compacting".to_string(),
+            trigger: "auto".to_string(),
+            session_id,
+            started_at: Utc::now(),
+            pid: None,
+        };
+
+        // Should fail to write
+        assert!(write_state(&state).is_err());
+    }
+
+    #[test]
+    fn test_session_id_special_characters_rejected() {
+        // Special characters should be rejected
+        let dangerous_chars = vec![
+            "test@session",  // @ symbol
+            "test#session",  // # symbol
+            "test$session",  // $ symbol
+            "test session",  // space
+            "test;session",  // semicolon
+            "test|session",  // pipe
+            "test&session",  // ampersand
+            "test`session",  // backtick
+            "test'session",  // single quote
+            "test\"session", // double quote
+            "test<session",  // less than
+            "test>session",  // greater than
+            "test(session",  // parenthesis
+            "test)session",  // parenthesis
+        ];
+
+        for session_id in dangerous_chars {
+            let state = HookState {
+                state: "compacting".to_string(),
+                trigger: "auto".to_string(),
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                pid: None,
+            };
+
+            assert!(
+                write_state(&state).is_err(),
+                "Session ID with '{}' should be rejected",
+                session_id
+            );
+        }
+    }
+
+    #[test]
+    fn test_session_id_valid_formats() {
+        // Test various valid session ID formats
+        let valid_ids = vec![
+            "simple",
+            "with-dashes",
+            "with_underscores",
+            "with.dots",
+            "MixedCase123",
+            "uuid-like-abc123-def456",
+            "session.2024-01-15",
+            "test-session_001.backup",
+        ];
+
+        for session_id in valid_ids {
+            let test_id = format!("{}-{}", test_session_id(), session_id);
+            let state = HookState {
+                state: "compacting".to_string(),
+                trigger: "auto".to_string(),
+                session_id: test_id.clone(),
+                started_at: Utc::now(),
+                pid: None,
+            };
+
+            assert!(
+                write_state(&state).is_ok(),
+                "Valid session ID '{}' should be accepted",
+                session_id
+            );
+
+            // Cleanup
+            clear_state(&test_id).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_session_id_control_characters_rejected() {
+        // Control characters should be rejected
+        let control_chars = vec![
+            "test\x00session", // Null byte
+            "test\x01session", // SOH
+            "test\x1Bsession", // Escape
+            "test\x7Fsession", // Delete
+        ];
+
+        for session_id in control_chars {
+            let state = HookState {
+                state: "compacting".to_string(),
+                trigger: "auto".to_string(),
+                session_id: session_id.to_string(),
+                started_at: Utc::now(),
+                pid: None,
+            };
+
+            assert!(
+                write_state(&state).is_err(),
+                "Session ID with control character should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn test_sanitize_session_id_comprehensive() {
+        // Path traversal attempts should be rejected
+        assert!(
+            sanitize_session_id("../etc/passwd").is_err(),
+            "Path traversal should be rejected"
+        );
+        assert!(
+            sanitize_session_id("..").is_err(),
+            "Directory traversal '..' should be rejected"
+        );
+        assert!(
+            sanitize_session_id("a..b").is_err(),
+            "Embedded '..' should be rejected"
+        );
+
+        // Path separators should be rejected (Unix and Windows)
+        assert!(
+            sanitize_session_id("foo/bar").is_err(),
+            "Unix path separator '/' should be rejected"
+        );
+        assert!(
+            sanitize_session_id("foo\\bar").is_err(),
+            "Windows path separator '\\' should be rejected"
+        );
+
+        // Null byte injection should be rejected
+        assert!(
+            sanitize_session_id("bad\0id").is_err(),
+            "Null byte should be rejected"
+        );
+
+        // Excessively long IDs should be rejected (>255 chars)
+        let long_id = "a".repeat(260);
+        assert!(
+            sanitize_session_id(&long_id).is_err(),
+            "Session ID exceeding 255 characters should be rejected"
+        );
+
+        // Empty string should be rejected
+        assert!(
+            sanitize_session_id("").is_err(),
+            "Empty session ID should be rejected"
+        );
+
+        // Special characters should be rejected
+        assert!(
+            sanitize_session_id("test@session").is_err(),
+            "@ character should be rejected"
+        );
+        assert!(
+            sanitize_session_id("test$session").is_err(),
+            "$ character should be rejected"
+        );
+        assert!(
+            sanitize_session_id("test session").is_err(),
+            "Space should be rejected"
+        );
+        assert!(
+            sanitize_session_id("test;session").is_err(),
+            "Semicolon should be rejected"
+        );
+
+        // Valid IDs should pass
+        assert!(
+            sanitize_session_id("valid_ID-123").is_ok(),
+            "Valid ID with alphanumeric, dash, underscore should be accepted"
+        );
+        assert!(
+            sanitize_session_id("test-session.001").is_ok(),
+            "Valid ID with dot should be accepted"
+        );
+        assert!(
+            sanitize_session_id("uuid-abc123-def456").is_ok(),
+            "UUID-like ID should be accepted"
+        );
+        assert!(
+            sanitize_session_id("a").is_ok(),
+            "Single character ID should be accepted"
+        );
+        assert!(
+            sanitize_session_id(&"a".repeat(255)).is_ok(),
+            "Maximum length (255) should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_get_state_file_path_rejects_invalid_ids() {
+        // Test that get_state_file_path properly rejects invalid session IDs
+        let long_id = "a".repeat(260); // Create binding for long-lived value
+        let invalid_ids = vec![
+            "../etc/passwd",
+            "foo/bar",
+            "bad\0id",
+            &long_id,
+            "",
+            "test@session",
+            "..",
+        ];
+
+        for bad_id in invalid_ids {
+            assert!(
+                get_state_file_path(bad_id).is_err(),
+                "get_state_file_path should reject invalid ID: {}",
+                bad_id.escape_default()
+            );
+        }
+
+        // Valid ID should succeed
+        assert!(
+            get_state_file_path("valid_ID-123").is_ok(),
+            "get_state_file_path should accept valid ID"
+        );
     }
 }

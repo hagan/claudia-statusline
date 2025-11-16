@@ -109,6 +109,18 @@ impl StatsData {
                         warn!("Failed to parse stats file: {}", e);
                         let backup_path = path.with_extension("backup");
                         let _ = fs::copy(&path, &backup_path);
+
+                        // Fix permissions on backup (fs::copy preserves source permissions)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = fs::metadata(&backup_path) {
+                                let mut perms = metadata.permissions();
+                                perms.set_mode(0o600);
+                                let _ = fs::set_permissions(&backup_path, perms);
+                            }
+                        }
+
                         warn!("Backed up corrupted stats to: {:?}", backup_path);
                     }
                 }
@@ -435,24 +447,63 @@ fn get_stats_backup_path() -> Result<PathBuf> {
 
 // Helper function to acquire and lock the stats file with retry
 fn acquire_stats_file(path: &Path) -> Result<File> {
-    // Ensure directory exists
+    // Ensure directory exists with secure permissions (0o700 on Unix)
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .mode(0o700)
+                .recursive(true)
+                .create(parent)?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::create_dir_all(parent)?;
+        }
     }
 
     // Use retry configuration for file operations
     let retry_config = RetryConfig::for_file_ops();
 
-    // Try to open the file with retry
+    // Try to open the file with retry and secure permissions (0o600 on Unix)
     let file = retry_if_retryable(&retry_config, || {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(path)
-            .map_err(StatuslineError::from)
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600) // Owner read/write only on Unix (for new files)
+                .open(path)
+                .map_err(StatuslineError::from)
+        }
+
+        #[cfg(not(unix))]
+        {
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(path)
+                .map_err(StatuslineError::from)
+        }
     })?;
+
+    // Fix permissions on existing files (mode flag only applies to new files)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = file.metadata() {
+            let mut perms = metadata.permissions();
+            perms.set_mode(0o600);
+            let _ = fs::set_permissions(path, perms); // Best effort - don't fail if it doesn't work
+        }
+    }
 
     // Try to acquire exclusive lock with retry
     retry_if_retryable(&retry_config, || {
@@ -486,6 +537,17 @@ fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
                     if let Err(e) = std::fs::copy(path, &backup_path) {
                         error!("Failed to backup corrupted stats file: {}", e);
                     } else {
+                        // Fix permissions on backup (fs::copy preserves source permissions)
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            if let Ok(metadata) = fs::metadata(&backup_path) {
+                                let mut perms = metadata.permissions();
+                                perms.set_mode(0o600);
+                                let _ = fs::set_permissions(&backup_path, perms);
+                            }
+                        }
+
                         warn!("Corrupted stats backed up to: {:?}", backup_path);
                     }
                 }
@@ -510,41 +572,6 @@ fn save_stats_data(file: &mut File, stats_data: &StatsData) {
     let json = serde_json::to_string_pretty(stats_data).unwrap_or_else(|_| "{}".to_string());
     if let Err(e) = file.write_all(json.as_bytes()) {
         error!("Failed to write stats file: {}", e);
-    }
-}
-
-// Write the current session to SQLite
-#[allow(dead_code)]
-fn write_current_session_to_sqlite(db: &SqliteDatabase, stats_data: &StatsData) {
-    if let Some((session_id, session)) = stats_data
-        .sessions
-        .iter()
-        .max_by_key(|(_, s)| &s.last_updated)
-    {
-        use crate::database::SessionUpdate;
-        match db.update_session(
-            session_id,
-            SessionUpdate {
-                cost: session.cost,
-                lines_added: session.lines_added,
-                lines_removed: session.lines_removed,
-                model_name: None,      // not available in dual-write
-                workspace_dir: None,   // not available in dual-write
-                device_id: None,       // not available in dual-write
-                token_breakdown: None, // not available in dual-write
-                max_tokens_observed: session.max_tokens_observed, // from in-memory stats
-            },
-        ) {
-            Ok((day_total, session_total)) => {
-                debug!(
-                    "SQLite dual-write successful: day=${:.2}, session=${:.2}",
-                    day_total, session_total
-                );
-            }
-            Err(e) => {
-                warn!("SQLite dual-write failed: {}", e);
-            }
-        }
     }
 }
 
@@ -774,16 +801,32 @@ mod tests {
 
         // Make sure data was persisted (either JSON or SQLite)
         // Note: In SQLite-only mode, stats.json may not exist
-        let data_dir = env::var("XDG_DATA_HOME").unwrap();
-        let db_path = PathBuf::from(&data_dir)
-            .join("claudia-statusline")
-            .join("stats.db");
+        // Use temp_dir path directly since get_data_dir() uses cached config
+        let db_path = temp_dir.path().join("claudia-statusline").join("stats.db");
         assert!(db_path.exists(), "Database should be created");
 
-        let loaded_stats = StatsData::load();
-        // Check that the session was saved and loaded correctly
-        assert!(loaded_stats.sessions.contains_key("test"));
-        assert!(loaded_stats.all_time.total_cost >= 5.0); // At least our cost
+        // Verify the session was saved to the database by querying directly
+        // We can't use StatsData::load() because it uses the cached global config
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path).unwrap();
+        let session_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sessions WHERE session_id = ?1",
+                [&"test"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(session_exists, "Session 'test' should exist in database");
+
+        // Verify the cost was saved
+        let total_cost: f64 = conn
+            .query_row(
+                "SELECT SUM(cost) FROM sessions WHERE session_id = ?1",
+                [&"test"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(total_cost >= 5.0, "Total cost should be at least 5.0");
 
         env::remove_var("XDG_DATA_HOME");
     }
@@ -1021,6 +1064,118 @@ mod tests {
         let backup_contents = fs::read_to_string(&backup_path).unwrap();
         assert_eq!(backup_contents, "not valid json {");
 
+        env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_stats_file_permissions_on_creation() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        // Create new stats file
+        let stats = StatsData::default();
+        stats.save().unwrap();
+
+        // Verify stats.json has 0o600 permissions
+        // Use temp_dir path directly since get_data_dir() uses cached config
+        let stats_path = temp_dir.path().join("claudia-statusline/stats.json");
+        let metadata = fs::metadata(&stats_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "stats.json should have 0o600 permissions, got: {:o}",
+            mode & 0o777
+        );
+
+        env::remove_var("STATUSLINE_JSON_BACKUP");
+        env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_stats_file_permissions_fixed_on_save() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        let stats_path = get_data_dir().join("stats.json");
+
+        // Create stats file with world-readable permissions (0o644)
+        let stats = StatsData::default();
+        let json = serde_json::to_string_pretty(&stats).unwrap();
+        fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
+        fs::write(&stats_path, json).unwrap();
+
+        let mut perms = fs::metadata(&stats_path).unwrap().permissions();
+        perms.set_mode(0o644); // World-readable
+        fs::set_permissions(&stats_path, perms).unwrap();
+
+        // Verify it's world-readable before fix
+        let mode_before = fs::metadata(&stats_path).unwrap().permissions().mode();
+        assert_eq!(mode_before & 0o777, 0o644, "Setup: file should be 0o644");
+
+        // Directly call acquire_stats_file to fix permissions (bypasses config cache)
+        let _ = acquire_stats_file(&stats_path).unwrap();
+
+        // Verify permissions were fixed to 0o600
+        let metadata = fs::metadata(&stats_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "stats.json should be fixed to 0o600 on save, got: {:o}",
+            mode & 0o777
+        );
+
+        env::remove_var("STATUSLINE_JSON_BACKUP");
+        env::remove_var("XDG_DATA_HOME");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_backup_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        let stats_path = get_data_dir().join("stats.json");
+
+        // Create corrupted stats file
+        fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
+        fs::write(&stats_path, "not valid json {").unwrap();
+
+        // Load stats (triggers backup creation)
+        let _stats = StatsData::load();
+
+        // Verify backup file has 0o600 permissions
+        let backup_path = stats_path.with_extension("backup");
+        assert!(backup_path.exists(), "Backup should be created");
+
+        let metadata = fs::metadata(&backup_path).unwrap();
+        let mode = metadata.permissions().mode();
+
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "Backup file should have 0o600 permissions, got: {:o}",
+            mode & 0o777
+        );
+
+        env::remove_var("STATUSLINE_JSON_BACKUP");
         env::remove_var("XDG_DATA_HOME");
     }
 }
