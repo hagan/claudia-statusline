@@ -176,8 +176,7 @@ fn test_context_tokens_hidden_when_disabled() {
     assert!(
         !has_token_ratio,
         "Should NOT show token count ratio when disabled.\nStdout: {}\nStderr: {}",
-        stdout,
-        stderr
+        stdout, stderr
     );
 
     // Clean up temp files
