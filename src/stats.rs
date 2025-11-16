@@ -802,9 +802,7 @@ mod tests {
         // Make sure data was persisted (either JSON or SQLite)
         // Note: In SQLite-only mode, stats.json may not exist
         // Use temp_dir path directly since get_data_dir() uses cached config
-        let db_path = temp_dir.path()
-            .join("claudia-statusline")
-            .join("stats.db");
+        let db_path = temp_dir.path().join("claudia-statusline").join("stats.db");
         assert!(db_path.exists(), "Database should be created");
 
         let loaded_stats = StatsData::load();
