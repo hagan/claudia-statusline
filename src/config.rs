@@ -813,6 +813,11 @@ pub fn get_config() -> &'static Config {
             config.database.json_backup = val == "true" || val == "1";
         }
 
+        // Override show_context_tokens from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_SHOW_CONTEXT_TOKENS") {
+            config.display.show_context_tokens = val == "true" || val == "1";
+        }
+
         config
     })
 }
