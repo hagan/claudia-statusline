@@ -801,8 +801,8 @@ mod tests {
 
         // Make sure data was persisted (either JSON or SQLite)
         // Note: In SQLite-only mode, stats.json may not exist
-        let data_dir = env::var("XDG_DATA_HOME").unwrap();
-        let db_path = PathBuf::from(&data_dir)
+        // Use temp_dir path directly since get_data_dir() uses cached config
+        let db_path = temp_dir.path()
             .join("claudia-statusline")
             .join("stats.db");
         assert!(db_path.exists(), "Database should be created");
