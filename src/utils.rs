@@ -14,6 +14,9 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+/// Static ANSI regex pattern, initialized once
+static ANSI_REGEX: OnceLock<regex::Regex> = OnceLock::new();
+
 /// Sanitizes a string for safe terminal output by removing control characters
 /// and ANSI escape sequences. This prevents malicious strings from manipulating
 /// terminal state or executing unintended commands.
@@ -24,9 +27,6 @@ use std::sync::OnceLock;
 ///
 /// # Returns
 ///
-/// Static ANSI regex pattern, initialized once
-static ANSI_REGEX: OnceLock<regex::Regex> = OnceLock::new();
-
 /// A sanitized string safe for terminal output
 pub fn sanitize_for_terminal(input: &str) -> String {
     // Remove ANSI escape sequences (e.g., \x1b[31m for colors)
