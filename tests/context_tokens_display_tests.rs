@@ -155,6 +155,7 @@ fn test_context_tokens_hidden_when_disabled() {
     assert!(output.status.success(), "Command should succeed");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
     // Should still show the progress bar percentage
     assert!(
@@ -169,8 +170,11 @@ fn test_context_tokens_hidden_when_disabled() {
 
     assert!(
         !has_token_ratio,
-        "Should NOT show token count ratio when disabled. Output: {}",
-        stdout
+        "Should NOT show token count ratio when disabled.\nStdout: {}\nStderr: {}\nhas k/: {}\nhas M/: {}",
+        stdout,
+        stderr,
+        stdout.contains("k/"),
+        stdout.contains("M/")
     );
 
     // Clean up temp files
