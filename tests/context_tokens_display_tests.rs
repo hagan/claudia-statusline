@@ -260,4 +260,7 @@ fn test_context_tokens_without_transcript() {
         "Should not show context bar without transcript. Output: {}",
         stdout
     );
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&config_file);
 }
