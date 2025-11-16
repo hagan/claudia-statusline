@@ -5,6 +5,7 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use tempfile::TempDir;
 
 /// Get the path to the test-built binary
 fn get_test_binary() -> String {
@@ -70,6 +71,9 @@ fn create_transcript(input_tokens: u32, output_tokens: u32) -> std::path::PathBu
 
 #[test]
 fn test_context_tokens_shown_when_enabled() {
+    // Create temp directory to avoid polluting user stats
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
     let config_file = create_config(true);
     let transcript = create_transcript(179000, 1000);
 
@@ -80,6 +84,8 @@ fn test_context_tokens_shown_when_enabled() {
     );
 
     let output = Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("STATUSLINE_CONFIG", &config_file)
         .env("STATUSLINE_SHOW_CONTEXT_TOKENS", "true") // Override for testing
         .env_remove("NO_COLOR") // Ensure colors are enabled
@@ -119,6 +125,9 @@ fn test_context_tokens_shown_when_enabled() {
 
 #[test]
 fn test_context_tokens_hidden_when_disabled() {
+    // Create temp directory to avoid polluting user stats
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
     let config_file = create_config(false);
     let transcript = create_transcript(179000, 1000);
 
@@ -128,6 +137,8 @@ fn test_context_tokens_hidden_when_disabled() {
     );
 
     let output = Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("STATUSLINE_CONFIG", &config_file)
         .env("STATUSLINE_SHOW_CONTEXT_TOKENS", "false") // Override to disable
         .env_remove("NO_COLOR")
@@ -169,6 +180,9 @@ fn test_context_tokens_hidden_when_disabled() {
 
 #[test]
 fn test_context_tokens_formatting() {
+    // Create temp directory to avoid polluting user stats
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
     let config_file = create_config(true);
 
     // Test various token sizes to verify formatting
@@ -187,6 +201,8 @@ fn test_context_tokens_formatting() {
         );
 
         let cmd_output = Command::new(get_test_binary())
+            .env("XDG_DATA_HOME", temp_dir.path())
+            .env("XDG_CONFIG_HOME", temp_dir.path())
             .env("STATUSLINE_CONFIG", &config_file)
             .env("STATUSLINE_SHOW_CONTEXT_TOKENS", "true") // Override for testing
             .env_remove("NO_COLOR")
@@ -224,12 +240,17 @@ fn test_context_tokens_formatting() {
 
 #[test]
 fn test_context_tokens_without_transcript() {
+    // Create temp directory to avoid polluting user stats
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
     let config_file = create_config(true);
 
     // JSON without transcript - context bar should not appear
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
     let output = Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("STATUSLINE_CONFIG", &config_file)
         .env_remove("NO_COLOR")
         .stdin(Stdio::piped())

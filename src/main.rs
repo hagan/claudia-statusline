@@ -1367,17 +1367,20 @@ fn handle_context_learning_command(
 
     // Handle reset for specific model
     if let Some(model_name) = reset {
+        // Sanitize model name for terminal output
+        let sanitized_model = crate::utils::sanitize_for_terminal(&model_name);
+
         println!(
             "{}Resetting learned context data for: {}{}",
             Colors::yellow(),
-            model_name,
+            sanitized_model,
             Colors::reset()
         );
         learner.reset_model(&model_name)?;
         println!(
             "{}✓ Learning data cleared for {}{}",
             Colors::green(),
-            model_name,
+            sanitized_model,
             Colors::reset()
         );
         return Ok(());
@@ -1385,12 +1388,15 @@ fn handle_context_learning_command(
 
     // Handle details for specific model
     if let Some(model_name) = details {
+        // Sanitize model name once up front for both success and error paths
+        let sanitized_model = crate::utils::sanitize_for_terminal(&model_name);
+
         if let Some(record) = learner.get_learned_window_details(&model_name)? {
             println!();
             println!(
                 "{}Learned Context Window Details for {}{}",
                 Colors::cyan(),
-                crate::utils::sanitize_for_terminal(&model_name),
+                sanitized_model,
                 Colors::reset()
             );
             println!("{}", "=".repeat(60));
@@ -1450,7 +1456,7 @@ fn handle_context_learning_command(
             println!(
                 "{}No learning data found for: {}{}",
                 Colors::yellow(),
-                model_name,
+                sanitized_model,
                 Colors::reset()
             );
         }
