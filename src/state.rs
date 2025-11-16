@@ -593,4 +593,119 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_sanitize_session_id_comprehensive() {
+        // Path traversal attempts should be rejected
+        assert!(
+            sanitize_session_id("../etc/passwd").is_err(),
+            "Path traversal should be rejected"
+        );
+        assert!(
+            sanitize_session_id("..").is_err(),
+            "Directory traversal '..' should be rejected"
+        );
+        assert!(
+            sanitize_session_id("a..b").is_err(),
+            "Embedded '..' should be rejected"
+        );
+
+        // Path separators should be rejected (Unix and Windows)
+        assert!(
+            sanitize_session_id("foo/bar").is_err(),
+            "Unix path separator '/' should be rejected"
+        );
+        assert!(
+            sanitize_session_id("foo\\bar").is_err(),
+            "Windows path separator '\\' should be rejected"
+        );
+
+        // Null byte injection should be rejected
+        assert!(
+            sanitize_session_id("bad\0id").is_err(),
+            "Null byte should be rejected"
+        );
+
+        // Excessively long IDs should be rejected (>255 chars)
+        let long_id = "a".repeat(260);
+        assert!(
+            sanitize_session_id(&long_id).is_err(),
+            "Session ID exceeding 255 characters should be rejected"
+        );
+
+        // Empty string should be rejected
+        assert!(
+            sanitize_session_id("").is_err(),
+            "Empty session ID should be rejected"
+        );
+
+        // Special characters should be rejected
+        assert!(
+            sanitize_session_id("test@session").is_err(),
+            "@ character should be rejected"
+        );
+        assert!(
+            sanitize_session_id("test$session").is_err(),
+            "$ character should be rejected"
+        );
+        assert!(
+            sanitize_session_id("test session").is_err(),
+            "Space should be rejected"
+        );
+        assert!(
+            sanitize_session_id("test;session").is_err(),
+            "Semicolon should be rejected"
+        );
+
+        // Valid IDs should pass
+        assert!(
+            sanitize_session_id("valid_ID-123").is_ok(),
+            "Valid ID with alphanumeric, dash, underscore should be accepted"
+        );
+        assert!(
+            sanitize_session_id("test-session.001").is_ok(),
+            "Valid ID with dot should be accepted"
+        );
+        assert!(
+            sanitize_session_id("uuid-abc123-def456").is_ok(),
+            "UUID-like ID should be accepted"
+        );
+        assert!(
+            sanitize_session_id("a").is_ok(),
+            "Single character ID should be accepted"
+        );
+        assert!(
+            sanitize_session_id(&"a".repeat(255)).is_ok(),
+            "Maximum length (255) should be accepted"
+        );
+    }
+
+    #[test]
+    fn test_get_state_file_path_rejects_invalid_ids() {
+        // Test that get_state_file_path properly rejects invalid session IDs
+        let long_id = "a".repeat(260); // Create binding for long-lived value
+        let invalid_ids = vec![
+            "../etc/passwd",
+            "foo/bar",
+            "bad\0id",
+            &long_id,
+            "",
+            "test@session",
+            "..",
+        ];
+
+        for bad_id in invalid_ids {
+            assert!(
+                get_state_file_path(bad_id).is_err(),
+                "get_state_file_path should reject invalid ID: {}",
+                bad_id.escape_default()
+            );
+        }
+
+        // Valid ID should succeed
+        assert!(
+            get_state_file_path("valid_ID-123").is_ok(),
+            "get_state_file_path should accept valid ID"
+        );
+    }
 }
