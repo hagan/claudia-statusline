@@ -796,6 +796,212 @@ adaptive_learning = false
 - You prefer consistency with Anthropic's advertised specifications
 - You're using adaptive learning and want to see refined total window estimate
 
+### Burn Rate Configuration
+
+**Added in v2.21.0**: Choose how session duration is calculated for burn rate (cost per hour).
+
+#### The Problem
+
+Long-running Claude sessions (multi-day projects) include idle time (nights, weekends, breaks), resulting in artificially low burn rates:
+- **Example**: $8.99 over 22 days (535 hours) = $0.02/hr ❌
+- **Reality**: $8.99 over 5 hours of actual usage = $1.80/hr ✅
+
+#### Configuration
+
+Edit `~/.config/claudia-statusline/config.toml`:
+
+```toml
+[burn_rate]
+# How to calculate session duration
+# Options: "wall_clock" (default), "active_time", "auto_reset"
+mode = "wall_clock"
+
+# Inactivity threshold in minutes (default: 60)
+# Messages separated by this duration are considered idle
+inactivity_threshold_minutes = 60
+```
+
+#### Mode Comparison
+
+| Mode | Duration Calculation | Best For | Example |
+|------|---------------------|----------|---------|
+| **"wall_clock"** (default) | Total time from session start to now | Quick sessions, accurate historical view | 22 days = $0.02/hr |
+| **"active_time"** | Sum of time between messages (excludes idle gaps) | Multi-day projects, accurate current rate | 5 hours = $1.80/hr ✅ |
+| **"auto_reset"** | Automatically start new session after inactivity | Long breaks, separate work sessions | Each day = separate session |
+
+#### Mode Details
+
+##### 1. Wall-Clock Mode (Default)
+
+**When to use:**
+- Short sessions (< 1 day)
+- Backward compatibility with existing behavior
+- Tracking total time including thinking/breaks
+
+**How it works:**
+- Duration = `now - session_start_time`
+- Includes all idle time
+- Simple, predictable calculation
+
+**Example:**
+```
+Session: 10:00 AM → 5:00 PM (7 hours wall-clock)
+Cost: $3.50
+Burn rate: $3.50 / 7h = $0.50/hr
+```
+
+##### 2. Active Time Mode
+
+**When to use:**
+- Multi-day projects with long idle periods
+- Want accurate cost per active hour
+- Tracking actual productivity time
+
+**How it works:**
+- Tracks time between consecutive messages
+- Excludes gaps ≥ inactivity threshold (default: 60 min)
+- Accumulates only active time in database
+- Updates automatically on every message
+
+**Example:**
+```
+Session over 3 days:
+- Day 1: 2 hours active (10 AM - 12 PM)
+- Day 2: 3 hours active (2 PM - 5 PM)
+- Day 3: 1 hour active (9 AM - 10 AM)
+
+Total active time: 6 hours
+Cost: $12.00
+Burn rate: $12.00 / 6h = $2.00/hr ✅
+```
+
+**Configuration:**
+```toml
+[burn_rate]
+mode = "active_time"
+inactivity_threshold_minutes = 60  # Default: 1 hour
+
+# Adjust threshold based on workflow:
+# inactivity_threshold_minutes = 30   # Shorter breaks
+# inactivity_threshold_minutes = 120  # Longer thinking time
+```
+
+##### 3. Auto-Reset Mode
+
+**When to use:**
+- Work in distinct daily sessions
+- Want separate stats per work period
+- Long breaks between coding sessions
+- Track each work period independently
+
+**How it works:**
+- Automatically archives current session after inactivity threshold
+- Resets counters (cost, lines, duration) to zero
+- Creates fresh session on next message
+- **History preserved** in `session_archive` table
+- Daily/monthly stats continue to accumulate across resets
+- Burn rate shows current work period only
+
+**Example:**
+```
+Monday 9 AM - 12 PM: Work Period 1 ($3.00, +120 lines)
+  → Idle for 2+ hours
+Monday 2 PM - 5 PM:  Work Period 2 ($4.50, +180 lines)
+  → Idle overnight
+Tuesday 9 AM - now:  Work Period 3 ($2.00, +50 lines, 2h = $1.00/hr)
+
+Statusline shows: $2.00 (current period), Daily total: $9.50
+Archive table has: 2 previous work periods preserved
+```
+
+**Key Features:**
+- ✅ **Automatic session management**: No manual resets needed
+- ✅ **History preserved**: All work periods archived to `session_archive` table
+- ✅ **Daily stats accurate**: Costs and lines accumulate across resets
+- ✅ **Clean burn rate**: Shows current work period, not multi-day average
+- ✅ **Configurable threshold**: Adjust inactivity detection to your workflow
+
+**Configuration:**
+```toml
+[burn_rate]
+mode = "auto_reset"
+inactivity_threshold_minutes = 60  # Reset after 1 hour idle
+```
+
+#### Technical Details
+
+**Database tracking:**
+- New columns (v2.21.0): `active_time_seconds`, `last_activity`
+- New table (v2.21.0): `session_archive` (for auto_reset mode)
+- Migration v5 automatically adds columns and table to existing databases
+- Active time accumulates incrementally on each message
+- Auto-reset archives old sessions before creating new ones
+
+**Calculation logic:**
+```rust
+// Active time mode
+if time_since_last_message < threshold {
+    active_time += time_since_last_message  // Add delta
+} else {
+    active_time += 0  // Idle - don't add
+}
+
+// Auto-reset mode
+if time_since_last_activity >= threshold {
+    archive_session(session_id)     // Save to session_archive
+    delete_session(session_id)      // Remove from sessions
+    create_new_session(session_id)  // Fresh counters
+}
+
+// Display
+burn_rate = total_cost / (session_duration / 3600.0)
+```
+
+**Backward compatibility:**
+- Default mode is "wall_clock" (preserves existing behavior)
+- Existing sessions work without changes
+- Migration runs automatically on first use
+
+#### Choosing the Right Mode
+
+**Use "wall_clock" if:**
+- ✅ Sessions are < 1 day
+- ✅ You want simple, predictable calculations
+- ✅ You include thinking/break time in productivity
+
+**Use "active_time" if:**
+- ✅ Multi-day projects with nights/weekends
+- ✅ You want accurate $/hour for actual work
+- ✅ Sessions span multiple days
+
+**Use "auto_reset" if:**
+- ✅ You work in distinct daily sessions
+- ✅ You want separate tracking per work period
+- ✅ Long breaks (lunch, overnight) should end sessions
+
+#### Example Configurations
+
+**Power user (multi-day projects, short breaks):**
+```toml
+[burn_rate]
+mode = "active_time"
+inactivity_threshold_minutes = 30  # 30-min break = still active
+```
+
+**Consultant (separate client sessions):**
+```toml
+[burn_rate]
+mode = "auto_reset"
+inactivity_threshold_minutes = 120  # 2-hour break = new session
+```
+
+**Default (simple tracking):**
+```toml
+[burn_rate]
+mode = "wall_clock"
+# threshold not used in wall_clock mode
+```
+
 ### Progress Bar Width
 
 Default is 10 characters. To change, edit `src/display.rs` and rebuild:

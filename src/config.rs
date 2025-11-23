@@ -33,6 +33,9 @@ pub struct Config {
     /// Sync configuration (optional cloud sync)
     #[cfg(feature = "turso-sync")]
     pub sync: SyncConfig,
+
+    /// Burn rate calculation configuration
+    pub burn_rate: BurnRateConfig,
 }
 
 /// Display-related configuration
@@ -308,6 +311,50 @@ pub struct GitConfig {
     pub timeout_ms: u32,
 }
 
+/// Burn rate calculation configuration
+///
+/// Controls how the hourly burn rate ($/hour) is calculated from session costs.
+///
+/// **Available Modes:**
+/// - **"wall_clock" (default)**: Uses total elapsed time from session start to last update
+///   - Simple and consistent across sessions
+///   - Includes idle time (nights, weekends, breaks)
+///   - Results in lower rates for long-running sessions
+///   - Example: $8.99 over 22 days = $0.02/hour
+///
+/// - **"active_time"**: Tracks only active conversation time
+///   - Counts time between consecutive messages
+///   - Excludes idle periods (>inactivity_threshold)
+///   - More accurate representation of actual usage cost
+///   - Requires tracking message timestamps in database
+///   - Example: $8.99 over 2 hours active = $4.50/hour
+///
+/// - **"auto_reset"**: Automatically starts new sessions after inactivity
+///   - Treats gaps >inactivity_threshold as session boundaries
+///   - Each session gets independent cost/duration tracking
+///   - Prevents multi-day sessions with inflated durations
+///   - Best for realistic burn rate tracking
+///   - Example: Session ends after 1 hour idle, new session on next message
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BurnRateConfig {
+    /// Burn rate calculation mode
+    ///
+    /// Options: "wall_clock", "active_time", or "auto_reset"
+    /// Default: "wall_clock" (backward compatible)
+    pub mode: String,
+
+    /// Inactivity threshold in minutes
+    ///
+    /// Used by "active_time" and "auto_reset" modes:
+    /// - **active_time**: Gaps longer than this are excluded from duration
+    /// - **auto_reset**: Session is considered ended after this much idle time
+    ///
+    /// Default: 60 minutes (1 hour)
+    /// Reasonable range: 15-120 minutes
+    pub inactivity_threshold_minutes: u32,
+}
+
 /// Sync configuration for cloud synchronization
 #[cfg(feature = "turso-sync")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -500,6 +547,15 @@ impl Default for GitConfig {
     fn default() -> Self {
         GitConfig {
             timeout_ms: 200, // 200ms default timeout for git operations
+        }
+    }
+}
+
+impl Default for BurnRateConfig {
+    fn default() -> Self {
+        BurnRateConfig {
+            mode: "wall_clock".to_string(), // Default to wall_clock for backward compatibility
+            inactivity_threshold_minutes: 60, // 1 hour default
         }
     }
 }
@@ -777,6 +833,27 @@ backoff_factor = 2.0
 # Git operation settings
 timeout_ms = 200  # Timeout for git operations
 
+[burn_rate]
+# Burn rate calculation mode
+# Options: "wall_clock", "active_time", or "auto_reset"
+#
+# - "wall_clock" (default): Uses total elapsed time from session start to last update
+#   Simple and backward compatible. Includes idle time (nights, weekends).
+#   Example: $8.99 over 22 days = $0.02/hour
+#
+# - "active_time": Tracks only active conversation time (excludes idle periods)
+#   More accurate representation of actual usage cost.
+#   Example: $8.99 over 2 hours active = $4.50/hour
+#
+# - "auto_reset": Automatically starts new sessions after inactivity
+#   Each session gets independent cost/duration tracking.
+#   Best for realistic burn rate tracking.
+mode = "wall_clock"
+
+# Inactivity threshold in minutes (used by "active_time" and "auto_reset" modes)
+# Default: 60 minutes (1 hour)
+inactivity_threshold_minutes = 60
+
 # Optional cloud sync configuration
 # Requires building with --features turso-sync
 # [sync]
@@ -820,6 +897,18 @@ pub fn get_config() -> &'static Config {
         // Override show_context_tokens from environment if set (for testing)
         if let Ok(val) = env::var("STATUSLINE_SHOW_CONTEXT_TOKENS") {
             config.display.show_context_tokens = val == "true" || val == "1";
+        }
+
+        // Override burn_rate.mode from environment if set (for testing)
+        if let Ok(mode) = env::var("STATUSLINE_BURN_RATE_MODE") {
+            config.burn_rate.mode = mode;
+        }
+
+        // Override burn_rate.inactivity_threshold_minutes from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_BURN_RATE_THRESHOLD") {
+            if let Ok(threshold) = val.parse::<u32>() {
+                config.burn_rate.inactivity_threshold_minutes = threshold;
+            }
         }
 
         config

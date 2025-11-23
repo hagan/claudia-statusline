@@ -198,6 +198,45 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 </details>
 
 <details>
+<summary><b>Configurable Burn Rate</b></summary>
+
+**New in v2.21.0**: Choose how session duration is calculated for accurate cost-per-hour tracking.
+
+**The Problem:** Multi-day sessions include idle time (nights, weekends), showing artificially low burn rates:
+- $8.99 over 22 days = $0.02/hr ❌
+- $8.99 over 5 hours active = $1.80/hr ✅
+
+**Three modes available:**
+
+| Mode | Best For | Example |
+|------|----------|---------|
+| **wall_clock** (default) | Quick sessions, backward compatibility | $3.50 / 7h = $0.50/hr |
+| **active_time** | Multi-day projects, accurate active rate | $12.00 / 6h active = $2.00/hr |
+| **auto_reset** | Separate daily sessions, distinct work periods | Each session tracked independently |
+
+**Configure in `~/.config/claudia-statusline/config.toml`:**
+```toml
+[burn_rate]
+mode = "active_time"  # or "wall_clock" or "auto_reset"
+inactivity_threshold_minutes = 60  # Default: 1 hour
+```
+
+**Active time mode** automatically excludes idle gaps ≥ threshold (default: 60 min):
+- Tracks time between consecutive messages
+- Excludes nights, weekends, long breaks
+- Shows realistic $/hour for actual work
+
+**Auto-reset mode** archives and resets session after inactivity:
+- Automatically archives old session to `session_archive` table
+- Resets counters (cost, lines, duration) to zero
+- Daily/monthly stats continue to accumulate
+- Great for consultants tracking multiple work periods
+- History preserved for analytics
+
+See [Configuration Guide](docs/CONFIGURATION.md#burn-rate-configuration) for complete details and examples.
+</details>
+
+<details>
 <summary><b>Adaptive Context Learning</b></summary>
 
 Experimental feature that learns actual context window limits by observing usage:

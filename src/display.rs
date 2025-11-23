@@ -362,8 +362,9 @@ fn format_statusline_string(
                 let cost_color = get_cost_color(total_cost);
 
                 // Calculate burn rate if we have duration
+                // Use configured burn_rate mode (wall_clock, active_time, or auto_reset)
                 let duration = session_id
-                    .and_then(crate::stats::get_session_duration)
+                    .and_then(crate::stats::get_session_duration_by_mode)
                     .or_else(|| transcript_path.and_then(parse_duration));
 
                 let burn_rate = duration.and_then(|d| {

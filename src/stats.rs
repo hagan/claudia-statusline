@@ -40,6 +40,10 @@ pub struct SessionStats {
     pub start_time: Option<String>, // ISO 8601 timestamp of session start
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_tokens_observed: Option<u32>, // For adaptive context learning
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_time_seconds: Option<u64>, // Accumulated active time (for burn_rate.mode = "active_time")
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_activity: Option<String>, // ISO 8601 timestamp of last activity (for active_time tracking)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,10 +254,53 @@ impl StatsData {
         // This ensures model_name, workspace_dir, device_id, and token breakdown are persisted immediately
         // SqliteDatabase::new() will create the database if it doesn't exist
         // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
+        //
+        // IMPORTANT: Auto-reset mode deletes then RECREATES the session in the same transaction,
+        // so we can't check existence. Instead, compare start_time to detect if session was reset.
+        let mut session_was_reset = false;
+        let config = crate::config::get_config();
+
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
                 if let Err(e) = db.update_session(session_id, update.clone()) {
                     log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
+                } else if config.burn_rate.mode == "auto_reset" {
+                    // Only check for reset if we're in auto_reset mode
+                    // Check if session was reset by comparing start_time
+                    // Auto-reset deletes+recreates session, giving it a new start_time
+                    if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                        if let Ok(db_start_time) = conn.query_row(
+                            "SELECT start_time FROM sessions WHERE session_id = ?1",
+                            rusqlite::params![session_id],
+                            |row| row.get::<_, String>(0),
+                        ) {
+                            // Compare with in-memory start_time
+                            if let Some(in_memory_session) = self.sessions.get(session_id) {
+                                if let Some(ref in_memory_start) = in_memory_session.start_time {
+                                    // If start times differ by more than 1 second, session was reset
+                                    // (allow small differences due to timestamp precision)
+                                    if let (Some(db_time), Some(mem_time)) = (
+                                        crate::utils::parse_iso8601_to_unix(&db_start_time),
+                                        crate::utils::parse_iso8601_to_unix(in_memory_start),
+                                    ) {
+                                        let time_diff = db_time.abs_diff(mem_time);
+
+                                        if time_diff > 1 {
+                                            // More than 1 second difference = reset
+                                            session_was_reset = true;
+                                            log::info!(
+                                                "Session {} was auto-reset (start_time changed: {} -> {})",
+                                                session_id,
+                                                in_memory_start,
+                                                db_start_time
+                                            );
+                                            self.sessions.remove(session_id);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             } else {
                 log::warn!(
@@ -266,31 +313,66 @@ impl StatsData {
         }
 
         // Calculate delta from last known session cost
-        let last_cost = self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0);
+        // If session was reset, treat as new session (delta = full value)
+        let last_cost = if session_was_reset {
+            0.0
+        } else {
+            self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0)
+        };
 
         let cost_delta = update.cost - last_cost;
 
         // Calculate line deltas from previous values
-        let last_lines_added = self
-            .sessions
-            .get(session_id)
-            .map(|s| s.lines_added)
-            .unwrap_or(0);
-        let last_lines_removed = self
-            .sessions
-            .get(session_id)
-            .map(|s| s.lines_removed)
-            .unwrap_or(0);
+        // If session was reset, treat as new session (delta = full value)
+        let last_lines_added = if session_was_reset {
+            0
+        } else {
+            self.sessions
+                .get(session_id)
+                .map(|s| s.lines_added)
+                .unwrap_or(0)
+        };
+        let last_lines_removed = if session_was_reset {
+            0
+        } else {
+            self.sessions
+                .get(session_id)
+                .map(|s| s.lines_removed)
+                .unwrap_or(0)
+        };
         let lines_added_delta = (update.lines_added as i64) - (last_lines_added as i64);
         let lines_removed_delta = (update.lines_removed as i64) - (last_lines_removed as i64);
 
+        // Query active_time_seconds and last_activity from SQLite for JSON backup persistence
+        let (active_time_seconds, last_activity) = if let Ok(db_path) = Self::get_sqlite_path() {
+            if let Ok(conn) = rusqlite::Connection::open(&db_path) {
+                conn.query_row(
+                    "SELECT active_time_seconds, last_activity FROM sessions WHERE session_id = ?1",
+                    rusqlite::params![session_id],
+                    |row| {
+                        let active_time: Option<i64> = row.get(0).ok();
+                        let last_activity: Option<String> = row.get(1).ok();
+                        Ok((active_time.map(|t| t as u64), last_activity))
+                    },
+                )
+                .unwrap_or((None, None))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        };
+
         // Always update session metadata (even with zero/negative deltas)
         // This ensures cost corrections and metadata refreshes are persisted
+        // IMPORTANT: Also populate active_time_seconds and last_activity for JSON backup
         if let Some(session) = self.sessions.get_mut(session_id) {
             session.cost = update.cost;
             session.lines_added = update.lines_added;
             session.lines_removed = update.lines_removed;
             session.last_updated = now.clone();
+            session.active_time_seconds = active_time_seconds;
+            session.last_activity = last_activity.clone();
         } else {
             self.sessions.insert(
                 session_id.to_string(),
@@ -301,6 +383,8 @@ impl StatsData {
                     lines_removed: update.lines_removed,
                     start_time: Some(now.clone()), // Track when session started
                     max_tokens_observed: None,     // Will be updated by adaptive learning
+                    active_time_seconds,           // Populated from SQLite
+                    last_activity,                 // Populated from SQLite
                 },
             );
             self.all_time.sessions += 1;
@@ -635,6 +719,8 @@ fn perform_sqlite_dual_write(_stats_data: &StatsData) {
 ///             device_id: None,
 ///             token_breakdown: None,
 ///             max_tokens_observed: None,
+///             active_time_seconds: None,
+///             last_activity: None,
 ///         },
 ///     )
 /// });
@@ -715,6 +801,50 @@ pub fn get_session_duration(session_id: &str) -> Option<u64> {
     })
 }
 
+/// Get session duration in seconds based on configured burn_rate mode
+///
+/// Respects the `burn_rate.mode` configuration setting:
+/// - "wall_clock": Total elapsed time from session start to now (default)
+/// - "active_time": Only time spent actively conversing (excludes idle gaps)
+/// - "auto_reset": Wall-clock time within current session (resets after inactivity)
+pub fn get_session_duration_by_mode(session_id: &str) -> Option<u64> {
+    let config = crate::config::get_config();
+    let mode = &config.burn_rate.mode;
+
+    match mode.as_str() {
+        "active_time" => {
+            // Query database for active_time_seconds
+            if let Ok(db_path) = StatsData::get_sqlite_path() {
+                if db_path.exists() && crate::database::SqliteDatabase::new(&db_path).is_ok() {
+                    // Get active_time_seconds from database
+                    use rusqlite::Connection;
+                    if let Ok(conn) = Connection::open(&db_path) {
+                        if let Ok(active_time) = conn.query_row(
+                            "SELECT active_time_seconds FROM sessions WHERE session_id = ?1",
+                            rusqlite::params![session_id],
+                            |row| row.get::<_, Option<i64>>(0),
+                        ) {
+                            return active_time.map(|t| t as u64);
+                        }
+                    }
+                }
+            }
+            // Fallback to wall_clock if database query fails
+            get_session_duration(session_id)
+        }
+        "auto_reset" => {
+            // Auto-reset mode: Session is archived and recreated after inactivity threshold
+            // start_time is reset to current time when recreated, so wall-clock duration
+            // represents the current work period (time since last reset)
+            get_session_duration(session_id)
+        }
+        _ => {
+            // Wall-clock mode (default): Duration from session start to now (includes idle time)
+            get_session_duration(session_id)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,6 +879,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         );
 
@@ -793,6 +925,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         );
 
@@ -849,6 +983,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         );
 
@@ -869,6 +1005,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         );
 
@@ -926,6 +1064,8 @@ mod tests {
                             device_id: None,
                             token_breakdown: None,
                             max_tokens_observed: None,
+                            active_time_seconds: None,
+                            last_activity: None,
                         },
                     )
                 });
@@ -1007,6 +1147,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
         });

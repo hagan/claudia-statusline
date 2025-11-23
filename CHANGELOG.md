@@ -7,6 +7,93 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.0] - TBD
+
+> **Minor Release**: Configurable Burn Rate Calculation Modes
+
+### Added - Burn Rate Configuration
+
+**Three burn rate calculation modes** to solve the "multi-day session" problem:
+
+Previously, long-running sessions (e.g., 22 days) showed unrealistically low burn rates ($0.02/hr) because they included idle time (nights, weekends). Now you can choose how duration is calculated:
+
+**Configuration** (`~/.config/claudia-statusline/config.toml`):
+```toml
+[burn_rate]
+mode = "wall_clock"  # or "active_time" or "auto_reset"
+inactivity_threshold_minutes = 60  # Default: 1 hour
+```
+
+**Modes:**
+1. **`"wall_clock"`** (default) - Current behavior, total elapsed time
+   - Backward compatible
+   - Includes all idle time
+   - Example: $8.99 over 22 days = $0.02/hr
+
+2. **`"active_time"`** (recommended) - Only active conversation time
+   - Tracks time between consecutive messages
+   - Excludes gaps > inactivity_threshold (default: 60 min)
+   - Provides realistic cost-per-hour rates
+   - Example: $8.99 over 2 hours = $4.50/hr
+
+3. **`"auto_reset"`** - Archives and resets sessions after inactivity
+   - Automatically archives current session after inactivity_threshold
+   - Archives to `session_archive` table (preserves all history)
+   - Resets counters (cost, lines, duration) to zero
+   - Next message creates fresh session
+   - Daily/monthly stats continue to accumulate correctly
+   - Each work period tracked independently
+
+### Implementation Details
+
+**Database:**
+- Migration v5:
+  - Added `active_time_seconds` and `last_activity` columns to sessions table
+  - Added `session_archive` table for auto_reset mode history
+  - Preserves start_time, end_time, cost, lines, model, workspace, device_id
+  - Indexed by session_id and archived_at date
+- Automatic migration on next run
+- Existing sessions show wall-clock until new messages accumulate active time
+
+**Tracking:**
+- Active time automatically tracked in `active_time mode` (database.rs:630-690)
+- Auto-reset archives sessions after threshold (database.rs:560-604)
+- Time gaps < threshold add to active_time_seconds
+- Time gaps >= threshold excluded from active time (or trigger reset in auto_reset mode)
+- All tracking transparent to user
+
+**Display:**
+- Burn rate calculation respects configured mode (display.rs:365-368)
+- Uses `get_session_duration_by_mode()` function (stats.rs:732-770)
+- Auto-reset mode shows current work period duration
+- Graceful fallback to wall-clock if database query fails
+
+### Testing
+
+**Unit tests** (database.rs):
+- `test_active_time_tracking_storage` - Verifies active_time persistence
+- `test_active_time_accumulation` - Tests time accumulation within threshold
+- `test_active_time_ignores_long_gaps` - Validates idle period exclusion
+
+**Integration tests** (separate processes for config isolation):
+- `burn_rate_active_time_accumulation_test.rs` - Active time auto-accumulation
+- `burn_rate_active_time_threshold_test.rs` - Inactivity threshold exclusion
+- `burn_rate_auto_reset_basic_test.rs` - Session archive and reset behavior
+- `burn_rate_auto_reset_daily_stats_test.rs` - Daily stats preservation across resets
+- `burn_rate_auto_reset_threshold_test.rs` - No reset within threshold
+
+**All tests passing**, including 8 new burn rate tests.
+
+### Migration
+
+**Automatic** - Migration v5 runs on first use after upgrade:
+```bash
+# Optional: Run manually
+statusline migrate --run
+```
+
+**No data loss** - Existing sessions preserved, new tracking begins immediately.
+
 ## [2.20.0] - 2025-11-16
 
 > **Minor Release**: Token count display feature + security hardening
