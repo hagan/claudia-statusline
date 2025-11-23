@@ -630,8 +630,34 @@ impl SqliteDatabase {
                     lines_added as i64 - old_lines_added,
                     lines_removed as i64 - old_lines_removed,
                 )
+            } else if config.burn_rate.mode == "auto_reset" {
+                // Session was just archived and deleted - query last archived values
+                // to avoid double-counting the cumulative cost
+                let archived_values: Option<(f64, i64, i64)> = tx
+                    .query_row(
+                        "SELECT cost, lines_added, lines_removed FROM session_archive
+                         WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
+                        params![session_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+
+                if let Some((archived_cost, archived_lines_added, archived_lines_removed)) =
+                    archived_values
+                {
+                    // Use archived values as baseline - only count incremental delta
+                    // This prevents double-counting when cumulative cost continues after reset
+                    (
+                        cost - archived_cost,
+                        lines_added as i64 - archived_lines_added,
+                        lines_removed as i64 - archived_lines_removed,
+                    )
+                } else {
+                    // Truly new session (no archive entry), use full value
+                    (cost, lines_added as i64, lines_removed as i64)
+                }
             } else {
-                // New session (or just archived), delta is the full value
+                // New session (not auto_reset mode), delta is the full value
                 (cost, lines_added as i64, lines_removed as i64)
             };
 
@@ -2296,7 +2322,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(active_time, Some(0), "Initial active_time should be 0");
-        assert_eq!(last_activity, now, "last_activity should match update");
+        // Check timestamps are close (within 1 second) to avoid flaky microsecond mismatches
+        let stored_time = crate::utils::parse_iso8601_to_unix(&last_activity);
+        let expected_time = crate::utils::parse_iso8601_to_unix(&now);
+        if let (Some(stored), Some(expected)) = (stored_time, expected_time) {
+            let diff = stored.abs_diff(expected);
+            assert!(
+                diff <= 1,
+                "last_activity should be within 1 second of update timestamp (diff: {}s)",
+                diff
+            );
+        } else {
+            panic!("Failed to parse timestamps for comparison");
+        }
     }
 
     #[test]

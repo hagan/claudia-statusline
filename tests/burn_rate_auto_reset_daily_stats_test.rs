@@ -71,12 +71,13 @@ fn test_auto_reset_daily_stats_preservation() {
     std::thread::sleep(std::time::Duration::from_secs(1));
 
     // Second work period (after reset) - should ADD to daily stats, not replace
+    // IMPORTANT: Claude sends CUMULATIVE costs, so this is 10.0 + 5.0 = 15.0 total
     db.update_session(
         "test-daily-stats",
         SessionUpdate {
-            cost: 5.0,
-            lines_added: 20,
-            lines_removed: 2,
+            cost: 15.0, // CUMULATIVE (was 10.0, now 15.0 = +5.0 delta)
+            lines_added: 120, // CUMULATIVE (was 100, now 120 = +20 delta)
+            lines_removed: 7, // CUMULATIVE (was 5, now 7 = +2 delta)
             model_name: Some("Sonnet".to_string()),
             workspace_dir: Some("/test/workspace".to_string()),
             device_id: Some("test-device".to_string()),
@@ -113,12 +114,13 @@ fn test_auto_reset_daily_stats_preservation() {
     // Sleep and add third work period to further verify accumulation
     std::thread::sleep(std::time::Duration::from_secs(1));
 
+    // Third work period - cumulative costs continue
     db.update_session(
         "test-daily-stats",
         SessionUpdate {
-            cost: 8.0,
-            lines_added: 50,
-            lines_removed: 10,
+            cost: 23.0, // CUMULATIVE (was 15.0, now 23.0 = +8.0 delta)
+            lines_added: 170, // CUMULATIVE (was 120, now 170 = +50 delta)
+            lines_removed: 17, // CUMULATIVE (was 7, now 17 = +10 delta)
             model_name: Some("Sonnet".to_string()),
             workspace_dir: Some("/test/workspace".to_string()),
             device_id: Some("test-device".to_string()),
