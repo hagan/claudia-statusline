@@ -75,7 +75,7 @@ fn test_auto_reset_daily_stats_preservation() {
     db.update_session(
         "test-daily-stats",
         SessionUpdate {
-            cost: 15.0, // CUMULATIVE (was 10.0, now 15.0 = +5.0 delta)
+            cost: 15.0,       // CUMULATIVE (was 10.0, now 15.0 = +5.0 delta)
             lines_added: 120, // CUMULATIVE (was 100, now 120 = +20 delta)
             lines_removed: 7, // CUMULATIVE (was 5, now 7 = +2 delta)
             model_name: Some("Sonnet".to_string()),
@@ -118,8 +118,8 @@ fn test_auto_reset_daily_stats_preservation() {
     db.update_session(
         "test-daily-stats",
         SessionUpdate {
-            cost: 23.0, // CUMULATIVE (was 15.0, now 23.0 = +8.0 delta)
-            lines_added: 170, // CUMULATIVE (was 120, now 170 = +50 delta)
+            cost: 23.0,        // CUMULATIVE (was 15.0, now 23.0 = +8.0 delta)
+            lines_added: 170,  // CUMULATIVE (was 120, now 170 = +50 delta)
             lines_removed: 17, // CUMULATIVE (was 7, now 17 = +10 delta)
             model_name: Some("Sonnet".to_string()),
             workspace_dir: Some("/test/workspace".to_string()),

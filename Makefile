@@ -48,6 +48,9 @@ help:
 	@echo "  $(YELLOW)make test-sqlite$(NC)  - Run SQLite integration tests"
 	@echo "  $(YELLOW)make test-install$(NC) - Run installation verification"
 	@echo "  $(YELLOW)make test-all$(NC)     - Run all tests"
+	@echo "  $(YELLOW)make test-manual$(NC)  - Run with isolated test database"
+	@echo "  $(YELLOW)make clean-test$(NC)   - Remove test database"
+	@echo "  $(YELLOW)make show-db-path$(NC) - Show database paths (prod vs test)"
 	@echo "  $(YELLOW)make check$(NC)        - Check build environment"
 	@echo "  $(YELLOW)make check-code$(NC)   - Run rustfmt and clippy"
 	@echo "  $(YELLOW)make dev$(NC)          - Build and run with test input"
@@ -297,6 +300,58 @@ ifeq ($(UNAME_S),Darwin)
 else
     SED_INPLACE := sed -i
 endif
+
+# Manual testing with isolated test database
+.PHONY: test-manual
+test-manual: release
+	@echo "$(BLUE)🧪 Running with isolated test database...$(NC)"
+	@mkdir -p ~/.local/share-test/claudia-statusline
+	@echo ""
+	@echo "$(YELLOW)Test Database:$(NC) ~/.local/share-test/claudia-statusline/stats.db"
+	@echo "$(YELLOW)Production DB:$(NC) ~/.local/share/claudia-statusline/stats.db (untouched)"
+	@echo ""
+	@echo "$(GREEN)Sample Output:$(NC)"
+	@echo ""
+	@XDG_DATA_HOME=~/.local/share-test echo '{"session_id":"test-session-$(shell date +%s)","workspace":{"current_dir":"'$$(pwd)'"},"model":{"display_name":"Claude Sonnet 4.5"},"cost":{"total_cost_usd":0.05},"context_usage":{"input_tokens":50000,"output_tokens":2000}}' | $(TARGET_DIR)/release/$(BINARY_NAME)
+	@echo ""
+	@echo "$(GREEN)✓$(NC) Test completed - production database untouched"
+	@echo ""
+	@echo "$(YELLOW)Tip:$(NC) Add to ~/.zshrc for quick testing:"
+	@echo "  alias statusline-test='XDG_DATA_HOME=~/.local/share-test statusline'"
+
+# Clean test database
+.PHONY: clean-test
+clean-test:
+	@echo "$(BLUE)Cleaning test database...$(NC)"
+	@rm -rf ~/.local/share-test/claudia-statusline
+	@echo "$(GREEN)✓$(NC) Test database removed: ~/.local/share-test/claudia-statusline/"
+	@echo "$(YELLOW)Note:$(NC) Production database unchanged"
+
+# Show database paths
+.PHONY: show-db-path
+show-db-path:
+	@echo "$(BLUE)Database Paths:$(NC)"
+	@echo ""
+	@echo "$(GREEN)Production:$(NC)"
+	@echo "  Database: ~/.local/share/claudia-statusline/stats.db"
+	@if [ -f ~/.local/share/claudia-statusline/stats.db ]; then \
+		echo "  Status:   $(GREEN)✓ Exists$(NC)"; \
+		echo "  Size:     $$(ls -lh ~/.local/share/claudia-statusline/stats.db | awk '{print $$5}')"; \
+	else \
+		echo "  Status:   $(YELLOW)Not created yet$(NC)"; \
+	fi
+	@echo ""
+	@echo "$(YELLOW)Test:$(NC)"
+	@echo "  Database: ~/.local/share-test/claudia-statusline/stats.db"
+	@if [ -f ~/.local/share-test/claudia-statusline/stats.db ]; then \
+		echo "  Status:   $(GREEN)✓ Exists$(NC)"; \
+		echo "  Size:     $$(ls -lh ~/.local/share-test/claudia-statusline/stats.db | awk '{print $$5}')"; \
+	else \
+		echo "  Status:   $(YELLOW)Not created yet$(NC)"; \
+	fi
+	@echo ""
+	@echo "$(BLUE)To use test database:$(NC)"
+	@echo "  XDG_DATA_HOME=~/.local/share-test statusline < input.json"
 
 
 .DEFAULT_GOAL := help

@@ -55,7 +55,10 @@ fn test_auto_reset_cumulative_cost_no_double_count() {
         )
         .unwrap();
 
-    assert_eq!(daily_cost_1, 100.0, "First period: daily cost should be $100");
+    assert_eq!(
+        daily_cost_1, 100.0,
+        "First period: daily cost should be $100"
+    );
     assert_eq!(
         daily_lines_1, 1000,
         "First period: daily lines should be 1000"
@@ -84,7 +87,7 @@ fn test_auto_reset_cumulative_cost_no_double_count() {
     db.update_session(
         "test-cumulative",
         SessionUpdate {
-            cost: 120.0, // CUMULATIVE cost (includes previous $100)
+            cost: 120.0,       // CUMULATIVE cost (includes previous $100)
             lines_added: 1200, // CUMULATIVE lines (includes previous 1000)
             lines_removed: 60, // CUMULATIVE lines (includes previous 50)
             model_name: Some("Sonnet".to_string()),
@@ -190,10 +193,7 @@ fn test_auto_reset_cumulative_cost_no_double_count() {
         "Daily cost should be $150 (not $370). \
          Breakdown: $100 + $20 + $30 = $150"
     );
-    assert_eq!(
-        daily_lines_3, 1500,
-        "Daily lines should be 1500 (not 3700)"
-    );
+    assert_eq!(daily_lines_3, 1500, "Daily lines should be 1500 (not 3700)");
 
     // Cleanup
     env::remove_var("STATUSLINE_BURN_RATE_MODE");

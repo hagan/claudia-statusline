@@ -730,3 +730,142 @@ fn test_multiple_cli_flags_precedence() {
         stdout
     );
 }
+
+#[test]
+fn test_test_mode_flag() {
+    // Test that --test-mode flag shows TEST indicator
+    let json = r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}"#;
+
+    let output = Command::new(get_test_binary())
+        .arg("--test-mode")
+        .env_remove("NO_COLOR") // Ensure colors are enabled for this test
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should contain [TEST] indicator
+    assert!(
+        stdout.contains("[TEST]"),
+        "Output should contain [TEST] indicator in test mode: {}",
+        stdout
+    );
+}
+
+#[test]
+fn test_test_mode_uses_isolated_database() {
+    // Test that --test-mode uses a separate database path
+    // IMPORTANT: This test now uses a completely isolated temp HOME to avoid
+    // touching any real user files during testing
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    // Create a temporary HOME directory for complete isolation
+    let temp_home = TempDir::new().expect("Failed to create temp HOME");
+    let temp_home_path = temp_home.path().to_str().unwrap();
+
+    // Real production DB path (in actual HOME)
+    let real_home = std::env::var("HOME").unwrap_or_else(|_| String::from("/tmp"));
+    let prod_db_path = PathBuf::from(format!(
+        "{}/.local/share/claudia-statusline/stats.db",
+        real_home
+    ));
+
+    // CRITICAL: Record prod DB timestamp BEFORE any test invocation
+    // This ensures we catch writes during the FIRST run, not just subsequent runs
+    let prod_modified_before = prod_db_path.metadata().ok().and_then(|m| m.modified().ok());
+
+    // Paths in temp HOME (where test binary will write)
+    let test_db_dir = PathBuf::from(format!(
+        "{}/.local/share-test/claudia-statusline",
+        temp_home_path
+    ));
+
+    // Run statusline with test mode, using temp HOME for complete isolation
+    let json = r#"{"session_id":"test-isolation-check","workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":0.01}}"#;
+
+    let output = Command::new(get_test_binary())
+        .arg("--test-mode")
+        .env("HOME", temp_home_path) // Use temp HOME, not real HOME
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success());
+
+    // Test database directory should now exist IN TEMP HOME
+    assert!(
+        test_db_dir.exists(),
+        "Test database directory should be created in temp HOME: {:?}",
+        test_db_dir
+    );
+
+    // Run again to ensure we're not touching prod database
+    let output2 = Command::new(get_test_binary())
+        .arg("--test-mode")
+        .env("HOME", temp_home_path) // Use temp HOME, not real HOME
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary on second run");
+
+    assert!(output2.status.success());
+
+    let prod_modified_after = prod_db_path.metadata().ok().and_then(|m| m.modified().ok());
+
+    // Production database modification time should be unchanged
+    // This verifies the binary with temp HOME never touched real prod DB
+    assert_eq!(
+        prod_modified_before, prod_modified_after,
+        "Production database should not be modified when using temp HOME (checked from before first run)"
+    );
+
+    // temp_home automatically cleaned up when TempDir drops
+}
+
+#[test]
+fn test_test_mode_without_flag() {
+    // Test that without --test-mode flag, no TEST indicator appears
+    let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
+
+    let output = Command::new(get_test_binary())
+        .env_remove("STATUSLINE_TEST_MODE") // Ensure test mode is not set
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Should NOT contain [TEST] indicator
+    assert!(
+        !stdout.contains("[TEST]"),
+        "Output should NOT contain [TEST] indicator without test mode: {}",
+        stdout
+    );
+}

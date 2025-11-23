@@ -399,6 +399,83 @@ Then: `export STATUSLINE_THEME=mytheme`
 See [Configuration Guide](docs/CONFIGURATION.md#theme-customization) for complete theme reference.
 </details>
 
+## Development & Testing
+
+When developing or testing statusline, it's important to keep test data separate from your production database to avoid pollution. We provide several tools for safe testing:
+
+### Test Mode (Recommended)
+
+Use the `--test-mode` flag for automatic isolation:
+
+```bash
+# Run with isolated test database and TEST indicator
+echo '{"workspace":{"current_dir":"/tmp"}}' | statusline --test-mode
+```
+
+This automatically:
+- Uses a separate database at `~/.local/share-test/claudia-statusline/stats.db`
+- Adds a yellow `[TEST]` indicator to the output
+- Prevents any modifications to your production database
+
+### Manual Testing with Make
+
+The project includes convenient Makefile targets:
+
+```bash
+# Run with isolated test database (builds binary first)
+make test-manual
+
+# Show database paths and status
+make show-db-path
+
+# Clean test database
+make clean-test
+```
+
+### Environment Variable Approach
+
+For more control, use environment variables directly:
+
+```bash
+# Use test database for this session
+export XDG_DATA_HOME="$HOME/.local/share-test"
+echo '{"workspace":{"current_dir":"/tmp"}}' | statusline
+
+# Or as a one-liner
+XDG_DATA_HOME=~/.local/share-test statusline < test_input.json
+
+# Add to ~/.zshrc for quick access
+alias statusline-test='XDG_DATA_HOME=~/.local/share-test statusline'
+```
+
+### Best Practices
+
+1. **Always use test mode** when experimenting with new features
+2. **Never manually create test data** in the production database
+3. **Use separate config files** for testing:
+   ```bash
+   statusline --test-mode --config ~/.config/claudia-statusline/config.test.toml
+   ```
+4. **Clean up after testing**:
+   ```bash
+   make clean-test  # or manually: rm -rf ~/.local/share-test/claudia-statusline
+   ```
+
+### Running Tests
+
+```bash
+# Run all tests (unit + integration)
+make test
+
+# Run specific test suite
+cargo test test_test_mode  # Test the test-mode feature
+
+# Run with verbose output
+cargo test -- --nocapture
+```
+
+For more details, see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Contributing
 
 We welcome contributions! Please see:

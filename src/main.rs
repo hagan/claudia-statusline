@@ -81,6 +81,10 @@ struct Cli {
     #[arg(long, value_name = "LEVEL", value_parser = ["error", "warn", "info", "debug", "trace"])]
     log_level: Option<String>,
 
+    /// Use test mode (isolated database, adds TEST indicator to output)
+    #[arg(long)]
+    test_mode: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -232,6 +236,19 @@ fn main() -> Result<()> {
     // Handle config path if provided
     if let Some(ref config_path) = cli.config {
         env::set_var("STATUSLINE_CONFIG_PATH", config_path.display().to_string());
+    }
+
+    // Handle test mode flag - uses isolated database
+    if cli.test_mode {
+        env::set_var("STATUSLINE_TEST_MODE", "1");
+        // Override XDG_DATA_HOME to use test directory
+        env::set_var(
+            "XDG_DATA_HOME",
+            format!(
+                "{}/.local/share-test",
+                env::var("HOME").unwrap_or_else(|_| String::from("/tmp"))
+            ),
+        );
     }
 
     // Handle version-full flag

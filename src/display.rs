@@ -256,6 +256,11 @@ fn format_statusline_string(
     );
     let mut parts = Vec::new();
 
+    // 0. TEST indicator if in test mode
+    if std::env::var("STATUSLINE_TEST_MODE").is_ok() {
+        parts.push(format!("{}[TEST]{}", Colors::yellow(), Colors::reset()));
+    }
+
     // 1. Directory (always first if shown)
     if display_config.show_directory {
         let short_dir = sanitize_for_terminal(&shorten_path(current_dir));

@@ -305,6 +305,43 @@ statusline --help
 statusline -h
 ```
 
+### Development & Testing Mode
+
+Use `--test-mode` to prevent test data from polluting your production database:
+
+```bash
+# Run with isolated test database
+echo '{"workspace":{"current_dir":"/tmp"}}' | statusline --test-mode
+
+# Output shows [TEST] indicator
+# Example: [TEST] • /tmp • main • S3.5 • 15s • day: $0.05
+```
+
+**What test mode does:**
+- Uses separate database: `~/.local/share-test/claudia-statusline/stats.db`
+- Adds yellow `[TEST]` indicator to output
+- Prevents modifications to production database at `~/.local/share/claudia-statusline/stats.db`
+
+**Combine with other flags:**
+```bash
+# Test mode with custom config and logging
+statusline --test-mode --config ./test-config.toml --log-level debug < test.json
+
+# Test mode with specific theme
+statusline --test-mode --theme dark < test.json
+```
+
+**Clean up test data:**
+```bash
+# Remove test database
+rm -rf ~/.local/share-test/claudia-statusline
+
+# Or use Makefile (if in project directory)
+make clean-test
+```
+
+See [README.md Development & Testing](../README.md#development--testing) for more testing strategies.
+
 ## JSON Input Format
 
 The statusline accepts JSON via stdin with this format:
