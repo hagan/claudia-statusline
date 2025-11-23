@@ -292,7 +292,8 @@ impl SyncManager {
             .map_err(|e| StatuslineError::Sync(format!("Failed to connect: {}", e)))?;
 
         // Pull sessions for this device
-        let query = "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed
+        let query = "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed,
+                            active_time_seconds, last_activity
                      FROM sessions WHERE device_id = ?";
 
         let mut rows = conn
@@ -322,6 +323,8 @@ impl SyncManager {
             let lines_removed: i64 = row.get(5).map_err(|e| {
                 StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
             })?;
+            let active_time_seconds: Option<i64> = row.get(6).ok();
+            let last_activity: Option<String> = row.get(7).ok();
 
             sessions.insert(
                 session_id,
@@ -332,6 +335,8 @@ impl SyncManager {
                     last_updated,
                     start_time,
                     max_tokens_observed: None, // Sync doesn't track token counts
+                    active_time_seconds: active_time_seconds.map(|t| t as u64),
+                    last_activity,
                 },
             );
         }

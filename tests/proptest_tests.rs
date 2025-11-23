@@ -222,6 +222,8 @@ proptest! {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         );
 

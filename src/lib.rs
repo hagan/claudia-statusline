@@ -164,6 +164,8 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
                             device_id: Some(device_id),
                             token_breakdown,
                             max_tokens_observed: None, // updated separately
+                            active_time_seconds: None, // TODO: calculate based on burn_rate mode
+                            last_activity: None,       // TODO: calculate based on burn_rate mode
                         },
                     )
                 });

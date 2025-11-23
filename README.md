@@ -198,6 +198,45 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 </details>
 
 <details>
+<summary><b>Configurable Burn Rate</b></summary>
+
+**New in v2.21.0**: Choose how session duration is calculated for accurate cost-per-hour tracking.
+
+**The Problem:** Multi-day sessions include idle time (nights, weekends), showing artificially low burn rates:
+- $8.99 over 22 days = $0.02/hr ❌
+- $8.99 over 5 hours active = $1.80/hr ✅
+
+**Three modes available:**
+
+| Mode | Best For | Example |
+|------|----------|---------|
+| **wall_clock** (default) | Quick sessions, backward compatibility | $3.50 / 7h = $0.50/hr |
+| **active_time** | Multi-day projects, accurate active rate | $12.00 / 6h active = $2.00/hr |
+| **auto_reset** | Separate daily sessions, distinct work periods | Each session tracked independently |
+
+**Configure in `~/.config/claudia-statusline/config.toml`:**
+```toml
+[burn_rate]
+mode = "active_time"  # or "wall_clock" or "auto_reset"
+inactivity_threshold_minutes = 60  # Default: 1 hour
+```
+
+**Active time mode** automatically excludes idle gaps ≥ threshold (default: 60 min):
+- Tracks time between consecutive messages
+- Excludes nights, weekends, long breaks
+- Shows realistic $/hour for actual work
+
+**Auto-reset mode** archives and resets session after inactivity:
+- Automatically archives old session to `session_archive` table
+- Resets counters (cost, lines, duration) to zero
+- Daily/monthly stats continue to accumulate
+- Great for consultants tracking multiple work periods
+- History preserved for analytics
+
+See [Configuration Guide](docs/CONFIGURATION.md#burn-rate-configuration) for complete details and examples.
+</details>
+
+<details>
 <summary><b>Adaptive Context Learning</b></summary>
 
 Experimental feature that learns actual context window limits by observing usage:
@@ -359,6 +398,83 @@ Then: `export STATUSLINE_THEME=mytheme`
 
 See [Configuration Guide](docs/CONFIGURATION.md#theme-customization) for complete theme reference.
 </details>
+
+## Development & Testing
+
+When developing or testing statusline, it's important to keep test data separate from your production database to avoid pollution. We provide several tools for safe testing:
+
+### Test Mode (Recommended)
+
+Use the `--test-mode` flag for automatic isolation:
+
+```bash
+# Run with isolated test database and TEST indicator
+echo '{"workspace":{"current_dir":"/tmp"}}' | statusline --test-mode
+```
+
+This automatically:
+- Uses a separate database at `~/.local/share-test/claudia-statusline/stats.db`
+- Adds a yellow `[TEST]` indicator to the output
+- Prevents any modifications to your production database
+
+### Manual Testing with Make
+
+The project includes convenient Makefile targets:
+
+```bash
+# Run with isolated test database (builds binary first)
+make test-manual
+
+# Show database paths and status
+make show-db-path
+
+# Clean test database
+make clean-test
+```
+
+### Environment Variable Approach
+
+For more control, use environment variables directly:
+
+```bash
+# Use test database for this session
+export XDG_DATA_HOME="$HOME/.local/share-test"
+echo '{"workspace":{"current_dir":"/tmp"}}' | statusline
+
+# Or as a one-liner
+XDG_DATA_HOME=~/.local/share-test statusline < test_input.json
+
+# Add to ~/.zshrc for quick access
+alias statusline-test='XDG_DATA_HOME=~/.local/share-test statusline'
+```
+
+### Best Practices
+
+1. **Always use test mode** when experimenting with new features
+2. **Never manually create test data** in the production database
+3. **Use separate config files** for testing:
+   ```bash
+   statusline --test-mode --config ~/.config/claudia-statusline/config.test.toml
+   ```
+4. **Clean up after testing**:
+   ```bash
+   make clean-test  # or manually: rm -rf ~/.local/share-test/claudia-statusline
+   ```
+
+### Running Tests
+
+```bash
+# Run all tests (unit + integration)
+make test
+
+# Run specific test suite
+cargo test test_test_mode  # Test the test-mode feature
+
+# Run with verbose output
+cargo test -- --nocapture
+```
+
+For more details, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Contributing
 

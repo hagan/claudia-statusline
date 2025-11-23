@@ -88,6 +88,7 @@ impl MigrationRunner {
             Box::new(AddMetaTable),
             Box::new(AddSyncMetadata),
             Box::new(AddAdaptiveLearning),
+            Box::new(AddBurnRateTracking),
         ]
     }
 
@@ -451,6 +452,94 @@ impl Migration for AddAdaptiveLearning {
     }
 }
 
+/// Migration 005: Add burn rate tracking (active_time, wall_clock, auto_reset modes)
+pub struct AddBurnRateTracking;
+
+impl Migration for AddBurnRateTracking {
+    fn version(&self) -> u32 {
+        5
+    }
+
+    fn description(&self) -> &str {
+        "Add burn rate tracking columns and session_archive table for all three modes"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Part 1: Add burn rate tracking columns to sessions table
+        // Add active_time_seconds for tracking accumulated active conversation time
+        // Used by "active_time" burn rate mode
+        tx.execute(
+            "ALTER TABLE sessions ADD COLUMN active_time_seconds INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        // Add last_activity timestamp for detecting inactivity gaps
+        // Used by both "active_time" and "auto_reset" modes
+        tx.execute("ALTER TABLE sessions ADD COLUMN last_activity TEXT", [])?;
+
+        // For existing sessions, set last_activity to last_updated
+        tx.execute(
+            "UPDATE sessions SET last_activity = last_updated WHERE last_activity IS NULL",
+            [],
+        )?;
+
+        // Part 2: Create session_archive table for auto_reset mode
+        // Stores reset session history to preserve work period data
+        tx.execute(
+            r#"
+            CREATE TABLE IF NOT EXISTS session_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+                -- Session identification
+                session_id TEXT NOT NULL,
+
+                -- Time boundaries
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
+
+                -- Accumulated values (snapshot at archive time)
+                cost REAL NOT NULL,
+                lines_added INTEGER NOT NULL,
+                lines_removed INTEGER NOT NULL,
+                active_time_seconds INTEGER,
+
+                -- Context preservation
+                last_activity TEXT,
+                model_name TEXT,
+                workspace_dir TEXT,
+                device_id TEXT
+            )
+            "#,
+            [],
+        )?;
+
+        // Create indexes for efficient queries on archived sessions
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_archive_session ON session_archive(session_id)",
+            [],
+        )?;
+
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at))",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        // Drop the session_archive table and indexes
+        tx.execute("DROP TABLE IF EXISTS session_archive", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_archive_session", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_archive_date", [])?;
+
+        // Note: SQLite doesn't support DROP COLUMN easily
+        // active_time_seconds and last_activity columns remain but that's acceptable
+        Ok(())
+    }
+}
+
 /// Run migrations on a specific database path
 /// Returns Err only on critical failures that prevent migrations from running
 pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
@@ -480,8 +569,8 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 4 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddAdaptiveLearning (v4 - consolidated from old v4, v5, v6)
-        assert_eq!(runner.current_version().unwrap(), 4);
+        // We now have 5 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddAdaptiveLearning (v4), AddBurnRateTracking (v5)
+        assert_eq!(runner.current_version().unwrap(), 5);
     }
 
     #[test]

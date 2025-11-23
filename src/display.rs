@@ -256,6 +256,11 @@ fn format_statusline_string(
     );
     let mut parts = Vec::new();
 
+    // 0. TEST indicator if in test mode
+    if std::env::var("STATUSLINE_TEST_MODE").is_ok() {
+        parts.push(format!("{}[TEST]{}", Colors::yellow(), Colors::reset()));
+    }
+
     // 1. Directory (always first if shown)
     if display_config.show_directory {
         let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
@@ -362,8 +367,9 @@ fn format_statusline_string(
                 let cost_color = get_cost_color(total_cost);
 
                 // Calculate burn rate if we have duration
+                // Use configured burn_rate mode (wall_clock, active_time, or auto_reset)
                 let duration = session_id
-                    .and_then(crate::stats::get_session_duration)
+                    .and_then(crate::stats::get_session_duration_by_mode)
                     .or_else(|| transcript_path.and_then(parse_duration));
 
                 let burn_rate = duration.and_then(|d| {

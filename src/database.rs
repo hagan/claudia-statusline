@@ -12,8 +12,22 @@ use std::sync::{Arc, Mutex, OnceLock};
 // Track which database files have been migrated to avoid redundant migration checks
 static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
+// Type alias for session archive data tuple
+type SessionArchiveData = (
+    String,         // start_time
+    String,         // last_updated
+    f64,            // cost
+    i64,            // lines_added
+    i64,            // lines_removed
+    Option<i64>,    // active_time_seconds
+    Option<String>, // last_activity
+    Option<String>, // model_name
+    Option<String>, // workspace_dir
+    Option<String>, // device_id
+);
+
 pub const SCHEMA: &str = r#"
--- Sessions table (includes all migration v3, v4, v5 columns)
+-- Sessions table (includes all migration v3, v4, v5 columns and session_archive table)
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
     start_time TEXT NOT NULL,
@@ -29,7 +43,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_input_tokens INTEGER DEFAULT 0,
     total_output_tokens INTEGER DEFAULT 0,
     total_cache_read_tokens INTEGER DEFAULT 0,
-    total_cache_creation_tokens INTEGER DEFAULT 0
+    total_cache_creation_tokens INTEGER DEFAULT 0,
+    active_time_seconds INTEGER DEFAULT 0,
+    last_activity TEXT
 );
 
 -- Daily aggregates (materialized for performance)
@@ -108,6 +124,27 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Session archive table (migration v5 - for auto_reset mode)
+CREATE TABLE IF NOT EXISTS session_archive (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    start_time TEXT NOT NULL,
+    end_time TEXT NOT NULL,
+    archived_at TEXT NOT NULL,
+    cost REAL NOT NULL,
+    lines_added INTEGER NOT NULL,
+    lines_removed INTEGER NOT NULL,
+    active_time_seconds INTEGER,
+    last_activity TEXT,
+    model_name TEXT,
+    workspace_dir TEXT,
+    device_id TEXT
+);
+
+-- Indexes for session_archive
+CREATE INDEX IF NOT EXISTS idx_archive_session ON session_archive(session_id);
+CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at));
 "#;
 
 /// Parameters for updating a session in the database
@@ -121,6 +158,22 @@ pub struct SessionUpdate {
     pub device_id: Option<String>,
     pub token_breakdown: Option<crate::models::TokenBreakdown>,
     pub max_tokens_observed: Option<u32>,
+    pub active_time_seconds: Option<u64>,
+    pub last_activity: Option<String>,
+}
+
+impl SessionUpdate {
+    /// Create a new SessionUpdate with default values for the new burn rate tracking fields
+    #[allow(dead_code)]
+    pub fn with_burn_rate_defaults(mut self) -> Self {
+        if self.active_time_seconds.is_none() {
+            self.active_time_seconds = Some(0);
+        }
+        if self.last_activity.is_none() {
+            self.last_activity = Some(crate::common::current_timestamp());
+        }
+        self
+    }
 }
 
 pub struct SqliteDatabase {
@@ -212,11 +265,11 @@ impl SqliteDatabase {
             // NEW DATABASE: Create complete schema with all migration columns
             conn.execute_batch(SCHEMA)?;
 
-            // Mark as fully migrated (v4 includes all adaptive learning features)
+            // Mark as fully migrated (v5 includes burn rate tracking and auto_reset archive)
             conn.execute(
                 "INSERT INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
-                 VALUES (?1, ?2, '', 'New database with complete schema (v4)', 0)",
-                params![4, chrono::Local::now().to_rfc3339()],
+                 VALUES (?1, ?2, '', 'New database with complete schema (v5)', 0)",
+                params![5, chrono::Local::now().to_rfc3339()],
             )?;
         } else {
             // OLD DATABASE: Only ensure base tables exist, let migrations add columns/indexes
@@ -391,6 +444,87 @@ impl SqliteDatabase {
         })
     }
 
+    /// Archive a session to session_archive table (for auto_reset mode)
+    /// This preserves the work period history before resetting the session counters
+    fn archive_session(tx: &Transaction, session_id: &str) -> Result<()> {
+        // Query current session data
+        let session_data: Option<SessionArchiveData> = tx
+            .query_row(
+                "SELECT start_time, last_updated, cost, lines_added, lines_removed,
+                        active_time_seconds, last_activity, model_name, workspace_dir, device_id
+                 FROM sessions WHERE session_id = ?1",
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5).ok(),
+                        row.get(6).ok(),
+                        row.get(7).ok(),
+                        row.get(8).ok(),
+                        row.get(9).ok(),
+                    ))
+                },
+            )
+            .optional()?;
+
+        if let Some((
+            start_time,
+            last_updated,
+            cost,
+            lines_added,
+            lines_removed,
+            active_time_seconds,
+            last_activity,
+            model_name,
+            workspace_dir,
+            device_id,
+        )) = session_data
+        {
+            let archived_at = current_timestamp();
+
+            // Insert into session_archive
+            tx.execute(
+                "INSERT INTO session_archive (
+                    session_id, start_time, end_time, archived_at,
+                    cost, lines_added, lines_removed,
+                    active_time_seconds, last_activity,
+                    model_name, workspace_dir, device_id
+                 )
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    session_id,
+                    start_time,
+                    last_updated, // end_time = last_updated
+                    archived_at,
+                    cost,
+                    lines_added,
+                    lines_removed,
+                    active_time_seconds,
+                    last_activity,
+                    model_name,
+                    workspace_dir,
+                    device_id,
+                ],
+            )?;
+
+            log::info!(
+                "Archived session {} ({}–{}, ${:.2}, +{}-{} lines)",
+                session_id,
+                start_time,
+                last_updated,
+                cost,
+                lines_added,
+                lines_removed
+            );
+        }
+
+        Ok(())
+    }
+
     fn update_session_tx(
         &self,
         tx: &Transaction,
@@ -409,7 +543,76 @@ impl SqliteDatabase {
         let workspace_dir = update.workspace_dir.as_deref();
         let device_id = update.device_id.as_deref();
 
-        // Check if session already exists and get old values
+        // Extract token breakdown values (0 if not provided)
+        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = update
+            .token_breakdown
+            .as_ref()
+            .map(|tb| {
+                (
+                    tb.input_tokens as i64,
+                    tb.output_tokens as i64,
+                    tb.cache_read_tokens as i64,
+                    tb.cache_creation_tokens as i64,
+                )
+            })
+            .unwrap_or((0, 0, 0, 0));
+
+        // Calculate active_time_seconds and last_activity based on burn_rate mode
+        let config = crate::config::get_config();
+
+        // AUTO_RESET MODE: Check for inactivity and archive/reset session if threshold exceeded
+        // IMPORTANT: This must happen BEFORE delta calculation so that archived sessions
+        // are treated as new sessions (delta = full value, not negative difference)
+        if config.burn_rate.mode == "auto_reset" {
+            // Query last_activity for this session
+            let last_activity: Option<String> = tx
+                .query_row(
+                    "SELECT last_activity FROM sessions WHERE session_id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .ok();
+
+            if let Some(last_activity_str) = last_activity {
+                // Calculate time since last activity
+                if let Some(last_activity_unix) =
+                    crate::utils::parse_iso8601_to_unix(&last_activity_str)
+                {
+                    if let Ok(now_duration) =
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    {
+                        let now_unix = now_duration.as_secs();
+                        let time_since_last = now_unix.saturating_sub(last_activity_unix);
+                        let threshold_seconds =
+                            (config.burn_rate.inactivity_threshold_minutes as u64) * 60;
+
+                        if time_since_last >= threshold_seconds {
+                            // INACTIVITY THRESHOLD EXCEEDED - ARCHIVE AND RESET SESSION
+                            log::info!(
+                                "Auto-reset triggered for session {} ({} seconds idle, threshold {} seconds)",
+                                session_id,
+                                time_since_last,
+                                threshold_seconds
+                            );
+
+                            // Archive the session (preserves work period history)
+                            Self::archive_session(tx, session_id)?;
+
+                            // Delete from sessions table (UPSERT below will recreate as new session)
+                            tx.execute(
+                                "DELETE FROM sessions WHERE session_id = ?1",
+                                params![session_id],
+                            )?;
+
+                            log::info!("Session {} archived and reset", session_id);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Calculate delta AFTER auto_reset check (so archived sessions are treated as new)
+        // Check if session exists (may have been deleted by auto_reset above)
         let old_values: Option<(f64, i64, i64)> = tx
             .query_row(
                 "SELECT cost, lines_added, lines_removed FROM sessions WHERE session_id = ?1",
@@ -427,27 +630,105 @@ impl SqliteDatabase {
                     lines_added as i64 - old_lines_added,
                     lines_removed as i64 - old_lines_removed,
                 )
+            } else if config.burn_rate.mode == "auto_reset" {
+                // Session was just archived and deleted - query last archived values
+                // to avoid double-counting the cumulative cost
+                let archived_values: Option<(f64, i64, i64)> = tx
+                    .query_row(
+                        "SELECT cost, lines_added, lines_removed FROM session_archive
+                         WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
+                        params![session_id],
+                        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    )
+                    .optional()?;
+
+                if let Some((archived_cost, archived_lines_added, archived_lines_removed)) =
+                    archived_values
+                {
+                    // Use archived values as baseline - only count incremental delta
+                    // This prevents double-counting when cumulative cost continues after reset
+                    (
+                        cost - archived_cost,
+                        lines_added as i64 - archived_lines_added,
+                        lines_removed as i64 - archived_lines_removed,
+                    )
+                } else {
+                    // Truly new session (no archive entry), use full value
+                    (cost, lines_added as i64, lines_removed as i64)
+                }
             } else {
-                // New session, delta is the full value
+                // New session (not auto_reset mode), delta is the full value
                 (cost, lines_added as i64, lines_removed as i64)
             };
 
-        // Extract token breakdown values (0 if not provided)
-        let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = update
-            .token_breakdown
-            .as_ref()
-            .map(|tb| {
-                (
-                    tb.input_tokens as i64,
-                    tb.output_tokens as i64,
-                    tb.cache_read_tokens as i64,
-                    tb.cache_creation_tokens as i64,
+        let (active_time_to_save, last_activity_to_save) = if config.burn_rate.mode == "active_time"
+        {
+            // Query existing active_time_seconds and last_activity for this session
+            let (old_active_time, old_last_activity): (Option<i64>, Option<String>) = tx
+                .query_row(
+                    "SELECT active_time_seconds, last_activity FROM sessions WHERE session_id = ?1",
+                    params![session_id],
+                    |row| Ok((row.get(0).ok(), row.get(1).ok())),
                 )
-            })
-            .unwrap_or((0, 0, 0, 0));
+                .unwrap_or((None, None));
+
+            let current_active_time = old_active_time.unwrap_or(0) as u64;
+
+            // Calculate time since last activity
+            if let Some(last_activity_str) = old_last_activity {
+                if let Some(last_activity_unix) =
+                    crate::utils::parse_iso8601_to_unix(&last_activity_str)
+                {
+                    if let Ok(now_duration) =
+                        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                    {
+                        let now_unix = now_duration.as_secs();
+                        let time_since_last = now_unix.saturating_sub(last_activity_unix);
+
+                        // Only add to active time if less than inactivity threshold
+                        let threshold_seconds =
+                            (config.burn_rate.inactivity_threshold_minutes as u64) * 60;
+                        let new_active_time = if time_since_last < threshold_seconds {
+                            // Active conversation - add the delta
+                            current_active_time + time_since_last
+                        } else {
+                            // Idle period - don't add to active time
+                            current_active_time
+                        };
+
+                        (Some(new_active_time as i64), now.clone())
+                    } else {
+                        // Can't get current time - keep existing
+                        (Some(current_active_time as i64), now.clone())
+                    }
+                } else {
+                    // Can't parse last_activity - keep existing
+                    (Some(current_active_time as i64), now.clone())
+                }
+            } else {
+                // No previous activity - this is the first update
+                (Some(0), now.clone())
+            }
+        } else if config.burn_rate.mode == "auto_reset" {
+            // For auto_reset mode: Track last_activity for inactivity detection
+            // After reset, session starts fresh (active_time from update struct or None)
+            (update.active_time_seconds.map(|t| t as i64), now.clone())
+        } else {
+            // For wall_clock mode: Use values from update struct or defaults
+            (
+                update.active_time_seconds.map(|t| t as i64),
+                update.last_activity.clone().unwrap_or_else(|| now.clone()),
+            )
+        };
 
         // Convert max_tokens_observed to i64 for SQLite
         let max_tokens = update.max_tokens_observed.map(|t| t as i64);
+
+        // Convert active_time_seconds to i64 for SQLite
+        let active_time = active_time_to_save;
+
+        // Use calculated last_activity
+        let last_activity = &last_activity_to_save;
 
         // UPSERT session (atomic operation)
         // Note: On conflict, we REPLACE the values, not accumulate them
@@ -456,9 +737,9 @@ impl SqliteDatabase {
                 session_id, start_time, last_updated, cost, lines_added, lines_removed,
                 model_name, workspace_dir, device_id,
                 total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
-                max_tokens_observed
+                max_tokens_observed, active_time_seconds, last_activity
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(session_id) DO UPDATE SET
                 last_updated = ?3,
                 cost = ?4,
@@ -475,12 +756,14 @@ impl SqliteDatabase {
                     WHEN ?14 IS NOT NULL AND ?14 > COALESCE(max_tokens_observed, 0)
                     THEN ?14
                     ELSE max_tokens_observed
-                END",
+                END,
+                active_time_seconds = COALESCE(?15, active_time_seconds),
+                last_activity = COALESCE(?16, last_activity)",
             params![
                 session_id, &now, &now, cost, lines_added as i64, lines_removed as i64,
                 model_name, workspace_dir, device_id,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                max_tokens
+                max_tokens, active_time, last_activity
             ],
         )?;
 
@@ -720,7 +1003,8 @@ impl SqliteDatabase {
 
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
-            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed, max_tokens_observed
+            "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed,
+                    max_tokens_observed, active_time_seconds, last_activity
              FROM sessions",
         )?;
 
@@ -732,6 +1016,8 @@ impl SqliteDatabase {
             let lines_added: i64 = row.get(4)?;
             let lines_removed: i64 = row.get(5)?;
             let max_tokens_observed: Option<i64> = row.get(6).ok();
+            let active_time_seconds: Option<i64> = row.get(7).ok();
+            let last_activity: Option<String> = row.get(8).ok();
 
             Ok((
                 session_id.clone(),
@@ -742,6 +1028,8 @@ impl SqliteDatabase {
                     last_updated,
                     start_time,
                     max_tokens_observed: max_tokens_observed.map(|t| t as u32),
+                    active_time_seconds: active_time_seconds.map(|t| t as u64),
+                    last_activity,
                 },
             ))
         })?;
@@ -882,8 +1170,8 @@ impl SqliteDatabase {
         for (session_id, session) in sessions.iter() {
             // Insert session (don't use UPSERT, just INSERT as this is initial import)
             tx.execute(
-                "INSERT OR IGNORE INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT OR IGNORE INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed, active_time_seconds, last_activity)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     session_id,
                     session.start_time.as_deref().unwrap_or(""),
@@ -891,6 +1179,8 @@ impl SqliteDatabase {
                     session.cost,
                     session.lines_added as i64,
                     session.lines_removed as i64,
+                    session.active_time_seconds.map(|t| t as i64),
+                    session.last_activity.as_deref(),
                 ],
             )?;
         }
@@ -1354,6 +1644,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1373,6 +1665,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1408,6 +1702,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1427,6 +1723,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1446,6 +1744,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1468,6 +1768,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1490,6 +1792,8 @@ mod tests {
                     device_id: None,
                     token_breakdown: None,
                     max_tokens_observed: None,
+                    active_time_seconds: None,
+                    last_activity: None,
                 },
             )
             .unwrap();
@@ -1528,6 +1832,8 @@ mod tests {
                             device_id: None,
                             token_breakdown: None,
                             max_tokens_observed: None,
+                            active_time_seconds: None,
+                            last_activity: None,
                         },
                     )
                 })
@@ -1565,6 +1871,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1579,6 +1887,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1593,6 +1903,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1771,6 +2083,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1800,6 +2114,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1814,6 +2130,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1828,6 +2146,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             },
         )
         .unwrap();
@@ -1890,6 +2210,8 @@ mod tests {
                 device_id: None,
                 token_breakdown: None,
                 max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
             };
             db.update_session("test-session", update).unwrap();
         } // Drop db to ensure WAL/SHM files are created
@@ -1958,6 +2280,208 @@ mod tests {
             0o600,
             "Existing database should be fixed to 0o600, got: {:o}",
             mode & 0o777
+        );
+    }
+
+    #[test]
+    fn test_active_time_tracking_storage() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        // First update - establishes baseline with explicit active_time
+        let now = crate::common::current_timestamp();
+        db.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 1.0,
+                lines_added: 10,
+                lines_removed: 5,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+                active_time_seconds: Some(0), // Explicitly set to 0
+                last_activity: Some(now.clone()),
+            },
+        )
+        .unwrap();
+
+        // Verify initial state
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path).unwrap();
+        let (active_time, last_activity): (Option<i64>, String) = conn
+            .query_row(
+                "SELECT active_time_seconds, last_activity FROM sessions WHERE session_id = ?1",
+                rusqlite::params!["test-session"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+
+        assert_eq!(active_time, Some(0), "Initial active_time should be 0");
+        // Check timestamps are close (within 1 second) to avoid flaky microsecond mismatches
+        let stored_time = crate::utils::parse_iso8601_to_unix(&last_activity);
+        let expected_time = crate::utils::parse_iso8601_to_unix(&now);
+        if let (Some(stored), Some(expected)) = (stored_time, expected_time) {
+            let diff = stored.abs_diff(expected);
+            assert!(
+                diff <= 1,
+                "last_activity should be within 1 second of update timestamp (diff: {}s)",
+                diff
+            );
+        } else {
+            panic!("Failed to parse timestamps for comparison");
+        }
+    }
+
+    #[test]
+    fn test_active_time_accumulation() {
+        use chrono::{DateTime, Duration, Utc};
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+
+        // NOTE: This test manually sets active_time_seconds to test STORAGE, not CALCULATION.
+        // The automatic calculation logic (src/database.rs:630-679) is tested in integration tests:
+        //   - tests/burn_rate_active_time_accumulation_test.rs (automatic delta accumulation)
+        //   - tests/burn_rate_active_time_threshold_test.rs (threshold handling)
+        // These integration tests use separate processes with STATUSLINE_BURN_RATE_MODE env var
+        // to avoid OnceLock config conflicts and properly exercise the automatic calculation path.
+
+        // Create database
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        // Simulate first message at T=0
+        let base_time: DateTime<Utc> = "2025-01-01T10:00:00Z".parse().unwrap();
+        let first_activity = base_time.to_rfc3339();
+
+        db.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 1.0,
+                lines_added: 10,
+                lines_removed: 0,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+                active_time_seconds: Some(0),
+                last_activity: Some(first_activity.clone()),
+            },
+        )
+        .unwrap();
+
+        // Simulate second message 5 minutes later (300 seconds)
+        let second_time = base_time + Duration::seconds(300);
+        let second_activity = second_time.to_rfc3339();
+
+        db.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 2.0,
+                lines_added: 20,
+                lines_removed: 0,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+                active_time_seconds: Some(300), // 5 minutes accumulated
+                last_activity: Some(second_activity),
+            },
+        )
+        .unwrap();
+
+        // Verify active_time was updated
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path).unwrap();
+        let active_time: Option<i64> = conn
+            .query_row(
+                "SELECT active_time_seconds FROM sessions WHERE session_id = ?1",
+                rusqlite::params!["test-session"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            active_time,
+            Some(300),
+            "Active time should accumulate when messages are close together"
+        );
+    }
+
+    #[test]
+    fn test_active_time_ignores_long_gaps() {
+        use tempfile::TempDir;
+
+        // NOTE: This test manually sets active_time_seconds to test STORAGE, not CALCULATION.
+        // The automatic threshold logic is tested in integration tests (see comment in test_active_time_accumulation).
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        // This test verifies that the database correctly stores the active_time_seconds
+        // when explicitly provided (simulating what the active_time mode would calculate)
+
+        // First update with 0 active time
+        db.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 1.0,
+                lines_added: 10,
+                lines_removed: 0,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+                active_time_seconds: Some(0),
+                last_activity: Some("2025-01-01T10:00:00Z".to_string()),
+            },
+        )
+        .unwrap();
+
+        // Second update after a long gap (2 hours)
+        // In active_time mode, this would NOT add to active_time
+        // We simulate this by keeping active_time at 0
+        db.update_session(
+            "test-session",
+            SessionUpdate {
+                cost: 2.0,
+                lines_added: 20,
+                lines_removed: 0,
+                model_name: None,
+                workspace_dir: None,
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+                active_time_seconds: Some(0), // Still 0 - gap was ignored
+                last_activity: Some("2025-01-01T12:00:00Z".to_string()),
+            },
+        )
+        .unwrap();
+
+        // Verify active_time did NOT increase
+        use rusqlite::Connection;
+        let conn = Connection::open(&db_path).unwrap();
+        let active_time: Option<i64> = conn
+            .query_row(
+                "SELECT active_time_seconds FROM sessions WHERE session_id = ?1",
+                rusqlite::params!["test-session"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_eq!(
+            active_time,
+            Some(0),
+            "Active time should NOT accumulate across long gaps"
         );
     }
 }
