@@ -1,3 +1,12 @@
+//! Integration test for auto_reset burn rate mode - cumulative cost handling
+//!
+//! ⚠️  CONFIG CACHING LIMITATION ⚠️
+//! Config is initialized ONCE per process using OnceLock, so the FIRST test
+//! that calls get_config() fixes all settings for the entire test binary.
+//!
+//! Solution: Only the first test can set env vars that affect config.
+//! Subsequent tests inherit those settings.
+
 use statusline::database::{SessionUpdate, SqliteDatabase};
 use std::env;
 use tempfile::TempDir;

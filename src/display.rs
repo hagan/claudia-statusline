@@ -257,6 +257,15 @@ fn format_statusline_string(
     );
     let mut parts = Vec::new();
 
+    // Create database handle once for reuse (performance optimization for token rates)
+    let db = session_id.and_then(|_| {
+        let db_path = crate::stats::StatsData::get_sqlite_path().ok()?;
+        if !db_path.exists() {
+            return None;
+        }
+        crate::database::SqliteDatabase::new(&db_path).ok()
+    });
+
     // 0. TEST indicator if in test mode
     if std::env::var("STATUSLINE_TEST_MODE").is_ok() {
         parts.push(format!("{}[TEST]{}", Colors::yellow(), Colors::reset()));
@@ -427,6 +436,14 @@ fn format_statusline_string(
                 daily_total,
                 Colors::reset()
             ));
+        }
+    }
+
+    // 8. Token rate metrics (opt-in feature)
+    if let Some(sid) = session_id {
+        if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, db.as_ref()) {
+            let token_rate_str = format_token_rates(&token_rates);
+            parts.push(token_rate_str);
         }
     }
 
@@ -800,6 +817,96 @@ fn format_duration(seconds: u64) -> String {
         format!("{}m", seconds / 60)
     } else {
         format!("{}h{}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
+/// Format token rate metrics based on display mode
+fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
+    let config = crate::config::get_config();
+    let mode = &config.token_rate.display_mode;
+
+    match mode.as_str() {
+        "detailed" => {
+            // Detailed: "In:5.2 Out:8.7 tok/s • Cache:85%"
+            let mut parts = vec![
+                format!(
+                    "{}In:{:.1} Out:{:.1} tok/s{}",
+                    Colors::light_gray(),
+                    metrics.input_rate,
+                    metrics.output_rate,
+                    Colors::reset()
+                ),
+            ];
+
+            // Add cache metrics if available and enabled
+            if config.token_rate.cache_metrics {
+                if let Some(hit_ratio) = metrics.cache_hit_ratio {
+                    let cache_pct = (hit_ratio * 100.0) as u8;
+                    let cache_str = if let Some(roi) = metrics.cache_roi {
+                        if roi.is_infinite() {
+                            format!("Cache:{}% (∞ ROI)", cache_pct)
+                        } else {
+                            format!("Cache:{}% ({:.1}x ROI)", cache_pct, roi)
+                        }
+                    } else {
+                        format!("Cache:{}%", cache_pct)
+                    };
+                    parts.push(cache_str);
+                }
+            }
+
+            parts.join(" • ")
+        }
+        "cache_only" => {
+            // Cache-focused: "Cache:85% (12x ROI) • 41.7 tok/s"
+            if config.token_rate.cache_metrics {
+                if let Some(hit_ratio) = metrics.cache_hit_ratio {
+                    let cache_pct = (hit_ratio * 100.0) as u8;
+                    let cache_str = if let Some(roi) = metrics.cache_roi {
+                        if roi.is_infinite() {
+                            format!("{}Cache:{}% (∞ ROI){}", Colors::cyan(), cache_pct, Colors::reset())
+                        } else {
+                            format!("{}Cache:{}% ({:.1}x ROI){}", Colors::cyan(), cache_pct, roi, Colors::reset())
+                        }
+                    } else {
+                        format!("{}Cache:{}%{}", Colors::cyan(), cache_pct, Colors::reset())
+                    };
+
+                    format!(
+                        "{} • {}{:.1} tok/s{}",
+                        cache_str,
+                        Colors::light_gray(),
+                        metrics.total_rate,
+                        Colors::reset()
+                    )
+                } else {
+                    // No cache data, fallback to summary
+                    format!(
+                        "{}{:.1} tok/s{}",
+                        Colors::light_gray(),
+                        metrics.total_rate,
+                        Colors::reset()
+                    )
+                }
+            } else {
+                // Cache metrics disabled, fallback to summary
+                format!(
+                    "{}{:.1} tok/s{}",
+                    Colors::light_gray(),
+                    metrics.total_rate,
+                    Colors::reset()
+                )
+            }
+        }
+        _ => {
+            // Summary (default): "13.9 tok/s"
+            format!(
+                "{}{:.1} tok/s{}",
+                Colors::light_gray(),
+                metrics.total_rate,
+                Colors::reset()
+            )
+        }
     }
 }
 

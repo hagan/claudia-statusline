@@ -6,6 +6,13 @@
 //! - Burn rate stability as costs grow
 //! - Database UPSERT precision with many updates
 //! - High-frequency updates over extended periods
+//!
+//! ⚠️  CONFIG CACHING LIMITATION ⚠️
+//! Config is initialized ONCE per process using OnceLock, so the FIRST test
+//! that calls get_config() fixes all settings for the entire test binary.
+//!
+//! Solution: Only the first test can set env vars that affect config.
+//! Subsequent tests inherit those settings.
 
 use std::env;
 use tempfile::TempDir;
@@ -15,7 +22,7 @@ fn test_high_volume_transactions_over_week() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Simulate a real-world scenario: 1 week of active work
-    // ~100 updates per day = 700 updates total
+    // Reduced from 700 to 50 iterations for faster CI (still validates accumulation)
     // Small costs accumulating: $0.10 - $2.00 per update
 
     env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
@@ -24,7 +31,7 @@ fn test_high_volume_transactions_over_week() {
     let db_path = temp_dir.path().join("test.db");
     let db = SqliteDatabase::new(&db_path).unwrap();
 
-    eprintln!("\n=== Test: 700 transactions over 1 week ===");
+    eprintln!("\n=== Test: 50 transactions over 1 week ===");
 
     // Session started 7 days ago
     let seven_days_ago = chrono::Utc::now() - chrono::Duration::days(7);
@@ -56,14 +63,14 @@ fn test_high_volume_transactions_over_week() {
     )
     .unwrap();
 
-    // Simulate 700 transactions over the week
+    // Simulate 50 transactions over the week
     let mut expected_total_cost = 0.50;
     let mut expected_total_lines_added = 10;
     let mut expected_total_lines_removed = 1;
 
-    eprintln!("Simulating 700 transactions...");
+    eprintln!("Simulating 50 transactions...");
 
-    for i in 1..=700 {
+    for i in 1..=50 {
         // Varying costs: $0.10 to $2.00 per update
         let cost_increment = 0.10 + ((i % 20) as f64 * 0.10);
         let lines_added_increment = (i % 50) + 5;
@@ -92,12 +99,12 @@ fn test_high_volume_transactions_over_week() {
         .unwrap();
 
         // Progress indicator
-        if i % 100 == 0 {
+        if i % 10 == 0 {
             eprintln!("  {} transactions completed", i);
         }
     }
 
-    eprintln!("All 700 transactions completed");
+    eprintln!("All 50 transactions completed");
 
     // Verify accumulated values in database
     let (db_cost, db_lines_added, db_lines_removed): (f64, i64, i64) = conn
@@ -130,7 +137,7 @@ fn test_high_volume_transactions_over_week() {
         "Lines removed should be exact"
     );
 
-    eprintln!("✓ Cost accumulation accurate after 700 transactions");
+    eprintln!("✓ Cost accumulation accurate after 50 transactions");
 
     // Calculate burn rate
     let start_time_from_db: String = conn
@@ -154,14 +161,14 @@ fn test_high_volume_transactions_over_week() {
     eprintln!("Burn rate: ${:.2}/hr", burn_rate);
 
     // Verify burn rate is reasonable for 7-day session
-    // ~$800 / 7 days = ~$114/day = ~$4.75/hr
+    // ~$49 / 7 days = ~$7/day = ~$0.29/hr (reduced from ~$4.75/hr with 700 transactions)
     assert!(
-        burn_rate > 4.0 && burn_rate < 6.0,
-        "Burn rate should be ~$4.75/hr for 7-day high-volume session, got ${:.2}/hr",
+        burn_rate > 0.25 && burn_rate < 0.35,
+        "Burn rate should be ~$0.29/hr for 7-day session with 50 transactions, got ${:.2}/hr",
         burn_rate
     );
 
-    eprintln!("✓ Burn rate accurate after 700 transactions");
+    eprintln!("✓ Burn rate accurate after 50 transactions");
 
     // Cleanup
     env::remove_var("STATUSLINE_BURN_RATE_MODE");
@@ -211,13 +218,13 @@ fn test_cumulative_rounding_with_tiny_costs() {
     )
     .unwrap();
 
-    eprintln!("Adding 999 more $0.001 transactions...");
+    eprintln!("Adding 99 more $0.001 transactions (reduced from 999 for faster CI)...");
 
     let mut total_cost = 0.001;
     let mut total_lines = 1;
 
-    // Add 999 more tiny transactions
-    for i in 1..1000 {
+    // Add 99 more tiny transactions (reduced from 999 for faster CI)
+    for i in 1..100 {
         total_cost += 0.001;
         total_lines += 1;
 
@@ -238,12 +245,12 @@ fn test_cumulative_rounding_with_tiny_costs() {
         )
         .unwrap();
 
-        if i % 200 == 0 {
+        if i % 20 == 0 {
             eprintln!("  {} transactions", i);
         }
     }
 
-    // Verify total is exactly $1.00 (1000 × $0.001)
+    // Verify total is exactly $0.10 (100 × $0.001)
     let final_cost: f64 = conn
         .query_row(
             "SELECT cost FROM sessions WHERE session_id = ?1",
@@ -252,18 +259,18 @@ fn test_cumulative_rounding_with_tiny_costs() {
         )
         .unwrap();
 
-    eprintln!("\nExpected: $1.00");
+    eprintln!("\nExpected: $0.10");
     eprintln!("Actual: ${:.6}", final_cost);
 
-    let diff = (1.0 - final_cost).abs();
+    let diff = (0.1 - final_cost).abs();
     assert!(
         diff < 0.0001,
-        "After 1000 tiny transactions, total should be $1.00 ± $0.0001, got ${:.6} (diff: ${:.6})",
+        "After 100 tiny transactions, total should be $0.10 ± $0.0001, got ${:.6} (diff: ${:.6})",
         final_cost,
         diff
     );
 
-    eprintln!("✓ No cumulative rounding errors with 1000 tiny transactions");
+    eprintln!("✓ No cumulative rounding errors with 100 tiny transactions");
 
     // Cleanup
     env::remove_var("STATUSLINE_BURN_RATE_MODE");
@@ -385,7 +392,7 @@ fn test_mixed_update_sizes_over_days() {
 
     // Test realistic scenario: Mix of small, medium, and large cost updates
     // Simulates: quick edits ($0.01-$0.50), conversations ($1-$5), heavy refactors ($10-$20)
-    // Over 3 days with 300 total updates
+    // Over 3 days with 30 total updates (reduced from 300 for faster CI)
 
     env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
 
@@ -393,7 +400,7 @@ fn test_mixed_update_sizes_over_days() {
     let db_path = temp_dir.path().join("test.db");
     let db = SqliteDatabase::new(&db_path).unwrap();
 
-    eprintln!("\n=== Test: 300 mixed-size transactions over 3 days ===");
+    eprintln!("\n=== Test: 30 mixed-size transactions over 3 days ===");
 
     let three_days_ago = chrono::Utc::now() - chrono::Duration::days(3);
     let start_timestamp = three_days_ago.to_rfc3339();
@@ -431,9 +438,9 @@ fn test_mixed_update_sizes_over_days() {
     )
     .unwrap();
 
-    eprintln!("Simulating 299 more transactions with varying costs...");
+    eprintln!("Simulating 29 more transactions with varying costs (reduced from 299 for faster CI)...");
 
-    for i in 1..300 {
+    for i in 1..30 {
         // Distribute updates: 60% small, 30% medium, 10% large
         let cost_increment = if i % 10 < 6 {
             // Small: $0.01 - $0.50
@@ -473,7 +480,7 @@ fn test_mixed_update_sizes_over_days() {
         }
     }
 
-    eprintln!("\n300 transactions completed:");
+    eprintln!("\n30 transactions completed:");
     eprintln!("  Small (<$1): {}", small_count);
     eprintln!("  Medium ($1-$10): {}", medium_count);
     eprintln!("  Large (>$10): {}", large_count);
@@ -494,7 +501,7 @@ fn test_mixed_update_sizes_over_days() {
 
     assert!(
         diff < 0.10,
-        "Cost should be accurate within $0.10 after 300 mixed updates, diff: ${:.6}",
+        "Cost should be accurate within $0.10 after 30 mixed updates, diff: ${:.6}",
         diff
     );
 

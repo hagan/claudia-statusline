@@ -864,6 +864,127 @@ pub fn get_session_duration_by_mode(session_id: &str) -> Option<u64> {
     }
 }
 
+/// Token rate metrics for display
+#[derive(Debug, Clone)]
+pub struct TokenRateMetrics {
+    pub input_rate: f64,          // Input tokens per second
+    pub output_rate: f64,         // Output tokens per second
+    pub cache_read_rate: f64,     // Cache read tokens per second
+    pub cache_creation_rate: f64, // Cache creation tokens per second
+    pub total_rate: f64,          // Total tokens per second
+    pub duration_seconds: u64,    // Duration used for calculation
+    pub cache_hit_ratio: Option<f64>, // Cache hit ratio (0.0-1.0)
+    pub cache_roi: Option<f64>,   // Cache ROI (return on investment)
+}
+
+/// Calculate token rates for a session
+///
+/// Uses the same duration mode as burn_rate (wall_clock, active_time, or auto_reset).
+/// Returns None if token breakdown or duration is not available.
+///
+/// Accepts an optional database handle to avoid creating a new connection on every call.
+/// If None is provided, creates a new connection (slower, for backward compatibility).
+pub fn calculate_token_rates_with_db(
+    session_id: &str,
+    db: Option<&crate::database::SqliteDatabase>,
+) -> Option<TokenRateMetrics> {
+    let config = crate::config::get_config();
+
+    // Check if token rate feature is enabled
+    if !config.token_rate.enabled {
+        return None;
+    }
+
+    // Get token breakdown from database (use provided handle or create new one)
+    let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = if let Some(db) =
+        db
+    {
+        db.get_session_token_breakdown(session_id)?
+    } else {
+        // Fallback: create new connection (slower)
+        let db_path = StatsData::get_sqlite_path().ok()?;
+        if !db_path.exists() {
+            return None;
+        }
+        let db = crate::database::SqliteDatabase::new(&db_path).ok()?;
+        db.get_session_token_breakdown(session_id)?
+    };
+
+    // Calculate total tokens
+    let total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens;
+
+    // No tokens yet, skip calculation
+    if total_tokens == 0 {
+        return None;
+    }
+
+    // Get duration based on mode (same logic as burn rate)
+    let duration = if config.token_rate.inherit_duration_mode {
+        // Use burn_rate.mode
+        get_session_duration_by_mode(session_id)?
+    } else {
+        // Always use wall_clock
+        get_session_duration(session_id)?
+    };
+
+    // Require at least 60 seconds for meaningful rates
+    if duration < 60 {
+        return None;
+    }
+
+    let duration_f64 = duration as f64;
+
+    // Calculate rates (tokens per second)
+    let input_rate = input_tokens as f64 / duration_f64;
+    let output_rate = output_tokens as f64 / duration_f64;
+    let cache_read_rate = cache_read_tokens as f64 / duration_f64;
+    let cache_creation_rate = cache_creation_tokens as f64 / duration_f64;
+    let total_rate = total_tokens as f64 / duration_f64;
+
+    // Calculate cache metrics if enabled
+    let (cache_hit_ratio, cache_roi) = if config.token_rate.cache_metrics {
+        // Cache hit ratio: cache_read / (cache_read + input)
+        let total_potential_cache = cache_read_tokens + input_tokens;
+        let hit_ratio = if total_potential_cache > 0 {
+            Some(cache_read_tokens as f64 / total_potential_cache as f64)
+        } else {
+            None
+        };
+
+        // Cache ROI: tokens saved / cost of creating cache
+        // ROI = cache_read / cache_creation (how many times we benefited from cache)
+        let roi = if cache_creation_tokens > 0 {
+            Some(cache_read_tokens as f64 / cache_creation_tokens as f64)
+        } else if cache_read_tokens > 0 {
+            Some(f64::INFINITY) // Free cache reads (cache created elsewhere)
+        } else {
+            None
+        };
+
+        (hit_ratio, roi)
+    } else {
+        (None, None)
+    };
+
+    Some(TokenRateMetrics {
+        input_rate,
+        output_rate,
+        cache_read_rate,
+        cache_creation_rate,
+        total_rate,
+        duration_seconds: duration,
+        cache_hit_ratio,
+        cache_roi,
+    })
+}
+
+/// Compatibility wrapper for calculate_token_rates that creates a new DB connection
+///
+/// For better performance, use calculate_token_rates_with_db() and pass an existing DB handle.
+pub fn calculate_token_rates(session_id: &str) -> Option<TokenRateMetrics> {
+    calculate_token_rates_with_db(session_id, None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

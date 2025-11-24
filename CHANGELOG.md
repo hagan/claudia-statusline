@@ -7,6 +7,68 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added - Token Rate Metrics (Opt-in Feature)
+
+**New feature**: Display token usage rates in tokens per second (tok/s), similar to burn rate but for token consumption.
+
+#### Configuration
+```toml
+[token_rate]
+# Enable token rate metrics display (tokens per second)
+# Default: false (opt-in feature)
+enabled = false
+
+# Display mode: "summary", "detailed", or "cache_only"
+# - "summary": Simple total rate (e.g., "13.9 tok/s")
+# - "detailed": Token type breakdown (e.g., "In:5.2 Out:8.7 tok/s • Cache:85%")
+# - "cache_only": Cache-focused (e.g., "Cache:85% (12x ROI) • 41.7 tok/s")
+# Default: "summary"
+display_mode = "summary"
+
+# Show cache efficiency metrics (hit ratio, ROI)
+# Default: true
+cache_metrics = true
+
+# Inherit duration mode from burn_rate configuration
+# When true, uses same duration mode as burn_rate (wall_clock, active_time, auto_reset)
+# When false, always uses wall_clock mode for token rate calculations
+# Default: true (recommended for consistency)
+inherit_duration_mode = true
+```
+
+#### Features
+- **Opt-in by default**: Disabled unless explicitly enabled in config
+- **Three display modes**:
+  - **summary**: `13.9 tok/s` (simple, clean)
+  - **detailed**: `In:5.2 Out:8.7 tok/s • Cache:85%` (full breakdown)
+  - **cache_only**: `Cache:85% (12x ROI) • 41.7 tok/s` (cache-focused)
+- **Duration modes**: Inherits from `burn_rate.mode` (wall_clock, active_time, auto_reset)
+- **Cache metrics**: Shows cache hit ratio and ROI (return on investment)
+- **Minimum duration**: Requires 60+ seconds for meaningful rates
+
+#### Calculations
+- **Input rate**: `input_tokens / duration_seconds`
+- **Output rate**: `output_tokens / duration_seconds`
+- **Cache read rate**: `cache_read_tokens / duration_seconds`
+- **Total rate**: `total_tokens / duration_seconds`
+- **Cache hit ratio**: `cache_read / (cache_read + input)`
+- **Cache ROI**: `cache_read / cache_creation` (how many times cache paid off)
+
+#### Environment Variable Overrides
+```bash
+export STATUSLINE_TOKEN_RATE_ENABLED=true
+export STATUSLINE_TOKEN_RATE_MODE=detailed  # summary, detailed, cache_only
+export STATUSLINE_TOKEN_RATE_CACHE_METRICS=true
+export STATUSLINE_TOKEN_RATE_INHERIT_DURATION=true
+```
+
+#### Implementation
+- New `TokenRateConfig` structure in `src/config.rs`
+- Token rate calculation in `src/stats.rs` (`calculate_token_rates()`)
+- Display formatting in `src/display.rs` (`format_token_rates()`)
+- Database integration with existing token breakdown tracking
+- 2 integration tests validating calculation accuracy
+
 ## [2.20.1] - 2025-11-25
 
 ### Fixed

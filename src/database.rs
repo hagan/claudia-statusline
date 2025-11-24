@@ -876,6 +876,37 @@ impl SqliteDatabase {
         Some(max_tokens as usize)
     }
 
+    /// Get token breakdown for a session
+    ///
+    /// Returns (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
+    /// Returns None if any token count is negative (DB corruption/migration edge case)
+    pub fn get_session_token_breakdown(&self, session_id: &str) -> Option<(u32, u32, u32, u32)> {
+        let conn = self.get_connection().ok()?;
+        conn.query_row(
+            "SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens
+             FROM sessions WHERE session_id = ?1",
+            params![session_id],
+            |row| {
+                let input: i64 = row.get(0)?;
+                let output: i64 = row.get(1)?;
+                let cache_read: i64 = row.get(2)?;
+                let cache_creation: i64 = row.get(3)?;
+
+                // Guard against negative values (DB corruption/migration edge cases)
+                if input < 0 || output < 0 || cache_read < 0 || cache_creation < 0 {
+                    log::warn!(
+                        "Negative token values detected for session {}: input={}, output={}, cache_read={}, cache_creation={}",
+                        session_id, input, output, cache_read, cache_creation
+                    );
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+
+                Ok((input as u32, output as u32, cache_read as u32, cache_creation as u32))
+            },
+        )
+        .ok()
+    }
+
     /// Get all-time total cost
     #[allow(dead_code)]
     pub fn get_all_time_total(&self) -> Result<f64> {

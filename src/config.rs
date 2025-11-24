@@ -39,6 +39,9 @@ pub struct Config {
 
     /// Layout configuration for customizable statusline format
     pub layout: LayoutConfig,
+
+    /// Token rate metrics configuration
+    pub token_rate: TokenRateConfig,
 }
 
 /// Display-related configuration
@@ -576,6 +579,68 @@ impl Default for ModelComponentConfig {
     }
 }
 
+/// Token rate metrics configuration
+///
+/// Controls display of token usage rates in tokens per second (tok/s).
+///
+/// **Available Display Modes:**
+/// - **"summary"**: Single total token rate (e.g., "13.9 tok/s")
+/// - **"detailed"**: Breakdown by token type (e.g., "In:5.2 Out:8.7 tok/s • Cache:85%")
+/// - **"cache_only"**: Cache-focused view (e.g., "Cache:85% (12x ROI) • 41.7 tok/s")
+///
+/// **Duration Modes:**
+/// By default, token rates inherit the duration mode from burn_rate.mode:
+/// - **"wall_clock"**: Total elapsed time (includes idle periods)
+/// - **"active_time"**: Only active conversation time (excludes gaps)
+/// - **"auto_reset"**: Resets after inactivity threshold
+///
+/// **Example Calculations:**
+/// - Input tokens: 18,750 / 3600s = 5.2 tok/s
+/// - Output tokens: 31,250 / 3600s = 8.7 tok/s
+/// - Cache read: 150,000 / 3600s = 41.7 tok/s
+/// - Total tokens: 50,000 / 3600s = 13.9 tok/s
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TokenRateConfig {
+    /// Enable token rate metrics display
+    ///
+    /// **Default: false (opt-in feature)**
+    ///
+    /// When enabled, shows token usage rates alongside burn rate.
+    /// Useful for understanding token consumption patterns during intensive sessions.
+    pub enabled: bool,
+
+    /// Token rate display mode
+    ///
+    /// **Default: "summary"**
+    ///
+    /// Options:
+    /// - **"summary"**: Simple total rate (e.g., "13.9 tok/s")
+    /// - **"detailed"**: Token type breakdown (e.g., "In:5.2 Out:8.7 tok/s • Cache:85%")
+    /// - **"cache_only"**: Cache-focused (e.g., "Cache:85% (12x ROI) • 41.7 tok/s")
+    pub display_mode: String,
+
+    /// Show cache efficiency metrics (hit ratio, ROI)
+    ///
+    /// **Default: true**
+    ///
+    /// When enabled, displays cache hit ratio and return on investment (ROI).
+    /// Only shown in "detailed" and "cache_only" modes.
+    ///
+    /// Example: "Cache:85% (12x ROI)" means 85% cache hits with 12x token savings.
+    pub cache_metrics: bool,
+
+    /// Inherit duration mode from burn_rate configuration
+    ///
+    /// **Default: true**
+    ///
+    /// When true, uses the same duration mode as burn_rate (wall_clock, active_time, or auto_reset).
+    /// When false, always uses wall_clock mode for token rate calculations.
+    ///
+    /// Recommended to keep true for consistency between cost and token metrics.
+    pub inherit_duration_mode: bool,
+}
+
 /// Sync configuration for cloud synchronization
 #[cfg(feature = "turso-sync")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -777,6 +842,17 @@ impl Default for BurnRateConfig {
         BurnRateConfig {
             mode: "wall_clock".to_string(), // Default to wall_clock for backward compatibility
             inactivity_threshold_minutes: 60, // 1 hour default
+        }
+    }
+}
+
+impl Default for TokenRateConfig {
+    fn default() -> Self {
+        TokenRateConfig {
+            enabled: false, // Opt-in feature, disabled by default
+            display_mode: "summary".to_string(), // Simple display mode by default
+            cache_metrics: true, // Show cache efficiency by default
+            inherit_duration_mode: true, // Use burn_rate.mode for consistency
         }
     }
 }
@@ -1075,6 +1151,28 @@ mode = "wall_clock"
 # Default: 60 minutes (1 hour)
 inactivity_threshold_minutes = 60
 
+[token_rate]
+# Enable token rate metrics display (tokens per second)
+# Default: false (opt-in feature)
+enabled = false
+
+# Display mode: "summary", "detailed", or "cache_only"
+# - "summary": Simple total rate (e.g., "13.9 tok/s")
+# - "detailed": Token type breakdown (e.g., "In:5.2 Out:8.7 tok/s • Cache:85%")
+# - "cache_only": Cache-focused (e.g., "Cache:85% (12x ROI) • 41.7 tok/s")
+# Default: "summary"
+display_mode = "summary"
+
+# Show cache efficiency metrics (hit ratio, ROI)
+# Default: true
+cache_metrics = true
+
+# Inherit duration mode from burn_rate configuration
+# When true, uses same duration mode as burn_rate (wall_clock, active_time, auto_reset)
+# When false, always uses wall_clock mode for token rate calculations
+# Default: true (recommended for consistency)
+inherit_duration_mode = true
+
 # Optional cloud sync configuration
 # Requires building with --features turso-sync
 # [sync]
@@ -1130,6 +1228,26 @@ pub fn get_config() -> &'static Config {
             if let Ok(threshold) = val.parse::<u32>() {
                 config.burn_rate.inactivity_threshold_minutes = threshold;
             }
+        }
+
+        // Override token_rate.enabled from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_TOKEN_RATE_ENABLED") {
+            config.token_rate.enabled = val == "true" || val == "1";
+        }
+
+        // Override token_rate.display_mode from environment if set (for testing)
+        if let Ok(mode) = env::var("STATUSLINE_TOKEN_RATE_MODE") {
+            config.token_rate.display_mode = mode;
+        }
+
+        // Override token_rate.cache_metrics from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_TOKEN_RATE_CACHE_METRICS") {
+            config.token_rate.cache_metrics = val == "true" || val == "1";
+        }
+
+        // Override token_rate.inherit_duration_mode from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_TOKEN_RATE_INHERIT_DURATION") {
+            config.token_rate.inherit_duration_mode = val == "true" || val == "1";
         }
 
         config
