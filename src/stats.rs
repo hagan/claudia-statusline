@@ -589,11 +589,30 @@ fn acquire_stats_file(path: &Path) -> Result<File> {
         }
     }
 
-    // Try to acquire exclusive lock with retry
+    // Try to acquire exclusive lock with retry (non-blocking)
+    // CRITICAL: Use try_lock_exclusive() instead of lock_exclusive()
+    // lock_exclusive() blocks indefinitely, causing hangs when multiple
+    // Claude instances run simultaneously. try_lock_exclusive() returns
+    // immediately with WouldBlock error if lock is held, allowing retry.
     retry_if_retryable(&retry_config, || {
-        file.lock_exclusive()
-            .map_err(|e| StatuslineError::lock(format!("Failed to lock stats file: {}", e)))?;
-        Ok(())
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                // Transient: another process holds the lock, retry is appropriate
+                log::debug!("Stats file lock contention (WouldBlock), will retry");
+                Err(StatuslineError::lock(
+                    "Stats file temporarily locked by another process",
+                ))
+            }
+            Err(e) => {
+                // Hard failure: permissions, I/O error, etc.
+                log::warn!("Stats file lock failed unexpectedly: {}", e);
+                Err(StatuslineError::lock(format!(
+                    "Failed to lock stats file: {}",
+                    e
+                )))
+            }
+        }
     })?;
 
     Ok(file)
