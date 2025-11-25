@@ -907,8 +907,14 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
                 )
             }
         }
-        _ => {
+        other => {
             // Summary (default): "13.9 tok/s"
+            if other != "summary" {
+                log::warn!(
+                    "Unknown token_rate display_mode '{}', using 'summary'",
+                    other
+                );
+            }
             format!(
                 "{}{:.1} tok/s{}",
                 Colors::light_gray(),
