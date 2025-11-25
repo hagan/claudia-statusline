@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.20.1] - 2025-11-25
+
+### Fixed
+- **Statusline hang with concurrent instances**: Changed from blocking `lock_exclusive()` to non-blocking `try_lock_exclusive()` to prevent indefinite hangs when multiple Claude instances run simultaneously
+- **Improved retry configuration**: Increased file operation retries from 3 to 5 attempts with faster initial delay (50ms) and gentler backoff (1.5x) for better concurrency handling
+- **Better error diagnostics**: Added explicit `WouldBlock` handling with debug logging for retries and warn logging for final failures
+- **Test race condition**: Fixed `NO_COLOR` environment variable test with `#[serial]` attribute
+
 ### Testing - Phase 1 Long Session Burn Rate Tests
 
 **17 comprehensive integration tests** validating burn rate accuracy for **extended sessions with high transaction volumes**:
