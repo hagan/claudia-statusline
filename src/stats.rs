@@ -865,16 +865,20 @@ pub fn get_session_duration_by_mode(session_id: &str) -> Option<u64> {
 }
 
 /// Token rate metrics for display
+///
+/// All fields are public API for library consumers, even if not all are
+/// used internally by the statusline binary.
 #[derive(Debug, Clone)]
+#[allow(dead_code)] // Public API - fields used by library consumers
 pub struct TokenRateMetrics {
-    pub input_rate: f64,          // Input tokens per second
-    pub output_rate: f64,         // Output tokens per second
-    pub cache_read_rate: f64,     // Cache read tokens per second
-    pub cache_creation_rate: f64, // Cache creation tokens per second
-    pub total_rate: f64,          // Total tokens per second
-    pub duration_seconds: u64,    // Duration used for calculation
+    pub input_rate: f64,              // Input tokens per second
+    pub output_rate: f64,             // Output tokens per second
+    pub cache_read_rate: f64,         // Cache read tokens per second
+    pub cache_creation_rate: f64,     // Cache creation tokens per second
+    pub total_rate: f64,              // Total tokens per second
+    pub duration_seconds: u64,        // Duration used for calculation
     pub cache_hit_ratio: Option<f64>, // Cache hit ratio (0.0-1.0)
-    pub cache_roi: Option<f64>,   // Cache ROI (return on investment)
+    pub cache_roi: Option<f64>,       // Cache ROI (return on investment)
 }
 
 /// Calculate token rates for a session
@@ -896,19 +900,18 @@ pub fn calculate_token_rates_with_db(
     }
 
     // Get token breakdown from database (use provided handle or create new one)
-    let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) = if let Some(db) =
-        db
-    {
-        db.get_session_token_breakdown(session_id)?
-    } else {
-        // Fallback: create new connection (slower)
-        let db_path = StatsData::get_sqlite_path().ok()?;
-        if !db_path.exists() {
-            return None;
-        }
-        let db = crate::database::SqliteDatabase::new(&db_path).ok()?;
-        db.get_session_token_breakdown(session_id)?
-    };
+    let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) =
+        if let Some(db) = db {
+            db.get_session_token_breakdown(session_id)?
+        } else {
+            // Fallback: create new connection (slower)
+            let db_path = StatsData::get_sqlite_path().ok()?;
+            if !db_path.exists() {
+                return None;
+            }
+            let db = crate::database::SqliteDatabase::new(&db_path).ok()?;
+            db.get_session_token_breakdown(session_id)?
+        };
 
     // Calculate total tokens
     let total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens;
@@ -981,6 +984,7 @@ pub fn calculate_token_rates_with_db(
 /// Compatibility wrapper for calculate_token_rates that creates a new DB connection
 ///
 /// For better performance, use calculate_token_rates_with_db() and pass an existing DB handle.
+#[allow(dead_code)] // Public API - used by library consumers and tests
 pub fn calculate_token_rates(session_id: &str) -> Option<TokenRateMetrics> {
     calculate_token_rates_with_db(session_id, None)
 }
@@ -1109,6 +1113,13 @@ mod tests {
     #[serial]
     fn test_session_start_time_tracking() {
         use crate::database::SessionUpdate;
+        use tempfile::TempDir;
+
+        // Isolate from real database
+        let temp_dir = TempDir::new().unwrap();
+        env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+
         let mut stats = StatsData::default();
 
         // First update creates session with start_time
@@ -1153,6 +1164,10 @@ mod tests {
         let session = stats.sessions.get("test-session").unwrap();
         assert_eq!(session.start_time, original_start);
         assert_eq!(session.cost, 2.0);
+
+        // Cleanup
+        env::remove_var("XDG_DATA_HOME");
+        env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]
@@ -1350,7 +1365,12 @@ mod tests {
 
         let temp_dir = TempDir::new().unwrap();
         env::set_var("XDG_DATA_HOME", temp_dir.path());
+        env::set_var("XDG_CONFIG_HOME", temp_dir.path());
         env::set_var("STATUSLINE_JSON_BACKUP", "true");
+
+        // Create the directory structure first
+        let data_dir = temp_dir.path().join("claudia-statusline");
+        fs::create_dir_all(&data_dir).unwrap();
 
         // Create new stats file
         let stats = StatsData::default();
@@ -1358,7 +1378,7 @@ mod tests {
 
         // Verify stats.json has 0o600 permissions
         // Use temp_dir path directly since get_data_dir() uses cached config
-        let stats_path = temp_dir.path().join("claudia-statusline/stats.json");
+        let stats_path = data_dir.join("stats.json");
         let metadata = fs::metadata(&stats_path).unwrap();
         let mode = metadata.permissions().mode();
 
@@ -1370,6 +1390,7 @@ mod tests {
         );
 
         env::remove_var("STATUSLINE_JSON_BACKUP");
+        env::remove_var("XDG_CONFIG_HOME");
         env::remove_var("XDG_DATA_HOME");
     }
 

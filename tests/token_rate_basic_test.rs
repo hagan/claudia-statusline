@@ -23,9 +23,12 @@ fn test_token_rate_calculation() {
     let temp_home = temp_dir.path();
 
     // Set env vars BEFORE creating any statusline objects
+    // MUST set both XDG_DATA_HOME and XDG_CONFIG_HOME to avoid loading user's real config
     env::set_var("XDG_DATA_HOME", temp_home.join(".local/share"));
+    env::set_var("XDG_CONFIG_HOME", temp_home.join(".config"));
     env::set_var("STATUSLINE_TOKEN_RATE_ENABLED", "true");
     env::set_var("STATUSLINE_TOKEN_RATE_MODE", "summary");
+    env::set_var("STATUSLINE_TOKEN_RATE_CACHE_METRICS", "true");
     env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
 
     // Create database using the same path that statusline will use
@@ -46,9 +49,9 @@ fn test_token_rate_calculation() {
             workspace_dir: Some("/test".to_string()),
             device_id: Some("test-device".to_string()),
             token_breakdown: Some(TokenBreakdown {
-                input_tokens: 18750,       // 5.2 tok/s over 3600s
-                output_tokens: 31250,      // 8.7 tok/s over 3600s
-                cache_read_tokens: 150000, // 41.7 tok/s over 3600s
+                input_tokens: 18750,          // 5.2 tok/s over 3600s
+                output_tokens: 31250,         // 8.7 tok/s over 3600s
+                cache_read_tokens: 150000,    // 41.7 tok/s over 3600s
                 cache_creation_tokens: 10000, // 2.8 tok/s over 3600s
             }),
             max_tokens_observed: None,
@@ -131,8 +134,10 @@ fn test_token_rate_calculation() {
 
     // Cleanup
     env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
     env::remove_var("STATUSLINE_TOKEN_RATE_ENABLED");
     env::remove_var("STATUSLINE_TOKEN_RATE_MODE");
+    env::remove_var("STATUSLINE_TOKEN_RATE_CACHE_METRICS");
     env::remove_var("STATUSLINE_BURN_RATE_MODE");
 }
 
@@ -145,6 +150,7 @@ fn test_token_rate_short_duration() {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let temp_home = temp_dir.path();
     env::set_var("XDG_DATA_HOME", temp_home.join(".local/share"));
+    env::set_var("XDG_CONFIG_HOME", temp_home.join(".config"));
     env::set_var("STATUSLINE_TOKEN_RATE_ENABLED", "true");
 
     let data_dir = temp_home.join(".local/share/claudia-statusline");
@@ -194,5 +200,6 @@ fn test_token_rate_short_duration() {
 
     // Cleanup
     env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
     env::remove_var("STATUSLINE_TOKEN_RATE_ENABLED");
 }

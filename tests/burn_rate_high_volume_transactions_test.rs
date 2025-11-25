@@ -438,7 +438,9 @@ fn test_mixed_update_sizes_over_days() {
     )
     .unwrap();
 
-    eprintln!("Simulating 29 more transactions with varying costs (reduced from 299 for faster CI)...");
+    eprintln!(
+        "Simulating 29 more transactions with varying costs (reduced from 299 for faster CI)..."
+    );
 
     for i in 1..30 {
         // Distribute updates: 60% small, 30% medium, 10% large

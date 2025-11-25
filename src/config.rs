@@ -849,10 +849,10 @@ impl Default for BurnRateConfig {
 impl Default for TokenRateConfig {
     fn default() -> Self {
         TokenRateConfig {
-            enabled: false, // Opt-in feature, disabled by default
+            enabled: false,                      // Opt-in feature, disabled by default
             display_mode: "summary".to_string(), // Simple display mode by default
-            cache_metrics: true, // Show cache efficiency by default
-            inherit_duration_mode: true, // Use burn_rate.mode for consistency
+            cache_metrics: true,                 // Show cache efficiency by default
+            inherit_duration_mode: true,         // Use burn_rate.mode for consistency
         }
     }
 }

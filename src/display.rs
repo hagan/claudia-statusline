@@ -828,15 +828,13 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
     match mode.as_str() {
         "detailed" => {
             // Detailed: "In:5.2 Out:8.7 tok/s • Cache:85%"
-            let mut parts = vec![
-                format!(
-                    "{}In:{:.1} Out:{:.1} tok/s{}",
-                    Colors::light_gray(),
-                    metrics.input_rate,
-                    metrics.output_rate,
-                    Colors::reset()
-                ),
-            ];
+            let mut parts = vec![format!(
+                "{}In:{:.1} Out:{:.1} tok/s{}",
+                Colors::light_gray(),
+                metrics.input_rate,
+                metrics.output_rate,
+                Colors::reset()
+            )];
 
             // Add cache metrics if available and enabled
             if config.token_rate.cache_metrics {
@@ -864,9 +862,20 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
                     let cache_pct = (hit_ratio * 100.0) as u8;
                     let cache_str = if let Some(roi) = metrics.cache_roi {
                         if roi.is_infinite() {
-                            format!("{}Cache:{}% (∞ ROI){}", Colors::cyan(), cache_pct, Colors::reset())
+                            format!(
+                                "{}Cache:{}% (∞ ROI){}",
+                                Colors::cyan(),
+                                cache_pct,
+                                Colors::reset()
+                            )
                         } else {
-                            format!("{}Cache:{}% ({:.1}x ROI){}", Colors::cyan(), cache_pct, roi, Colors::reset())
+                            format!(
+                                "{}Cache:{}% ({:.1}x ROI){}",
+                                Colors::cyan(),
+                                cache_pct,
+                                roi,
+                                Colors::reset()
+                            )
                         }
                     } else {
                         format!("{}Cache:{}%{}", Colors::cyan(), cache_pct, Colors::reset())
