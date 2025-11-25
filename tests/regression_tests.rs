@@ -2,6 +2,7 @@
 //!
 //! Ensures that once-fixed bugs stay fixed.
 
+use serial_test::serial;
 use statusline::display::format_output_to_string;
 use statusline::models::ModelType;
 
@@ -129,9 +130,11 @@ fn test_git_info_no_leading_space() {
 // ============================================================================
 
 #[test]
+#[serial]
 fn test_no_color_environment_variable() {
     // Test that NO_COLOR is properly checked
     // Note: Due to theme caching, we just verify that Colors::enabled() respects NO_COLOR
+    // Must be #[serial] to prevent race conditions with other tests modifying env vars
     use statusline::display::Colors;
 
     // Save original state

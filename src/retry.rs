@@ -198,9 +198,15 @@ where
         }
     }
 
-    // All attempts failed, return the last error
-    Err(last_error
-        .unwrap_or_else(|| StatuslineError::other("Retry failed with no error information")))
+    // All attempts failed, log and return the last error
+    let final_error = last_error
+        .unwrap_or_else(|| StatuslineError::other("Retry failed with no error information"));
+    log::warn!(
+        "All {} retry attempts exhausted: {}",
+        config.max_attempts,
+        final_error
+    );
+    Err(final_error)
 }
 
 #[cfg(test)]

@@ -499,10 +499,10 @@ impl Default for RetryConfig {
     fn default() -> Self {
         RetryConfig {
             file_ops: RetrySettings {
-                max_attempts: 3,
-                initial_delay_ms: 100,
-                max_delay_ms: 5000,
-                backoff_factor: 2.0,
+                max_attempts: 5,
+                initial_delay_ms: 50,
+                max_delay_ms: 2000,
+                backoff_factor: 1.5,
             },
             db_ops: RetrySettings {
                 max_attempts: 5,
@@ -802,11 +802,11 @@ retention_days_monthly = 0      # Keep monthly aggregates for N days (0 = foreve
 buffer_lines = 50
 
 [retry.file_ops]
-# File operation retry settings
-max_attempts = 3
-initial_delay_ms = 100
-max_delay_ms = 5000
-backoff_factor = 2.0
+# File operation retry settings (tuned for concurrent access)
+max_attempts = 5
+initial_delay_ms = 50
+max_delay_ms = 2000
+backoff_factor = 1.5
 
 [retry.db_ops]
 # Database operation retry settings
