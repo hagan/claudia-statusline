@@ -192,6 +192,26 @@ xattr -d com.apple.quarantine ~/.local/bin/statusline
 curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 ```
 
+**Burn rate shows unrealistic values (e.g., $800+/hr)?**
+
+This can happen with `auto_reset` mode when a session resets after inactivity. The accumulated cost from before the reset briefly appears with a very short duration, causing a spike. This is transient and corrects itself as the session progresses. If it persists, check your database with `statusline health`.
+
+**Daily/monthly cost totals seem wrong?**
+
+The stats database may have accumulated incorrect values. Rebuild from actual session data:
+```bash
+sqlite3 ~/.local/share/claudia-statusline/stats.db "
+DELETE FROM daily_stats;
+DELETE FROM monthly_stats;
+INSERT INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
+SELECT date(start_time, 'localtime'), SUM(cost), SUM(lines_added), SUM(lines_removed), COUNT(*)
+FROM sessions GROUP BY date(start_time, 'localtime');
+INSERT INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed, session_count)
+SELECT strftime('%Y-%m', start_time, 'localtime'), SUM(cost), SUM(lines_added), SUM(lines_removed), COUNT(*)
+FROM sessions GROUP BY strftime('%Y-%m', start_time, 'localtime');
+"
+```
+
 **More help?** See [Installation Guide](docs/INSTALLATION.md#troubleshooting) and [Usage Guide](docs/USAGE.md#troubleshooting)
 
 ## Advanced Features
