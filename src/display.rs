@@ -5,6 +5,7 @@
 
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
+use crate::layout::{LayoutRenderer, VariableBuilder};
 use crate::models::{ContextUsage, Cost, ModelType};
 use crate::theme::{get_theme_manager, Theme};
 use crate::utils::{calculate_context_usage, parse_duration, sanitize_for_terminal, shorten_path};
@@ -434,6 +435,127 @@ fn format_statusline_string(
     parts.join(&separator)
 }
 
+/// Format statusline using the configurable layout system.
+///
+/// This function builds all component variables and renders them
+/// using the user's layout configuration (preset or custom format).
+fn format_statusline_with_layout(
+    current_dir: &str,
+    model_name: Option<&str>,
+    transcript_path: Option<&str>,
+    cost: Option<&Cost>,
+    daily_total: f64,
+    session_id: Option<&str>,
+    layout_config: &config::LayoutConfig,
+) -> String {
+    let full_config = config::get_config();
+    let reset = Colors::reset();
+
+    // Build variables using VariableBuilder
+    let mut builder = VariableBuilder::new();
+
+    // Directory
+    let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
+    let basename = std::path::Path::new(current_dir)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(current_dir);
+    builder = builder.directory(&short_dir, basename, &Colors::directory(), &reset);
+
+    // Git status
+    if let Some(git_status) = get_git_status(current_dir) {
+        let git_info = format_git_info(&git_status);
+        let branch = sanitize_for_terminal(&git_status.branch);
+        builder = builder.git(git_info.trim_start(), Some(&branch));
+    }
+
+    // Context usage
+    if let Some(transcript) = transcript_path {
+        if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None) {
+            let current_tokens = crate::utils::get_token_count_from_transcript(transcript);
+            let window_size = crate::utils::get_context_window_for_model(model_name, full_config);
+            let bar_display = format_context_bar(&context, current_tokens, Some(window_size));
+            builder = builder.context(
+                &bar_display,
+                Some(context.percentage as u32),
+                current_tokens.map(|t| (t as u64, window_size as u64)),
+            );
+        }
+    }
+
+    // Model
+    if let Some(name) = model_name {
+        let sanitized_name = sanitize_for_terminal(name);
+        let model_type = ModelType::from_name(&sanitized_name);
+        builder = builder.model(
+            &model_type.abbreviation(),
+            &sanitized_name,
+            &Colors::model(),
+            &reset,
+        );
+    }
+
+    // Duration
+    if let Some(transcript) = transcript_path {
+        if let Some(duration) = parse_duration(transcript) {
+            builder = builder.duration(&format_duration(duration), &Colors::duration(), &reset);
+        }
+    }
+
+    // Lines changed
+    if let Some(cost_data) = cost {
+        if let (Some(added), Some(removed)) =
+            (cost_data.total_lines_added, cost_data.total_lines_removed)
+        {
+            builder = builder.lines_changed(
+                added,
+                removed,
+                &Colors::lines_added(),
+                &Colors::lines_removed(),
+                &reset,
+            );
+        }
+    }
+
+    // Cost and burn rate
+    if let Some(cost_data) = cost {
+        if let Some(total_cost) = cost_data.total_cost_usd {
+            let cost_color = get_cost_color(total_cost);
+
+            // Calculate burn rate
+            let duration = session_id
+                .and_then(crate::stats::get_session_duration_by_mode)
+                .or_else(|| transcript_path.and_then(parse_duration));
+
+            let burn_rate = duration.and_then(|d| {
+                if d > 60 {
+                    Some((total_cost * 3600.0) / d as f64)
+                } else {
+                    None
+                }
+            });
+
+            builder = builder.cost(
+                Some(total_cost),
+                burn_rate,
+                if daily_total > total_cost {
+                    Some(daily_total)
+                } else {
+                    None
+                },
+                &cost_color,
+                &Colors::light_gray(),
+                &reset,
+            );
+        }
+    }
+
+    // Build variables and render
+    let variables = builder.build();
+    let renderer = LayoutRenderer::from_config(layout_config);
+    renderer.render(&variables)
+}
+
 /// Format output with explicit display configuration (prints to stdout)
 fn format_output_with_config(
     current_dir: &str,
@@ -444,15 +566,33 @@ fn format_output_with_config(
     session_id: Option<&str>,
     display_config: &config::DisplayConfig,
 ) {
-    let output = format_statusline_string(
-        current_dir,
-        model_name,
-        transcript_path,
-        cost,
-        daily_total,
-        session_id,
-        display_config,
-    );
+    let full_config = config::get_config();
+
+    // Check if custom layout is configured (non-empty format OR non-default preset)
+    let use_layout_system = !full_config.layout.format.is_empty()
+        || full_config.layout.preset.to_lowercase() != "default";
+
+    let output = if use_layout_system {
+        format_statusline_with_layout(
+            current_dir,
+            model_name,
+            transcript_path,
+            cost,
+            daily_total,
+            session_id,
+            &full_config.layout,
+        )
+    } else {
+        format_statusline_string(
+            current_dir,
+            model_name,
+            transcript_path,
+            cost,
+            daily_total,
+            session_id,
+            display_config,
+        )
+    };
     print!("{}", output);
 }
 
