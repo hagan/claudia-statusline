@@ -36,6 +36,9 @@ pub struct Config {
 
     /// Burn rate calculation configuration
     pub burn_rate: BurnRateConfig,
+
+    /// Layout configuration for customizable statusline format
+    pub layout: LayoutConfig,
 }
 
 /// Display-related configuration
@@ -353,6 +356,224 @@ pub struct BurnRateConfig {
     /// Default: 60 minutes (1 hour)
     /// Reasonable range: 15-120 minutes
     pub inactivity_threshold_minutes: u32,
+}
+
+/// Layout configuration for customizable statusline format
+///
+/// Allows users to define their own statusline layout using a template string
+/// with variables that get replaced with actual values.
+///
+/// # Example
+///
+/// ```toml
+/// [layout]
+/// # Use a preset
+/// preset = "default"
+///
+/// # Or define custom format
+/// format = "{directory} • {git} • {model} • {cost}"
+///
+/// # Multi-line example
+/// format = """
+/// {directory} • {git}
+/// {context} • {model} • {cost}
+/// """
+///
+/// # Custom separator (default: " • ")
+/// separator = " | "
+/// ```
+///
+/// # Available Variables
+///
+/// | Variable | Example | Description |
+/// |----------|---------|-------------|
+/// | `{directory}` | `~/projects/app` | Shortened directory path |
+/// | `{dir_short}` | `app` | Just the directory name |
+/// | `{git}` | `main +2 ~1` | Full git info |
+/// | `{git_branch}` | `main` | Branch name only |
+/// | `{context}` | `75% [=====>----]` | Context bar with percentage |
+/// | `{context_pct}` | `75` | Just the percentage number |
+/// | `{context_tokens}` | `150k/200k` | Token counts |
+/// | `{model}` | `S4.5` | Model abbreviation |
+/// | `{model_full}` | `Claude Sonnet 4.5` | Full model name |
+/// | `{duration}` | `25m` | Session duration |
+/// | `{cost}` | `$12.50` | Session cost |
+/// | `{burn_rate}` | `$3.50/hr` | Cost per hour |
+/// | `{daily_total}` | `$45.00` | Today's total cost |
+/// | `{lines}` | `+50 -10` | Lines changed |
+/// | `{token_rate}` | `12.5 tok/s` | Token processing rate |
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    /// Layout preset name
+    ///
+    /// Available presets:
+    /// - "default": Standard single-line layout (current behavior)
+    /// - "compact": Minimal info, short format
+    /// - "detailed": Multi-line with all information
+    /// - "minimal": Just directory and model
+    ///
+    /// If both `preset` and `format` are specified, `format` takes precedence.
+    pub preset: String,
+
+    /// Custom format string with variable placeholders
+    ///
+    /// Use `{variable_name}` syntax. Newlines create multi-line output.
+    /// If empty, the preset format is used.
+    pub format: String,
+
+    /// Separator between components (default: " • ")
+    ///
+    /// Used when `{sep}` variable is in the format string,
+    /// or when using presets that include separators.
+    pub separator: String,
+
+    /// Per-component configuration overrides
+    #[serde(default)]
+    pub components: ComponentsConfig,
+}
+
+/// Per-component configuration for fine-grained customization
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ComponentsConfig {
+    /// Directory component settings
+    pub directory: DirectoryComponentConfig,
+
+    /// Git component settings
+    pub git: GitComponentConfig,
+
+    /// Context component settings
+    pub context: ContextComponentConfig,
+
+    /// Cost component settings
+    pub cost: CostComponentConfig,
+
+    /// Model component settings
+    pub model: ModelComponentConfig,
+}
+
+/// Directory component configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DirectoryComponentConfig {
+    /// Format: "short" (default), "full", "basename"
+    pub format: String,
+
+    /// Maximum length before truncation (0 = no limit)
+    pub max_length: usize,
+
+    /// Override theme color (empty = use theme)
+    pub color: String,
+}
+
+/// Git component configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitComponentConfig {
+    /// Format: "full" (default), "branch", "status"
+    pub format: String,
+
+    /// When to show: "always" (default), "dirty", "never"
+    pub show_when: String,
+
+    /// Override theme color (empty = use theme)
+    pub color: String,
+}
+
+/// Context component configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContextComponentConfig {
+    /// Format: "full" (default), "bar", "percent", "tokens"
+    pub format: String,
+
+    /// Progress bar width (default from display config)
+    pub bar_width: Option<usize>,
+
+    /// Show token counts
+    pub show_tokens: bool,
+}
+
+/// Cost component configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CostComponentConfig {
+    /// Format: "full" (default), "cost_only", "rate_only", "with_daily"
+    pub format: String,
+
+    /// Override theme color (empty = use theme)
+    pub color: String,
+}
+
+/// Model component configuration
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelComponentConfig {
+    /// Format: "abbreviation" (default), "full", "version"
+    pub format: String,
+
+    /// Override theme color (empty = use theme)
+    pub color: String,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        Self {
+            preset: "default".to_string(),
+            format: String::new(), // Empty = use preset
+            separator: " • ".to_string(),
+            components: ComponentsConfig::default(),
+        }
+    }
+}
+
+impl Default for DirectoryComponentConfig {
+    fn default() -> Self {
+        Self {
+            format: "short".to_string(),
+            max_length: 0,
+            color: String::new(),
+        }
+    }
+}
+
+impl Default for GitComponentConfig {
+    fn default() -> Self {
+        Self {
+            format: "full".to_string(),
+            show_when: "always".to_string(),
+            color: String::new(),
+        }
+    }
+}
+
+impl Default for ContextComponentConfig {
+    fn default() -> Self {
+        Self {
+            format: "full".to_string(),
+            bar_width: None,
+            show_tokens: true,
+        }
+    }
+}
+
+impl Default for CostComponentConfig {
+    fn default() -> Self {
+        Self {
+            format: "full".to_string(),
+            color: String::new(),
+        }
+    }
+}
+
+impl Default for ModelComponentConfig {
+    fn default() -> Self {
+        Self {
+            format: "abbreviation".to_string(),
+            color: String::new(),
+        }
+    }
 }
 
 /// Sync configuration for cloud synchronization

@@ -418,11 +418,15 @@ fn detect_compaction_state(
         }
     }
 
-    // Get last known token count from database
+    // Get last known token count from database (only if DB already exists)
     let last_known_tokens = if let Some(sid) = session_id {
         let db_path = get_data_dir().join("stats.db");
-        if let Ok(db) = SqliteDatabase::new(&db_path) {
-            db.get_session_max_tokens(sid)
+        if db_path.exists() {
+            if let Ok(db) = SqliteDatabase::new(&db_path) {
+                db.get_session_max_tokens(sid)
+            } else {
+                None
+            }
         } else {
             None
         }

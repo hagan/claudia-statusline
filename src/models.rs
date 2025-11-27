@@ -167,6 +167,14 @@ impl ModelType {
         }
     }
 
+    /// Returns just the version string (e.g., "3.5", "4.5")
+    pub fn version(&self) -> String {
+        match self {
+            ModelType::Model { version, .. } => version.clone(),
+            ModelType::Unknown => String::new(),
+        }
+    }
+
     /// Returns the canonical model name for database storage
     /// This normalizes different display name variations to a consistent format
     /// Examples:

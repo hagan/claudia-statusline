@@ -43,6 +43,8 @@ pub mod git;
 pub mod git_utils;
 /// Hook handlers for Claude Code PreCompact and Stop events
 pub mod hook_handler;
+/// Layout rendering module for customizable statusline format
+pub mod layout;
 /// Database schema migration system
 pub mod migrations;
 pub mod models;

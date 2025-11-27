@@ -35,6 +35,7 @@ mod error;
 mod git;
 mod git_utils;
 mod hook_handler;
+mod layout;
 mod migrations;
 mod models;
 mod retry;
