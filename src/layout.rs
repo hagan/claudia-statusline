@@ -166,8 +166,10 @@ impl VariableBuilder {
     pub fn directory(mut self, path: &str, short_path: &str, color: &str, reset: &str) -> Self {
         // Full shortened path
         if !path.is_empty() {
-            self.variables
-                .insert("directory".to_string(), format!("{}{}{}", color, path, reset));
+            self.variables.insert(
+                "directory".to_string(),
+                format!("{}{}{}", color, path, reset),
+            );
         }
         // Basename only
         if !short_path.is_empty() {
@@ -187,7 +189,8 @@ impl VariableBuilder {
         }
         if let Some(b) = branch {
             if !b.is_empty() {
-                self.variables.insert("git_branch".to_string(), b.to_string());
+                self.variables
+                    .insert("git_branch".to_string(), b.to_string());
             }
         }
         self
