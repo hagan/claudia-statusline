@@ -516,15 +516,16 @@ pub fn calculate_context_usage(
 
     // Interpretation of base_window depends on whether adaptive learning is enabled:
     // - If adaptive learning ENABLED: base_window is the learned compaction point (e.g., 156K)
-    //   This represents the working window where compaction happens
+    //   This represents the actual window before compaction happens
     // - If adaptive learning DISABLED: base_window is the advertised total window (e.g., 200K)
     //   This is the full context window as advertised by Anthropic
 
     let (full_window, working_window) = if config.context.adaptive_learning {
-        // Adaptive learning enabled: base_window is the compaction point (working window)
-        // full_window = compaction_point + buffer (e.g., 156K + 40K = 196K total)
-        // working_window = compaction_point (e.g., 156K before compaction)
-        (base_window + buffer_size, base_window)
+        // Adaptive learning enabled: base_window is the learned compaction point
+        // Both windows use the learned value for accurate percentage display
+        // full_window = learned compaction point (e.g., 156K)
+        // working_window = same as full_window (no buffer subtraction needed)
+        (base_window, base_window)
     } else {
         // Adaptive learning disabled: base_window is the advertised total window
         // full_window = advertised total (e.g., 200K)
