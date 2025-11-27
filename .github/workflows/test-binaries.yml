@@ -10,6 +10,8 @@ on:
 jobs:
   test-linux-binary:
     runs-on: ubuntu-latest
+    # Only run if triggered manually OR if the build workflow succeeded
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     strategy:
       matrix:
         arch: [amd64]  # GitHub Actions doesn't easily support ARM64 runners
@@ -266,7 +268,8 @@ jobs:
 
   validate-checksums:
     runs-on: ubuntu-latest
-    if: github.event.workflow_run
+    # Only run if triggered by a successful build workflow
+    if: github.event.workflow_run && github.event.workflow_run.conclusion == 'success'
 
     steps:
     - name: Download all artifacts
