@@ -450,23 +450,60 @@ fn format_statusline_with_layout(
 ) -> String {
     let full_config = config::get_config();
     let reset = Colors::reset();
+    let components = &layout_config.components;
 
-    // Build variables using VariableBuilder
+    // Build variables using VariableBuilder with component configs
     let mut builder = VariableBuilder::new();
 
-    // Directory
+    // Directory (with component config)
     let short_dir = sanitize_for_terminal(&shorten_path(current_dir));
     let basename = std::path::Path::new(current_dir)
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or(current_dir);
-    builder = builder.directory(&short_dir, basename, &Colors::directory(), &reset);
+    builder = builder.directory_with_config(
+        current_dir,
+        &short_dir,
+        basename,
+        &Colors::directory(),
+        &reset,
+        &components.directory,
+    );
 
-    // Git status
+    // Git status (with component config)
     if let Some(git_status) = get_git_status(current_dir) {
         let git_info = format_git_info(&git_status);
         let branch = sanitize_for_terminal(&git_status.branch);
-        builder = builder.git(git_info.trim_start(), Some(&branch));
+        let is_dirty = git_status.added > 0
+            || git_status.modified > 0
+            || git_status.deleted > 0
+            || git_status.untracked > 0;
+
+        // Build status-only string (without branch)
+        let status_parts: Vec<String> = [
+            (git_status.added > 0).then(|| format!("+{}", git_status.added)),
+            (git_status.modified > 0).then(|| format!("~{}", git_status.modified)),
+            (git_status.deleted > 0).then(|| format!("-{}", git_status.deleted)),
+            (git_status.untracked > 0).then(|| format!("?{}", git_status.untracked)),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let status_only = status_parts.join(" ");
+
+        builder = builder.git_with_config(
+            git_info.trim_start(),
+            Some(&branch),
+            if status_only.is_empty() {
+                None
+            } else {
+                Some(&status_only)
+            },
+            is_dirty,
+            &Colors::green(),
+            &reset,
+            &components.git,
+        );
     }
 
     // Context usage
@@ -483,15 +520,17 @@ fn format_statusline_with_layout(
         }
     }
 
-    // Model
+    // Model (with component config)
     if let Some(name) = model_name {
         let sanitized_name = sanitize_for_terminal(name);
         let model_type = ModelType::from_name(&sanitized_name);
-        builder = builder.model(
+        builder = builder.model_with_config(
             &model_type.abbreviation(),
             &sanitized_name,
+            &model_type.version(),
             &Colors::model(),
             &reset,
+            &components.model,
         );
     }
 
@@ -517,7 +556,7 @@ fn format_statusline_with_layout(
         }
     }
 
-    // Cost and burn rate
+    // Cost and burn rate (with component config)
     if let Some(cost_data) = cost {
         if let Some(total_cost) = cost_data.total_cost_usd {
             let cost_color = get_cost_color(total_cost);
@@ -535,7 +574,7 @@ fn format_statusline_with_layout(
                 }
             });
 
-            builder = builder.cost(
+            builder = builder.cost_with_config(
                 Some(total_cost),
                 burn_rate,
                 if daily_total > total_cost {
@@ -546,6 +585,7 @@ fn format_statusline_with_layout(
                 &cost_color,
                 &Colors::light_gray(),
                 &reset,
+                &components.cost,
             );
         }
     }

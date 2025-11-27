@@ -5,7 +5,10 @@
 
 use std::collections::HashMap;
 
-use crate::config::LayoutConfig;
+use crate::config::{
+    CostComponentConfig, DirectoryComponentConfig, GitComponentConfig, LayoutConfig,
+    ModelComponentConfig,
+};
 use crate::utils::sanitize_for_terminal;
 
 /// Built-in layout presets
@@ -26,6 +29,72 @@ pub fn get_preset_format(preset: &str) -> &'static str {
         "power" => PRESET_POWER,
         _ => PRESET_DEFAULT, // "default" or unknown
     }
+}
+
+/// Resolve a color override string to an ANSI code
+///
+/// Supports:
+/// - Named colors: "red", "green", "blue", "cyan", "yellow", "magenta", "white", "gray"
+/// - Hex colors: "#FF5733" or "#F53"
+/// - ANSI codes: "\x1b[32m" (passthrough)
+/// - 256 colors: "38;5;123" (wrapped in \x1b[..m)
+fn resolve_color_override(color: &str) -> String {
+    if color.is_empty() {
+        return String::new();
+    }
+
+    // Already an ANSI escape sequence
+    if color.starts_with("\x1b[") || color.starts_with("\\x1b[") {
+        return color.replace("\\x1b", "\x1b");
+    }
+
+    // 256 color code (e.g., "38;5;123")
+    if color.contains(';') {
+        return format!("\x1b[{}m", color);
+    }
+
+    // Hex color
+    if color.starts_with('#') {
+        return hex_to_ansi(color);
+    }
+
+    // Named color
+    match color.to_lowercase().as_str() {
+        "red" => "\x1b[31m".to_string(),
+        "green" => "\x1b[32m".to_string(),
+        "yellow" => "\x1b[33m".to_string(),
+        "blue" => "\x1b[34m".to_string(),
+        "magenta" => "\x1b[35m".to_string(),
+        "cyan" => "\x1b[36m".to_string(),
+        "white" => "\x1b[37m".to_string(),
+        "gray" | "grey" => "\x1b[90m".to_string(),
+        "orange" => "\x1b[38;5;208m".to_string(),
+        "light_gray" | "light_grey" => "\x1b[38;5;245m".to_string(),
+        _ => String::new(), // Unknown color, return empty
+    }
+}
+
+/// Convert hex color (#RGB or #RRGGBB) to 24-bit ANSI escape code
+fn hex_to_ansi(hex: &str) -> String {
+    let hex = hex.trim_start_matches('#');
+
+    let (r, g, b) = if hex.len() == 3 {
+        // Short form: #RGB -> #RRGGBB
+        let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).unwrap_or(0);
+        let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).unwrap_or(0);
+        let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).unwrap_or(0);
+        (r, g, b)
+    } else if hex.len() == 6 {
+        // Long form: #RRGGBB
+        let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+        let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+        let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+        (r, g, b)
+    } else {
+        return String::new(); // Invalid hex format
+    };
+
+    format!("\x1b[38;2;{};{};{}m", r, g, b)
 }
 
 /// Layout renderer that handles template substitution
@@ -162,7 +231,8 @@ impl VariableBuilder {
         self
     }
 
-    /// Set directory variables ({directory}, {dir_short})
+    /// Set directory variables ({directory}, {dir_short}) with optional config
+    #[allow(dead_code)]
     pub fn directory(mut self, path: &str, short_path: &str, color: &str, reset: &str) -> Self {
         // Full shortened path
         if !path.is_empty() {
@@ -181,7 +251,61 @@ impl VariableBuilder {
         self
     }
 
+    /// Set directory variables with component configuration
+    ///
+    /// Applies format, max_length, and color overrides from config.
+    pub fn directory_with_config(
+        mut self,
+        full_path: &str,
+        short_path: &str,
+        basename: &str,
+        default_color: &str,
+        reset: &str,
+        config: &DirectoryComponentConfig,
+    ) -> Self {
+        // Determine which color to use
+        let color = if config.color.is_empty() {
+            default_color.to_string()
+        } else {
+            resolve_color_override(&config.color)
+        };
+
+        // Apply truncation if configured
+        let truncate = |s: &str| -> String {
+            if config.max_length > 0 && s.len() > config.max_length {
+                format!("…{}", &s[s.len() - config.max_length + 1..])
+            } else {
+                s.to_string()
+            }
+        };
+
+        // Format based on config
+        let display_value = match config.format.as_str() {
+            "full" => truncate(full_path),
+            "basename" => truncate(basename),
+            _ => truncate(short_path), // "short" is default
+        };
+
+        if !display_value.is_empty() {
+            self.variables.insert(
+                "directory".to_string(),
+                format!("{}{}{}", color, display_value, reset),
+            );
+        }
+
+        // Also set dir_short for templates that want it
+        if !basename.is_empty() {
+            self.variables.insert(
+                "dir_short".to_string(),
+                format!("{}{}{}", color, truncate(basename), reset),
+            );
+        }
+
+        self
+    }
+
     /// Set git variables ({git}, {git_branch})
+    #[allow(dead_code)]
     pub fn git(mut self, full_info: &str, branch: Option<&str>) -> Self {
         if !full_info.is_empty() {
             self.variables
@@ -193,6 +317,76 @@ impl VariableBuilder {
                     .insert("git_branch".to_string(), b.to_string());
             }
         }
+        self
+    }
+
+    /// Set git variables with component configuration
+    ///
+    /// Applies format and show_when options from config.
+    /// show_when: "always" (default), "dirty" (only when dirty), "never"
+    #[allow(clippy::too_many_arguments)]
+    pub fn git_with_config(
+        mut self,
+        full_info: &str,
+        branch: Option<&str>,
+        status_only: Option<&str>,
+        is_dirty: bool,
+        default_color: &str,
+        reset: &str,
+        config: &GitComponentConfig,
+    ) -> Self {
+        // Check show_when condition
+        let should_show = match config.show_when.as_str() {
+            "never" => false,
+            "dirty" => is_dirty,
+            _ => true, // "always" is default
+        };
+
+        if !should_show {
+            return self;
+        }
+
+        // Determine color
+        let color = if config.color.is_empty() {
+            default_color.to_string()
+        } else {
+            resolve_color_override(&config.color)
+        };
+
+        // Format based on config
+        match config.format.as_str() {
+            "branch" => {
+                if let Some(b) = branch {
+                    if !b.is_empty() {
+                        self.variables
+                            .insert("git".to_string(), format!("{}{}{}", color, b, reset));
+                    }
+                }
+            }
+            "status" => {
+                if let Some(s) = status_only {
+                    if !s.is_empty() {
+                        self.variables.insert("git".to_string(), s.to_string());
+                    }
+                }
+            }
+            _ => {
+                // "full" is default
+                if !full_info.is_empty() {
+                    self.variables
+                        .insert("git".to_string(), full_info.to_string());
+                }
+            }
+        }
+
+        // Always set git_branch for templates that want it
+        if let Some(b) = branch {
+            if !b.is_empty() {
+                self.variables
+                    .insert("git_branch".to_string(), format!("{}{}{}", color, b, reset));
+            }
+        }
+
         self
     }
 
@@ -221,6 +415,7 @@ impl VariableBuilder {
     }
 
     /// Set model variables ({model}, {model_full})
+    #[allow(dead_code)]
     pub fn model(mut self, abbreviation: &str, full_name: &str, color: &str, reset: &str) -> Self {
         if !abbreviation.is_empty() {
             self.variables.insert(
@@ -237,6 +432,49 @@ impl VariableBuilder {
         self
     }
 
+    /// Set model variables with component configuration
+    ///
+    /// Format options: "abbreviation" (default), "full", "version"
+    pub fn model_with_config(
+        mut self,
+        abbreviation: &str,
+        full_name: &str,
+        version: &str,
+        default_color: &str,
+        reset: &str,
+        config: &ModelComponentConfig,
+    ) -> Self {
+        let color = if config.color.is_empty() {
+            default_color.to_string()
+        } else {
+            resolve_color_override(&config.color)
+        };
+
+        // Format based on config
+        let display_value = match config.format.as_str() {
+            "full" => full_name,
+            "version" => version,
+            _ => abbreviation, // "abbreviation" is default
+        };
+
+        if !display_value.is_empty() {
+            self.variables.insert(
+                "model".to_string(),
+                format!("{}{}{}", color, display_value, reset),
+            );
+        }
+
+        // Always set model_full for templates that want it
+        if !full_name.is_empty() {
+            self.variables.insert(
+                "model_full".to_string(),
+                format!("{}{}{}", color, full_name, reset),
+            );
+        }
+
+        self
+    }
+
     /// Set duration variable ({duration})
     pub fn duration(mut self, formatted: &str, color: &str, reset: &str) -> Self {
         if !formatted.is_empty() {
@@ -249,6 +487,7 @@ impl VariableBuilder {
     }
 
     /// Set cost variables ({cost}, {burn_rate}, {daily_total}, {cost_short})
+    #[allow(dead_code)]
     pub fn cost(
         mut self,
         session_cost: Option<f64>,
@@ -284,6 +523,106 @@ impl VariableBuilder {
                 );
             }
         }
+        self
+    }
+
+    /// Set cost variables with component configuration
+    ///
+    /// Format options: "full" (default), "cost_only", "rate_only", "with_daily"
+    #[allow(clippy::too_many_arguments)]
+    pub fn cost_with_config(
+        mut self,
+        session_cost: Option<f64>,
+        burn_rate: Option<f64>,
+        daily_total: Option<f64>,
+        default_cost_color: &str,
+        rate_color: &str,
+        reset: &str,
+        config: &CostComponentConfig,
+    ) -> Self {
+        let cost_color = if config.color.is_empty() {
+            default_cost_color.to_string()
+        } else {
+            resolve_color_override(&config.color)
+        };
+
+        // Always set individual variables for templates that want them
+        if let Some(cost) = session_cost {
+            self.variables.insert(
+                "cost_short".to_string(),
+                format!("{}${:.0}{}", cost_color, cost, reset),
+            );
+        }
+
+        if let Some(rate) = burn_rate {
+            if rate > 0.0 {
+                self.variables.insert(
+                    "burn_rate".to_string(),
+                    format!("{}${:.2}/hr{}", rate_color, rate, reset),
+                );
+            }
+        }
+
+        if let Some(daily) = daily_total {
+            if daily > 0.0 {
+                self.variables.insert(
+                    "daily_total".to_string(),
+                    format!("{}${:.2}{}", cost_color, daily, reset),
+                );
+            }
+        }
+
+        // Build {cost} variable based on format config
+        match config.format.as_str() {
+            "cost_only" => {
+                if let Some(cost) = session_cost {
+                    self.variables.insert(
+                        "cost".to_string(),
+                        format!("{}${:.2}{}", cost_color, cost, reset),
+                    );
+                }
+            }
+            "rate_only" => {
+                if let Some(rate) = burn_rate {
+                    if rate > 0.0 {
+                        self.variables.insert(
+                            "cost".to_string(),
+                            format!("{}${:.2}/hr{}", rate_color, rate, reset),
+                        );
+                    }
+                }
+            }
+            "with_daily" => {
+                let mut parts = Vec::new();
+                if let Some(cost) = session_cost {
+                    parts.push(format!("{}${:.2}{}", cost_color, cost, reset));
+                }
+                if let Some(daily) = daily_total {
+                    if daily > 0.0 {
+                        parts.push(format!("day:{}${:.2}{}", cost_color, daily, reset));
+                    }
+                }
+                if !parts.is_empty() {
+                    self.variables.insert("cost".to_string(), parts.join(" "));
+                }
+            }
+            _ => {
+                // "full" is default - cost with burn rate
+                let mut parts = Vec::new();
+                if let Some(cost) = session_cost {
+                    parts.push(format!("{}${:.2}{}", cost_color, cost, reset));
+                }
+                if let Some(rate) = burn_rate {
+                    if rate > 0.0 {
+                        parts.push(format!("({}${:.2}/hr{})", rate_color, rate, reset));
+                    }
+                }
+                if !parts.is_empty() {
+                    self.variables.insert("cost".to_string(), parts.join(" "));
+                }
+            }
+        }
+
         self
     }
 
@@ -673,5 +1012,258 @@ mod tests {
         let renderer = LayoutRenderer::with_format("{directory} {model}", "");
         let result = renderer.render(&vars);
         assert_eq!(result, "~/test S4.5");
+    }
+
+    // Component configuration tests
+    #[test]
+    fn test_directory_with_config_format_short() {
+        let config = DirectoryComponentConfig {
+            format: "short".to_string(),
+            max_length: 0,
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .directory_with_config(
+                "/home/user/projects/app",
+                "~/projects/app",
+                "app",
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        assert_eq!(vars.get("directory"), Some(&"~/projects/app".to_string()));
+    }
+
+    #[test]
+    fn test_directory_with_config_format_basename() {
+        let config = DirectoryComponentConfig {
+            format: "basename".to_string(),
+            max_length: 0,
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .directory_with_config(
+                "/home/user/projects/app",
+                "~/projects/app",
+                "app",
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        assert_eq!(vars.get("directory"), Some(&"app".to_string()));
+    }
+
+    #[test]
+    fn test_directory_with_config_max_length() {
+        let config = DirectoryComponentConfig {
+            format: "short".to_string(),
+            max_length: 10,
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .directory_with_config(
+                "/home/user/projects/app",
+                "~/projects/app",
+                "app",
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        let dir = vars.get("directory").unwrap();
+        assert!(dir.starts_with('…'));
+        // Check character count, not byte count (… is 3 bytes)
+        assert!(dir.chars().count() <= 11); // 10 chars + ellipsis
+    }
+
+    #[test]
+    fn test_directory_with_config_color_override() {
+        let config = DirectoryComponentConfig {
+            format: "short".to_string(),
+            max_length: 0,
+            color: "red".to_string(),
+        };
+        let vars = VariableBuilder::new()
+            .directory_with_config(
+                "/home/user/projects/app",
+                "~/projects/app",
+                "app",
+                "\x1b[36m", // cyan (default)
+                "\x1b[0m",
+                &config,
+            )
+            .build();
+
+        let dir = vars.get("directory").unwrap();
+        assert!(dir.contains("\x1b[31m")); // red override
+        assert!(!dir.contains("\x1b[36m")); // not default cyan
+    }
+
+    #[test]
+    fn test_git_with_config_show_when_dirty_when_clean() {
+        let config = GitComponentConfig {
+            format: "full".to_string(),
+            show_when: "dirty".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .git_with_config(
+                "main",
+                Some("main"),
+                None,
+                false, // is_dirty = false
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        // Should not show git when clean and show_when = "dirty"
+        assert!(!vars.contains_key("git"));
+    }
+
+    #[test]
+    fn test_git_with_config_show_when_dirty_when_dirty() {
+        let config = GitComponentConfig {
+            format: "full".to_string(),
+            show_when: "dirty".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .git_with_config(
+                "main +2",
+                Some("main"),
+                Some("+2"),
+                true, // is_dirty = true
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        // Should show git when dirty
+        assert!(vars.contains_key("git"));
+    }
+
+    #[test]
+    fn test_git_with_config_format_branch_only() {
+        let config = GitComponentConfig {
+            format: "branch".to_string(),
+            show_when: "always".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .git_with_config(
+                "main +2 ~1",
+                Some("main"),
+                Some("+2 ~1"),
+                true,
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        assert_eq!(vars.get("git"), Some(&"main".to_string()));
+    }
+
+    #[test]
+    fn test_model_with_config_format_full() {
+        let config = ModelComponentConfig {
+            format: "full".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .model_with_config("S4.5", "Claude Sonnet 4.5", "4.5", "", "", &config)
+            .build();
+
+        assert_eq!(vars.get("model"), Some(&"Claude Sonnet 4.5".to_string()));
+    }
+
+    #[test]
+    fn test_model_with_config_format_version() {
+        let config = ModelComponentConfig {
+            format: "version".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .model_with_config("S4.5", "Claude Sonnet 4.5", "4.5", "", "", &config)
+            .build();
+
+        assert_eq!(vars.get("model"), Some(&"4.5".to_string()));
+    }
+
+    #[test]
+    fn test_cost_with_config_cost_only() {
+        let config = CostComponentConfig {
+            format: "cost_only".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .cost_with_config(Some(12.50), Some(3.25), Some(45.00), "", "", "", &config)
+            .build();
+
+        let cost = vars.get("cost").unwrap();
+        assert!(cost.contains("12.50"));
+        assert!(!cost.contains("/hr")); // No burn rate
+    }
+
+    #[test]
+    fn test_cost_with_config_rate_only() {
+        let config = CostComponentConfig {
+            format: "rate_only".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .cost_with_config(Some(12.50), Some(3.25), Some(45.00), "", "", "", &config)
+            .build();
+
+        let cost = vars.get("cost").unwrap();
+        assert!(cost.contains("3.25/hr"));
+        assert!(!cost.contains("12.50")); // No session cost
+    }
+
+    #[test]
+    fn test_cost_with_config_with_daily() {
+        let config = CostComponentConfig {
+            format: "with_daily".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .cost_with_config(Some(12.50), Some(3.25), Some(45.00), "", "", "", &config)
+            .build();
+
+        let cost = vars.get("cost").unwrap();
+        assert!(cost.contains("12.50"));
+        assert!(cost.contains("day:"));
+        assert!(cost.contains("45.00"));
+    }
+
+    #[test]
+    fn test_resolve_color_override_named() {
+        assert_eq!(resolve_color_override("red"), "\x1b[31m");
+        assert_eq!(resolve_color_override("green"), "\x1b[32m");
+        assert_eq!(resolve_color_override("cyan"), "\x1b[36m");
+    }
+
+    #[test]
+    fn test_resolve_color_override_hex() {
+        assert_eq!(resolve_color_override("#FF0000"), "\x1b[38;2;255;0;0m");
+        assert_eq!(resolve_color_override("#F00"), "\x1b[38;2;255;0;0m");
+    }
+
+    #[test]
+    fn test_resolve_color_override_256() {
+        assert_eq!(resolve_color_override("38;5;208"), "\x1b[38;5;208m");
+    }
+
+    #[test]
+    fn test_resolve_color_override_passthrough() {
+        assert_eq!(resolve_color_override("\x1b[32m"), "\x1b[32m");
     }
 }
