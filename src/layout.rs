@@ -43,7 +43,9 @@ pub fn get_preset_format(preset: &str) -> String {
 
 /// Load a user-defined preset from the config directory
 fn load_user_preset(name: &str) -> Option<String> {
-    let preset_dir = dirs::config_dir()?.join("claudia-statusline").join("presets");
+    let preset_dir = dirs::config_dir()?
+        .join("claudia-statusline")
+        .join("presets");
     let preset_path = preset_dir.join(format!("{}.toml", name.to_lowercase()));
 
     if !preset_path.exists() {
@@ -77,7 +79,8 @@ pub fn list_available_presets() -> Vec<String> {
     ];
 
     // Add user presets
-    if let Some(preset_dir) = dirs::config_dir().map(|d| d.join("claudia-statusline").join("presets"))
+    if let Some(preset_dir) =
+        dirs::config_dir().map(|d| d.join("claudia-statusline").join("presets"))
     {
         if preset_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&preset_dir) {
@@ -1198,7 +1201,7 @@ mod tests {
         // … + 7 chars from the end = 8 visible characters
         assert!(dir.starts_with('…'));
         assert_eq!(dir.chars().count(), 8); // Exactly 8 characters
-        // Should not panic - this is the main test
+                                            // Should not panic - this is the main test
     }
 
     #[test]
