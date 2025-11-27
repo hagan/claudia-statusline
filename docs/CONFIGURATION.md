@@ -120,6 +120,149 @@ Most users don't need a config file - defaults work great! But if you want to cu
 json_backup = false
 ```
 
+## Layout Customization
+
+Statusline supports customizable layouts through presets and template-based formatting.
+
+### Built-in Presets
+
+| Preset | Description | Example Output |
+|--------|-------------|----------------|
+| `default` | Standard layout with all components | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50` |
+| `compact` | Minimal space-efficient layout | `project main S4.5 $12` |
+| `detailed` | Two-line detailed view | `~/project • main +2`<br>`75% [======>---] • S4.5 • 5m • $12.50` |
+| `minimal` | Just directory and model | `~/project S4.5` |
+| `power` | Multi-line power user view | (see below) |
+
+### Basic Layout Configuration
+
+```toml
+[layout]
+# Use a built-in preset
+preset = "compact"  # Options: default, compact, detailed, minimal, power
+
+# Or define a custom format (overrides preset)
+format = "{directory} • {git_branch} • {model}"
+
+# Custom separator (default: " • ")
+separator = " | "
+```
+
+### Template Variables
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `{directory}` | `~/projects/app` | Full shortened path |
+| `{dir_short}` | `app` | Directory basename only |
+| `{git}` | `main +2 ~1` | Full git info |
+| `{git_branch}` | `main` | Branch name only |
+| `{context}` | `75% [======>---]` | Full context bar |
+| `{context_pct}` | `75` | Percentage number |
+| `{context_tokens}` | `150k/200k` | Token counts |
+| `{model}` | `S4.5` | Abbreviated model |
+| `{model_full}` | `Claude Sonnet 4.5` | Full model name |
+| `{duration}` | `5m` | Session duration |
+| `{cost}` | `$12.50` | Session cost |
+| `{cost_short}` | `$12` | Rounded cost |
+| `{burn_rate}` | `$3.50/hr` | Cost per hour |
+| `{daily_total}` | `$45.00` | Today's total |
+| `{lines}` | `+50 -10` | Lines changed |
+| `{sep}` | ` • ` | Configured separator |
+
+### Multi-line Layouts
+
+Use `\n` for line breaks:
+
+```toml
+[layout]
+format = """
+{directory} • {git}
+{context} • {model} • {cost}
+"""
+```
+
+### Per-Component Configuration
+
+Fine-tune individual components:
+
+```toml
+[layout.components.directory]
+format = "short"      # Options: short (default), full, basename
+max_length = 30       # Truncate with ellipsis (0 = no limit)
+color = "cyan"        # Named color, hex (#FF5733), or ANSI code
+
+[layout.components.git]
+format = "full"       # Options: full (default), branch, status
+show_when = "always"  # Options: always (default), dirty, never
+color = "green"
+
+[layout.components.model]
+format = "abbreviation"  # Options: abbreviation (default), full, version
+color = ""               # Empty = use theme default
+
+[layout.components.cost]
+format = "full"       # Options: full (default), cost_only, rate_only, with_daily
+color = ""
+```
+
+### Color Override Values
+
+Component colors accept:
+- **Named colors**: `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, `orange`
+- **Hex colors**: `#FF5733` or `#F53`
+- **256 colors**: `38;5;208` (ANSI format)
+- **ANSI codes**: `\x1b[32m` (passthrough)
+
+### Custom User Presets
+
+Create custom presets in `~/.config/claudia-statusline/presets/`:
+
+```bash
+mkdir -p ~/.config/claudia-statusline/presets
+```
+
+**File**: `~/.config/claudia-statusline/presets/mypreset.toml`
+```toml
+format = "{dir_short} [{git_branch}] {model} ${cost_short}"
+```
+
+Use with:
+```toml
+[layout]
+preset = "mypreset"
+```
+
+### Example Configurations
+
+#### Compact Git-Focused
+```toml
+[layout]
+preset = "compact"
+
+[layout.components.git]
+show_when = "dirty"  # Only show when there are changes
+```
+
+#### Cost-Focused Power User
+```toml
+[layout]
+format = "{directory} • {model}\n{cost} ({burn_rate}) | Day: {daily_total}"
+
+[layout.components.cost]
+format = "full"
+color = "#FFD700"  # Gold
+```
+
+#### Minimal for Narrow Terminals
+```toml
+[layout]
+preset = "minimal"
+
+[layout.components.directory]
+format = "basename"
+max_length = 15
+```
+
 ## Environment Variables
 
 ### Theme

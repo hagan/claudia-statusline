@@ -43,6 +43,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - Persistent cost tracking across sessions
 - Multi-console safe (run multiple Claude instances)
 - **11 embedded themes** (dark, light, monokai, solarized, high-contrast, gruvbox, nord, dracula, one-dark, tokyo-night, catppuccin)
+- **5 layout presets** (default, compact, detailed, minimal, power) with custom template support
 - SQLite database for reliability
 - **Hook-based compaction detection** (opt-in) - instant real-time feedback via Claude Code hooks
 - **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
@@ -89,7 +90,23 @@ export NO_COLOR=1
 vim ~/.config/claudia-statusline/config.toml
 ```
 
-See [Configuration Guide](docs/CONFIGURATION.md) for all options.
+**Layout Presets** - Choose from 5 built-in layouts:
+
+| Preset | Output |
+|--------|--------|
+| `default` | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50` |
+| `compact` | `project main S4.5 $12` |
+| `detailed` | Two-line with context on second line |
+| `minimal` | `~/project S4.5` |
+| `power` | Multi-line with all details |
+
+```toml
+# ~/.config/claudia-statusline/config.toml
+[layout]
+preset = "compact"  # Or create custom: format = "{directory} {model}"
+```
+
+See [Configuration Guide](docs/CONFIGURATION.md) for all options including per-component customization.
 
 ## Common Questions
 
