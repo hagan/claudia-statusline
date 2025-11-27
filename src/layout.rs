@@ -337,10 +337,12 @@ impl VariableBuilder {
             resolve_color_override(&config.color)
         };
 
-        // Apply truncation if configured
+        // Apply truncation if configured (character-based, not byte-based for UTF-8 safety)
         let truncate = |s: &str| -> String {
-            if config.max_length > 0 && s.len() > config.max_length {
-                format!("…{}", &s[s.len() - config.max_length + 1..])
+            let char_count = s.chars().count();
+            if config.max_length > 0 && char_count > config.max_length {
+                let skip = char_count - config.max_length + 1;
+                format!("…{}", s.chars().skip(skip).collect::<String>())
             } else {
                 s.to_string()
             }
@@ -1169,6 +1171,34 @@ mod tests {
         let dir = vars.get("directory").unwrap();
         assert!(dir.contains("\x1b[31m")); // red override
         assert!(!dir.contains("\x1b[36m")); // not default cyan
+    }
+
+    #[test]
+    fn test_directory_with_config_utf8_truncation() {
+        // Test that truncation works correctly with multi-byte UTF-8 characters
+        // This would panic with byte-based slicing if truncation cuts mid-character
+        let config = DirectoryComponentConfig {
+            format: "short".to_string(),
+            max_length: 8,
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .directory_with_config(
+                "/home/用户/项目/приложение", // Mixed UTF-8: Chinese, Russian
+                "~/用户/项目/приложение",
+                "приложение", // Russian: 10 characters but 20 bytes
+                "",
+                "",
+                &config,
+            )
+            .build();
+
+        let dir = vars.get("directory").unwrap();
+        // Should truncate to 8 chars (including ellipsis replacement)
+        // … + 7 chars from the end = 8 visible characters
+        assert!(dir.starts_with('…'));
+        assert_eq!(dir.chars().count(), 8); // Exactly 8 characters
+        // Should not panic - this is the main test
     }
 
     #[test]
