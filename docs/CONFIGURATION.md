@@ -196,6 +196,11 @@ format = "full"       # Options: full (default), branch, status
 show_when = "always"  # Options: always (default), dirty, never
 color = "green"
 
+[layout.components.context]
+format = "full"       # Options: full (default), bar, percent, tokens
+show_tokens = false   # Show token counts in full format (e.g., "75% [======>---] 150k/200k")
+bar_width = 10        # Optional: override progress bar width
+
 [layout.components.model]
 format = "abbreviation"  # Options: abbreviation (default), full, version
 color = ""               # Empty = use theme default
@@ -204,6 +209,16 @@ color = ""               # Empty = use theme default
 format = "full"       # Options: full (default), cost_only, rate_only, with_daily
 color = ""
 ```
+
+#### Context Format Options
+
+| Format | Example Output | Description |
+|--------|---------------|-------------|
+| `full` | `75% [======>---]` | Percentage + progress bar (default) |
+| `full` + `show_tokens` | `75% [======>---] 150k/200k` | With token counts |
+| `bar` | `[======>---]` | Progress bar only |
+| `percent` | `75%` | Percentage only |
+| `tokens` | `150k/200k` | Token counts only |
 
 ### Color Override Values
 
