@@ -506,16 +506,18 @@ fn format_statusline_with_layout(
         );
     }
 
-    // Context usage
+    // Context usage (with component config)
     if let Some(transcript) = transcript_path {
         if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None) {
             let current_tokens = crate::utils::get_token_count_from_transcript(transcript);
             let window_size = crate::utils::get_context_window_for_model(model_name, full_config);
-            let bar_display = format_context_bar(&context, current_tokens, Some(window_size));
-            builder = builder.context(
-                &bar_display,
+            let bar_width = full_config.display.progress_bar_width;
+            let raw_bar = format_raw_bar(context.percentage, bar_width);
+            builder = builder.context_with_config(
+                &raw_bar,
                 Some(context.percentage as u32),
                 current_tokens.map(|t| (t as u64, window_size as u64)),
+                &components.context,
             );
         }
     }
@@ -658,6 +660,21 @@ pub fn format_output_to_string(
         daily_total,
         session_id,
         &config.display,
+    )
+}
+
+/// Generate just the raw progress bar without colors (e.g., "[====>-----]")
+fn format_raw_bar(percentage: f64, width: usize) -> String {
+    let filled_ratio = percentage / 100.0;
+    let filled = (filled_ratio * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let empty = width - filled;
+
+    format!(
+        "[{}{}{}]",
+        "=".repeat(filled),
+        if filled < width { ">" } else { "" },
+        "-".repeat(empty.saturating_sub(if filled < width { 1 } else { 0 }))
     )
 }
 

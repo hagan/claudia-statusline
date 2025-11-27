@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use crate::config::{
-    CostComponentConfig, DirectoryComponentConfig, GitComponentConfig, LayoutConfig,
-    ModelComponentConfig,
+    ContextComponentConfig, CostComponentConfig, DirectoryComponentConfig, GitComponentConfig,
+    LayoutConfig, ModelComponentConfig,
 };
 use crate::utils::sanitize_for_terminal;
 
@@ -463,6 +463,7 @@ impl VariableBuilder {
     }
 
     /// Set context variables ({context}, {context_pct}, {context_tokens})
+    #[allow(dead_code)]
     pub fn context(
         mut self,
         bar_display: &str,
@@ -483,6 +484,75 @@ impl VariableBuilder {
                 format!("{}k/{}k", current / 1000, max / 1000),
             );
         }
+        self
+    }
+
+    /// Set context variables with component configuration
+    ///
+    /// Format options: "full" (default), "bar", "percent", "tokens"
+    pub fn context_with_config(
+        mut self,
+        bar_only: &str,
+        percentage: Option<u32>,
+        tokens: Option<(u64, u64)>,
+        config: &ContextComponentConfig,
+    ) -> Self {
+        // Always set individual variables for templates that want them
+        if let Some(pct) = percentage {
+            self.variables
+                .insert("context_pct".to_string(), format!("{}%", pct));
+        }
+        if let Some((current, max)) = tokens {
+            self.variables.insert(
+                "context_tokens".to_string(),
+                format!("{}k/{}k", current / 1000, max / 1000),
+            );
+        }
+
+        // Build {context} variable based on format config
+        let context_value = match config.format.as_str() {
+            "bar" => {
+                // Just the progress bar
+                if !bar_only.is_empty() {
+                    Some(bar_only.to_string())
+                } else {
+                    None
+                }
+            }
+            "percent" => {
+                // Just the percentage
+                percentage.map(|pct| format!("{}%", pct))
+            }
+            "tokens" => {
+                // Just the token counts
+                tokens.map(|(current, max)| format!("{}k/{}k", current / 1000, max / 1000))
+            }
+            _ => {
+                // "full" is default - percentage + bar + optional tokens
+                let mut parts = Vec::new();
+                if let Some(pct) = percentage {
+                    parts.push(format!("{}%", pct));
+                }
+                if !bar_only.is_empty() {
+                    parts.push(bar_only.to_string());
+                }
+                if config.show_tokens {
+                    if let Some((current, max)) = tokens {
+                        parts.push(format!("{}k/{}k", current / 1000, max / 1000));
+                    }
+                }
+                if parts.is_empty() {
+                    None
+                } else {
+                    Some(parts.join(" "))
+                }
+            }
+        };
+
+        if let Some(value) = context_value {
+            self.variables.insert("context".to_string(), value);
+        }
+
         self
     }
 
@@ -1342,6 +1412,88 @@ mod tests {
         assert!(cost.contains("12.50"));
         assert!(cost.contains("day:"));
         assert!(cost.contains("45.00"));
+    }
+
+    // Context component config tests
+    #[test]
+    fn test_context_with_config_format_full() {
+        let config = ContextComponentConfig {
+            format: "full".to_string(),
+            bar_width: None,
+            show_tokens: false,
+        };
+        let vars = VariableBuilder::new()
+            .context_with_config("[=====>----]", Some(50), Some((100_000, 200_000)), &config)
+            .build();
+
+        let context = vars.get("context").unwrap();
+        assert!(context.contains("50%"));
+        assert!(context.contains("[=====>----]"));
+        // No tokens because show_tokens=false
+        assert!(!context.contains("100k"));
+    }
+
+    #[test]
+    fn test_context_with_config_format_bar() {
+        let config = ContextComponentConfig {
+            format: "bar".to_string(),
+            bar_width: None,
+            show_tokens: true, // Should be ignored for bar format
+        };
+        let vars = VariableBuilder::new()
+            .context_with_config("[=====>----]", Some(50), Some((100_000, 200_000)), &config)
+            .build();
+
+        let context = vars.get("context").unwrap();
+        assert_eq!(context, "[=====>----]");
+        assert!(!context.contains("50%"));
+    }
+
+    #[test]
+    fn test_context_with_config_format_percent() {
+        let config = ContextComponentConfig {
+            format: "percent".to_string(),
+            bar_width: None,
+            show_tokens: true, // Should be ignored for percent format
+        };
+        let vars = VariableBuilder::new()
+            .context_with_config("[=====>----]", Some(75), Some((150_000, 200_000)), &config)
+            .build();
+
+        let context = vars.get("context").unwrap();
+        assert_eq!(context, "75%");
+    }
+
+    #[test]
+    fn test_context_with_config_format_tokens() {
+        let config = ContextComponentConfig {
+            format: "tokens".to_string(),
+            bar_width: None,
+            show_tokens: true, // Should be ignored for tokens format
+        };
+        let vars = VariableBuilder::new()
+            .context_with_config("[=====>----]", Some(50), Some((100_000, 200_000)), &config)
+            .build();
+
+        let context = vars.get("context").unwrap();
+        assert_eq!(context, "100k/200k");
+    }
+
+    #[test]
+    fn test_context_with_config_full_with_tokens() {
+        let config = ContextComponentConfig {
+            format: "full".to_string(),
+            bar_width: None,
+            show_tokens: true, // Enable tokens in full format
+        };
+        let vars = VariableBuilder::new()
+            .context_with_config("[=====>----]", Some(50), Some((100_000, 200_000)), &config)
+            .build();
+
+        let context = vars.get("context").unwrap();
+        assert!(context.contains("50%"));
+        assert!(context.contains("[=====>----]"));
+        assert!(context.contains("100k/200k"));
     }
 
     #[test]
