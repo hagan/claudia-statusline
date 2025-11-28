@@ -89,6 +89,7 @@ impl MigrationRunner {
             Box::new(AddSyncMetadata),
             Box::new(AddAdaptiveLearning),
             Box::new(AddBurnRateTracking),
+            Box::new(AddDailyTokenTracking),
         ]
     }
 
@@ -540,6 +541,81 @@ impl Migration for AddBurnRateTracking {
     }
 }
 
+/// Migration 006: Add daily/monthly token tracking for aggregate token metrics
+pub struct AddDailyTokenTracking;
+
+impl Migration for AddDailyTokenTracking {
+    fn version(&self) -> u32 {
+        6
+    }
+
+    fn description(&self) -> &str {
+        "Add token tracking columns to daily_stats and monthly_stats for aggregate metrics"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        // Add token columns to daily_stats
+        tx.execute(
+            "ALTER TABLE daily_stats ADD COLUMN total_input_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE daily_stats ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE daily_stats ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE daily_stats ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        // Add token columns to monthly_stats
+        tx.execute(
+            "ALTER TABLE monthly_stats ADD COLUMN total_input_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE monthly_stats ADD COLUMN total_output_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE monthly_stats ADD COLUMN total_cache_read_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+        tx.execute(
+            "ALTER TABLE monthly_stats ADD COLUMN total_cache_creation_tokens INTEGER DEFAULT 0",
+            [],
+        )?;
+
+        // Create index for efficient daily token queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_daily_tokens ON daily_stats(date DESC, total_input_tokens, total_output_tokens)",
+            [],
+        )?;
+
+        // Create index for efficient monthly token queries
+        tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_monthly_tokens ON monthly_stats(month DESC, total_input_tokens, total_output_tokens)",
+            [],
+        )?;
+
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        // Drop the indexes
+        tx.execute("DROP INDEX IF EXISTS idx_daily_tokens", [])?;
+        tx.execute("DROP INDEX IF EXISTS idx_monthly_tokens", [])?;
+
+        // Note: SQLite doesn't support DROP COLUMN easily
+        // Token columns remain but that's acceptable for backward compatibility
+        Ok(())
+    }
+}
+
 /// Run migrations on a specific database path
 /// Returns Err only on critical failures that prevent migrations from running
 pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
@@ -569,8 +645,9 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 5 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3), AddAdaptiveLearning (v4), AddBurnRateTracking (v5)
-        assert_eq!(runner.current_version().unwrap(), 5);
+        // We now have 6 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3),
+        // AddAdaptiveLearning (v4), AddBurnRateTracking (v5), AddDailyTokenTracking (v6)
+        assert_eq!(runner.current_version().unwrap(), 6);
     }
 
     #[test]
@@ -662,6 +739,92 @@ mod tests {
         assert!(
             sessions_columns.contains(&"max_tokens_observed".to_string()),
             "sessions table should have max_tokens_observed column"
+        );
+    }
+
+    #[test]
+    fn test_daily_token_tracking_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_tokens.db");
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.migrate().unwrap();
+
+        // Verify version is 6
+        assert_eq!(runner.current_version().unwrap(), 6);
+
+        // Verify token columns were added to daily_stats
+        let daily_columns: Vec<String> = runner
+            .conn
+            .prepare("PRAGMA table_info(daily_stats)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            daily_columns.contains(&"total_input_tokens".to_string()),
+            "daily_stats should have total_input_tokens column"
+        );
+        assert!(
+            daily_columns.contains(&"total_output_tokens".to_string()),
+            "daily_stats should have total_output_tokens column"
+        );
+        assert!(
+            daily_columns.contains(&"total_cache_read_tokens".to_string()),
+            "daily_stats should have total_cache_read_tokens column"
+        );
+        assert!(
+            daily_columns.contains(&"total_cache_creation_tokens".to_string()),
+            "daily_stats should have total_cache_creation_tokens column"
+        );
+
+        // Verify token columns were added to monthly_stats
+        let monthly_columns: Vec<String> = runner
+            .conn
+            .prepare("PRAGMA table_info(monthly_stats)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(
+            monthly_columns.contains(&"total_input_tokens".to_string()),
+            "monthly_stats should have total_input_tokens column"
+        );
+        assert!(
+            monthly_columns.contains(&"total_output_tokens".to_string()),
+            "monthly_stats should have total_output_tokens column"
+        );
+
+        // Verify indexes were created
+        let daily_index_exists: bool = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_daily_tokens'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+
+        assert!(daily_index_exists, "idx_daily_tokens index should exist");
+
+        let monthly_index_exists: bool = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_monthly_tokens'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap()
+            > 0;
+
+        assert!(
+            monthly_index_exists,
+            "idx_monthly_tokens index should exist"
         );
     }
 }

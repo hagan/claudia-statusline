@@ -167,7 +167,35 @@ separator = " | "
 | `{burn_rate}` | `$3.50/hr` | Cost per hour |
 | `{daily_total}` | `$45.00` | Today's total |
 | `{lines}` | `+50 -10` | Lines changed |
+| `{token_rate}` | `12.5 tok/s • 150K` | Token rate (combined format) |
+| `{token_rate_only}` | `12.5 tok/s` | Token rate only |
+| `{token_session_total}` | `150K` | Session token total |
+| `{token_daily_total}` | `day: 2.5M` | Daily token total |
 | `{sep}` | ` • ` | Configured separator |
+
+> **Note:** Token rate variables (`{token_rate}*`) require `[token_rate] enabled = true` in config.
+> The format of `{token_rate}` depends on `[layout.components.token_rate] format` setting.
+
+### Layout Mode vs Legacy Mode
+
+The statusline supports two display modes:
+
+**Layout Mode** (template-based):
+- Activated when `[layout] format` is set or `preset` is not "default"
+- Uses template variables like `{token_rate}`, `{token_rate_only}`, etc.
+- Token rate format controlled by `[layout.components.token_rate] format` options:
+  - `rate_only`: Just the rate (e.g., "12.5 tok/s")
+  - `with_session`: Rate + session total (e.g., "12.5 tok/s • 150K")
+  - `with_daily`: Rate + daily total (e.g., "12.5 tok/s (day: 2.5M)")
+  - `full`: All three components
+
+**Legacy Mode** (non-template):
+- Used when no custom layout is configured
+- Token rate format controlled by `[token_rate] display_mode`:
+  - `minimal`: Simple rate only
+  - `compact`: Rate with totals
+  - `detailed`: Breakdown by input/output tokens
+  - `cache_only`: Focus on cache metrics and ROI
 
 ### Multi-line Layouts
 
@@ -1114,6 +1142,18 @@ if time_since_last_activity >= threshold {
 // Display
 burn_rate = total_cost / (session_duration / 3600.0)
 ```
+
+**Token tracking note (auto_reset mode):**
+
+> ⚠️ **Token totals may spike after auto-reset events.** Unlike cost and lines (which use
+> archived baselines), token tracking treats post-reset values as fresh counts. This means
+> daily/monthly token totals will include the full session token count as a delta after each
+> reset, potentially inflating totals.
+>
+> **Example:** Session has 50K tokens, auto-resets, then accumulates 10K more.
+> Daily total becomes: 50K (full) + 10K (delta) = 60K instead of just 60K cumulative.
+>
+> For precise token continuity, consider using `wall_clock` mode instead.
 
 **Backward compatibility:**
 - Default mode is "wall_clock" (preserves existing behavior)

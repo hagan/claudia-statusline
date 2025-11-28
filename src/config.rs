@@ -404,7 +404,10 @@ pub struct BurnRateConfig {
 /// | `{burn_rate}` | `$3.50/hr` | Cost per hour |
 /// | `{daily_total}` | `$45.00` | Today's total cost |
 /// | `{lines}` | `+50 -10` | Lines changed |
-/// | `{token_rate}` | `12.5 tok/s` | Token processing rate |
+/// | `{token_rate}` | `12.5 tok/s` | Token processing rate (combined format) |
+/// | `{token_rate_only}` | `12.5 tok/s` | Token rate only |
+/// | `{token_session_total}` | `1.5K` | Session token total |
+/// | `{token_daily_total}` | `day: 25K` | Daily token total |
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct LayoutConfig {
@@ -454,6 +457,9 @@ pub struct ComponentsConfig {
 
     /// Model component settings
     pub model: ModelComponentConfig,
+
+    /// Token rate component settings
+    pub token_rate: TokenRateComponentConfig,
 }
 
 /// Directory component configuration
@@ -520,6 +526,44 @@ pub struct ModelComponentConfig {
     pub color: String,
 }
 
+/// Token rate component configuration
+///
+/// Controls how token rate metrics are displayed in the statusline.
+/// Works in conjunction with `[token_rate]` config for enabling the feature.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TokenRateComponentConfig {
+    /// Format: "rate_only" (default), "with_session", "with_daily", "full"
+    ///
+    /// - "rate_only": Just the rate (e.g., "13.9 tok/s")
+    /// - "with_session": Rate + session total (e.g., "13.9 tok/s • 150K")
+    /// - "with_daily": Rate + daily total (e.g., "13.9 tok/s (day: 2.5M)")
+    /// - "full": Rate + session + daily (e.g., "13.9 tok/s • 150K (day: 2.5M)")
+    pub format: String,
+
+    /// Time unit for rate calculation: "second" (default), "minute", "hour"
+    ///
+    /// - "second": Tokens per second (e.g., "13.9 tok/s")
+    /// - "minute": Tokens per minute (e.g., "834 tok/min")
+    /// - "hour": Tokens per hour (e.g., "50.1K tok/hr")
+    pub time_unit: String,
+
+    /// Show session total token count (e.g., "150K")
+    ///
+    /// When true, shows aggregate tokens for current session.
+    /// Overridden by format if format specifies session display.
+    pub show_session_total: bool,
+
+    /// Show daily total token count (e.g., "(day: 2.5M)")
+    ///
+    /// When true, shows aggregate tokens for today across all sessions.
+    /// Similar to how cost shows "(day: $X.XX)".
+    pub show_daily_total: bool,
+
+    /// Override theme color (empty = use theme)
+    pub color: String,
+}
+
 impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
@@ -574,6 +618,18 @@ impl Default for ModelComponentConfig {
     fn default() -> Self {
         Self {
             format: "abbreviation".to_string(),
+            color: String::new(),
+        }
+    }
+}
+
+impl Default for TokenRateComponentConfig {
+    fn default() -> Self {
+        Self {
+            format: "rate_only".to_string(),
+            time_unit: "second".to_string(),
+            show_session_total: false,
+            show_daily_total: false,
             color: String::new(),
         }
     }

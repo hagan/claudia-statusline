@@ -441,9 +441,11 @@ fn format_statusline_string(
 
     // 8. Token rate metrics (opt-in feature)
     if let Some(sid) = session_id {
-        if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, db.as_ref()) {
-            let token_rate_str = format_token_rates(&token_rates);
-            parts.push(token_rate_str);
+        if let Some(ref db_handle) = db {
+            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, db_handle) {
+                let token_rate_str = format_token_rates(&token_rates);
+                parts.push(token_rate_str);
+            }
         }
     }
 
@@ -606,6 +608,27 @@ fn format_statusline_with_layout(
                 &reset,
                 &components.cost,
             );
+        }
+    }
+
+    // Token rate (with component config)
+    if let Some(sid) = session_id {
+        // Create database handle for token rate calculation
+        if let Some(db) = crate::stats::StatsData::get_sqlite_path()
+            .ok()
+            .filter(|p| p.exists())
+            .and_then(|p| crate::database::SqliteDatabase::new(&p).ok())
+        {
+            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, &db) {
+                builder = builder.token_rate_with_config(
+                    token_rates.total_rate,
+                    Some(token_rates.session_total_tokens),
+                    Some(token_rates.daily_total_tokens),
+                    &Colors::light_gray(),
+                    &reset,
+                    &components.token_rate,
+                );
+            }
         }
     }
 
@@ -820,12 +843,23 @@ fn format_duration(seconds: u64) -> String {
     }
 }
 
-/// Format token rate metrics based on display mode
+/// Format token rate metrics based on display mode.
+///
+/// NOTE: This function is used in NON-LAYOUT MODE only (format_output).
+/// For layout mode, use `VariableBuilder::token_rate_with_config()` in layout.rs.
+///
+/// The two paths have different capabilities:
+/// - Non-layout (this): Supports display_mode (detailed, cache_only, compact, minimal)
+///   with cache metrics, ROI calculations, and detailed breakdowns
+/// - Layout mode: Simpler format options (rate_only, with_session, with_daily, full)
+///   for template rendering with {token_rate}, {token_rate_only}, etc.
 fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
     let config = crate::config::get_config();
     let mode = &config.token_rate.display_mode;
+    let component_config = &config.layout.components.token_rate;
 
-    match mode.as_str() {
+    // Build the rate display based on display mode
+    let rate_str = match mode.as_str() {
         "detailed" => {
             // Detailed: "In:5.2 Out:8.7 tok/s • Cache:85%"
             let mut parts = vec![format!(
@@ -922,6 +956,47 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
                 Colors::reset()
             )
         }
+    };
+
+    // Add session and daily totals based on component config
+    let show_session = component_config.show_session_total && metrics.session_total_tokens > 0;
+    let show_daily = component_config.show_daily_total && metrics.daily_total_tokens > 0;
+
+    if !show_session && !show_daily {
+        return rate_str;
+    }
+
+    let mut parts = vec![rate_str];
+
+    if show_session {
+        parts.push(format!(
+            "{}{}{}",
+            Colors::light_gray(),
+            format_token_count_for_display(metrics.session_total_tokens),
+            Colors::reset()
+        ));
+    }
+
+    if show_daily {
+        parts.push(format!(
+            "{}day: {}{}",
+            Colors::light_gray(),
+            format_token_count_for_display(metrics.daily_total_tokens),
+            Colors::reset()
+        ));
+    }
+
+    parts.join(" ")
+}
+
+/// Format token count with K/M suffix for display
+fn format_token_count_for_display(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{}k", (count + 500) / 1000)
+    } else {
+        count.to_string()
     }
 }
 
