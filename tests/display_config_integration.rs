@@ -37,13 +37,24 @@ fn config_with_toggles(
 
 /// Create a deterministic transcript file with known duration
 fn create_test_transcript(duration_seconds: u64) -> NamedTempFile {
-    let mut file = NamedTempFile::new().unwrap();
+    let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
     let start = "2025-10-20T00:00:00.000Z";
     let minutes = duration_seconds / 60;
     let end = format!("2025-10-20T00:{:02}:00.000Z", minutes);
 
-    writeln!(file, r#"{{"timestamp":"{}"}}"#, start).unwrap();
-    writeln!(file, r#"{{"timestamp":"{}"}}"#, end).unwrap();
+    // TranscriptEntry requires a message field with role
+    writeln!(
+        file,
+        r#"{{"message":{{"role":"user","content":"start"}},"timestamp":"{}"}}"#,
+        start
+    )
+    .unwrap();
+    writeln!(
+        file,
+        r#"{{"message":{{"role":"assistant","content":"end"}},"timestamp":"{}"}}"#,
+        end
+    )
+    .unwrap();
     file.flush().unwrap();
     file
 }

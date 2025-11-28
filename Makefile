@@ -148,17 +148,24 @@ dev: debug
 	@echo '{"workspace":{"current_dir":"'$$(pwd)'"},"model":{"display_name":"Claude Sonnet"}}' | $(TARGET_DIR)/debug/$(BINARY_NAME)
 	@echo ""
 
-# Run tests
+# Test isolation directories (temporary paths to avoid touching production data)
+TEST_TEMP_DIR = $(shell mktemp -d 2>/dev/null || echo "/tmp/claudia-test-$$$$")
+TEST_ENV = XDG_CONFIG_HOME=$(TEST_TEMP_DIR)/config XDG_DATA_HOME=$(TEST_TEMP_DIR)/data
+
+# Run tests (isolated from production config/data)
 .PHONY: test
 test: debug
 	@echo "$(BLUE)Running tests...$(NC)"
-	@$(CARGO) test
+	@echo "$(YELLOW)Using isolated test directories:$(NC)"
+	@echo "  Config: $(TEST_TEMP_DIR)/config"
+	@echo "  Data:   $(TEST_TEMP_DIR)/data"
+	@$(TEST_ENV) $(CARGO) test
 
 # Run SQLite integration tests
 .PHONY: test-sqlite
 test-sqlite: debug
 	@echo "$(BLUE)Running SQLite integration tests...$(NC)"
-	@$(CARGO) test sqlite_integration
+	@$(TEST_ENV) $(CARGO) test sqlite_integration
 
 # Run installation test
 .PHONY: test-install
