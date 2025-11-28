@@ -516,16 +516,15 @@ pub fn calculate_context_usage(
 
     // Interpretation of base_window depends on whether adaptive learning is enabled:
     // - If adaptive learning ENABLED: base_window is the learned compaction point (e.g., 156K)
-    //   This represents the actual window before compaction happens
+    //   This represents the working window where compaction happens
     // - If adaptive learning DISABLED: base_window is the advertised total window (e.g., 200K)
     //   This is the full context window as advertised by Anthropic
 
     let (full_window, working_window) = if config.context.adaptive_learning {
-        // Adaptive learning enabled: base_window is the learned compaction point
-        // Both windows use the learned value for accurate percentage display
-        // full_window = learned compaction point (e.g., 156K)
-        // working_window = same as full_window (no buffer subtraction needed)
-        (base_window, base_window)
+        // Adaptive learning enabled: base_window is the compaction point (working window)
+        // full_window = compaction_point + buffer (e.g., 156K + 40K = 196K total)
+        // working_window = compaction_point (e.g., 156K before compaction)
+        (base_window + buffer_size, base_window)
     } else {
         // Adaptive learning disabled: base_window is the advertised total window
         // full_window = advertised total (e.g., 200K)
@@ -1043,5 +1042,157 @@ mod tests {
         assert_eq!(format_token_count(179000), "179k");
         assert_eq!(format_token_count(200000), "200k");
         assert_eq!(format_token_count(1000000), "1000k");
+    }
+
+    #[test]
+    fn test_context_percentage_full_mode_with_adaptive_learning() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a transcript with 150K tokens
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
+        writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":150000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
+
+        // Create config with adaptive_learning enabled and "full" mode
+        // Simulate a learned context window of 156K (compaction point)
+        // With full mode: percentage = 150K / (156K + 40K buffer) = 150K / 196K ≈ 76.53%
+        let mut cfg = crate::config::Config::default();
+        cfg.context.adaptive_learning = true;
+        cfg.context.percentage_mode = "full".to_string();
+        cfg.context.buffer_size = 40_000;
+        // Set a model window override to simulate learned value of 156K
+        cfg.context
+            .model_windows
+            .insert("Test Model".to_string(), 156_000);
+
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Test Model"),
+            None,
+            Some(&cfg),
+        );
+        assert!(result.is_some());
+        let usage = result.unwrap();
+
+        // With adaptive learning + full mode:
+        // full_window = base_window (156K) + buffer_size (40K) = 196K
+        // percentage = 150K / 196K ≈ 76.53%
+        let expected = (150_000.0 / 196_000.0) * 100.0;
+        assert!(
+            (usage.percentage - expected).abs() < 0.01,
+            "Expected ~{:.2}% but got {:.2}%",
+            expected,
+            usage.percentage
+        );
+    }
+
+    #[test]
+    fn test_context_percentage_working_mode_with_adaptive_learning() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a transcript with 150K tokens
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
+        writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":150000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
+
+        // Create config with adaptive_learning enabled and "working" mode
+        // Simulate a learned context window of 156K (compaction point)
+        // With working mode: percentage = 150K / 156K ≈ 96.15%
+        let mut cfg = crate::config::Config::default();
+        cfg.context.adaptive_learning = true;
+        cfg.context.percentage_mode = "working".to_string();
+        cfg.context.buffer_size = 40_000;
+        // Set a model window override to simulate learned value of 156K
+        cfg.context
+            .model_windows
+            .insert("Test Model".to_string(), 156_000);
+
+        let result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Test Model"),
+            None,
+            Some(&cfg),
+        );
+        assert!(result.is_some());
+        let usage = result.unwrap();
+
+        // With adaptive learning + working mode:
+        // working_window = base_window (156K) - no buffer subtraction for working mode
+        // percentage = 150K / 156K ≈ 96.15%
+        let expected = (150_000.0 / 156_000.0) * 100.0;
+        assert!(
+            (usage.percentage - expected).abs() < 0.01,
+            "Expected ~{:.2}% but got {:.2}%",
+            expected,
+            usage.percentage
+        );
+    }
+
+    #[test]
+    fn test_context_percentage_modes_differ_with_adaptive_learning() {
+        use std::io::Write;
+        use tempfile::NamedTempFile;
+
+        // Create a transcript with 150K tokens
+        let mut file = NamedTempFile::with_suffix(".jsonl").unwrap();
+        writeln!(file, r#"{{"message":{{"role":"assistant","content":"test","usage":{{"input_tokens":150000,"output_tokens":0}}}},"timestamp":"2025-08-22T18:32:37.789Z"}}"#).unwrap();
+
+        // Test that full and working modes give DIFFERENT percentages
+        // when adaptive learning is enabled (this is the expected behavior)
+
+        // Full mode config
+        let mut full_cfg = crate::config::Config::default();
+        full_cfg.context.adaptive_learning = true;
+        full_cfg.context.percentage_mode = "full".to_string();
+        full_cfg.context.buffer_size = 40_000;
+        full_cfg
+            .context
+            .model_windows
+            .insert("Test Model".to_string(), 156_000);
+
+        // Working mode config
+        let mut working_cfg = crate::config::Config::default();
+        working_cfg.context.adaptive_learning = true;
+        working_cfg.context.percentage_mode = "working".to_string();
+        working_cfg.context.buffer_size = 40_000;
+        working_cfg
+            .context
+            .model_windows
+            .insert("Test Model".to_string(), 156_000);
+
+        let full_result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Test Model"),
+            None,
+            Some(&full_cfg),
+        );
+        let working_result = calculate_context_usage(
+            file.path().to_str().unwrap(),
+            Some("Test Model"),
+            None,
+            Some(&working_cfg),
+        );
+
+        assert!(full_result.is_some());
+        assert!(working_result.is_some());
+
+        let full_pct = full_result.unwrap().percentage;
+        let working_pct = working_result.unwrap().percentage;
+
+        // Full mode: 150K / 196K ≈ 76.53%
+        // Working mode: 150K / 156K ≈ 96.15%
+        // They should be significantly different
+        assert!(
+            (working_pct - full_pct).abs() > 10.0,
+            "Full mode ({:.2}%) and working mode ({:.2}%) should differ significantly with adaptive learning",
+            full_pct,
+            working_pct
+        );
+
+        // Working mode should show higher percentage (closer to compaction)
+        assert!(
+            working_pct > full_pct,
+            "Working mode should show higher percentage than full mode"
+        );
     }
 }
