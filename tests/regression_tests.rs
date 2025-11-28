@@ -63,7 +63,11 @@ fn test_model_abbreviation_without_build_id() {
 
     // Haiku follows same pattern
     let haiku = ModelType::from_name("Claude Haiku");
-    assert_eq!(haiku.abbreviation(), "Haiku", "Haiku without version shows full name");
+    assert_eq!(
+        haiku.abbreviation(),
+        "Haiku",
+        "Haiku without version shows full name"
+    );
 
     let haiku45 = ModelType::from_name("Claude Haiku 4.5");
     assert_eq!(haiku45.abbreviation(), "H4.5", "Haiku 4.5 shows as 'H4.5'");
