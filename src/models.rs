@@ -181,6 +181,14 @@ impl ModelType {
         }
     }
 
+    /// Returns just the model family name (e.g., "Opus", "Sonnet", "Haiku")
+    pub fn family(&self) -> String {
+        match self {
+            ModelType::Model { family, .. } => family.clone(),
+            ModelType::Unknown => "Claude".to_string(),
+        }
+    }
+
     /// Returns the canonical model name for database storage
     /// This normalizes different display name variations to a consistent format
     /// Examples:
@@ -430,6 +438,14 @@ mod tests {
         assert_eq!(ModelType::from_name("Claude Sonnet").abbreviation(), "S3.5"); // Default to 3.5
         assert_eq!(ModelType::from_name("Claude Haiku").abbreviation(), "Haiku");
         assert_eq!(ModelType::Unknown.abbreviation(), "Claude");
+    }
+
+    #[test]
+    fn test_model_family() {
+        assert_eq!(ModelType::from_name("Claude Opus 4.5").family(), "Opus");
+        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet").family(), "Sonnet");
+        assert_eq!(ModelType::from_name("Claude Haiku 4.5").family(), "Haiku");
+        assert_eq!(ModelType::Unknown.family(), "Claude");
     }
 
     #[test]

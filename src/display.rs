@@ -548,6 +548,7 @@ fn format_statusline_with_layout(
         builder = builder.model_with_config(
             &model_type.abbreviation(),
             &sanitized_name,
+            &model_type.family(),
             &model_type.version(),
             &Colors::model(),
             &reset,
