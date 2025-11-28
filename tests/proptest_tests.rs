@@ -8,7 +8,7 @@ use serde_json::json;
 use statusline::{
     git::get_git_status,
     models::{ContextUsage, Cost, ModelType, StatuslineInput},
-    stats::StatsData,
+    stats::{SessionStats, StatsData},
     utils::{parse_iso8601_to_unix, shorten_path},
 };
 
@@ -201,6 +201,8 @@ proptest! {
 }
 
 // Test that stats data serialization round-trips correctly
+// NOTE: This test uses direct HashMap manipulation instead of update_session()
+// to avoid writing to the production SQLite database
 proptest! {
     #[test]
     fn test_stats_serialization_roundtrip(
@@ -209,18 +211,19 @@ proptest! {
         lines_added in 0u64..10000,
         lines_removed in 0u64..10000,
     ) {
-        use statusline::database::SessionUpdate;
         let mut stats = StatsData::default();
-        stats.update_session(
-            &session_id,
-            SessionUpdate {
+
+        // Directly insert into the sessions HashMap to avoid database side effects
+        // update_session() writes to production SQLite which pollutes real data
+        let now = chrono::Utc::now().to_rfc3339();
+        stats.sessions.insert(
+            session_id.clone(),
+            SessionStats {
+                last_updated: now.clone(),
                 cost,
                 lines_added,
                 lines_removed,
-                model_name: None,
-                workspace_dir: None,
-                device_id: None,
-                token_breakdown: None,
+                start_time: Some(now),
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
@@ -239,6 +242,13 @@ proptest! {
             if let Ok(restored) = deserialized {
                 // Check that key data is preserved
                 prop_assert!(restored.sessions.contains_key(&session_id));
+
+                // Verify the session data was preserved
+                if let Some(session) = restored.sessions.get(&session_id) {
+                    prop_assert!((session.cost - cost).abs() < 0.001);
+                    prop_assert_eq!(session.lines_added, lines_added);
+                    prop_assert_eq!(session.lines_removed, lines_removed);
+                }
             }
         }
     }

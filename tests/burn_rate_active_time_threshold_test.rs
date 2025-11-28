@@ -1,7 +1,11 @@
 //! Integration test for active_time burn rate mode - inactivity threshold
 //!
-//! This test MUST run in a separate process from other burn_rate tests because
-//! the config is initialized only once per process using OnceLock.
+//! ⚠️  CONFIG CACHING LIMITATION ⚠️
+//! Config is initialized ONCE per process using OnceLock, so the FIRST test
+//! that calls get_config() fixes all settings for the entire test binary.
+//!
+//! Solution: Only the first test can set env vars that affect config.
+//! Subsequent tests inherit those settings.
 
 use std::env;
 use tempfile::TempDir;

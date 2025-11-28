@@ -192,6 +192,26 @@ xattr -d com.apple.quarantine ~/.local/bin/statusline
 curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scripts/quick-install.sh | bash
 ```
 
+**Burn rate shows unrealistic values (e.g., $800+/hr)?**
+
+This can happen with `auto_reset` mode when a session resets after inactivity. The accumulated cost from before the reset briefly appears with a very short duration, causing a spike. This is transient and corrects itself as the session progresses. If it persists, check your database with `statusline health`.
+
+**Daily/monthly cost totals seem wrong?**
+
+The stats database may have accumulated incorrect values. Rebuild from actual session data:
+```bash
+sqlite3 ~/.local/share/claudia-statusline/stats.db "
+DELETE FROM daily_stats;
+DELETE FROM monthly_stats;
+INSERT INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
+SELECT date(start_time, 'localtime'), SUM(cost), SUM(lines_added), SUM(lines_removed), COUNT(*)
+FROM sessions GROUP BY date(start_time, 'localtime');
+INSERT INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed, session_count)
+SELECT strftime('%Y-%m', start_time, 'localtime'), SUM(cost), SUM(lines_added), SUM(lines_removed), COUNT(*)
+FROM sessions GROUP BY strftime('%Y-%m', start_time, 'localtime');
+"
+```
+
 **More help?** See [Installation Guide](docs/INSTALLATION.md#troubleshooting) and [Usage Guide](docs/USAGE.md#troubleshooting)
 
 ## Advanced Features
@@ -251,6 +271,43 @@ inactivity_threshold_minutes = 60  # Default: 1 hour
 - History preserved for analytics
 
 See [Configuration Guide](docs/CONFIGURATION.md#burn-rate-configuration) for complete details and examples.
+</details>
+
+<details>
+<summary><b>Token Rate Metrics (Opt-in)</b></summary>
+
+**Display token usage rates in tokens per second** to understand consumption patterns during intensive sessions.
+
+**Disabled by default** - explicitly enable in config:
+
+```toml
+[token_rate]
+enabled = true                      # Opt-in feature
+display_mode = "summary"            # "summary", "detailed", or "cache_only"
+cache_metrics = true                # Show cache hit ratio and ROI
+inherit_duration_mode = true        # Use burn_rate.mode for consistency
+```
+
+**Three display modes:**
+
+| Mode | Example Output | Best For |
+|------|----------------|----------|
+| **summary** | `13.9 tok/s` | Clean, minimal display |
+| **detailed** | `In:5.2 Out:8.7 tok/s • Cache:85%` | Full token breakdown |
+| **cache_only** | `Cache:85% (12x ROI) • 41.7 tok/s` | Cache efficiency focus |
+
+**Key features:**
+- Inherits duration mode from `burn_rate` (wall_clock, active_time, auto_reset)
+- Shows cache hit ratio and ROI (return on investment)
+- Requires 60+ seconds duration for meaningful rates
+- Calculations: `tokens / duration_seconds` (simpler than burn rate!)
+
+**Example calculations:**
+- 50,000 tokens / 3600 seconds = **13.9 tok/s**
+- Cache ROI of 12x means cache reads saved 12× the cost of creating cache
+- Hit ratio of 85% means 85% of requests were served from cache
+
+See [Configuration Guide](docs/CONFIGURATION.md#token-rate-configuration) for details.
 </details>
 
 <details>

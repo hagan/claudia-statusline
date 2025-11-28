@@ -2,6 +2,13 @@
 //!
 //! Tests that burn rate calculations maintain precision and display correctly
 //! for sessions running weeks to months.
+//!
+//! ⚠️  CONFIG CACHING LIMITATION ⚠️
+//! Config is initialized ONCE per process using OnceLock, so the FIRST test
+//! that calls get_config() fixes all settings for the entire test binary.
+//!
+//! Solution: Only the first test can set env vars that affect config.
+//! Subsequent tests inherit those settings.
 
 use tempfile::TempDir;
 

@@ -167,6 +167,26 @@ fn hex_to_ansi(hex: &str) -> String {
     format!("\x1b[38;2;{};{};{}m", r, g, b)
 }
 
+/// Format a token rate with the specified unit
+fn format_rate_with_unit(rate: f64, unit: &str, color: &str, reset: &str) -> String {
+    if rate >= 1000.0 {
+        format!("{}{:.1}K {}{}", color, rate / 1000.0, unit, reset)
+    } else {
+        format!("{}{:.1} {}{}", color, rate, unit, reset)
+    }
+}
+
+/// Format a token count with K/M suffix
+fn format_token_count(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        format!("{}", count)
+    }
+}
+
 /// Layout renderer that handles template substitution
 pub struct LayoutRenderer {
     /// The format template string
@@ -799,6 +819,120 @@ impl VariableBuilder {
                 format!("{}{:.1} tok/s{}", color, rate, reset),
             );
         }
+        self
+    }
+
+    /// Set token rate with component configuration ({token_rate})
+    ///
+    /// Supports different formats, time units, and session/daily totals.
+    #[allow(dead_code)]
+    pub fn token_rate_with_config(
+        mut self,
+        rate: f64,
+        session_total: Option<u64>,
+        daily_total: Option<u64>,
+        default_color: &str,
+        reset: &str,
+        config: &crate::config::TokenRateComponentConfig,
+    ) -> Self {
+        if rate <= 0.0 && session_total.is_none() && daily_total.is_none() {
+            return self;
+        }
+
+        let color = if config.color.is_empty() {
+            default_color.to_string()
+        } else {
+            resolve_color_override(&config.color)
+        };
+
+        // Format rate based on time_unit
+        let rate_str = if rate > 0.0 {
+            let (adjusted_rate, unit) = match config.time_unit.as_str() {
+                "minute" => (rate * 60.0, "tok/min"),
+                "hour" => (rate * 3600.0, "tok/hr"),
+                _ => (rate, "tok/s"), // default to second
+            };
+            format_rate_with_unit(adjusted_rate, unit, &color, reset)
+        } else {
+            String::new()
+        };
+
+        // Always set individual variables for templates
+        if !rate_str.is_empty() {
+            self.variables
+                .insert("token_rate_only".to_string(), rate_str.clone());
+        }
+
+        if let Some(session) = session_total {
+            self.variables.insert(
+                "token_session_total".to_string(),
+                format!("{}{}{}", color, format_token_count(session), reset),
+            );
+        }
+
+        if let Some(daily) = daily_total {
+            self.variables.insert(
+                "token_daily_total".to_string(),
+                format!("{}day: {}{}", color, format_token_count(daily), reset),
+            );
+        }
+
+        // Build {token_rate} variable based on format config
+        let token_rate_str = match config.format.as_str() {
+            "with_session" => {
+                let mut parts = Vec::new();
+                if !rate_str.is_empty() {
+                    parts.push(rate_str);
+                }
+                if let Some(session) = session_total {
+                    parts.push(format!("{}{}{}", color, format_token_count(session), reset));
+                }
+                parts.join(" • ")
+            }
+            "with_daily" => {
+                let mut parts = Vec::new();
+                if !rate_str.is_empty() {
+                    parts.push(rate_str);
+                }
+                if let Some(daily) = daily_total {
+                    parts.push(format!(
+                        "{}(day: {}){}",
+                        color,
+                        format_token_count(daily),
+                        reset
+                    ));
+                }
+                parts.join(" ")
+            }
+            "full" => {
+                let mut parts = Vec::new();
+                if !rate_str.is_empty() {
+                    parts.push(rate_str);
+                }
+                if let Some(session) = session_total {
+                    parts.push(format!("{}{}{}", color, format_token_count(session), reset));
+                }
+                let main_part = parts.join(" • ");
+                if let Some(daily) = daily_total {
+                    format!(
+                        "{} {}(day: {}){}",
+                        main_part,
+                        color,
+                        format_token_count(daily),
+                        reset
+                    )
+                } else {
+                    main_part
+                }
+            }
+            _ => rate_str, // "rate_only" or default
+        };
+
+        if !token_rate_str.is_empty() {
+            self.variables
+                .insert("token_rate".to_string(), token_rate_str);
+        }
+
         self
     }
 
@@ -1649,5 +1783,106 @@ mod tests {
         let result = renderer.render(&vars);
         assert!(result.contains("~/test"));
         assert!(result.contains("S4.5"));
+    }
+
+    #[test]
+    fn test_token_rate_with_config_sets_all_variables() {
+        // Test that token_rate_with_config sets all expected layout variables
+        let config = crate::config::TokenRateComponentConfig {
+            format: "full".to_string(),
+            time_unit: "second".to_string(),
+            show_session_total: true,
+            show_daily_total: true,
+            color: String::new(),
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_config(
+                10.5,          // rate (tok/s)
+                Some(15_000),  // session total
+                Some(250_000), // daily total
+                "\x1b[90m",    // default color (gray)
+                "\x1b[0m",     // reset
+                &config,
+            )
+            .build();
+
+        // Verify all expected variables are set
+        assert!(vars.contains_key("token_rate"), "token_rate should be set");
+        assert!(
+            vars.contains_key("token_rate_only"),
+            "token_rate_only should be set"
+        );
+        assert!(
+            vars.contains_key("token_session_total"),
+            "token_session_total should be set"
+        );
+        assert!(
+            vars.contains_key("token_daily_total"),
+            "token_daily_total should be set"
+        );
+
+        // Verify token_rate_only contains rate
+        let rate_only = vars.get("token_rate_only").unwrap();
+        assert!(rate_only.contains("tok/s"), "Should contain tok/s unit");
+
+        // Verify session total formatting (15K)
+        let session = vars.get("token_session_total").unwrap();
+        assert!(session.contains("15"), "Should contain 15 (from 15K)");
+
+        // Verify daily total formatting (250K)
+        let daily = vars.get("token_daily_total").unwrap();
+        assert!(daily.contains("day:"), "Should contain 'day:' prefix");
+        assert!(daily.contains("250"), "Should contain 250 (from 250K)");
+
+        // Verify full format combines everything
+        let full = vars.get("token_rate").unwrap();
+        assert!(full.contains("tok/s"), "Full format should contain rate");
+        assert!(
+            full.contains("15"),
+            "Full format should contain session total"
+        );
+        assert!(
+            full.contains("day:"),
+            "Full format should contain daily prefix"
+        );
+    }
+
+    #[test]
+    fn test_token_rate_with_config_layout_integration() {
+        // Test that token rate variables work in layout format strings
+        let config = crate::config::TokenRateComponentConfig {
+            format: "rate_only".to_string(),
+            time_unit: "minute".to_string(),
+            show_session_total: true,
+            show_daily_total: true,
+            color: String::new(),
+        };
+
+        let vars = VariableBuilder::new()
+            .set("directory", "~/test".to_string())
+            .token_rate_with_config(5.0, Some(10_000), Some(100_000), "", "", &config)
+            .build();
+
+        // Test layout rendering with individual token variables
+        let format = "{directory} | rate: {token_rate_only} | session: {token_session_total}";
+        let renderer = LayoutRenderer::with_format(format, " • ");
+        let result = renderer.render(&vars);
+
+        assert!(
+            result.contains("~/test"),
+            "Should render directory: {}",
+            result
+        );
+        assert!(
+            result.contains("tok/min"),
+            "Should render rate with minute unit: {}",
+            result
+        );
+        assert!(
+            result.contains("10"),
+            "Should render session total: {}",
+            result
+        );
     }
 }
