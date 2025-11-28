@@ -1528,6 +1528,12 @@ mod tests {
             .build();
 
         assert_eq!(vars.get("model"), Some(&"4.5".to_string()));
+        // model_full and model_name should always be set regardless of format
+        assert_eq!(
+            vars.get("model_full"),
+            Some(&"Claude Sonnet 4.5".to_string())
+        );
+        assert_eq!(vars.get("model_name"), Some(&"Sonnet".to_string()));
     }
 
     #[test]
