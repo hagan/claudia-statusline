@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.0] - 2025-11-28
+
 ### Added - Token Rate Metrics (Opt-in Feature)
 
 **New feature**: Display token usage rates in tokens per second (tok/s), similar to burn rate but for token consumption.

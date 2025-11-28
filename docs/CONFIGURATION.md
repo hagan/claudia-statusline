@@ -229,7 +229,7 @@ show_tokens = false   # Show token counts in full format (e.g., "75% [======>---
 bar_width = 10        # Optional: override progress bar width
 
 [layout.components.model]
-format = "abbreviation"  # Options: abbreviation (default), full, version
+format = "abbreviation"  # Options: abbreviation (default), full, name, version
 color = ""               # Empty = use theme default
 
 [layout.components.cost]
@@ -246,6 +246,20 @@ color = ""
 | `bar` | `[======>---]` | Progress bar only |
 | `percent` | `75%` | Percentage only |
 | `tokens` | `150k/200k` | Token counts only |
+
+#### Model Format Options
+
+| Format | Example Output | Description |
+|--------|---------------|-------------|
+| `abbreviation` | `O4.5`, `S4.5`, `H4.5` | Short form with version (default) |
+| `full` | `Claude Opus 4.5` | Full display name from Claude |
+| `name` | `Opus`, `Sonnet`, `Haiku` | Model family only, no version |
+| `version` | `4.5` | Version number only |
+
+**Template variables** (always available regardless of format):
+- `{model}` - Uses configured format
+- `{model_full}` - Always full name
+- `{model_name}` - Always family name only
 
 ### Color Override Values
 

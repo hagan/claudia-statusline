@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
   - Normal: `79% [========>-] ⚠` (warning when approaching limit)
   - In Progress: `Compacting... ⠋` (hook-based, <1ms detection)
   - Completed: `35% [===>------] ✓` (checkmark after successful compact)
-- **Claude model** (Opus/S3.5/S4.5/Haiku)
+- **Claude model** (O4.5/S4.5/H4.5 - consistent version display)
 - **Session duration** (1h 23m)
 - **Cost tracking** ($3.50 session, $2.54/hour burn rate)
 - **Lines changed** (+150 added, -42 removed)
@@ -44,7 +44,9 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - Multi-console safe (run multiple Claude instances)
 - **11 embedded themes** (dark, light, monokai, solarized, high-contrast, gruvbox, nord, dracula, one-dark, tokyo-night, catppuccin)
 - **5 layout presets** (default, compact, detailed, minimal, power) with custom template support
+- **4 model formats** (abbreviation: O4.5, full: Claude Opus 4.5, name: Opus, version: 4.5)
 - SQLite database for reliability
+- **Token rate metrics** (opt-in) - display tokens/second with cache efficiency tracking
 - **Hook-based compaction detection** (opt-in) - instant real-time feedback via Claude Code hooks
 - **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
 - No configuration needed (smart defaults)
