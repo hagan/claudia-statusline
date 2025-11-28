@@ -1364,7 +1364,10 @@ mod tests {
 
         // Create a temp directory for the test
         let temp_dir = TempDir::new().unwrap();
-        let stats_path = temp_dir.path().join("claudia-statusline").join("stats.json");
+        let stats_path = temp_dir
+            .path()
+            .join("claudia-statusline")
+            .join("stats.json");
 
         // Directly call acquire_stats_file() to test file creation with 0o600 permissions
         // This bypasses save() which uses config caching (OnceLock)
