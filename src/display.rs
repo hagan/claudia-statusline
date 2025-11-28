@@ -849,7 +849,7 @@ fn format_duration(seconds: u64) -> String {
 /// For layout mode, use `VariableBuilder::token_rate_with_config()` in layout.rs.
 ///
 /// The two paths have different capabilities:
-/// - Non-layout (this): Supports display_mode (detailed, cache_only, compact, minimal)
+/// - Non-layout (this): Supports display_mode ("summary", "detailed", "cache_only")
 ///   with cache metrics, ROI calculations, and detailed breakdowns
 /// - Layout mode: Simpler format options (rate_only, with_session, with_daily, full)
 ///   for template rendering with {token_rate}, {token_rate_only}, etc.
@@ -994,7 +994,7 @@ fn format_token_count_for_display(count: u64) -> String {
     if count >= 1_000_000 {
         format!("{:.1}M", count as f64 / 1_000_000.0)
     } else if count >= 1_000 {
-        format!("{}k", (count + 500) / 1000)
+        format!("{}K", (count + 500) / 1000)
     } else {
         count.to_string()
     }

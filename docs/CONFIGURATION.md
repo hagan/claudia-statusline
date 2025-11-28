@@ -192,9 +192,8 @@ The statusline supports two display modes:
 **Legacy Mode** (non-template):
 - Used when no custom layout is configured
 - Token rate format controlled by `[token_rate] display_mode`:
-  - `minimal`: Simple rate only
-  - `compact`: Rate with totals
-  - `detailed`: Breakdown by input/output tokens
+  - `summary`: Simple rate only (default)
+  - `detailed`: Breakdown by input/output tokens with cache metrics
   - `cache_only`: Focus on cache metrics and ROI
 
 ### Multi-line Layouts

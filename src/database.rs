@@ -959,10 +959,11 @@ impl SqliteDatabase {
     ///
     /// Returns (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
     /// Returns None if any token count is negative (DB corruption/migration edge case)
+    /// NULL values are treated as 0 via COALESCE.
     pub fn get_session_token_breakdown(&self, session_id: &str) -> Option<(u32, u32, u32, u32)> {
         let conn = self.get_connection().ok()?;
         conn.query_row(
-            "SELECT total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens
+            "SELECT COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0), COALESCE(total_cache_read_tokens, 0), COALESCE(total_cache_creation_tokens, 0)
              FROM sessions WHERE session_id = ?1",
             params![session_id],
             |row| {

@@ -908,8 +908,11 @@ pub fn calculate_token_rates_with_db(
     // Get daily token total
     let daily_total_tokens = db.get_today_token_total().unwrap_or(0);
 
-    // Calculate total tokens
-    let total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens;
+    // Calculate total tokens (cast to u64 first to prevent overflow with long sessions)
+    let total_tokens = input_tokens as u64
+        + output_tokens as u64
+        + cache_read_tokens as u64
+        + cache_creation_tokens as u64;
 
     // No tokens yet, skip calculation
     if total_tokens == 0 {
@@ -973,7 +976,7 @@ pub fn calculate_token_rates_with_db(
         duration_seconds: duration,
         cache_hit_ratio,
         cache_roi,
-        session_total_tokens: total_tokens as u64,
+        session_total_tokens: total_tokens,
         daily_total_tokens,
     })
 }
