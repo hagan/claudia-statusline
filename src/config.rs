@@ -399,6 +399,7 @@ pub struct BurnRateConfig {
 /// | `{context_tokens}` | `150k/200k` | Token counts |
 /// | `{model}` | `S4.5` | Model abbreviation |
 /// | `{model_full}` | `Claude Sonnet 4.5` | Full model name |
+/// | `{model_name}` | `Sonnet` | Model family name |
 /// | `{duration}` | `25m` | Session duration |
 /// | `{cost}` | `$12.50` | Session cost |
 /// | `{burn_rate}` | `$3.50/hr` | Cost per hour |
@@ -519,7 +520,12 @@ pub struct CostComponentConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelComponentConfig {
-    /// Format: "abbreviation" (default), "full", "version"
+    /// Format: "abbreviation" (default), "full", "name", "version"
+    ///
+    /// - "abbreviation": Short form like "S4.5", "O4.5", "H4.5"
+    /// - "full": Full display name like "Claude Sonnet 4.5"
+    /// - "name": Just the model family like "Sonnet", "Opus", "Haiku"
+    /// - "version": Just the version number like "4.5"
     pub format: String,
 
     /// Override theme color (empty = use theme)

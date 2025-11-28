@@ -46,16 +46,31 @@ fn test_model_abbreviation_without_build_id() {
         "Display name should abbreviate correctly"
     );
 
+    // Opus without version shows full name
     let opus = ModelType::from_name("Claude Opus");
     assert_eq!(
         opus.abbreviation(),
         "Opus",
-        "Opus shows full name (no abbreviation)"
+        "Opus without version shows full name"
     );
 
-    // Opus models always show as "Opus" regardless of version
+    // Opus with version shows abbreviated form (consistent with Sonnet/Haiku)
     let opus3 = ModelType::from_name("Claude 3 Opus");
-    assert_eq!(opus3.abbreviation(), "Opus", "Opus always shows as 'Opus'");
+    assert_eq!(opus3.abbreviation(), "O3", "Opus 3 shows as 'O3'");
+
+    let opus45 = ModelType::from_name("Claude Opus 4.5");
+    assert_eq!(opus45.abbreviation(), "O4.5", "Opus 4.5 shows as 'O4.5'");
+
+    // Haiku follows same pattern
+    let haiku = ModelType::from_name("Claude Haiku");
+    assert_eq!(
+        haiku.abbreviation(),
+        "Haiku",
+        "Haiku without version shows full name"
+    );
+
+    let haiku45 = ModelType::from_name("Claude Haiku 4.5");
+    assert_eq!(haiku45.abbreviation(), "H4.5", "Haiku 4.5 shows as 'H4.5'");
 }
 
 // ============================================================================

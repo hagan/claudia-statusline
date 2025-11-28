@@ -596,11 +596,13 @@ impl VariableBuilder {
 
     /// Set model variables with component configuration
     ///
-    /// Format options: "abbreviation" (default), "full", "version"
+    /// Format options: "abbreviation" (default), "full", "name", "version"
+    #[allow(clippy::too_many_arguments)]
     pub fn model_with_config(
         mut self,
         abbreviation: &str,
         full_name: &str,
+        family_name: &str,
         version: &str,
         default_color: &str,
         reset: &str,
@@ -615,6 +617,7 @@ impl VariableBuilder {
         // Format based on config
         let display_value = match config.format.as_str() {
             "full" => full_name,
+            "name" => family_name,
             "version" => version,
             _ => abbreviation, // "abbreviation" is default
         };
@@ -631,6 +634,14 @@ impl VariableBuilder {
             self.variables.insert(
                 "model_full".to_string(),
                 format!("{}{}{}", color, full_name, reset),
+            );
+        }
+
+        // Always set model_name for templates that want just the family name
+        if !family_name.is_empty() {
+            self.variables.insert(
+                "model_name".to_string(),
+                format!("{}{}{}", color, family_name, reset),
             );
         }
 
@@ -1483,10 +1494,19 @@ mod tests {
             color: String::new(),
         };
         let vars = VariableBuilder::new()
-            .model_with_config("S4.5", "Claude Sonnet 4.5", "4.5", "", "", &config)
+            .model_with_config(
+                "S4.5",
+                "Claude Sonnet 4.5",
+                "Sonnet",
+                "4.5",
+                "",
+                "",
+                &config,
+            )
             .build();
 
         assert_eq!(vars.get("model"), Some(&"Claude Sonnet 4.5".to_string()));
+        assert_eq!(vars.get("model_name"), Some(&"Sonnet".to_string()));
     }
 
     #[test]
@@ -1496,10 +1516,39 @@ mod tests {
             color: String::new(),
         };
         let vars = VariableBuilder::new()
-            .model_with_config("S4.5", "Claude Sonnet 4.5", "4.5", "", "", &config)
+            .model_with_config(
+                "S4.5",
+                "Claude Sonnet 4.5",
+                "Sonnet",
+                "4.5",
+                "",
+                "",
+                &config,
+            )
             .build();
 
         assert_eq!(vars.get("model"), Some(&"4.5".to_string()));
+        // model_full and model_name should always be set regardless of format
+        assert_eq!(
+            vars.get("model_full"),
+            Some(&"Claude Sonnet 4.5".to_string())
+        );
+        assert_eq!(vars.get("model_name"), Some(&"Sonnet".to_string()));
+    }
+
+    #[test]
+    fn test_model_with_config_format_name() {
+        let config = ModelComponentConfig {
+            format: "name".to_string(),
+            color: String::new(),
+        };
+        let vars = VariableBuilder::new()
+            .model_with_config("O4.5", "Claude Opus 4.5", "Opus", "4.5", "", "", &config)
+            .build();
+
+        assert_eq!(vars.get("model"), Some(&"Opus".to_string()));
+        assert_eq!(vars.get("model_full"), Some(&"Claude Opus 4.5".to_string()));
+        assert_eq!(vars.get("model_name"), Some(&"Opus".to_string()));
     }
 
     #[test]

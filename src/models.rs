@@ -139,14 +139,17 @@ impl ModelType {
     }
 
     /// Returns the abbreviated display name for the model
-    /// Examples: "Opus" → "Opus", "Sonnet 3.5" → "S3.5", "Haiku 4.5" → "H4.5"
+    /// Examples: "Opus 4.5" → "O4.5", "Sonnet 3.5" → "S3.5", "Haiku 4.5" → "H4.5"
     pub fn abbreviation(&self) -> String {
         match self {
             ModelType::Model { family, version } => {
                 match family.as_str() {
                     "Opus" => {
-                        // Opus is already short, just show "Opus"
-                        "Opus".to_string()
+                        if version.is_empty() {
+                            "Opus".to_string()
+                        } else {
+                            format!("O{}", version)
+                        }
                     }
                     "Sonnet" => {
                         if version.is_empty() {
@@ -157,8 +160,11 @@ impl ModelType {
                         }
                     }
                     "Haiku" => {
-                        // Haiku is already short, just show "Haiku"
-                        "Haiku".to_string()
+                        if version.is_empty() {
+                            "Haiku".to_string()
+                        } else {
+                            format!("H{}", version)
+                        }
                     }
                     _ => family.clone(),
                 }
@@ -172,6 +178,14 @@ impl ModelType {
         match self {
             ModelType::Model { version, .. } => version.clone(),
             ModelType::Unknown => String::new(),
+        }
+    }
+
+    /// Returns just the model family name (e.g., "Opus", "Sonnet", "Haiku")
+    pub fn family(&self) -> String {
+        match self {
+            ModelType::Model { family, .. } => family.clone(),
+            ModelType::Unknown => "Claude".to_string(),
         }
     }
 
@@ -427,6 +441,14 @@ mod tests {
     }
 
     #[test]
+    fn test_model_family() {
+        assert_eq!(ModelType::from_name("Claude Opus 4.5").family(), "Opus");
+        assert_eq!(ModelType::from_name("Claude 3.5 Sonnet").family(), "Sonnet");
+        assert_eq!(ModelType::from_name("Claude Haiku 4.5").family(), "Haiku");
+        assert_eq!(ModelType::Unknown.family(), "Claude");
+    }
+
+    #[test]
     fn test_version_extraction() {
         // Test various version number formats
         let test_cases = vec![
@@ -468,11 +490,11 @@ mod tests {
         );
         assert_eq!(
             ModelType::from_name("Claude Haiku 4.5").abbreviation(),
-            "Haiku"
+            "H4.5"
         );
         assert_eq!(
             ModelType::from_name("Claude Opus 4.0").abbreviation(),
-            "Opus"
+            "O4.0"
         );
 
         // Test edge cases

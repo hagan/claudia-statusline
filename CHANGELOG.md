@@ -69,6 +69,41 @@ export STATUSLINE_TOKEN_RATE_INHERIT_DURATION=true
 - Database integration with existing token breakdown tracking
 - 2 integration tests validating calculation accuracy
 
+### Added - Model Display Enhancements
+
+**Model version display for Opus and Haiku**: Now shows version numbers consistently across all model families.
+
+#### Changes
+- **Opus 4.5** now displays as `O4.5` instead of `Opus`
+- **Haiku 4.5** now displays as `H4.5` instead of `Haiku`
+- Consistent with Sonnet which already showed `S4.5`
+
+#### New `model_name` format option
+
+Added `"name"` format for showing just the model family without version:
+
+```toml
+[layout.components.model]
+format = "name"  # Shows "Opus", "Sonnet", "Haiku"
+```
+
+**All model format options**:
+| Format | Example Output |
+|--------|---------------|
+| `abbreviation` (default) | `O4.5`, `S4.5`, `H4.5` |
+| `full` | `Claude Opus 4.5` |
+| `name` | `Opus`, `Sonnet`, `Haiku` |
+| `version` | `4.5` |
+
+#### New template variable
+
+- `{model_name}` - Always available, shows just the model family name
+
+#### Implementation
+- New `ModelType::family()` method in `src/models.rs`
+- Updated `model_with_config()` in `src/layout.rs` to support "name" format
+- `{model_name}` template variable always set alongside `{model}` and `{model_full}`
+
 ## [2.20.1] - 2025-11-25
 
 ### Fixed
