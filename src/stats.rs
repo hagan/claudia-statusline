@@ -1358,28 +1358,19 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    #[serial]
-    #[ignore = "Flaky test - depends on config cache state"]
     fn test_stats_file_permissions_on_creation() {
         use std::os::unix::fs::PermissionsExt;
         use tempfile::TempDir;
 
+        // Create a temp directory for the test
         let temp_dir = TempDir::new().unwrap();
-        env::set_var("XDG_DATA_HOME", temp_dir.path());
-        env::set_var("XDG_CONFIG_HOME", temp_dir.path());
-        env::set_var("STATUSLINE_JSON_BACKUP", "true");
+        let stats_path = temp_dir.path().join("claudia-statusline").join("stats.json");
 
-        // Create the directory structure first
-        let data_dir = temp_dir.path().join("claudia-statusline");
-        fs::create_dir_all(&data_dir).unwrap();
-
-        // Create new stats file
-        let stats = StatsData::default();
-        stats.save().unwrap();
+        // Directly call acquire_stats_file() to test file creation with 0o600 permissions
+        // This bypasses save() which uses config caching (OnceLock)
+        let _file = acquire_stats_file(&stats_path).unwrap();
 
         // Verify stats.json has 0o600 permissions
-        // Use temp_dir path directly since get_data_dir() uses cached config
-        let stats_path = data_dir.join("stats.json");
         let metadata = fs::metadata(&stats_path).unwrap();
         let mode = metadata.permissions().mode();
 
@@ -1389,10 +1380,6 @@ mod tests {
             "stats.json should have 0o600 permissions, got: {:o}",
             mode & 0o777
         );
-
-        env::remove_var("STATUSLINE_JSON_BACKUP");
-        env::remove_var("XDG_CONFIG_HOME");
-        env::remove_var("XDG_DATA_HOME");
     }
 
     #[test]
