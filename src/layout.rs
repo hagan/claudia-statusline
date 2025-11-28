@@ -1494,7 +1494,15 @@ mod tests {
             color: String::new(),
         };
         let vars = VariableBuilder::new()
-            .model_with_config("S4.5", "Claude Sonnet 4.5", "Sonnet", "4.5", "", "", &config)
+            .model_with_config(
+                "S4.5",
+                "Claude Sonnet 4.5",
+                "Sonnet",
+                "4.5",
+                "",
+                "",
+                &config,
+            )
             .build();
 
         assert_eq!(vars.get("model"), Some(&"Claude Sonnet 4.5".to_string()));
@@ -1508,7 +1516,15 @@ mod tests {
             color: String::new(),
         };
         let vars = VariableBuilder::new()
-            .model_with_config("S4.5", "Claude Sonnet 4.5", "Sonnet", "4.5", "", "", &config)
+            .model_with_config(
+                "S4.5",
+                "Claude Sonnet 4.5",
+                "Sonnet",
+                "4.5",
+                "",
+                "",
+                &config,
+            )
             .build();
 
         assert_eq!(vars.get("model"), Some(&"4.5".to_string()));
