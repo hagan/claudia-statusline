@@ -3,6 +3,9 @@
 //! This module provides persistent statistics tracking for Claude Code sessions,
 //! including costs, line changes, and usage metrics. Statistics are stored in
 //! both JSON and SQLite formats for reliability and concurrent access.
+//!
+//! **Note**: Advanced features (token rates, rolling window) require SQLite.
+//! JSON backup mode is deprecated and will be removed in v3.0.
 
 use crate::common::{current_date, current_month, current_timestamp, get_data_dir};
 use crate::config::get_config;
@@ -16,7 +19,29 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::SystemTime;
+
+/// Static flag to ensure deprecation warning is only shown once per process
+static JSON_BACKUP_WARNING_SHOWN: OnceLock<bool> = OnceLock::new();
+
+/// Show deprecation warning for json_backup mode (only once per process)
+fn warn_json_backup_deprecated() {
+    JSON_BACKUP_WARNING_SHOWN.get_or_init(|| {
+        warn!(
+            "DEPRECATION: json_backup mode is deprecated and will be removed in v3.0. \
+             Advanced features (token rates, rolling window, context learning) require SQLite. \
+             Run 'statusline migrate --finalize' to migrate to SQLite-only mode."
+        );
+        // Also print to stderr for visibility (log might be filtered)
+        eprintln!(
+            "\x1b[33m⚠ DEPRECATION:\x1b[0m json_backup mode is deprecated. \
+             Token rates and other advanced features require SQLite. \
+             Run 'statusline migrate --finalize' to switch to SQLite-only mode."
+        );
+        true
+    });
+}
 
 /// Persistent stats tracking structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -753,6 +778,9 @@ where
 
     // Load existing stats data
     let mut stats_data = if config.database.json_backup {
+        // Show deprecation warning (once per process)
+        warn_json_backup_deprecated();
+
         // Acquire and lock the file with retry
         let mut file = match acquire_stats_file(&path) {
             Ok(f) => f,
@@ -915,6 +943,13 @@ pub fn calculate_token_rates_with_db_and_transcript(
 
     // Check if token rate feature is enabled
     if !config.token_rate.enabled {
+        return None;
+    }
+
+    // Token rates require SQLite-only mode (json_backup = false)
+    // JSON backup doesn't store token breakdowns needed for rate calculation
+    if config.database.json_backup {
+        log::debug!("Token rates disabled: requires SQLite-only mode (json_backup = false)");
         return None;
     }
 

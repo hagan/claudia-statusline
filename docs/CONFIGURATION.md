@@ -760,7 +760,7 @@ Prune old data automatically with cron:
 
 ### SQLite-Only Mode (Recommended)
 
-For best performance, disable JSON backup:
+For best performance and full feature support, disable JSON backup:
 
 ```toml
 [database]
@@ -772,6 +772,13 @@ json_backup = false
 - Lower memory usage
 - No JSON file I/O overhead
 - Better concurrent access
+- **Required for advanced features** (see below)
+
+**Advanced features requiring SQLite-only mode:**
+- **Token rates**: Real-time token consumption tracking (`[token_rate] enabled = true`)
+- **Rolling window rates**: Responsive rate updates (`rate_window_seconds > 0`)
+- **Adaptive context learning**: Automatic context window detection
+- **Cloud sync**: Multi-device synchronization (when enabled)
 
 **Migration:**
 ```bash
@@ -779,19 +786,28 @@ json_backup = false
 statusline migrate --finalize
 ```
 
-### Dual-Write Mode (Default)
+### Dual-Write Mode (Deprecated)
+
+> **⚠️ Deprecated**: JSON backup mode will be removed in v3.0.
+> Advanced features (token rates, context learning) are disabled in this mode.
 
 Keep both SQLite and JSON:
 
 ```toml
 [database]
-json_backup = true  # Default
+json_backup = true  # Default (deprecated)
 ```
 
 **When to use:**
-- Transitioning from old versions
+- Transitioning from old versions (temporary)
 - Want backup in human-readable format
 - Debugging or development
+
+**Limitations:**
+- Token rate metrics disabled
+- Rolling window rates disabled
+- Adaptive context learning disabled
+- Shows deprecation warning on startup
 
 ## Git Configuration
 

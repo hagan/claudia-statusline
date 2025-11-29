@@ -688,9 +688,12 @@ pub fn get_rolling_window_rates(
     }
 
     // Process messages within the window
-    let mut sum_input = 0u32;
+    // Note: For rolling window, we use different logic than session totals:
+    // - SUM for output/cache_creation (cumulative work done in window)
+    // - MAX for input/cache_read (peak context, not cumulative - input shows full context each message)
+    let mut max_input = 0u32;
+    let mut max_cache_read = 0u32;
     let mut sum_output = 0u32;
-    let mut sum_cache_read = 0u32;
     let mut sum_cache_creation = 0u32;
     let mut earliest_timestamp: Option<u64> = None;
     let mut latest_timestamp: Option<u64> = None;
@@ -717,10 +720,17 @@ pub fn get_rolling_window_rates(
                     if entry.message.role == "assistant" {
                         if let Some(usage) = entry.message.usage {
                             has_data = true;
-                            sum_input = sum_input.saturating_add(usage.input_tokens.unwrap_or(0));
+                            // MAX for context tokens (input/cache_read represent full context, not delta)
+                            let input = usage.input_tokens.unwrap_or(0);
+                            let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+                            if input > max_input {
+                                max_input = input;
+                            }
+                            if cache_read > max_cache_read {
+                                max_cache_read = cache_read;
+                            }
+                            // SUM for generated tokens (output/cache_creation are cumulative)
                             sum_output = sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
-                            sum_cache_read =
-                                sum_cache_read.saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
                             sum_cache_creation = sum_cache_creation
                                 .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
                         }
@@ -744,10 +754,19 @@ pub fn get_rolling_window_rates(
     let effective_duration = actual_span.min(window_seconds).max(1);
 
     let duration_f64 = effective_duration as f64;
-    let input_rate = sum_input as f64 / duration_f64;
+
+    // For rolling window:
+    // - Output rate: tokens generated per second (meaningful)
+    // - Cache creation rate: cache writes per second (meaningful)
+    // - Input/cache_read "rate": Not meaningful as a rate (context size != generation rate)
+    //   We return 0 for these to signal they shouldn't be displayed as rates
     let output_rate = sum_output as f64 / duration_f64;
-    let cache_read_rate = sum_cache_read as f64 / duration_f64;
     let cache_creation_rate = sum_cache_creation as f64 / duration_f64;
+
+    // Input/cache_read are returned as 0 since "tokens per second" doesn't apply to context size
+    // The session totals (from database) still show accurate input metrics
+    let input_rate = 0.0;
+    let cache_read_rate = 0.0;
 
     Some((
         input_rate,
