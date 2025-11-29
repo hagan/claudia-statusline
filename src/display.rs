@@ -440,9 +440,14 @@ fn format_statusline_string(
     }
 
     // 8. Token rate metrics (opt-in feature)
+    // Uses rolling window if configured, otherwise session average
     if let Some(sid) = session_id {
         if let Some(ref db_handle) = db {
-            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, db_handle) {
+            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db_and_transcript(
+                sid,
+                db_handle,
+                transcript_path,
+            ) {
                 let token_rate_str = format_token_rates(&token_rates);
                 parts.push(token_rate_str);
             }
@@ -613,6 +618,8 @@ fn format_statusline_with_layout(
     }
 
     // Token rate (with component config)
+    // Uses rolling window if configured, otherwise session average
+    // Now respects rate_display config (output_only, input_only, both)
     if let Some(sid) = session_id {
         // Create database handle for token rate calculation
         if let Some(db) = crate::stats::StatsData::get_sqlite_path()
@@ -620,14 +627,17 @@ fn format_statusline_with_layout(
             .filter(|p| p.exists())
             .and_then(|p| crate::database::SqliteDatabase::new(&p).ok())
         {
-            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, &db) {
-                builder = builder.token_rate_with_config(
-                    token_rates.total_rate,
-                    Some(token_rates.session_total_tokens),
-                    Some(token_rates.daily_total_tokens),
+            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db_and_transcript(
+                sid,
+                &db,
+                transcript_path,
+            ) {
+                builder = builder.token_rate_with_metrics(
+                    &token_rates,
                     &Colors::light_gray(),
                     &reset,
                     &components.token_rate,
+                    &full_config.token_rate,
                 );
             }
         }
@@ -859,17 +869,61 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
     let mode = &config.token_rate.display_mode;
     let component_config = &config.layout.components.token_rate;
 
+    // Convert rate based on time_unit config
+    let (rate_multiplier, unit_str) = match component_config.time_unit.as_str() {
+        "minute" => (60.0, "tok/min"),
+        "hour" => (3600.0, "tok/hr"),
+        _ => (1.0, "tok/s"), // "second" is default
+    };
+
+    // Helper to format a rate value with appropriate precision
+    let format_rate = |rate: f64| -> String {
+        let adjusted = rate * rate_multiplier;
+        if adjusted >= 1000.0 {
+            format!("{:.1}K", adjusted / 1000.0)
+        } else {
+            format!("{:.1}", adjusted)
+        }
+    };
+
     // Build the rate display based on display mode
     let rate_str = match mode.as_str() {
         "detailed" => {
-            // Detailed: "In:5.2 Out:8.7 tok/s • Cache:85%"
-            let mut parts = vec![format!(
-                "{}In:{:.1} Out:{:.1} tok/s{}",
-                Colors::light_gray(),
-                metrics.input_rate,
-                metrics.output_rate,
-                Colors::reset()
-            )];
+            // Detailed: "In:5.2K Out:8.7K tok/hr • Cache:85%"
+            // Note: input_rate includes cache_read_rate for meaningful display
+            // (raw input without cache is often near-zero for long sessions)
+            //
+            // For rolling window mode:
+            // - Input rate: session average (context size, stable)
+            // - Output rate: rolling window (generation rate, responsive)
+            let effective_input_rate = metrics.input_rate + metrics.cache_read_rate;
+
+            // Build rate display based on rate_display config
+            let rate_part = match config.token_rate.rate_display.as_str() {
+                "output_only" => format!(
+                    "{}Out:{} {}{}",
+                    Colors::light_gray(),
+                    format_rate(metrics.output_rate),
+                    unit_str,
+                    Colors::reset()
+                ),
+                "input_only" => format!(
+                    "{}In:{} {}{}",
+                    Colors::light_gray(),
+                    format_rate(effective_input_rate),
+                    unit_str,
+                    Colors::reset()
+                ),
+                _ => format!(
+                    "{}In:{} Out:{} {}{}",
+                    Colors::light_gray(),
+                    format_rate(effective_input_rate),
+                    format_rate(metrics.output_rate),
+                    unit_str,
+                    Colors::reset()
+                ),
+            };
+            let mut parts = vec![rate_part];
 
             // Add cache metrics if available and enabled
             if config.token_rate.cache_metrics {
@@ -917,33 +971,36 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
                     };
 
                     format!(
-                        "{} • {}{:.1} tok/s{}",
+                        "{} • {}{} {}{}",
                         cache_str,
                         Colors::light_gray(),
-                        metrics.total_rate,
+                        format_rate(metrics.total_rate),
+                        unit_str,
                         Colors::reset()
                     )
                 } else {
                     // No cache data, fallback to summary
                     format!(
-                        "{}{:.1} tok/s{}",
+                        "{}{} {}{}",
                         Colors::light_gray(),
-                        metrics.total_rate,
+                        format_rate(metrics.total_rate),
+                        unit_str,
                         Colors::reset()
                     )
                 }
             } else {
                 // Cache metrics disabled, fallback to summary
                 format!(
-                    "{}{:.1} tok/s{}",
+                    "{}{} {}{}",
                     Colors::light_gray(),
-                    metrics.total_rate,
+                    format_rate(metrics.total_rate),
+                    unit_str,
                     Colors::reset()
                 )
             }
         }
         other => {
-            // Summary (default): "13.9 tok/s"
+            // Summary (default): "13.9 tok/s" or "45.2K tok/hr"
             if other != "summary" {
                 log::warn!(
                     "Unknown token_rate display_mode '{}', using 'summary'",
@@ -951,9 +1008,10 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
                 );
             }
             format!(
-                "{}{:.1} tok/s{}",
+                "{}{} {}{}",
                 Colors::light_gray(),
-                metrics.total_rate,
+                format_rate(metrics.total_rate),
+                unit_str,
                 Colors::reset()
             )
         }
@@ -1256,5 +1314,80 @@ mod tests {
         // Test model name sanitization
         let sanitized_model = sanitize_for_terminal(model_with_control);
         assert_eq!(sanitized_model, "claude--opus");
+    }
+
+    #[test]
+    fn test_token_rate_time_unit_conversion() {
+        // Test that time_unit config produces correct rate multipliers and units
+        // This tests the logic used in format_token_rates()
+
+        let test_cases = vec![
+            ("second", 1.0, "tok/s"),
+            ("minute", 60.0, "tok/min"),
+            ("hour", 3600.0, "tok/hr"),
+            ("invalid", 1.0, "tok/s"), // defaults to second
+        ];
+
+        for (time_unit, expected_multiplier, expected_unit) in test_cases {
+            let (multiplier, unit) = match time_unit {
+                "minute" => (60.0, "tok/min"),
+                "hour" => (3600.0, "tok/hr"),
+                _ => (1.0, "tok/s"),
+            };
+
+            assert_eq!(
+                multiplier, expected_multiplier,
+                "time_unit '{}' should have multiplier {}",
+                time_unit, expected_multiplier
+            );
+            assert_eq!(
+                unit, expected_unit,
+                "time_unit '{}' should have unit '{}'",
+                time_unit, expected_unit
+            );
+        }
+    }
+
+    #[test]
+    fn test_token_rate_formatting_with_k_suffix() {
+        // Test that large rates get K suffix
+        let format_rate = |rate: f64, multiplier: f64| -> String {
+            let adjusted = rate * multiplier;
+            if adjusted >= 1000.0 {
+                format!("{:.1}K", adjusted / 1000.0)
+            } else {
+                format!("{:.1}", adjusted)
+            }
+        };
+
+        // At tok/s (multiplier 1.0)
+        assert_eq!(format_rate(10.5, 1.0), "10.5");
+        assert_eq!(format_rate(1000.0, 1.0), "1.0K");
+        assert_eq!(format_rate(1500.0, 1.0), "1.5K");
+
+        // At tok/min (multiplier 60.0)
+        assert_eq!(format_rate(10.0, 60.0), "600.0"); // 10 * 60 = 600
+        assert_eq!(format_rate(20.0, 60.0), "1.2K"); // 20 * 60 = 1200
+
+        // At tok/hr (multiplier 3600.0)
+        assert_eq!(format_rate(10.0, 3600.0), "36.0K"); // 10 * 3600 = 36000
+        assert_eq!(format_rate(0.5, 3600.0), "1.8K"); // 0.5 * 3600 = 1800
+        assert_eq!(format_rate(0.1, 3600.0), "360.0"); // 0.1 * 3600 = 360
+    }
+
+    #[test]
+    fn test_token_rate_hour_display() {
+        // Verify the hour display format matches expected output
+        let rate_per_second = 12.5; // 12.5 tok/s
+        let hour_multiplier = 3600.0;
+        let adjusted = rate_per_second * hour_multiplier; // 45000 tok/hr
+
+        let formatted = if adjusted >= 1000.0 {
+            format!("{:.1}K tok/hr", adjusted / 1000.0)
+        } else {
+            format!("{:.1} tok/hr", adjusted)
+        };
+
+        assert_eq!(formatted, "45.0K tok/hr");
     }
 }

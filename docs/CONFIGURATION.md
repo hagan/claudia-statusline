@@ -167,14 +167,19 @@ separator = " | "
 | `{burn_rate}` | `$3.50/hr` | Cost per hour |
 | `{daily_total}` | `$45.00` | Today's total |
 | `{lines}` | `+50 -10` | Lines changed |
-| `{token_rate}` | `12.5 tok/s • 150K` | Token rate (combined format) |
-| `{token_rate_only}` | `12.5 tok/s` | Token rate only |
+| `{token_rate}` | `12.5 tok/s • 150K` | Token rate (combined, respects `rate_display`) |
+| `{token_rate_only}` | `12.5 tok/s` | Total token rate only |
+| `{token_input_rate}` | `5.2K tok/s` | Input + cache read rate |
+| `{token_output_rate}` | `8.7K tok/s` | Output token rate |
+| `{token_cache_rate}` | `41.7K tok/s` | Cache read rate |
+| `{token_cache_hit}` | `85%` | Cache hit ratio |
+| `{token_cache_roi}` | `12.3x` | Cache ROI multiplier |
 | `{token_session_total}` | `150K` | Session token total |
 | `{token_daily_total}` | `day: 2.5M` | Daily token total |
 | `{sep}` | ` • ` | Configured separator |
 
-> **Note:** Token rate variables (`{token_rate}*`) require `[token_rate] enabled = true` in config.
-> The format of `{token_rate}` depends on `[layout.components.token_rate] format` setting.
+> **Note:** Token rate variables require `[token_rate] enabled = true` in config.
+> The `{token_rate}` variable respects both `display_mode` and `rate_display` settings.
 
 ### Layout Mode vs Legacy Mode
 
@@ -718,6 +723,128 @@ show_duration = false
 show_lines_changed = false
 ```
 
+## Token Rate Configuration
+
+Real-time token consumption tracking with configurable display options.
+
+> **Note**: Token rate features require SQLite-only mode (`json_backup = false`).
+
+### Basic Configuration
+
+```toml
+[token_rate]
+enabled = true                # Enable token rate tracking
+display_mode = "detailed"     # "summary", "detailed", or "cache_only"
+```
+
+### Rate Display Options
+
+Control which rates to display:
+
+```toml
+[token_rate]
+rate_display = "both"         # "both", "output_only", "input_only"
+```
+
+| Value | Output Example | Description |
+|-------|----------------|-------------|
+| `both` | `In:5.2K Out:8.7K tok/s` | Show both input and output rates |
+| `output_only` | `Out:8.7K tok/s` | Show only generation rate |
+| `input_only` | `In:5.2K tok/s` | Show only context rate |
+
+### Rolling Window (Responsive Rates)
+
+Enable responsive output rate that reacts quickly to changes:
+
+```toml
+[token_rate]
+rate_window_seconds = 60      # Calculate output rate from last 60 seconds
+```
+
+**Hybrid approach:**
+- **Input rate**: Always uses session average (stable, context-based)
+- **Output rate**: Uses rolling window when configured (responsive, generation-based)
+
+This provides the best of both worlds—stable context tracking with responsive generation speed.
+
+| Value | Behavior |
+|-------|----------|
+| `0` | Session average for both rates (default) |
+| `30` | 30-second window for output rate |
+| `60` | 60-second window (balanced) |
+| `300` | 5-minute window (smoother) |
+
+### Display Modes
+
+| Mode | Output Example | Description |
+|------|----------------|-------------|
+| `summary` | `12.5 tok/s • 150K` | Single combined rate |
+| `detailed` | `In:5.2K Out:8.7K tok/s` | Separate input/output rates |
+| `cache_only` | `Cache:85%` | Focus on cache efficiency |
+
+### Time Units
+
+```toml
+[layout.components.token_rate]
+time_unit = "second"          # "second", "minute", or "hour"
+```
+
+## Claude API Pricing Reference
+
+> **Note**: This is a reference table only. The statusline receives pre-calculated costs
+> from Claude Code—it does not calculate costs from tokens. Pricing may change;
+> see [Anthropic's official pricing](https://docs.anthropic.com/en/docs/about-claude/pricing) for current rates.
+
+### Model Pricing (November 2025)
+
+| Model | Input | Output | Cache Write (5-min) | Cache Read |
+|-------|-------|--------|---------------------|------------|
+| **Opus 4** | $15.00/M | $75.00/M | $18.75/M (1.25×) | $1.50/M (0.1×) |
+| **Opus 4.5** | $5.00/M | $25.00/M | $6.25/M (1.25×) | $0.50/M (0.1×) |
+| **Sonnet 4** | $3.00/M | $15.00/M | $3.75/M (1.25×) | $0.30/M (0.1×) |
+| **Sonnet 4.5** | $3.00/M | $15.00/M | $3.75/M (1.25×) | $0.30/M (0.1×) |
+| **Haiku 3.5** | $0.80/M | $4.00/M | $1.00/M (1.25×) | $0.08/M (0.1×) |
+
+*M = million tokens. Cache write multiplier: 1.25× input price. Cache read: 0.1× input price.*
+
+### Understanding Your Burn Rate
+
+The burn rate shown (e.g., `$64.70/hr`) is calculated from:
+
+```
+burn_rate = (session_cost × 3600) / session_duration_seconds
+```
+
+**Common cost drivers:**
+
+| Token Type | Relative Cost | Notes |
+|------------|---------------|-------|
+| **Cache creation** | 1.25× input | Initial cache builds are expensive |
+| **Output** | 5× input | Generation costs more than input |
+| **Cache read** | 0.1× input | Cached context is 90% cheaper |
+| **Input** | 1× (base) | Standard prompt/context cost |
+
+### Example Cost Breakdown
+
+For a 30-minute Opus 4 session with heavy cache building:
+
+| Token Type | Count | Rate | Cost |
+|------------|-------|------|------|
+| Cache creation | 1,000,000 | $18.75/M | $18.75 |
+| Output | 20,000 | $75.00/M | $1.50 |
+| Cache read | 150,000 | $1.50/M | $0.23 |
+| Input | 1,000 | $15.00/M | $0.02 |
+| **Total** | | | **$20.50** |
+
+Burn rate: $20.50 × 2 = **$41.00/hr**
+
+### Cost Optimization Tips
+
+1. **Leverage cache reads**: Once cached, reads are 90% cheaper than re-sending context
+2. **Use Opus 4.5**: 67% cheaper than Opus 4 with similar capabilities
+3. **Monitor cache creation**: High `cache_creation_tokens` = high initial cost
+4. **Batch operations**: 50% discount on batch API calls
+
 ## Data Retention
 
 Configure how long to keep historical data in SQLite database.
@@ -760,7 +887,7 @@ Prune old data automatically with cron:
 
 ### SQLite-Only Mode (Recommended)
 
-For best performance, disable JSON backup:
+For best performance and full feature support, disable JSON backup:
 
 ```toml
 [database]
@@ -772,6 +899,13 @@ json_backup = false
 - Lower memory usage
 - No JSON file I/O overhead
 - Better concurrent access
+- **Required for advanced features** (see below)
+
+**Advanced features requiring SQLite-only mode:**
+- **Token rates**: Real-time token consumption tracking (`[token_rate] enabled = true`)
+- **Rolling window rates**: Responsive rate updates (`rate_window_seconds > 0`)
+- **Adaptive context learning**: Automatic context window detection
+- **Cloud sync**: Multi-device synchronization (when enabled)
 
 **Migration:**
 ```bash
@@ -779,19 +913,28 @@ json_backup = false
 statusline migrate --finalize
 ```
 
-### Dual-Write Mode (Default)
+### Dual-Write Mode (Deprecated)
+
+> **⚠️ Deprecated**: JSON backup mode will be removed in v3.0.
+> Advanced features (token rates, context learning) are disabled in this mode.
 
 Keep both SQLite and JSON:
 
 ```toml
 [database]
-json_backup = true  # Default
+json_backup = true  # Default (deprecated)
 ```
 
 **When to use:**
-- Transitioning from old versions
+- Transitioning from old versions (temporary)
 - Want backup in human-readable format
 - Debugging or development
+
+**Limitations:**
+- Token rate metrics disabled
+- Rolling window rates disabled
+- Adaptive context learning disabled
+- Shows deprecation warning on startup
 
 ## Git Configuration
 

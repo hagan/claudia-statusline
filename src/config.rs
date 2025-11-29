@@ -701,6 +701,33 @@ pub struct TokenRateConfig {
     ///
     /// Recommended to keep true for consistency between cost and token metrics.
     pub inherit_duration_mode: bool,
+
+    /// Rolling window for rate calculation in seconds
+    ///
+    /// **Default: 0 (disabled, uses session average)**
+    ///
+    /// When set to a positive value (e.g., 60, 120), calculates token rate based on
+    /// messages within the last N seconds instead of the entire session average.
+    ///
+    /// This makes the displayed rate more responsive to current activity:
+    /// - 0: Session average (total_tokens / session_duration) - stable but slow to react
+    /// - 60: Last minute of activity - responsive to current pace
+    /// - 120: Last 2 minutes - balance between responsiveness and stability
+    ///
+    /// Note: Daily totals remain accurate (from database); only the displayed rate changes.
+    pub rate_window_seconds: u64,
+
+    /// Which token rates to display
+    ///
+    /// **Default: "both"**
+    ///
+    /// Options:
+    /// - **"both"**: Show both input and output rates (e.g., "In:5.2K Out:8.7K tok/s")
+    /// - **"output_only"**: Show only output rate (e.g., "Out:8.7K tok/s")
+    /// - **"input_only"**: Show only input rate (e.g., "In:5.2K tok/s")
+    ///
+    /// Useful when you only care about generation speed (output) or context size (input).
+    pub rate_display: String,
 }
 
 /// Sync configuration for cloud synchronization
@@ -887,7 +914,10 @@ impl Default for RetrySettings {
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
-        TranscriptConfig { buffer_lines: 50 }
+        // Increased from 50 to 500 for better token accumulation in long sessions
+        // Each line is ~2KB, so 500 lines ≈ 1MB memory usage (acceptable for statusline)
+        // For sessions with >500 messages, MAX(new, old) in DB preserves cumulative totals
+        TranscriptConfig { buffer_lines: 500 }
     }
 }
 
@@ -915,6 +945,8 @@ impl Default for TokenRateConfig {
             display_mode: "summary".to_string(), // Simple display mode by default
             cache_metrics: true,                 // Show cache efficiency by default
             inherit_duration_mode: true,         // Use burn_rate.mode for consistency
+            rate_window_seconds: 0,              // 0 = use session average (disabled)
+            rate_display: "both".to_string(),    // Show both input and output rates
         }
     }
 }
@@ -1273,6 +1305,10 @@ pub fn get_config() -> &'static Config {
         // Override json_backup from environment if set (for testing)
         if let Ok(val) = env::var("STATUSLINE_JSON_BACKUP") {
             config.database.json_backup = val == "true" || val == "1";
+            // Also handle explicit false
+            if val == "false" || val == "0" {
+                config.database.json_backup = false;
+            }
         }
 
         // Override show_context_tokens from environment if set (for testing)

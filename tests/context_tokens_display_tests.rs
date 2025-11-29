@@ -192,10 +192,12 @@ fn test_context_tokens_formatting() {
     let config_file = create_config(true);
 
     // Test various token sizes to verify formatting
+    // Note: Context only counts input + cache_read tokens (not output)
+    // Output tokens are generated, they don't consume context window
     let test_cases = vec![
-        (1000, 500, "2k"),       // Small numbers (1.5k total → rounds to 2k)
-        (85000, 1000, "86k"),    // Medium (86k total)
-        (500000, 10000, "510k"), // Large
+        (1000, 500, "1k"),       // input=1000 → 1k (output not counted)
+        (85000, 1000, "85k"),    // input=85000 → 85k
+        (500000, 10000, "500k"), // input=500000 → 500k
     ];
 
     for (input, output, expected_display) in test_cases {

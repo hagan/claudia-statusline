@@ -285,10 +285,14 @@ See [Configuration Guide](docs/CONFIGURATION.md#burn-rate-configuration) for com
 ```toml
 [token_rate]
 enabled = true                      # Opt-in feature
-display_mode = "summary"            # "summary", "detailed", or "cache_only"
+display_mode = "detailed"           # "summary", "detailed", or "cache_only"
+rate_display = "output_only"        # "both", "output_only", or "input_only"
 cache_metrics = true                # Show cache hit ratio and ROI
-inherit_duration_mode = true        # Use burn_rate.mode for consistency
+rate_window_seconds = 60            # Rolling window (0 = session average)
 ```
+
+> **⚠️ Requires SQLite**: Token rates require `json_backup = false` (SQLite-only mode).
+> Run `statusline migrate --finalize` if you haven't migrated yet.
 
 **Three display modes:**
 
@@ -299,10 +303,11 @@ inherit_duration_mode = true        # Use burn_rate.mode for consistency
 | **cache_only** | `Cache:85% (12x ROI) • 41.7 tok/s` | Cache efficiency focus |
 
 **Key features:**
-- Inherits duration mode from `burn_rate` (wall_clock, active_time, auto_reset)
+- **Rolling window**: Output rate uses last N seconds for responsive updates
+- **Hybrid approach**: Input rate = session average, Output rate = rolling window
+- **Configurable display**: Show both rates, output only, or input only
 - Shows cache hit ratio and ROI (return on investment)
-- Requires 60+ seconds duration for meaningful rates
-- Calculations: `tokens / duration_seconds` (simpler than burn rate!)
+- Session/daily totals remain accurate from database
 
 **Example calculations:**
 - 50,000 tokens / 3600 seconds = **13.9 tok/s**
@@ -337,6 +342,8 @@ statusline context-learning --rebuild
 adaptive_learning = true
 learning_confidence_threshold = 0.7
 ```
+
+> **⚠️ Requires SQLite**: Context learning requires `json_backup = false` (SQLite-only mode).
 
 See [Adaptive Learning Guide](docs/ADAPTIVE_LEARNING.md) for complete documentation.
 </details>

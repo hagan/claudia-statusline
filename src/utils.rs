@@ -289,7 +289,9 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
 /// Extract the maximum token count from transcript file.
 /// Returns the highest token count observed across all assistant messages.
 pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
-    get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.total())
+    // Use context_size() (input + cache_read) for context window calculation
+    // These are MAX values representing peak context, not SUMmed values
+    get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.context_size())
 }
 
 /// Extracts detailed token breakdown from transcript file.
@@ -355,38 +357,55 @@ pub fn get_token_breakdown_from_transcript(
             .collect()
     };
 
-    // Find the most recent assistant message with usage data
-    let mut best_breakdown = TokenBreakdown::default();
-    let mut max_total = 0u32;
+    // Process all assistant messages:
+    // - MAX for context-related tokens (input, cache_read) - represents peak context usage
+    // - SUM for generated tokens (output, cache_creation) - represents total work done
+    //
+    // This distinction is critical for accurate token rate calculation:
+    // - Context tokens (input/cache_read) grow with conversation length, MAX shows peak
+    // - Generated tokens (output) are per-message, SUM shows total output across session
+    let mut max_context_total = 0u32;
+    let mut max_input = 0u32;
+    let mut max_cache_read = 0u32;
+    let mut sum_output = 0u32;
+    let mut sum_cache_creation = 0u32;
+    let mut has_data = false;
 
     for line in lines {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if entry.message.role == "assistant" {
                 if let Some(usage) = entry.message.usage {
+                    has_data = true;
+
                     // Extract individual token counts
                     let input = usage.input_tokens.unwrap_or(0);
                     let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
                     let cache_creation = usage.cache_creation_input_tokens.unwrap_or(0);
                     let output = usage.output_tokens.unwrap_or(0);
-                    let current_total = input + cache_read + cache_creation + output;
 
-                    // Keep the breakdown with the highest total token count
-                    if current_total > max_total {
-                        max_total = current_total;
-                        best_breakdown = TokenBreakdown {
-                            input_tokens: input,
-                            output_tokens: output,
-                            cache_read_tokens: cache_read,
-                            cache_creation_tokens: cache_creation,
-                        };
+                    // SUM: output and cache_creation (cumulative work done)
+                    sum_output = sum_output.saturating_add(output);
+                    sum_cache_creation = sum_cache_creation.saturating_add(cache_creation);
+
+                    // MAX: input and cache_read (peak context usage for context window tracking)
+                    let context_total = input + cache_read;
+                    if context_total > max_context_total {
+                        max_context_total = context_total;
+                        max_input = input;
+                        max_cache_read = cache_read;
                     }
                 }
             }
         }
     }
 
-    if max_total > 0 {
-        Some(best_breakdown)
+    if has_data {
+        Some(TokenBreakdown {
+            input_tokens: max_input,
+            output_tokens: sum_output,
+            cache_read_tokens: max_cache_read,
+            cache_creation_tokens: sum_cache_creation,
+        })
     } else {
         None
     }
@@ -631,6 +650,133 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
     }
 }
 
+/// Rolling window token rates from transcript
+///
+/// Calculates token rates based on messages within the last `window_seconds` seconds,
+/// providing more responsive rate updates compared to session averages.
+///
+/// Returns `(input_rate, output_rate, cache_read_rate, cache_creation_rate, window_duration)`
+/// where rates are in tokens per second and window_duration is the actual time span covered.
+pub fn get_rolling_window_rates(
+    transcript_path: &str,
+    window_seconds: u64,
+) -> Option<(f64, f64, f64, f64, u64)> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let config = crate::config::get_config();
+    let safe_path = validate_transcript_file(transcript_path).ok()?;
+    let file = File::open(&safe_path).ok()?;
+
+    // Calculate cutoff time (now - window_seconds)
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
+    let cutoff = now.saturating_sub(window_seconds);
+
+    // Read lines in reverse order (most recent first) using circular buffer
+    let reader = BufReader::new(file);
+    let buffer_lines = config.transcript.buffer_lines;
+
+    let mut buffer: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(buffer_lines);
+
+    for line in reader.lines().map_while(|l| l.ok()) {
+        if buffer.len() >= buffer_lines {
+            buffer.pop_front();
+        }
+        buffer.push_back(line);
+    }
+
+    // Process messages within the window
+    // Note: For rolling window, we use different logic than session totals:
+    // - SUM for output/cache_creation (cumulative work done in window)
+    // - MAX for input/cache_read (peak context, not cumulative - input shows full context each message)
+    let mut max_input = 0u32;
+    let mut max_cache_read = 0u32;
+    let mut sum_output = 0u32;
+    let mut sum_cache_creation = 0u32;
+    let mut earliest_timestamp: Option<u64> = None;
+    let mut latest_timestamp: Option<u64> = None;
+    let mut has_data = false;
+
+    for line in buffer.iter() {
+        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) {
+            if let Some(ts) = parse_iso8601_to_unix(&entry.timestamp) {
+                // Only include messages within the window
+                if ts >= cutoff {
+                    // Track time span
+                    match earliest_timestamp {
+                        None => earliest_timestamp = Some(ts),
+                        Some(e) if ts < e => earliest_timestamp = Some(ts),
+                        _ => {}
+                    }
+                    match latest_timestamp {
+                        None => latest_timestamp = Some(ts),
+                        Some(l) if ts > l => latest_timestamp = Some(ts),
+                        _ => {}
+                    }
+
+                    // Only assistant messages have usage data
+                    if entry.message.role == "assistant" {
+                        if let Some(usage) = entry.message.usage {
+                            has_data = true;
+                            // MAX for context tokens (input/cache_read represent full context, not delta)
+                            let input = usage.input_tokens.unwrap_or(0);
+                            let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
+                            if input > max_input {
+                                max_input = input;
+                            }
+                            if cache_read > max_cache_read {
+                                max_cache_read = cache_read;
+                            }
+                            // SUM for generated tokens (output/cache_creation are cumulative)
+                            sum_output =
+                                sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
+                            sum_cache_creation = sum_cache_creation
+                                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_data {
+        return None;
+    }
+
+    // Calculate actual window duration (use configured window or actual span, whichever is smaller)
+    let actual_span = match (earliest_timestamp, latest_timestamp) {
+        (Some(e), Some(l)) if l > e => l - e,
+        (Some(e), Some(_)) => now.saturating_sub(e), // Single message: use time since message
+        _ => window_seconds,                         // Fall back to configured window
+    };
+
+    // Use the smaller of actual span or configured window, minimum 1 second
+    let effective_duration = actual_span.min(window_seconds).max(1);
+
+    let duration_f64 = effective_duration as f64;
+
+    // For rolling window:
+    // - Output rate: tokens generated per second (meaningful)
+    // - Cache creation rate: cache writes per second (meaningful)
+    // - Input/cache_read "rate": Not meaningful as a rate (context size != generation rate)
+    //   We return 0 for these to signal they shouldn't be displayed as rates
+    let output_rate = sum_output as f64 / duration_f64;
+    let cache_creation_rate = sum_cache_creation as f64 / duration_f64;
+
+    // Input/cache_read are returned as 0 since "tokens per second" doesn't apply to context size
+    // The session totals (from database) still show accurate input metrics
+    let input_rate = 0.0;
+    let cache_read_rate = 0.0;
+
+    Some((
+        input_rate,
+        output_rate,
+        cache_read_rate,
+        cache_creation_rate,
+        effective_duration,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -841,9 +987,10 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
 
-        // Total tokens: 120000 + 5000 = 125000
-        // With test config (200K full mode, no adaptive learning): 125000 / 200000 = 62.5%
-        assert_eq!(usage.percentage, 62.5);
+        // Context tokens (input + cache_read): 120000 + 0 = 120000
+        // With test config (200K full mode, no adaptive learning): 120000 / 200000 = 60%
+        // Note: output_tokens (5000) are excluded from context window calculation
+        assert_eq!(usage.percentage, 60.0);
     }
 
     #[test]
@@ -860,9 +1007,10 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
 
-        // Total: 100 + 30000 + 200 + 500 = 30800
-        // With test config (200K full mode): 30800 / 200000 = 15.4%
-        assert_eq!(usage.percentage, 15.4);
+        // Context tokens (input + cache_read): 100 + 30000 = 30100
+        // With test config (200K full mode): 30100 / 200000 = 15.05%
+        // Note: output (500) and cache_creation (200) are excluded from context window
+        assert!((usage.percentage - 15.05).abs() < 0.01);
     }
 
     #[test]
@@ -879,9 +1027,10 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
 
-        // Total: 50000 + 1000 = 51000
-        // With test config (200K full mode): 51000 / 200000 = 25.5%
-        assert_eq!(usage.percentage, 25.5);
+        // Context tokens (input + cache_read): 50000 + 0 = 50000
+        // With test config (200K full mode): 50000 / 200000 = 25%
+        // Note: output_tokens (1000) are excluded from context window calculation
+        assert_eq!(usage.percentage, 25.0);
     }
 
     #[test]
