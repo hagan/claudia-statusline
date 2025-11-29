@@ -655,14 +655,20 @@ impl SqliteDatabase {
         )) = old_values
         {
             // Session exists, calculate delta
+            // IMPORTANT: Token deltas must be non-negative because:
+            // - Transcript parser only reads last N lines (buffer_lines)
+            // - For long sessions, older messages scroll out of buffer
+            // - This can cause transcript sum < DB stored value (false "decrease")
+            // - Negative deltas would incorrectly subtract from daily/monthly totals
+            // Solution: clamp token deltas to 0 minimum
             (
                 cost - old_cost,
                 lines_added as i64 - old_lines_added,
                 lines_removed as i64 - old_lines_removed,
-                input_tokens - old_input,
-                output_tokens - old_output,
-                cache_read_tokens - old_cache_read,
-                cache_creation_tokens - old_cache_creation,
+                (input_tokens - old_input).max(0),
+                (output_tokens - old_output).max(0),
+                (cache_read_tokens - old_cache_read).max(0),
+                (cache_creation_tokens - old_cache_creation).max(0),
             )
         } else if config.burn_rate.mode == "auto_reset" {
             // Session was just archived and deleted - query last archived values
@@ -798,7 +804,9 @@ impl SqliteDatabase {
         let last_activity = &last_activity_to_save;
 
         // UPSERT session (atomic operation)
-        // Note: On conflict, we REPLACE the values, not accumulate them
+        // Token handling: Use MAX to preserve cumulative totals when older messages scroll
+        // out of the transcript buffer. Transcript parser only reads last N lines, so token
+        // counts can appear to "decrease". Using MAX ensures we never lose previously counted tokens.
         tx.execute(
             "INSERT INTO sessions (
                 session_id, start_time, last_updated, cost, lines_added, lines_removed,
@@ -815,10 +823,10 @@ impl SqliteDatabase {
                 model_name = ?7,
                 workspace_dir = ?8,
                 device_id = ?9,
-                total_input_tokens = ?10,
-                total_output_tokens = ?11,
-                total_cache_read_tokens = ?12,
-                total_cache_creation_tokens = ?13,
+                total_input_tokens = MAX(COALESCE(total_input_tokens, 0), ?10),
+                total_output_tokens = MAX(COALESCE(total_output_tokens, 0), ?11),
+                total_cache_read_tokens = MAX(COALESCE(total_cache_read_tokens, 0), ?12),
+                total_cache_creation_tokens = MAX(COALESCE(total_cache_creation_tokens, 0), ?13),
                 max_tokens_observed = CASE
                     WHEN ?14 IS NOT NULL AND ?14 > COALESCE(max_tokens_observed, 0)
                     THEN ?14

@@ -74,8 +74,17 @@ pub struct TokenBreakdown {
 
 impl TokenBreakdown {
     /// Returns the total token count (sum of all token types)
+    /// Note: This includes SUMmed output/cache_creation tokens, so it's not
+    /// suitable for context window calculation. Use context_size() for that.
     pub fn total(&self) -> u32 {
         self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_creation_tokens
+    }
+
+    /// Returns the context window size (input + cache_read tokens)
+    /// This represents the actual context that Claude sees when processing a message.
+    /// Uses MAX values from transcript, suitable for context window tracking.
+    pub fn context_size(&self) -> u32 {
+        self.input_tokens + self.cache_read_tokens
     }
 }
 

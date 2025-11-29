@@ -879,11 +879,14 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
     // Build the rate display based on display mode
     let rate_str = match mode.as_str() {
         "detailed" => {
-            // Detailed: "In:5.2 Out:8.7 tok/hr • Cache:85%"
+            // Detailed: "In:5.2K Out:8.7K tok/hr • Cache:85%"
+            // Note: input_rate includes cache_read_rate for meaningful display
+            // (raw input without cache is often near-zero for long sessions)
+            let effective_input_rate = metrics.input_rate + metrics.cache_read_rate;
             let mut parts = vec![format!(
                 "{}In:{} Out:{} {}{}",
                 Colors::light_gray(),
-                format_rate(metrics.input_rate),
+                format_rate(effective_input_rate),
                 format_rate(metrics.output_rate),
                 unit_str,
                 Colors::reset()

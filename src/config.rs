@@ -887,7 +887,10 @@ impl Default for RetrySettings {
 
 impl Default for TranscriptConfig {
     fn default() -> Self {
-        TranscriptConfig { buffer_lines: 50 }
+        // Increased from 50 to 500 for better token accumulation in long sessions
+        // Each line is ~2KB, so 500 lines ≈ 1MB memory usage (acceptable for statusline)
+        // For sessions with >500 messages, MAX(new, old) in DB preserves cumulative totals
+        TranscriptConfig { buffer_lines: 500 }
     }
 }
 

@@ -289,7 +289,9 @@ fn validate_transcript_file(path: &str) -> Result<PathBuf> {
 /// Extract the maximum token count from transcript file.
 /// Returns the highest token count observed across all assistant messages.
 pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
-    get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.total())
+    // Use context_size() (input + cache_read) for context window calculation
+    // These are MAX values representing peak context, not SUMmed values
+    get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.context_size())
 }
 
 /// Extracts detailed token breakdown from transcript file.
@@ -355,38 +357,55 @@ pub fn get_token_breakdown_from_transcript(
             .collect()
     };
 
-    // Find the most recent assistant message with usage data
-    let mut best_breakdown = TokenBreakdown::default();
-    let mut max_total = 0u32;
+    // Process all assistant messages:
+    // - MAX for context-related tokens (input, cache_read) - represents peak context usage
+    // - SUM for generated tokens (output, cache_creation) - represents total work done
+    //
+    // This distinction is critical for accurate token rate calculation:
+    // - Context tokens (input/cache_read) grow with conversation length, MAX shows peak
+    // - Generated tokens (output) are per-message, SUM shows total output across session
+    let mut max_context_total = 0u32;
+    let mut max_input = 0u32;
+    let mut max_cache_read = 0u32;
+    let mut sum_output = 0u32;
+    let mut sum_cache_creation = 0u32;
+    let mut has_data = false;
 
     for line in lines {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if entry.message.role == "assistant" {
                 if let Some(usage) = entry.message.usage {
+                    has_data = true;
+
                     // Extract individual token counts
                     let input = usage.input_tokens.unwrap_or(0);
                     let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
                     let cache_creation = usage.cache_creation_input_tokens.unwrap_or(0);
                     let output = usage.output_tokens.unwrap_or(0);
-                    let current_total = input + cache_read + cache_creation + output;
 
-                    // Keep the breakdown with the highest total token count
-                    if current_total > max_total {
-                        max_total = current_total;
-                        best_breakdown = TokenBreakdown {
-                            input_tokens: input,
-                            output_tokens: output,
-                            cache_read_tokens: cache_read,
-                            cache_creation_tokens: cache_creation,
-                        };
+                    // SUM: output and cache_creation (cumulative work done)
+                    sum_output = sum_output.saturating_add(output);
+                    sum_cache_creation = sum_cache_creation.saturating_add(cache_creation);
+
+                    // MAX: input and cache_read (peak context usage for context window tracking)
+                    let context_total = input + cache_read;
+                    if context_total > max_context_total {
+                        max_context_total = context_total;
+                        max_input = input;
+                        max_cache_read = cache_read;
                     }
                 }
             }
         }
     }
 
-    if max_total > 0 {
-        Some(best_breakdown)
+    if has_data {
+        Some(TokenBreakdown {
+            input_tokens: max_input,
+            output_tokens: sum_output,
+            cache_read_tokens: max_cache_read,
+            cache_creation_tokens: sum_cache_creation,
+        })
     } else {
         None
     }
@@ -841,9 +860,10 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
 
-        // Total tokens: 120000 + 5000 = 125000
-        // With test config (200K full mode, no adaptive learning): 125000 / 200000 = 62.5%
-        assert_eq!(usage.percentage, 62.5);
+        // Context tokens (input + cache_read): 120000 + 0 = 120000
+        // With test config (200K full mode, no adaptive learning): 120000 / 200000 = 60%
+        // Note: output_tokens (5000) are excluded from context window calculation
+        assert_eq!(usage.percentage, 60.0);
     }
 
     #[test]
@@ -860,9 +880,10 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
 
-        // Total: 100 + 30000 + 200 + 500 = 30800
-        // With test config (200K full mode): 30800 / 200000 = 15.4%
-        assert_eq!(usage.percentage, 15.4);
+        // Context tokens (input + cache_read): 100 + 30000 = 30100
+        // With test config (200K full mode): 30100 / 200000 = 15.05%
+        // Note: output (500) and cache_creation (200) are excluded from context window
+        assert!((usage.percentage - 15.05).abs() < 0.01);
     }
 
     #[test]
@@ -879,9 +900,10 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
 
-        // Total: 50000 + 1000 = 51000
-        // With test config (200K full mode): 51000 / 200000 = 25.5%
-        assert_eq!(usage.percentage, 25.5);
+        // Context tokens (input + cache_read): 50000 + 0 = 50000
+        // With test config (200K full mode): 50000 / 200000 = 25%
+        // Note: output_tokens (1000) are excluded from context window calculation
+        assert_eq!(usage.percentage, 25.0);
     }
 
     #[test]
