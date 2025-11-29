@@ -746,7 +746,8 @@ pub fn get_rolling_window_rates(
     // Calculate actual window duration (use configured window or actual span, whichever is smaller)
     let actual_span = match (earliest_timestamp, latest_timestamp) {
         (Some(e), Some(l)) if l > e => l - e,
-        _ => window_seconds, // Fall back to configured window
+        (Some(e), Some(_)) => now.saturating_sub(e), // Single message: use time since message
+        _ => window_seconds,                         // Fall back to configured window
     };
 
     // Use the smaller of actual span or configured window, minimum 1 second

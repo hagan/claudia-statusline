@@ -1161,10 +1161,11 @@ pub fn calculate_token_rates_from_raw(
     let cache_creation_rate = cache_creation_tokens as f64 / duration_f64;
     let total_rate = total_tokens as f64 / duration_f64;
 
-    // Calculate cache metrics
-    let total_cache = cache_read_tokens as u64 + cache_creation_tokens as u64;
-    let cache_hit_ratio = if total_cache > 0 {
-        Some(cache_read_tokens as f64 / total_cache as f64)
+    // Calculate cache metrics (consistent with calculate_cache_metrics)
+    // Cache hit ratio = cache_read / (cache_read + input) - percentage of input from cache
+    let total_potential_cache = cache_read_tokens as u64 + input_tokens as u64;
+    let cache_hit_ratio = if total_potential_cache > 0 {
+        Some(cache_read_tokens as f64 / total_potential_cache as f64)
     } else {
         None
     };
@@ -1796,11 +1797,12 @@ mod tests {
         assert_eq!(metrics.duration_seconds, 3600);
 
         // Verify cache metrics
+        // Cache hit ratio = cache_read / (cache_read + input) = 150000 / (150000 + 18750) = 0.889
         let hit_ratio = metrics
             .cache_hit_ratio
             .expect("Should have cache hit ratio");
         assert!(
-            (hit_ratio - 0.9375).abs() < 0.01,
+            (hit_ratio - 0.889).abs() < 0.01,
             "Cache hit ratio mismatch: {}",
             hit_ratio
         );
@@ -1832,16 +1834,24 @@ mod tests {
     /// Test cache metrics edge cases
     #[test]
     fn test_calculate_token_rates_from_raw_cache_edge_cases() {
-        // No cache at all
+        // No cache at all - cache_hit_ratio = 0 / (0 + 1000) = 0%
         let metrics = super::calculate_token_rates_from_raw(1000, 1000, 0, 0, 3600, 0)
             .expect("Should return metrics");
-        assert!(metrics.cache_hit_ratio.is_none());
+        assert!(
+            metrics.cache_hit_ratio.unwrap() < 0.01,
+            "Expected ~0% cache hit ratio"
+        );
         assert!(metrics.cache_roi.is_none());
 
         // Cache reads only (infinite ROI)
+        // cache_hit_ratio = cache_read / (cache_read + input) = 5000 / (5000 + 1000) = 0.833
         let metrics = super::calculate_token_rates_from_raw(1000, 1000, 5000, 0, 3600, 0)
             .expect("Should return metrics");
-        assert!(metrics.cache_hit_ratio.unwrap() > 0.99);
+        assert!(
+            (metrics.cache_hit_ratio.unwrap() - 0.833).abs() < 0.01,
+            "Expected ~0.833, got {}",
+            metrics.cache_hit_ratio.unwrap()
+        );
         assert!(metrics.cache_roi.unwrap().is_infinite());
 
         // Cache creation only (0 hit ratio, no ROI)
