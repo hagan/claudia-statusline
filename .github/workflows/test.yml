@@ -488,8 +488,9 @@ jobs:
         {"message":{"role":"assistant","content":[{"type":"text","text":"response"}],"usage":{"input_tokens":50000,"output_tokens":1000}},"timestamp":"2025-08-22T18:00:00.000Z"}
         EOF
         output=$(echo '{"workspace":{"current_dir":"/tmp"},"transcript":"/tmp/array-test.jsonl"}' | ./target/release/statusline)
-        # Updated for 200k context window: 51000/200000 = 25.5% → 26% (was 32% with 160k window)
-        if ! echo "$output" | grep -q "26%"; then
+        # Context window = input_tokens only (50000), not output_tokens
+        # 50000/200000 = 25%
+        if ! echo "$output" | grep -q "25%"; then
           echo "Array content not handled correctly"
           echo "Output: $output"
           exit 1
