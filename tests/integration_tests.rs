@@ -222,7 +222,14 @@ fn test_version_flag() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Clap's --version now shows simple version
     assert!(stdout.contains("statusline"));
-    assert!(stdout.contains("2.21.0"));
+    // Version read from VERSION file at compile time
+    let expected_version = include_str!("../VERSION").trim();
+    assert!(
+        stdout.contains(expected_version),
+        "Expected version {} in output: {}",
+        expected_version,
+        stdout
+    );
 }
 
 #[test]

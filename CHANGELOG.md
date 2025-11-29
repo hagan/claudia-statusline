@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.21.1] - 2025-11-29
+
+### Fixed
+
+- **Token rate time_unit config**: Fixed `time_unit` setting not being applied to token rate display. Rates now properly display as tok/s, tok/min, or tok/hr based on config.
+- **Token rate accuracy (152x improvement)**: Fixed token tracking accuracy via MAX/SUM hybrid approach:
+  - Transcript parser now uses SUM for output/cache_creation (cumulative) and MAX for input/cache_read (peak context)
+  - Database UPSERT uses MAX(old, new) to preserve tokens when buffer overflows
+  - Delta clamping prevents incorrect decrements
+- **Context display**: Fixed impossible context displays (e.g., "1432K/200K") by using `context_size()` method that only counts input + cache_read tokens
+- **Rolling window edge case**: Fixed single-message window duration calculation
+- **Cache hit ratio consistency**: Unified formula across all calculation paths
+
+### Added
+
+- **Rolling window rates**: New `rate_window_seconds` config for responsive token rate updates
+  - Output rate uses rolling window (responsive to current activity)
+  - Input rate uses session average (stable context tracking)
+  - Session/daily totals remain accurate from database
+- **K suffix formatting**: Large rates display as "45.0K tok/hr" instead of "45000.0 tok/hr"
+- **Deterministic testing**: Added `calculate_token_rates_from_raw()` for config-independent unit tests
+- **CI isolated tests**: New workflow job runs `#[ignore]` tests in separate process
+
+### Changed
+
+- **buffer_lines default**: Increased from 50 to 500 for better token accumulation in long sessions
+- **JSON backup deprecated**: Shows warning on startup; token rates and advanced features require SQLite-only mode
+
 ## [2.21.0] - 2025-11-28
 
 ### Added - Token Rate Metrics (Opt-in Feature)
