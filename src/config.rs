@@ -701,6 +701,21 @@ pub struct TokenRateConfig {
     ///
     /// Recommended to keep true for consistency between cost and token metrics.
     pub inherit_duration_mode: bool,
+
+    /// Rolling window for rate calculation in seconds
+    ///
+    /// **Default: 0 (disabled, uses session average)**
+    ///
+    /// When set to a positive value (e.g., 60, 120), calculates token rate based on
+    /// messages within the last N seconds instead of the entire session average.
+    ///
+    /// This makes the displayed rate more responsive to current activity:
+    /// - 0: Session average (total_tokens / session_duration) - stable but slow to react
+    /// - 60: Last minute of activity - responsive to current pace
+    /// - 120: Last 2 minutes - balance between responsiveness and stability
+    ///
+    /// Note: Daily totals remain accurate (from database); only the displayed rate changes.
+    pub rate_window_seconds: u64,
 }
 
 /// Sync configuration for cloud synchronization
@@ -918,6 +933,7 @@ impl Default for TokenRateConfig {
             display_mode: "summary".to_string(), // Simple display mode by default
             cache_metrics: true,                 // Show cache efficiency by default
             inherit_duration_mode: true,         // Use burn_rate.mode for consistency
+            rate_window_seconds: 0,              // 0 = use session average (disabled)
         }
     }
 }

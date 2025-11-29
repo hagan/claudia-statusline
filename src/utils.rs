@@ -650,6 +650,114 @@ pub fn parse_duration(transcript_path: &str) -> Option<u64> {
     }
 }
 
+/// Rolling window token rates from transcript
+///
+/// Calculates token rates based on messages within the last `window_seconds` seconds,
+/// providing more responsive rate updates compared to session averages.
+///
+/// Returns `(input_rate, output_rate, cache_read_rate, cache_creation_rate, window_duration)`
+/// where rates are in tokens per second and window_duration is the actual time span covered.
+pub fn get_rolling_window_rates(
+    transcript_path: &str,
+    window_seconds: u64,
+) -> Option<(f64, f64, f64, f64, u64)> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let config = crate::config::get_config();
+    let safe_path = validate_transcript_file(transcript_path).ok()?;
+    let file = File::open(&safe_path).ok()?;
+
+    // Calculate cutoff time (now - window_seconds)
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs();
+    let cutoff = now.saturating_sub(window_seconds);
+
+    // Read lines in reverse order (most recent first) using circular buffer
+    let reader = BufReader::new(file);
+    let buffer_lines = config.transcript.buffer_lines;
+
+    let mut buffer: std::collections::VecDeque<String> = std::collections::VecDeque::with_capacity(buffer_lines);
+
+    for line in reader.lines().map_while(|l| l.ok()) {
+        if buffer.len() >= buffer_lines {
+            buffer.pop_front();
+        }
+        buffer.push_back(line);
+    }
+
+    // Process messages within the window
+    let mut sum_input = 0u32;
+    let mut sum_output = 0u32;
+    let mut sum_cache_read = 0u32;
+    let mut sum_cache_creation = 0u32;
+    let mut earliest_timestamp: Option<u64> = None;
+    let mut latest_timestamp: Option<u64> = None;
+    let mut has_data = false;
+
+    for line in buffer.iter() {
+        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) {
+            if let Some(ts) = parse_iso8601_to_unix(&entry.timestamp) {
+                // Only include messages within the window
+                if ts >= cutoff {
+                    // Track time span
+                    match earliest_timestamp {
+                        None => earliest_timestamp = Some(ts),
+                        Some(e) if ts < e => earliest_timestamp = Some(ts),
+                        _ => {}
+                    }
+                    match latest_timestamp {
+                        None => latest_timestamp = Some(ts),
+                        Some(l) if ts > l => latest_timestamp = Some(ts),
+                        _ => {}
+                    }
+
+                    // Only assistant messages have usage data
+                    if entry.message.role == "assistant" {
+                        if let Some(usage) = entry.message.usage {
+                            has_data = true;
+                            sum_input = sum_input.saturating_add(usage.input_tokens.unwrap_or(0));
+                            sum_output = sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
+                            sum_cache_read =
+                                sum_cache_read.saturating_add(usage.cache_read_input_tokens.unwrap_or(0));
+                            sum_cache_creation = sum_cache_creation
+                                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !has_data {
+        return None;
+    }
+
+    // Calculate actual window duration (use configured window or actual span, whichever is smaller)
+    let actual_span = match (earliest_timestamp, latest_timestamp) {
+        (Some(e), Some(l)) if l > e => l - e,
+        _ => window_seconds, // Fall back to configured window
+    };
+
+    // Use the smaller of actual span or configured window, minimum 1 second
+    let effective_duration = actual_span.min(window_seconds).max(1);
+
+    let duration_f64 = effective_duration as f64;
+    let input_rate = sum_input as f64 / duration_f64;
+    let output_rate = sum_output as f64 / duration_f64;
+    let cache_read_rate = sum_cache_read as f64 / duration_f64;
+    let cache_creation_rate = sum_cache_creation as f64 / duration_f64;
+
+    Some((
+        input_rate,
+        output_rate,
+        cache_read_rate,
+        cache_creation_rate,
+        effective_duration,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

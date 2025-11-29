@@ -888,11 +888,28 @@ pub struct TokenRateMetrics {
 /// Uses the same duration mode as burn_rate (wall_clock, active_time, or auto_reset).
 /// Returns None if token breakdown or duration is not available.
 ///
+/// When `rate_window_seconds > 0` in config and `transcript_path` is provided,
+/// uses rolling window calculation for more responsive rate updates.
+/// Otherwise falls back to session average (total_tokens / session_duration).
+///
 /// Requires a database handle - hot path callers should create the handle once and reuse it.
 /// For convenience (non-hot paths), use `calculate_token_rates()` which creates its own handle.
 pub fn calculate_token_rates_with_db(
     session_id: &str,
     db: &crate::database::SqliteDatabase,
+) -> Option<TokenRateMetrics> {
+    calculate_token_rates_with_db_and_transcript(session_id, db, None)
+}
+
+/// Calculate token rates with optional rolling window support
+///
+/// When `rate_window_seconds > 0` in config and `transcript_path` is provided,
+/// uses rolling window calculation from transcript for more responsive rate updates.
+/// The displayed rate reflects recent activity while totals remain accurate from the database.
+pub fn calculate_token_rates_with_db_and_transcript(
+    session_id: &str,
+    db: &crate::database::SqliteDatabase,
+    transcript_path: Option<&str>,
 ) -> Option<TokenRateMetrics> {
     let config = crate::config::get_config();
 
@@ -901,7 +918,7 @@ pub fn calculate_token_rates_with_db(
         return None;
     }
 
-    // Get token breakdown from database
+    // Get token breakdown from database (for totals - always accurate)
     let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) =
         db.get_session_token_breakdown(session_id)?;
 
@@ -919,7 +936,42 @@ pub fn calculate_token_rates_with_db(
         return None;
     }
 
-    // Get duration based on mode (same logic as burn rate)
+    // Check if rolling window is configured and transcript is available
+    let window_seconds = config.token_rate.rate_window_seconds;
+    if window_seconds > 0 {
+        if let Some(path) = transcript_path {
+            // Try rolling window calculation
+            if let Some((input_rate, output_rate, cache_read_rate, cache_creation_rate, duration)) =
+                crate::utils::get_rolling_window_rates(path, window_seconds)
+            {
+                let total_rate = input_rate + output_rate + cache_read_rate + cache_creation_rate;
+
+                // Calculate cache metrics from session totals (more stable)
+                let (cache_hit_ratio, cache_roi) = calculate_cache_metrics(
+                    &config,
+                    cache_read_tokens,
+                    input_tokens,
+                    cache_creation_tokens,
+                );
+
+                return Some(TokenRateMetrics {
+                    input_rate,
+                    output_rate,
+                    cache_read_rate,
+                    cache_creation_rate,
+                    total_rate,
+                    duration_seconds: duration,
+                    cache_hit_ratio,
+                    cache_roi,
+                    session_total_tokens: total_tokens,
+                    daily_total_tokens,
+                });
+            }
+            // Fall through to session average if rolling window fails
+        }
+    }
+
+    // Fall back to session average calculation
     let duration = if config.token_rate.inherit_duration_mode {
         // Use burn_rate.mode
         get_session_duration_by_mode(session_id)?
@@ -942,30 +994,9 @@ pub fn calculate_token_rates_with_db(
     let cache_creation_rate = cache_creation_tokens as f64 / duration_f64;
     let total_rate = total_tokens as f64 / duration_f64;
 
-    // Calculate cache metrics if enabled
-    let (cache_hit_ratio, cache_roi) = if config.token_rate.cache_metrics {
-        // Cache hit ratio: cache_read / (cache_read + input)
-        let total_potential_cache = cache_read_tokens + input_tokens;
-        let hit_ratio = if total_potential_cache > 0 {
-            Some(cache_read_tokens as f64 / total_potential_cache as f64)
-        } else {
-            None
-        };
-
-        // Cache ROI: tokens saved / cost of creating cache
-        // ROI = cache_read / cache_creation (how many times we benefited from cache)
-        let roi = if cache_creation_tokens > 0 {
-            Some(cache_read_tokens as f64 / cache_creation_tokens as f64)
-        } else if cache_read_tokens > 0 {
-            Some(f64::INFINITY) // Free cache reads (cache created elsewhere)
-        } else {
-            None
-        };
-
-        (hit_ratio, roi)
-    } else {
-        (None, None)
-    };
+    // Calculate cache metrics
+    let (cache_hit_ratio, cache_roi) =
+        calculate_cache_metrics(&config, cache_read_tokens, input_tokens, cache_creation_tokens);
 
     Some(TokenRateMetrics {
         input_rate,
@@ -979,6 +1010,38 @@ pub fn calculate_token_rates_with_db(
         session_total_tokens: total_tokens,
         daily_total_tokens,
     })
+}
+
+/// Helper to calculate cache metrics (hit ratio and ROI)
+fn calculate_cache_metrics(
+    config: &crate::config::Config,
+    cache_read_tokens: u32,
+    input_tokens: u32,
+    cache_creation_tokens: u32,
+) -> (Option<f64>, Option<f64>) {
+    if !config.token_rate.cache_metrics {
+        return (None, None);
+    }
+
+    // Cache hit ratio: cache_read / (cache_read + input)
+    let total_potential_cache = cache_read_tokens + input_tokens;
+    let hit_ratio = if total_potential_cache > 0 {
+        Some(cache_read_tokens as f64 / total_potential_cache as f64)
+    } else {
+        None
+    };
+
+    // Cache ROI: tokens saved / cost of creating cache
+    // ROI = cache_read / cache_creation (how many times we benefited from cache)
+    let roi = if cache_creation_tokens > 0 {
+        Some(cache_read_tokens as f64 / cache_creation_tokens as f64)
+    } else if cache_read_tokens > 0 {
+        Some(f64::INFINITY) // Free cache reads (cache created elsewhere)
+    } else {
+        None
+    };
+
+    (hit_ratio, roi)
 }
 
 /// Convenience wrapper that creates its own database connection.

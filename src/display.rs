@@ -440,9 +440,12 @@ fn format_statusline_string(
     }
 
     // 8. Token rate metrics (opt-in feature)
+    // Uses rolling window if configured, otherwise session average
     if let Some(sid) = session_id {
         if let Some(ref db_handle) = db {
-            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, db_handle) {
+            if let Some(token_rates) =
+                crate::stats::calculate_token_rates_with_db_and_transcript(sid, db_handle, transcript_path)
+            {
                 let token_rate_str = format_token_rates(&token_rates);
                 parts.push(token_rate_str);
             }
@@ -613,6 +616,7 @@ fn format_statusline_with_layout(
     }
 
     // Token rate (with component config)
+    // Uses rolling window if configured, otherwise session average
     if let Some(sid) = session_id {
         // Create database handle for token rate calculation
         if let Some(db) = crate::stats::StatsData::get_sqlite_path()
@@ -620,7 +624,9 @@ fn format_statusline_with_layout(
             .filter(|p| p.exists())
             .and_then(|p| crate::database::SqliteDatabase::new(&p).ok())
         {
-            if let Some(token_rates) = crate::stats::calculate_token_rates_with_db(sid, &db) {
+            if let Some(token_rates) =
+                crate::stats::calculate_token_rates_with_db_and_transcript(sid, &db, transcript_path)
+            {
                 builder = builder.token_rate_with_config(
                     token_rates.total_rate,
                     Some(token_rates.session_total_tokens),
