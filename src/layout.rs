@@ -977,12 +977,8 @@ impl VariableBuilder {
 
         // Format individual rates
         let effective_input_rate = metrics.input_rate + metrics.cache_read_rate;
-        let input_rate_str = format_rate_with_unit(
-            effective_input_rate * time_mult,
-            unit_suffix,
-            &color,
-            reset,
-        );
+        let input_rate_str =
+            format_rate_with_unit(effective_input_rate * time_mult, unit_suffix, &color, reset);
         let output_rate_str =
             format_rate_with_unit(metrics.output_rate * time_mult, unit_suffix, &color, reset);
         let cache_rate_str = format_rate_with_unit(

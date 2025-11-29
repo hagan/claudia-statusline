@@ -195,8 +195,8 @@ fn test_context_tokens_formatting() {
     // Note: Context only counts input + cache_read tokens (not output)
     // Output tokens are generated, they don't consume context window
     let test_cases = vec![
-        (1000, 500, "1k"),     // input=1000 → 1k (output not counted)
-        (85000, 1000, "85k"),  // input=85000 → 85k
+        (1000, 500, "1k"),       // input=1000 → 1k (output not counted)
+        (85000, 1000, "85k"),    // input=85000 → 85k
         (500000, 10000, "500k"), // input=500000 → 500k
     ];
 

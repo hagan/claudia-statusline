@@ -668,17 +668,15 @@ pub fn get_rolling_window_rates(
     let file = File::open(&safe_path).ok()?;
 
     // Calculate cutoff time (now - window_seconds)
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()?
-        .as_secs();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?.as_secs();
     let cutoff = now.saturating_sub(window_seconds);
 
     // Read lines in reverse order (most recent first) using circular buffer
     let reader = BufReader::new(file);
     let buffer_lines = config.transcript.buffer_lines;
 
-    let mut buffer: std::collections::VecDeque<String> = std::collections::VecDeque::with_capacity(buffer_lines);
+    let mut buffer: std::collections::VecDeque<String> =
+        std::collections::VecDeque::with_capacity(buffer_lines);
 
     for line in reader.lines().map_while(|l| l.ok()) {
         if buffer.len() >= buffer_lines {
@@ -730,7 +728,8 @@ pub fn get_rolling_window_rates(
                                 max_cache_read = cache_read;
                             }
                             // SUM for generated tokens (output/cache_creation are cumulative)
-                            sum_output = sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
+                            sum_output =
+                                sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
                             sum_cache_creation = sum_cache_creation
                                 .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
                         }

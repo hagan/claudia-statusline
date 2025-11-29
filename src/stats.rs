@@ -1049,8 +1049,12 @@ pub fn calculate_token_rates_with_db_and_transcript(
     let total_rate = total_tokens as f64 / duration_f64;
 
     // Calculate cache metrics
-    let (cache_hit_ratio, cache_roi) =
-        calculate_cache_metrics(config, cache_read_tokens, input_tokens, cache_creation_tokens);
+    let (cache_hit_ratio, cache_roi) = calculate_cache_metrics(
+        config,
+        cache_read_tokens,
+        input_tokens,
+        cache_creation_tokens,
+    );
 
     Some(TokenRateMetrics {
         input_rate,
@@ -1690,8 +1694,10 @@ mod tests {
         let output_rate = output_tokens as f64 / duration_f64;
         let cache_read_rate = cache_read_tokens as f64 / duration_f64;
         let cache_creation_rate = cache_creation_tokens as f64 / duration_f64;
-        let total_tokens =
-            input_tokens as u64 + output_tokens as u64 + cache_read_tokens as u64 + cache_creation_tokens as u64;
+        let total_tokens = input_tokens as u64
+            + output_tokens as u64
+            + cache_read_tokens as u64
+            + cache_creation_tokens as u64;
         let total_rate = total_tokens as f64 / duration_f64;
 
         // Verify rates
@@ -1790,7 +1796,9 @@ mod tests {
         assert_eq!(metrics.duration_seconds, 3600);
 
         // Verify cache metrics
-        let hit_ratio = metrics.cache_hit_ratio.expect("Should have cache hit ratio");
+        let hit_ratio = metrics
+            .cache_hit_ratio
+            .expect("Should have cache hit ratio");
         assert!(
             (hit_ratio - 0.9375).abs() < 0.01,
             "Cache hit ratio mismatch: {}",

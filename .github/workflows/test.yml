@@ -446,8 +446,9 @@ jobs:
         {"message":{"role":"user","content":"question"},"timestamp":"2025-08-22T18:05:00.000Z"}
         EOF
         output=$(echo '{"workspace":{"current_dir":"/tmp"},"transcript":"/tmp/high-usage.jsonl"}' | ./target/release/statusline)
-        # Updated for 200k context window: 125000/200000 = 62.5% → displays as 63% (was 78% with 160k window)
-        if ! echo "$output" | grep -q "63%"; then
+        # Context window = input_tokens only (120000), not output_tokens
+        # 120000/200000 = 60%
+        if ! echo "$output" | grep -q "60%"; then
           echo "Context percentage not showing correctly"
           echo "Output: $output"
           exit 1
