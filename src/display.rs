@@ -617,6 +617,7 @@ fn format_statusline_with_layout(
 
     // Token rate (with component config)
     // Uses rolling window if configured, otherwise session average
+    // Now respects rate_display config (output_only, input_only, both)
     if let Some(sid) = session_id {
         // Create database handle for token rate calculation
         if let Some(db) = crate::stats::StatsData::get_sqlite_path()
@@ -627,13 +628,12 @@ fn format_statusline_with_layout(
             if let Some(token_rates) =
                 crate::stats::calculate_token_rates_with_db_and_transcript(sid, &db, transcript_path)
             {
-                builder = builder.token_rate_with_config(
-                    token_rates.total_rate,
-                    Some(token_rates.session_total_tokens),
-                    Some(token_rates.daily_total_tokens),
+                builder = builder.token_rate_with_metrics(
+                    &token_rates,
                     &Colors::light_gray(),
                     &reset,
                     &components.token_rate,
+                    &full_config.token_rate,
                 );
             }
         }
@@ -888,31 +888,38 @@ fn format_token_rates(metrics: &crate::stats::TokenRateMetrics) -> String {
             // Detailed: "In:5.2K Out:8.7K tok/hr • Cache:85%"
             // Note: input_rate includes cache_read_rate for meaningful display
             // (raw input without cache is often near-zero for long sessions)
+            //
+            // For rolling window mode:
+            // - Input rate: session average (context size, stable)
+            // - Output rate: rolling window (generation rate, responsive)
             let effective_input_rate = metrics.input_rate + metrics.cache_read_rate;
 
-            // When using rolling window (input_rate = 0), only show output rate
-            // since input "rate" isn't meaningful (context size != generation rate)
-            let rate_display = if effective_input_rate < 0.01 {
-                // Rolling window mode - only output rate is meaningful
-                format!(
+            // Build rate display based on rate_display config
+            let rate_part = match config.token_rate.rate_display.as_str() {
+                "output_only" => format!(
                     "{}Out:{} {}{}",
                     Colors::light_gray(),
                     format_rate(metrics.output_rate),
                     unit_str,
                     Colors::reset()
-                )
-            } else {
-                // Session average mode - show both
-                format!(
+                ),
+                "input_only" => format!(
+                    "{}In:{} {}{}",
+                    Colors::light_gray(),
+                    format_rate(effective_input_rate),
+                    unit_str,
+                    Colors::reset()
+                ),
+                _ => format!(
                     "{}In:{} Out:{} {}{}",
                     Colors::light_gray(),
                     format_rate(effective_input_rate),
                     format_rate(metrics.output_rate),
                     unit_str,
                     Colors::reset()
-                )
+                ),
             };
-            let mut parts = vec![rate_display];
+            let mut parts = vec![rate_part];
 
             // Add cache metrics if available and enabled
             if config.token_rate.cache_metrics {

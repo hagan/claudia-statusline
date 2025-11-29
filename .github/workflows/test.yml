@@ -503,3 +503,83 @@ jobs:
           exit 1
         fi
         echo "Output: $output"
+
+  # Dedicated job for isolated integration tests that require specific config
+  # These tests are marked #[ignore] in the default suite to avoid config conflicts
+  test-isolated:
+    name: Isolated Integration Tests
+    runs-on: ubuntu-latest
+    env:
+      NO_COLOR: 1
+      CARGO_TERM_COLOR: never
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-isolated
+        restore-keys: |
+          ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-cargo-registry-
+
+    - name: Cache target directory
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-isolated
+        restore-keys: |
+          ${{ runner.os }}-target-${{ hashFiles('**/Cargo.lock') }}-
+          ${{ runner.os }}-target-
+
+    - name: Run isolated token rate tests
+      id: isolated_test
+      run: |
+        echo "## Isolated Integration Tests" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "These tests require specific config (json_backup=false) and run in isolation." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        start_time=$(date +%s)
+
+        # Run ignored tests in isolation - they get a fresh config state
+        if cargo test --test token_rate_basic_test -- --ignored 2>&1 | tee isolated_output.txt; then
+          test_result="✅ PASSED"
+          test_status=0
+        else
+          test_result="❌ FAILED"
+          test_status=1
+        fi
+
+        end_time=$(date +%s)
+        duration=$((end_time - start_time))
+
+        # Extract test count
+        test_count=$(grep -E "test result:" isolated_output.txt | grep -oE "[0-9]+ passed" | grep -oE "[0-9]+" | head -1 || echo "0")
+        test_count=${test_count:-0}
+
+        echo "| Metric | Value |" >> $GITHUB_STEP_SUMMARY
+        echo "|--------|-------|" >> $GITHUB_STEP_SUMMARY
+        echo "| Status | $test_result |" >> $GITHUB_STEP_SUMMARY
+        echo "| Tests Passed | $test_count |" >> $GITHUB_STEP_SUMMARY
+        echo "| Duration | ${duration}s |" >> $GITHUB_STEP_SUMMARY
+        echo "| Test File | \`token_rate_basic_test.rs\` |" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+
+        if [ $test_status -ne 0 ]; then
+          echo "### Test Output" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          tail -50 isolated_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+        fi
+
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "ℹ️ These tests are \`#[ignore]\` in the default suite due to OnceLock config caching." >> $GITHUB_STEP_SUMMARY
+        echo "Run locally with: \`cargo test --test token_rate_basic_test -- --ignored\`" >> $GITHUB_STEP_SUMMARY
+
+        exit $test_status

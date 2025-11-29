@@ -716,6 +716,18 @@ pub struct TokenRateConfig {
     ///
     /// Note: Daily totals remain accurate (from database); only the displayed rate changes.
     pub rate_window_seconds: u64,
+
+    /// Which token rates to display
+    ///
+    /// **Default: "both"**
+    ///
+    /// Options:
+    /// - **"both"**: Show both input and output rates (e.g., "In:5.2K Out:8.7K tok/s")
+    /// - **"output_only"**: Show only output rate (e.g., "Out:8.7K tok/s")
+    /// - **"input_only"**: Show only input rate (e.g., "In:5.2K tok/s")
+    ///
+    /// Useful when you only care about generation speed (output) or context size (input).
+    pub rate_display: String,
 }
 
 /// Sync configuration for cloud synchronization
@@ -934,6 +946,7 @@ impl Default for TokenRateConfig {
             cache_metrics: true,                 // Show cache efficiency by default
             inherit_duration_mode: true,         // Use burn_rate.mode for consistency
             rate_window_seconds: 0,              // 0 = use session average (disabled)
+            rate_display: "both".to_string(),    // Show both input and output rates
         }
     }
 }
@@ -1292,6 +1305,10 @@ pub fn get_config() -> &'static Config {
         // Override json_backup from environment if set (for testing)
         if let Ok(val) = env::var("STATUSLINE_JSON_BACKUP") {
             config.database.json_backup = val == "true" || val == "1";
+            // Also handle explicit false
+            if val == "false" || val == "0" {
+                config.database.json_backup = false;
+            }
         }
 
         // Override show_context_tokens from environment if set (for testing)

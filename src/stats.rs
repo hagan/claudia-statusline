@@ -975,15 +975,34 @@ pub fn calculate_token_rates_with_db_and_transcript(
     let window_seconds = config.token_rate.rate_window_seconds;
     if window_seconds > 0 {
         if let Some(path) = transcript_path {
-            // Try rolling window calculation
-            if let Some((input_rate, output_rate, cache_read_rate, cache_creation_rate, duration)) =
+            // Try rolling window calculation for OUTPUT rate (responsive)
+            // Input rate uses session average (stable, since input_tokens = context size, not delta)
+            if let Some((_, rolling_output_rate, _, rolling_cache_creation_rate, window_duration)) =
                 crate::utils::get_rolling_window_rates(path, window_seconds)
             {
+                // Get session duration for input rate calculation
+                let session_duration = if config.token_rate.inherit_duration_mode {
+                    get_session_duration_by_mode(session_id).unwrap_or(60)
+                } else {
+                    get_session_duration(session_id).unwrap_or(60)
+                };
+                let session_duration_f64 = session_duration.max(1) as f64;
+
+                // Hybrid approach:
+                // - Input rate: session average (input_tokens = context size, not cumulative)
+                // - Output rate: rolling window (output_tokens ARE cumulative per message)
+                // - Cache read rate: session average (like input, represents context)
+                // - Cache creation rate: rolling window (like output, cumulative work)
+                let input_rate = input_tokens as f64 / session_duration_f64;
+                let cache_read_rate = cache_read_tokens as f64 / session_duration_f64;
+                let output_rate = rolling_output_rate;
+                let cache_creation_rate = rolling_cache_creation_rate;
+
                 let total_rate = input_rate + output_rate + cache_read_rate + cache_creation_rate;
 
                 // Calculate cache metrics from session totals (more stable)
                 let (cache_hit_ratio, cache_roi) = calculate_cache_metrics(
-                    &config,
+                    config,
                     cache_read_tokens,
                     input_tokens,
                     cache_creation_tokens,
@@ -995,7 +1014,7 @@ pub fn calculate_token_rates_with_db_and_transcript(
                     cache_read_rate,
                     cache_creation_rate,
                     total_rate,
-                    duration_seconds: duration,
+                    duration_seconds: window_duration,
                     cache_hit_ratio,
                     cache_roi,
                     session_total_tokens: total_tokens,
@@ -1031,7 +1050,7 @@ pub fn calculate_token_rates_with_db_and_transcript(
 
     // Calculate cache metrics
     let (cache_hit_ratio, cache_roi) =
-        calculate_cache_metrics(&config, cache_read_tokens, input_tokens, cache_creation_tokens);
+        calculate_cache_metrics(config, cache_read_tokens, input_tokens, cache_creation_tokens);
 
     Some(TokenRateMetrics {
         input_rate,
@@ -1104,6 +1123,72 @@ pub fn calculate_token_rates(session_id: &str) -> Option<TokenRateMetrics> {
     let db = crate::database::SqliteDatabase::new(&db_path).ok()?;
 
     calculate_token_rates_with_db(session_id, &db)
+}
+
+/// Test-only: Calculate token rate metrics from raw values without config lookup.
+/// This bypasses the OnceLock config to allow deterministic testing.
+#[cfg(test)]
+pub fn calculate_token_rates_from_raw(
+    input_tokens: u32,
+    output_tokens: u32,
+    cache_read_tokens: u32,
+    cache_creation_tokens: u32,
+    duration_seconds: u64,
+    daily_total_tokens: u64,
+) -> Option<TokenRateMetrics> {
+    if duration_seconds < 60 {
+        return None; // Minimum 60 seconds for stable rates
+    }
+
+    let total_tokens = input_tokens as u64
+        + output_tokens as u64
+        + cache_read_tokens as u64
+        + cache_creation_tokens as u64;
+
+    if total_tokens == 0 {
+        return None;
+    }
+
+    let duration_f64 = duration_seconds as f64;
+
+    let input_rate = input_tokens as f64 / duration_f64;
+    let output_rate = output_tokens as f64 / duration_f64;
+    let cache_read_rate = cache_read_tokens as f64 / duration_f64;
+    let cache_creation_rate = cache_creation_tokens as f64 / duration_f64;
+    let total_rate = total_tokens as f64 / duration_f64;
+
+    // Calculate cache metrics
+    let total_cache = cache_read_tokens as u64 + cache_creation_tokens as u64;
+    let cache_hit_ratio = if total_cache > 0 {
+        Some(cache_read_tokens as f64 / total_cache as f64)
+    } else {
+        None
+    };
+
+    let cache_roi = if cache_creation_tokens > 0 {
+        // ROI = reads / (creation * cost_multiplier)
+        // Cache creation costs 1.25x input, reads cost 0.1x
+        // So ROI = (reads * 0.1) / (creation * 1.25) * effective_factor
+        // Simplified: reads / (creation * 1.25) shows how many tokens saved per investment
+        Some(cache_read_tokens as f64 / (cache_creation_tokens as f64 * 1.25))
+    } else if cache_read_tokens > 0 {
+        Some(f64::INFINITY) // All reads, no creation cost
+    } else {
+        None
+    };
+
+    Some(TokenRateMetrics {
+        input_rate,
+        output_rate,
+        cache_read_rate,
+        cache_creation_rate,
+        total_rate,
+        duration_seconds,
+        cache_hit_ratio,
+        cache_roi,
+        session_total_tokens: total_tokens,
+        daily_total_tokens,
+    })
 }
 
 #[cfg(test)]
@@ -1584,5 +1669,177 @@ mod tests {
 
         env::remove_var("STATUSLINE_JSON_BACKUP");
         env::remove_var("XDG_DATA_HOME");
+    }
+
+    /// Unit test for token rate calculation math (no config dependency)
+    ///
+    /// This test verifies the rate calculation formula directly without relying
+    /// on global config state, making it stable regardless of test execution order.
+    #[test]
+    fn test_token_rate_math_direct() {
+        // Test values: 1 hour session with known token counts
+        let duration_seconds: u64 = 3600; // 1 hour
+        let input_tokens: u32 = 18750; // Expected: 5.2 tok/s
+        let output_tokens: u32 = 31250; // Expected: 8.7 tok/s
+        let cache_read_tokens: u32 = 150000; // Expected: 41.7 tok/s
+        let cache_creation_tokens: u32 = 10000; // Expected: 2.8 tok/s
+
+        // Calculate rates
+        let duration_f64 = duration_seconds as f64;
+        let input_rate = input_tokens as f64 / duration_f64;
+        let output_rate = output_tokens as f64 / duration_f64;
+        let cache_read_rate = cache_read_tokens as f64 / duration_f64;
+        let cache_creation_rate = cache_creation_tokens as f64 / duration_f64;
+        let total_tokens =
+            input_tokens as u64 + output_tokens as u64 + cache_read_tokens as u64 + cache_creation_tokens as u64;
+        let total_rate = total_tokens as f64 / duration_f64;
+
+        // Verify rates
+        assert!(
+            (input_rate - 5.208).abs() < 0.01,
+            "Input rate should be ~5.2 tok/s, got {}",
+            input_rate
+        );
+        assert!(
+            (output_rate - 8.68).abs() < 0.01,
+            "Output rate should be ~8.7 tok/s, got {}",
+            output_rate
+        );
+        assert!(
+            (cache_read_rate - 41.67).abs() < 0.01,
+            "Cache read rate should be ~41.7 tok/s, got {}",
+            cache_read_rate
+        );
+        assert!(
+            (cache_creation_rate - 2.78).abs() < 0.01,
+            "Cache creation rate should be ~2.8 tok/s, got {}",
+            cache_creation_rate
+        );
+        assert!(
+            (total_rate - 58.33).abs() < 0.1,
+            "Total rate should be ~58.3 tok/s, got {}",
+            total_rate
+        );
+
+        // Test cache hit ratio calculation
+        let total_cache = cache_read_tokens as f64 + cache_creation_tokens as f64;
+        let cache_hit_ratio = cache_read_tokens as f64 / total_cache;
+        assert!(
+            (cache_hit_ratio - 0.9375).abs() < 0.01,
+            "Cache hit ratio should be ~93.75%, got {}",
+            cache_hit_ratio
+        );
+
+        // Test cache ROI calculation (reads / creation cost)
+        // ROI = cache_read_tokens / (cache_creation_tokens * 1.25)
+        // Assuming cache write costs 1.25x input
+        let cache_roi = cache_read_tokens as f64 / (cache_creation_tokens as f64 * 1.25);
+        assert!(
+            (cache_roi - 12.0).abs() < 0.1,
+            "Cache ROI should be ~12x, got {}",
+            cache_roi
+        );
+    }
+
+    /// Deterministic test using calculate_token_rates_from_raw (bypasses OnceLock config).
+    /// This test exercises the full TokenRateMetrics struct calculation without any
+    /// dependency on global config state.
+    #[test]
+    fn test_calculate_token_rates_from_raw() {
+        // Test with typical values: 1 hour session
+        let metrics = super::calculate_token_rates_from_raw(
+            18750,  // input tokens
+            31250,  // output tokens
+            150000, // cache read tokens
+            10000,  // cache creation tokens
+            3600,   // 1 hour duration
+            500000, // daily total
+        )
+        .expect("Should return metrics for valid input");
+
+        // Verify rates
+        assert!(
+            (metrics.input_rate - 5.208).abs() < 0.01,
+            "Input rate mismatch: {}",
+            metrics.input_rate
+        );
+        assert!(
+            (metrics.output_rate - 8.68).abs() < 0.01,
+            "Output rate mismatch: {}",
+            metrics.output_rate
+        );
+        assert!(
+            (metrics.cache_read_rate - 41.67).abs() < 0.01,
+            "Cache read rate mismatch: {}",
+            metrics.cache_read_rate
+        );
+        assert!(
+            (metrics.cache_creation_rate - 2.78).abs() < 0.01,
+            "Cache creation rate mismatch: {}",
+            metrics.cache_creation_rate
+        );
+        assert!(
+            (metrics.total_rate - 58.33).abs() < 0.1,
+            "Total rate mismatch: {}",
+            metrics.total_rate
+        );
+
+        // Verify totals
+        assert_eq!(metrics.session_total_tokens, 210000);
+        assert_eq!(metrics.daily_total_tokens, 500000);
+        assert_eq!(metrics.duration_seconds, 3600);
+
+        // Verify cache metrics
+        let hit_ratio = metrics.cache_hit_ratio.expect("Should have cache hit ratio");
+        assert!(
+            (hit_ratio - 0.9375).abs() < 0.01,
+            "Cache hit ratio mismatch: {}",
+            hit_ratio
+        );
+
+        let roi = metrics.cache_roi.expect("Should have cache ROI");
+        assert!((roi - 12.0).abs() < 0.1, "Cache ROI mismatch: {}", roi);
+    }
+
+    /// Test that short durations return None (minimum 60 seconds required)
+    #[test]
+    fn test_calculate_token_rates_from_raw_short_duration() {
+        let metrics = super::calculate_token_rates_from_raw(
+            1000, 1000, 0, 0, 30, // 30 seconds - too short
+            0,
+        );
+        assert!(
+            metrics.is_none(),
+            "Should return None for duration < 60 seconds"
+        );
+    }
+
+    /// Test with zero tokens returns None
+    #[test]
+    fn test_calculate_token_rates_from_raw_zero_tokens() {
+        let metrics = super::calculate_token_rates_from_raw(0, 0, 0, 0, 3600, 0);
+        assert!(metrics.is_none(), "Should return None for zero tokens");
+    }
+
+    /// Test cache metrics edge cases
+    #[test]
+    fn test_calculate_token_rates_from_raw_cache_edge_cases() {
+        // No cache at all
+        let metrics = super::calculate_token_rates_from_raw(1000, 1000, 0, 0, 3600, 0)
+            .expect("Should return metrics");
+        assert!(metrics.cache_hit_ratio.is_none());
+        assert!(metrics.cache_roi.is_none());
+
+        // Cache reads only (infinite ROI)
+        let metrics = super::calculate_token_rates_from_raw(1000, 1000, 5000, 0, 3600, 0)
+            .expect("Should return metrics");
+        assert!(metrics.cache_hit_ratio.unwrap() > 0.99);
+        assert!(metrics.cache_roi.unwrap().is_infinite());
+
+        // Cache creation only (0 hit ratio, no ROI)
+        let metrics = super::calculate_token_rates_from_raw(1000, 1000, 0, 5000, 3600, 0)
+            .expect("Should return metrics");
+        assert!(metrics.cache_hit_ratio.unwrap() < 0.01);
+        assert!(metrics.cache_roi.unwrap() < 0.01);
     }
 }

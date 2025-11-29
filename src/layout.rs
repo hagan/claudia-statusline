@@ -947,6 +947,181 @@ impl VariableBuilder {
         self
     }
 
+    /// Set token rate with full metrics and respect rate_display config
+    ///
+    /// Exposes individual rate variables and respects the rate_display setting:
+    /// - "both": Shows both input and output rates
+    /// - "output_only": Shows only output rate
+    /// - "input_only": Shows only input rate
+    #[allow(dead_code)]
+    pub fn token_rate_with_metrics(
+        mut self,
+        metrics: &crate::stats::TokenRateMetrics,
+        default_color: &str,
+        reset: &str,
+        component_config: &crate::config::TokenRateComponentConfig,
+        token_rate_config: &crate::config::TokenRateConfig,
+    ) -> Self {
+        let color = if component_config.color.is_empty() {
+            default_color.to_string()
+        } else {
+            resolve_color_override(&component_config.color)
+        };
+
+        // Get time unit multiplier and suffix
+        let (time_mult, unit_suffix) = match component_config.time_unit.as_str() {
+            "minute" => (60.0, "tok/min"),
+            "hour" => (3600.0, "tok/hr"),
+            _ => (1.0, "tok/s"),
+        };
+
+        // Format individual rates
+        let effective_input_rate = metrics.input_rate + metrics.cache_read_rate;
+        let input_rate_str = format_rate_with_unit(
+            effective_input_rate * time_mult,
+            unit_suffix,
+            &color,
+            reset,
+        );
+        let output_rate_str =
+            format_rate_with_unit(metrics.output_rate * time_mult, unit_suffix, &color, reset);
+        let cache_rate_str = format_rate_with_unit(
+            metrics.cache_read_rate * time_mult,
+            unit_suffix,
+            &color,
+            reset,
+        );
+        let total_rate_str =
+            format_rate_with_unit(metrics.total_rate * time_mult, unit_suffix, &color, reset);
+
+        // Set individual rate variables for templates
+        self.variables
+            .insert("token_input_rate".to_string(), input_rate_str.clone());
+        self.variables
+            .insert("token_output_rate".to_string(), output_rate_str.clone());
+        self.variables
+            .insert("token_rate_only".to_string(), total_rate_str.clone());
+
+        // Set cache-related variables only if cache_metrics is enabled
+        if token_rate_config.cache_metrics {
+            self.variables
+                .insert("token_cache_rate".to_string(), cache_rate_str);
+            if let Some(hit_ratio) = metrics.cache_hit_ratio {
+                let cache_pct = (hit_ratio * 100.0) as u8;
+                self.variables
+                    .insert("token_cache_hit".to_string(), format!("{}%", cache_pct));
+
+                if let Some(roi) = metrics.cache_roi {
+                    let roi_str = if roi.is_infinite() {
+                        "∞".to_string()
+                    } else {
+                        format!("{:.1}x", roi)
+                    };
+                    self.variables
+                        .insert("token_cache_roi".to_string(), roi_str);
+                }
+            }
+        }
+
+        // Set session and daily totals
+        self.variables.insert(
+            "token_session_total".to_string(),
+            format!(
+                "{}{}{}",
+                color,
+                format_token_count(metrics.session_total_tokens),
+                reset
+            ),
+        );
+        self.variables.insert(
+            "token_daily_total".to_string(),
+            format!(
+                "{}day: {}{}",
+                color,
+                format_token_count(metrics.daily_total_tokens),
+                reset
+            ),
+        );
+
+        // Build {token_rate} based on display_mode and rate_display
+        let rate_display_str = match token_rate_config.display_mode.as_str() {
+            "detailed" => {
+                // Respect rate_display config
+                match token_rate_config.rate_display.as_str() {
+                    "output_only" => format!("{}Out:{}{}", color, output_rate_str, reset),
+                    "input_only" => format!("{}In:{}{}", color, input_rate_str, reset),
+                    _ => format!(
+                        "{}In:{} Out:{}{}",
+                        color, input_rate_str, output_rate_str, reset
+                    ),
+                }
+            }
+            "cache_only" => {
+                // Only show cache metrics if enabled in config
+                if token_rate_config.cache_metrics {
+                    if let Some(hit_ratio) = metrics.cache_hit_ratio {
+                        let cache_pct = (hit_ratio * 100.0) as u8;
+                        if let Some(roi) = metrics.cache_roi {
+                            if roi.is_infinite() {
+                                format!("{}Cache:{}% (∞ ROI){}", color, cache_pct, reset)
+                            } else {
+                                format!("{}Cache:{}% ({:.1}x ROI){}", color, cache_pct, roi, reset)
+                            }
+                        } else {
+                            format!("{}Cache:{}%{}", color, cache_pct, reset)
+                        }
+                    } else {
+                        total_rate_str.clone()
+                    }
+                } else {
+                    // cache_metrics disabled, fall back to total rate
+                    total_rate_str.clone()
+                }
+            }
+            _ => total_rate_str.clone(), // "summary" or default
+        };
+
+        // Build final token_rate variable based on format
+        let token_rate_str = match component_config.format.as_str() {
+            "with_session" => {
+                format!(
+                    "{} • {}{}{}",
+                    rate_display_str,
+                    color,
+                    format_token_count(metrics.session_total_tokens),
+                    reset
+                )
+            }
+            "with_daily" => {
+                format!(
+                    "{} {}(day: {}){}",
+                    rate_display_str,
+                    color,
+                    format_token_count(metrics.daily_total_tokens),
+                    reset
+                )
+            }
+            "full" => {
+                format!(
+                    "{} • {}{}{} {}(day: {}){}",
+                    rate_display_str,
+                    color,
+                    format_token_count(metrics.session_total_tokens),
+                    reset,
+                    color,
+                    format_token_count(metrics.daily_total_tokens),
+                    reset
+                )
+            }
+            _ => rate_display_str, // "rate_only" or default
+        };
+
+        self.variables
+            .insert("token_rate".to_string(), token_rate_str);
+
+        self
+    }
+
     /// Build the final HashMap
     pub fn build(self) -> HashMap<String, String> {
         self.variables
@@ -1932,6 +2107,275 @@ mod tests {
             result.contains("10"),
             "Should render session total: {}",
             result
+        );
+    }
+
+    #[test]
+    fn test_token_rate_with_metrics_cache_metrics_disabled() {
+        // Test that cache_metrics = false hides cache-related variables
+        let metrics = crate::stats::TokenRateMetrics {
+            input_rate: 5.0,
+            output_rate: 8.5,
+            cache_read_rate: 40.0,
+            cache_creation_rate: 2.5,
+            total_rate: 56.0,
+            duration_seconds: 3600,
+            cache_hit_ratio: Some(0.90),
+            cache_roi: Some(15.0),
+            session_total_tokens: 50000,
+            daily_total_tokens: 200000,
+        };
+
+        let component_config = crate::config::TokenRateComponentConfig {
+            format: "rate_only".to_string(),
+            time_unit: "second".to_string(),
+            show_session_total: false,
+            show_daily_total: false,
+            color: String::new(),
+        };
+
+        // Cache metrics DISABLED
+        let token_rate_config = crate::config::TokenRateConfig {
+            enabled: true,
+            display_mode: "summary".to_string(),
+            cache_metrics: false, // KEY: disabled
+            rate_display: "both".to_string(),
+            rate_window_seconds: 300,
+            inherit_duration_mode: true,
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_metrics(&metrics, "", "", &component_config, &token_rate_config)
+            .build();
+
+        // Individual rates should be set
+        assert!(
+            vars.contains_key("token_input_rate"),
+            "token_input_rate should be set"
+        );
+        assert!(
+            vars.contains_key("token_output_rate"),
+            "token_output_rate should be set"
+        );
+
+        // Cache variables should NOT be set when cache_metrics = false
+        assert!(
+            !vars.contains_key("token_cache_rate"),
+            "token_cache_rate should NOT be set when cache_metrics = false"
+        );
+        assert!(
+            !vars.contains_key("token_cache_hit"),
+            "token_cache_hit should NOT be set when cache_metrics = false"
+        );
+        assert!(
+            !vars.contains_key("token_cache_roi"),
+            "token_cache_roi should NOT be set when cache_metrics = false"
+        );
+    }
+
+    #[test]
+    fn test_token_rate_with_metrics_cache_metrics_enabled() {
+        // Test that cache_metrics = true includes cache-related variables
+        let metrics = crate::stats::TokenRateMetrics {
+            input_rate: 5.0,
+            output_rate: 8.5,
+            cache_read_rate: 40.0,
+            cache_creation_rate: 2.5,
+            total_rate: 56.0,
+            duration_seconds: 3600,
+            cache_hit_ratio: Some(0.90),
+            cache_roi: Some(15.0),
+            session_total_tokens: 50000,
+            daily_total_tokens: 200000,
+        };
+
+        let component_config = crate::config::TokenRateComponentConfig {
+            format: "rate_only".to_string(),
+            time_unit: "second".to_string(),
+            show_session_total: false,
+            show_daily_total: false,
+            color: String::new(),
+        };
+
+        // Cache metrics ENABLED
+        let token_rate_config = crate::config::TokenRateConfig {
+            enabled: true,
+            display_mode: "summary".to_string(),
+            cache_metrics: true, // KEY: enabled
+            rate_display: "both".to_string(),
+            rate_window_seconds: 300,
+            inherit_duration_mode: true,
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_metrics(&metrics, "", "", &component_config, &token_rate_config)
+            .build();
+
+        // All variables should be set
+        assert!(
+            vars.contains_key("token_input_rate"),
+            "token_input_rate should be set"
+        );
+        assert!(
+            vars.contains_key("token_output_rate"),
+            "token_output_rate should be set"
+        );
+        assert!(
+            vars.contains_key("token_cache_rate"),
+            "token_cache_rate should be set when cache_metrics = true"
+        );
+        assert!(
+            vars.contains_key("token_cache_hit"),
+            "token_cache_hit should be set when cache_metrics = true"
+        );
+        assert!(
+            vars.contains_key("token_cache_roi"),
+            "token_cache_roi should be set when cache_metrics = true"
+        );
+
+        // Verify cache values are formatted correctly
+        let cache_hit = vars.get("token_cache_hit").unwrap();
+        assert!(
+            cache_hit.contains("90"),
+            "Cache hit should show 90%: {}",
+            cache_hit
+        );
+
+        let cache_roi = vars.get("token_cache_roi").unwrap();
+        assert!(
+            cache_roi.contains("15"),
+            "Cache ROI should show 15x: {}",
+            cache_roi
+        );
+    }
+
+    #[test]
+    fn test_token_rate_with_metrics_rate_display_options() {
+        // Test rate_display options: "both", "input_only", "output_only"
+        // NOTE: rate_display only applies to "detailed" display_mode
+        let metrics = crate::stats::TokenRateMetrics {
+            input_rate: 5.0,
+            output_rate: 8.5,
+            cache_read_rate: 0.0,
+            cache_creation_rate: 0.0,
+            total_rate: 13.5,
+            duration_seconds: 3600,
+            cache_hit_ratio: None,
+            cache_roi: None,
+            session_total_tokens: 0,
+            daily_total_tokens: 0,
+        };
+
+        let component_config = crate::config::TokenRateComponentConfig {
+            format: "rate_only".to_string(),
+            time_unit: "second".to_string(),
+            show_session_total: false,
+            show_daily_total: false,
+            color: String::new(),
+        };
+
+        // Test "output_only" (requires detailed mode)
+        let config_output_only = crate::config::TokenRateConfig {
+            enabled: true,
+            display_mode: "detailed".to_string(), // Must be detailed for rate_display
+            cache_metrics: false,
+            rate_display: "output_only".to_string(),
+            rate_window_seconds: 300,
+            inherit_duration_mode: true,
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_metrics(&metrics, "", "", &component_config, &config_output_only)
+            .build();
+
+        let token_rate = vars.get("token_rate").unwrap();
+        assert!(
+            token_rate.contains("Out:"),
+            "output_only should show Out: {}",
+            token_rate
+        );
+        assert!(
+            !token_rate.contains("In:"),
+            "output_only should NOT show In: {}",
+            token_rate
+        );
+
+        // Test "input_only" (requires detailed mode)
+        let config_input_only = crate::config::TokenRateConfig {
+            enabled: true,
+            display_mode: "detailed".to_string(), // Must be detailed for rate_display
+            cache_metrics: false,
+            rate_display: "input_only".to_string(),
+            rate_window_seconds: 300,
+            inherit_duration_mode: true,
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_metrics(&metrics, "", "", &component_config, &config_input_only)
+            .build();
+
+        let token_rate = vars.get("token_rate").unwrap();
+        assert!(
+            token_rate.contains("In:"),
+            "input_only should show In: {}",
+            token_rate
+        );
+        assert!(
+            !token_rate.contains("Out:"),
+            "input_only should NOT show Out: {}",
+            token_rate
+        );
+
+        // Test "both" (requires detailed mode)
+        let config_both = crate::config::TokenRateConfig {
+            enabled: true,
+            display_mode: "detailed".to_string(), // Must be detailed for rate_display
+            cache_metrics: false,
+            rate_display: "both".to_string(),
+            rate_window_seconds: 300,
+            inherit_duration_mode: true,
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_metrics(&metrics, "", "", &component_config, &config_both)
+            .build();
+
+        let token_rate = vars.get("token_rate").unwrap();
+        assert!(
+            token_rate.contains("In:"),
+            "both should show In: {}",
+            token_rate
+        );
+        assert!(
+            token_rate.contains("Out:"),
+            "both should show Out: {}",
+            token_rate
+        );
+
+        // Test "summary" mode ignores rate_display (always shows total)
+        let config_summary = crate::config::TokenRateConfig {
+            enabled: true,
+            display_mode: "summary".to_string(),
+            cache_metrics: false,
+            rate_display: "output_only".to_string(), // Ignored in summary mode
+            rate_window_seconds: 300,
+            inherit_duration_mode: true,
+        };
+
+        let vars = VariableBuilder::new()
+            .token_rate_with_metrics(&metrics, "", "", &component_config, &config_summary)
+            .build();
+
+        let token_rate = vars.get("token_rate").unwrap();
+        assert!(
+            token_rate.contains("13.5"),
+            "summary should show total rate: {}",
+            token_rate
+        );
+        assert!(
+            !token_rate.contains("Out:"),
+            "summary should NOT show Out: {}",
+            token_rate
         );
     }
 }
