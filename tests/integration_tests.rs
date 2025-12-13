@@ -43,9 +43,19 @@ fn test_binary_with_empty_input() {
         })
         .expect("Failed to execute binary");
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("~")); // Should show home directory
+    assert!(
+        output.status.success(),
+        "Empty input should not cause failure"
+    );
+    // With empty input {}, statusline should succeed without crashing.
+    // Note: We don't assert stdout.contains("~") because with isolated HOME env,
+    // the current working directory may not match the temp HOME path and thus
+    // won't be shortened to ~. The key assertion is that the command succeeds.
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("panic") && !stderr.contains("PANIC"),
+        "Should not panic on empty input"
+    );
 }
 
 #[test]

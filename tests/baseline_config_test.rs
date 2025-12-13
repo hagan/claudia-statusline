@@ -51,11 +51,9 @@ inherit_duration = false
 # Context settings
 [context]
 percentage_mode = "full"
-buffer_tokens = 40000
-
+buffer_size = 40000
 # Adaptive learning - disabled for predictable tests
-[adaptive_learning]
-enabled = false
+adaptive_learning = false
 "#;
 
 /// Get the path where the baseline config should be written
@@ -171,11 +169,10 @@ fn test_baseline_config_has_expected_test_values() {
     );
 
     // Adaptive learning should be disabled for predictable tests
-    let adaptive = config
-        .get("adaptive_learning")
-        .expect("Should have adaptive_learning section");
+    // Note: adaptive_learning is a field under [context], not a separate section
+    let context = config.get("context").expect("Should have context section");
     assert_eq!(
-        adaptive.get("enabled").and_then(|v| v.as_bool()),
+        context.get("adaptive_learning").and_then(|v| v.as_bool()),
         Some(false),
         "Adaptive learning should be disabled for predictable test results"
     );
