@@ -2,6 +2,11 @@
 //!
 //! Tests theme loading, color resolution, user themes,
 //! and ANSI escape sequence handling.
+//!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use statusline::theme::{get_theme_manager, Theme};
 
@@ -11,6 +16,7 @@ use statusline::theme::{get_theme_manager, Theme};
 
 #[test]
 fn test_embedded_dark_theme() {
+    let _guard = test_support::init();
     let theme = Theme::load_embedded("dark").expect("Dark theme should load");
 
     assert_eq!(theme.name, "dark");
@@ -28,6 +34,7 @@ fn test_embedded_dark_theme() {
 
 #[test]
 fn test_embedded_light_theme() {
+    let _guard = test_support::init();
     let theme = Theme::load_embedded("light").expect("Light theme should load");
 
     assert_eq!(theme.name, "light");
@@ -45,6 +52,7 @@ fn test_embedded_light_theme() {
 
 #[test]
 fn test_embedded_theme_all_colors_defined() {
+    let _guard = test_support::init();
     let theme = Theme::load_embedded("dark").expect("Dark theme should load");
 
     // Verify all 14 color fields have values
@@ -103,6 +111,7 @@ fn test_embedded_theme_all_colors_defined() {
 
 #[test]
 fn test_user_theme_loading() {
+    let _guard = test_support::init();
     // Create a custom user theme TOML
     let toml_content = r#"
 name = "custom"
@@ -137,6 +146,7 @@ lines_removed = "red"
 
 #[test]
 fn test_user_theme_with_ansi_escape() {
+    let _guard = test_support::init();
     // Create theme with ANSI escape sequences
     let toml_content = r#"
 name = "ansi"
@@ -179,6 +189,7 @@ lines_removed = "red"
 
 #[test]
 fn test_theme_manager_caching() {
+    let _guard = test_support::init();
     // Load theme twice, should use cached version
     let manager1 = get_theme_manager();
     let theme1 = manager1.get_or_load("dark").unwrap();
@@ -192,6 +203,7 @@ fn test_theme_manager_caching() {
 
 #[test]
 fn test_theme_manager_error_on_nonexistent() {
+    let _guard = test_support::init();
     let manager = get_theme_manager();
 
     // Non-existent theme should return error
@@ -216,6 +228,7 @@ fn test_theme_manager_error_on_nonexistent() {
 
 #[test]
 fn test_color_resolution_named_colors() {
+    let _guard = test_support::init();
     let theme = Theme::load_embedded("dark").unwrap();
 
     // Test common named color resolutions
@@ -231,6 +244,7 @@ fn test_color_resolution_named_colors() {
 
 #[test]
 fn test_color_resolution_ansi_escape() {
+    let _guard = test_support::init();
     let theme = Theme::load_embedded("dark").unwrap();
 
     // Test ANSI escape sequence resolution
@@ -248,6 +262,7 @@ fn test_color_resolution_ansi_escape() {
 
 #[test]
 fn test_theme_env_variable_precedence() {
+    let _guard = test_support::init();
     // Save original env var
     let original = std::env::var("STATUSLINE_THEME").ok();
 

@@ -1,24 +1,12 @@
 //! Integration test for token rate metrics feature
 //!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! Config is initialized ONCE per process using OnceLock, so the FIRST test
-//! that calls get_config() fixes all settings for the entire test binary.
-//!
-//! These tests are marked `#[ignore]` because they require specific config settings
-//! that may conflict with other tests in the suite.
-//!
-//! To run these tests in isolation:
-//! ```bash
-//! cargo test --test token_rate_basic_test -- --ignored
-//! ```
-//!
-//! Or run all tests including ignored:
-//! ```bash
-//! cargo test -- --include-ignored
-//! ```
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
 //!
 //! Note: Deterministic token rate tests (without config dependency) are in
 //! src/stats.rs under `test_calculate_token_rates_from_raw*` - these always run.
+
+mod test_support;
 
 use serial_test::serial;
 use std::env;
@@ -37,12 +25,14 @@ fn test_token_rate_calculation() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
     use statusline::models::TokenBreakdown;
 
-    // Set ALL env vars BEFORE any statusline code runs
+    // Initialize test environment isolation first
+    let _guard = test_support::init();
+
+    // Create additional temp dir for this test's data
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
     let temp_home = temp_dir.path();
 
-    // Set env vars BEFORE creating any statusline objects
-    // MUST set both XDG_DATA_HOME and XDG_CONFIG_HOME to avoid loading user's real config
+    // Override XDG paths to use this test's temp directory
     env::set_var("XDG_DATA_HOME", temp_home.join(".local/share"));
     env::set_var("XDG_CONFIG_HOME", temp_home.join(".config"));
     env::set_var("STATUSLINE_TOKEN_RATE_ENABLED", "true");
@@ -172,6 +162,7 @@ fn test_token_rate_calculation() {
 #[ignore = "requires isolated config; run with: cargo test --test token_rate_basic_test -- --ignored"]
 #[serial]
 fn test_token_rate_short_duration() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
     use statusline::models::TokenBreakdown;
 

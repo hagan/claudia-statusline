@@ -319,7 +319,7 @@ test-manual: release
 	@echo ""
 	@echo "$(GREEN)Sample Output:$(NC)"
 	@echo ""
-	@XDG_DATA_HOME=~/.local/share-test echo '{"session_id":"test-session-$(shell date +%s)","workspace":{"current_dir":"'$$(pwd)'"},"model":{"display_name":"Claude Sonnet 4.5"},"cost":{"total_cost_usd":0.05},"context_usage":{"input_tokens":50000,"output_tokens":2000}}' | $(TARGET_DIR)/release/$(BINARY_NAME)
+	@echo '{"session_id":"test-session-$(shell date +%s)","workspace":{"current_dir":"'$$(pwd)'"},"model":{"display_name":"Claude Sonnet 4.5"},"cost":{"total_cost_usd":0.05},"context_usage":{"input_tokens":50000,"output_tokens":2000}}' | XDG_DATA_HOME=~/.local/share-test $(TARGET_DIR)/release/$(BINARY_NAME)
 	@echo ""
 	@echo "$(GREEN)✓$(NC) Test completed - production database untouched"
 	@echo ""

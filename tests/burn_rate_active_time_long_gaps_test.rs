@@ -1,16 +1,12 @@
 //! Integration test for active_time burn rate mode with long inactivity gaps (24+ hours)
 //!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! This test MUST run in a separate process from other burn_rate tests because:
-//! - Config is initialized ONCE per process using OnceLock (src/config.rs)
-//! - The FIRST get_config() call fixes burn_rate.mode for the entire test binary
-//! - Setting STATUSLINE_BURN_RATE_MODE mid-test has NO EFFECT after first call
-//! - Tests with different modes need separate processes to work correctly
-//!
-//! To run in isolation: cargo test test_active_time_ignores_24_hour_gap -- --test-threads=1
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
 //!
 //! Tests that active_time mode correctly excludes overnight/multi-day gaps
 //! from accumulated time when gap exceeds threshold.
+
+mod test_support;
 
 use std::env;
 use tempfile::TempDir;
@@ -19,7 +15,10 @@ use tempfile::TempDir;
 fn test_active_time_ignores_24_hour_gap() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
-    // Set environment variables BEFORE any code that might call get_config()
+    // Initialize test environment isolation
+    let _guard = test_support::init();
+
+    // Set test-specific env vars after isolation init
     env::set_var("STATUSLINE_BURN_RATE_MODE", "active_time");
     env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "60"); // 60 minutes = 1 hour
 
@@ -193,6 +192,7 @@ fn test_active_time_ignores_24_hour_gap() {
 
 #[test]
 fn test_active_time_multiple_days_with_work_periods() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test scenario: Work for a few seconds, then overnight gap, then more work
@@ -353,6 +353,7 @@ fn test_active_time_multiple_days_with_work_periods() {
 
 #[test]
 fn test_active_time_week_long_session() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Realistic scenario: Active work across a week with overnight gaps

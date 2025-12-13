@@ -2,6 +2,11 @@
 //!
 //! These tests verify that user-controlled data (workspace_dir, device_id, model_name)
 //! is properly sanitized before being printed to the terminal.
+//!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use std::fs;
 use std::path::PathBuf;
@@ -112,6 +117,7 @@ fn setup_test_database_with_malicious_data() -> TempDir {
 
 #[test]
 fn test_context_learning_status_sanitizes_model_name() {
+    let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
     let output = Command::new(get_binary_path())
@@ -150,6 +156,7 @@ fn test_context_learning_status_sanitizes_model_name() {
 
 #[test]
 fn test_context_learning_details_sanitizes_workspace() {
+    let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
     let output = Command::new(get_binary_path())
@@ -175,6 +182,7 @@ fn test_context_learning_details_sanitizes_workspace() {
 
 #[test]
 fn test_context_learning_details_sanitizes_device_id() {
+    let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
     let output = Command::new(get_binary_path())
@@ -201,6 +209,7 @@ fn test_context_learning_details_sanitizes_device_id() {
 
 #[test]
 fn test_context_learning_handles_missing_model() {
+    let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
     // Try to get details for a model that doesn't exist

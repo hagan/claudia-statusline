@@ -126,6 +126,38 @@ The codebase is organized into focused modules:
 3. **SQLite Tests**: Add to `tests/sqlite_integration_tests.rs`
 4. **Property Tests**: Add to `tests/proptest_tests.rs`
 
+#### Test Environment Isolation
+
+**Important**: All integration tests must use environment isolation to prevent test failures caused by host configuration files (e.g., `~/.config/claudia-statusline/config.toml`).
+
+Add this at the start of **every** test function in `tests/` files:
+
+```rust
+mod test_support;
+
+#[test]
+fn test_your_feature() {
+    let _guard = test_support::init();
+    // Your test code here - environment is now isolated
+}
+```
+
+The `test_support::init()` function:
+- Redirects `HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME` to temp directories
+- Clears all `STATUSLINE_*` and `CLAUDE_*` environment variables
+- Ensures tests use default config values, not your personal settings
+
+If your test needs specific env vars, set them **after** calling `init()`:
+
+```rust
+#[test]
+fn test_with_custom_env() {
+    let _guard = test_support::init();
+    std::env::set_var("STATUSLINE_THEME", "light");  // Set after init()
+    // Test code...
+}
+```
+
 Run specific test categories:
 ```bash
 cargo test --lib                    # Unit tests only

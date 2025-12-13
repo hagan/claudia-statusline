@@ -1,14 +1,12 @@
 //! Integration test for auto_reset burn rate mode with long inactivity (weekend/vacation)
 //!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! Config is initialized ONCE per process using OnceLock, so the FIRST test
-//! that calls get_config() fixes all settings for the entire test binary.
-//!
-//! Solution: Only the first test can set env vars that affect config.
-//! Subsequent tests inherit those settings.
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
 //!
 //! Tests that auto_reset properly archives and resets sessions after extended
 //! inactivity periods (days, not just seconds).
+
+mod test_support;
 
 use std::env;
 use tempfile::TempDir;
@@ -17,7 +15,10 @@ use tempfile::TempDir;
 fn test_auto_reset_after_weekend() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
-    // Set environment variables BEFORE any code that might call get_config()
+    // Initialize test environment isolation
+    let _guard = test_support::init();
+
+    // Set test-specific env vars after isolation init
     env::set_var("STATUSLINE_BURN_RATE_MODE", "auto_reset");
     env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "60"); // 60 minutes threshold
 
@@ -183,6 +184,7 @@ fn test_auto_reset_after_weekend() {
 
 #[test]
 fn test_auto_reset_after_vacation() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test even longer gap - 7 days (vacation)
@@ -299,6 +301,7 @@ fn test_auto_reset_after_vacation() {
 
 #[test]
 fn test_auto_reset_multiple_gaps() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test multiple long gaps - should create multiple archives

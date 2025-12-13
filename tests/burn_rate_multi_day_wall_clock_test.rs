@@ -1,16 +1,12 @@
 //! Integration test for wall_clock burn rate mode with multi-day sessions
 //!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! This test MUST run in a separate process from other burn_rate tests because:
-//! - Config is initialized ONCE per process using OnceLock (src/config.rs)
-//! - The FIRST get_config() call fixes burn_rate.mode for the entire test binary
-//! - Setting STATUSLINE_BURN_RATE_MODE mid-test has NO EFFECT after first call
-//! - Tests with different modes need separate processes to work correctly
-//!
-//! To run in isolation: cargo test test_wall_clock_multi_day_session -- --test-threads=1
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
 //!
 //! Tests that wall_clock mode correctly calculates burn rate for sessions
 //! running multiple days, including all idle time (overnight, weekends, etc.).
+
+mod test_support;
 
 use std::env;
 use tempfile::TempDir;
@@ -18,6 +14,9 @@ use tempfile::TempDir;
 #[test]
 fn test_wall_clock_multi_day_session() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
+
+    // Initialize test environment isolation
+    let _guard = test_support::init();
 
     // Wall-clock mode is the default, but set explicitly for clarity
     env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
@@ -117,6 +116,7 @@ fn test_wall_clock_multi_day_session() {
 
 #[test]
 fn test_wall_clock_30_day_session() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
@@ -206,6 +206,7 @@ fn test_wall_clock_30_day_session() {
 
 #[test]
 fn test_wall_clock_very_old_session() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test with very old session (90 days) to verify timestamp parsing

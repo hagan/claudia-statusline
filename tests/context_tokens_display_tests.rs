@@ -2,6 +2,11 @@
 //!
 //! Tests that the optional token-count suffix (e.g., " 179k/1000k")
 //! appears only when show_context_tokens is enabled.
+//!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -71,6 +76,7 @@ fn create_transcript(input_tokens: u32, output_tokens: u32) -> std::path::PathBu
 
 #[test]
 fn test_context_tokens_shown_when_enabled() {
+    let _guard = test_support::init();
     // Create temp directory to avoid polluting user stats
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -127,6 +133,7 @@ fn test_context_tokens_shown_when_enabled() {
 
 #[test]
 fn test_context_tokens_hidden_when_disabled() {
+    let _guard = test_support::init();
     // Create temp directory to avoid polluting user stats
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -186,6 +193,7 @@ fn test_context_tokens_hidden_when_disabled() {
 
 #[test]
 fn test_context_tokens_formatting() {
+    let _guard = test_support::init();
     // Create temp directory to avoid polluting user stats
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -248,6 +256,7 @@ fn test_context_tokens_formatting() {
 
 #[test]
 fn test_context_tokens_without_transcript() {
+    let _guard = test_support::init();
     // Create temp directory to avoid polluting user stats
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 

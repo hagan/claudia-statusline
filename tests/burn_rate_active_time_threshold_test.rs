@@ -1,11 +1,9 @@
 //! Integration test for active_time burn rate mode - inactivity threshold
 //!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! Config is initialized ONCE per process using OnceLock, so the FIRST test
-//! that calls get_config() fixes all settings for the entire test binary.
-//!
-//! Solution: Only the first test can set env vars that affect config.
-//! Subsequent tests inherit those settings.
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use std::env;
 use tempfile::TempDir;
@@ -16,7 +14,10 @@ use tempfile::TempDir;
 fn test_active_time_respects_threshold() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
-    // Set a very short threshold for testing (0 minutes = always idle)
+    // Initialize test environment isolation
+    let _guard = test_support::init();
+
+    // Set test-specific env vars after isolation init
     env::set_var("STATUSLINE_BURN_RATE_MODE", "active_time");
     env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "0"); // 0 minutes = always idle
 

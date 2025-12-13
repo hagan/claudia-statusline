@@ -2,6 +2,11 @@
 //!
 //! Tests that all `show_*` flags in DisplayConfig work correctly
 //! and don't introduce regressions like double separators.
+//!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use statusline::config::Config;
 use statusline::display::format_output_to_string;
@@ -73,6 +78,7 @@ fn assert_clean_separators(output: &str) {
 
 #[test]
 fn test_baseline_all_components_enabled() {
+    let _guard = test_support::init();
     // Clear NO_COLOR to ensure colors work
     std::env::remove_var("NO_COLOR");
 
@@ -93,6 +99,7 @@ fn test_baseline_all_components_enabled() {
 
 #[test]
 fn test_directory_disabled() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     let output = format_output_to_string(
@@ -115,6 +122,7 @@ fn test_directory_disabled() {
 
 #[test]
 fn test_model_display() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     let output = format_output_to_string("/test", Some("Claude 3.5 Sonnet"), None, None, 0.0, None);
@@ -125,6 +133,7 @@ fn test_model_display() {
 
 #[test]
 fn test_lines_changed_display() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     let cost = Cost {
@@ -148,6 +157,7 @@ fn test_lines_changed_display() {
 
 #[test]
 fn test_cost_display() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     let cost = Cost {
@@ -167,6 +177,7 @@ fn test_cost_display() {
 
 #[test]
 fn test_cost_disabled_but_daily_total_present() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     // No session cost, but daily total exists
@@ -189,6 +200,7 @@ fn test_cost_disabled_but_daily_total_present() {
 
 #[test]
 fn test_duration_display() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     // Create a transcript with 5 minutes duration
@@ -214,6 +226,7 @@ fn test_duration_display() {
 
 #[test]
 fn test_multiple_components() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     let cost = Cost {
@@ -251,6 +264,7 @@ fn test_multiple_components() {
 
 #[test]
 fn test_no_double_separators_regression() {
+    let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
     // This is the key regression test - with minimal components,
@@ -272,6 +286,7 @@ fn test_no_double_separators_regression() {
 #[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
 #[ignore] // Flaky: NO_COLOR env var can be cached by earlier tests
 fn test_with_no_color_env() {
+    let _guard = test_support::init();
     // Save original state
     let original_no_color = std::env::var("NO_COLOR").ok();
 
