@@ -1,20 +1,21 @@
 //! Integration test for burn rate calculation with very long sessions (90+ days)
 //!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+//!
 //! Tests that burn rate calculations maintain precision and display correctly
 //! for sessions running weeks to months.
-//!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! Config is initialized ONCE per process using OnceLock, so the FIRST test
-//! that calls get_config() fixes all settings for the entire test binary.
-//!
-//! Solution: Only the first test can set env vars that affect config.
-//! Subsequent tests inherit those settings.
+
+mod test_support;
 
 use tempfile::TempDir;
 
 #[test]
 fn test_burn_rate_precision_very_long_sessions() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
+
+    // Initialize test environment isolation
+    let _guard = test_support::init();
 
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
@@ -167,6 +168,7 @@ fn test_burn_rate_precision_very_long_sessions() {
 
 #[test]
 fn test_burn_rate_display_formatting_edge_cases() {
+    let _guard = test_support::init();
     // Test display formatting with various burn rates
 
     // Very small rates
@@ -211,6 +213,7 @@ fn test_burn_rate_display_formatting_edge_cases() {
 
 #[test]
 fn test_very_large_duration_calculations() {
+    let _guard = test_support::init();
     // Test that duration calculations don't overflow with very large values
 
     // u64 max is 18,446,744,073,709,551,615 seconds (~584 billion years)

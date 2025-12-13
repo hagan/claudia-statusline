@@ -1,11 +1,9 @@
 //! Integration test for auto_reset burn rate mode - cumulative cost handling
 //!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! Config is initialized ONCE per process using OnceLock, so the FIRST test
-//! that calls get_config() fixes all settings for the entire test binary.
-//!
-//! Solution: Only the first test can set env vars that affect config.
-//! Subsequent tests inherit those settings.
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use statusline::database::{SessionUpdate, SqliteDatabase};
 use std::env;
@@ -19,7 +17,10 @@ use tempfile::TempDir;
 /// 4. Daily stats became $200 instead of $100
 #[test]
 fn test_auto_reset_cumulative_cost_no_double_count() {
-    // Set environment variables for auto_reset mode with 0-second threshold
+    // Initialize test environment isolation
+    let _guard = test_support::init();
+
+    // Set test-specific env vars after isolation init
     env::set_var("STATUSLINE_BURN_RATE_MODE", "auto_reset");
     env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "0"); // Immediate reset
 

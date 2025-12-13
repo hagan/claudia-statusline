@@ -1,3 +1,10 @@
+//! Integration tests for SQLite database operations.
+//!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
+
 use std::fs;
 use std::io::Write;
 use std::sync::Arc;
@@ -25,6 +32,7 @@ fn get_test_binary() -> String {
 // Test the dual-write functionality
 #[test]
 fn test_dual_write_creates_both_files() {
+    let _guard = test_support::init();
     let temp_dir = TempDir::new().unwrap();
     let data_dir = temp_dir.path().join("claudia-statusline");
     fs::create_dir_all(&data_dir).unwrap();
@@ -99,6 +107,7 @@ fn test_dual_write_creates_both_files() {
 
 #[test]
 fn test_concurrent_sqlite_access() {
+    let _guard = test_support::init();
     use rusqlite::Connection;
 
     let temp_dir = TempDir::new().unwrap();
@@ -151,6 +160,7 @@ fn test_concurrent_sqlite_access() {
 
 #[test]
 fn test_sqlite_wal_mode() {
+    let _guard = test_support::init();
     use rusqlite::Connection;
 
     let temp_dir = TempDir::new().unwrap();
@@ -174,6 +184,7 @@ fn test_sqlite_wal_mode() {
 
 #[test]
 fn test_json_to_sqlite_migration() {
+    let _guard = test_support::init();
     use rusqlite::Connection;
     use serde_json::json;
 
@@ -279,6 +290,7 @@ fn test_json_to_sqlite_migration() {
 
 #[test]
 fn test_sqlite_transaction_rollback() {
+    let _guard = test_support::init();
     use rusqlite::Connection;
 
     let temp_dir = TempDir::new().unwrap();
@@ -313,6 +325,7 @@ fn test_sqlite_transaction_rollback() {
 
 #[test]
 fn test_sqlite_upsert_behavior() {
+    let _guard = test_support::init();
     use rusqlite::Connection;
 
     let temp_dir = TempDir::new().unwrap();
@@ -360,6 +373,7 @@ fn test_sqlite_upsert_behavior() {
 
 #[test]
 fn test_database_corruption_recovery() {
+    let _guard = test_support::init();
     // Skip this test in CI due to file system timing issues
     if std::env::var("CI").is_ok() {
         println!("Skipping test_database_corruption_recovery in CI environment");
@@ -408,6 +422,7 @@ fn test_database_corruption_recovery() {
 
 #[test]
 fn test_sqlite_busy_timeout() {
+    let _guard = test_support::init();
     // Skip this test in CI due to timing issues
     if std::env::var("CI").is_ok() {
         println!("Skipping test_sqlite_busy_timeout in CI environment");
@@ -461,6 +476,7 @@ fn test_sqlite_busy_timeout() {
 
 #[test]
 fn test_schema_migrations_table() {
+    let _guard = test_support::init();
     use rusqlite::Connection;
 
     let temp_dir = TempDir::new().unwrap();
@@ -501,6 +517,7 @@ fn test_schema_migrations_table() {
 #[test]
 #[serial_test::serial]
 fn test_cost_reduction_updates_correctly() {
+    let _guard = test_support::init();
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
@@ -565,6 +582,7 @@ fn test_cost_reduction_updates_correctly() {
 #[test]
 #[serial_test::serial]
 fn test_unchanged_cost_updates_metadata() {
+    let _guard = test_support::init();
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
@@ -624,6 +642,7 @@ fn test_unchanged_cost_updates_metadata() {
 #[test]
 #[serial_test::serial]
 fn test_multiple_sessions_increment_count() {
+    let _guard = test_support::init();
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
@@ -676,6 +695,7 @@ fn test_multiple_sessions_increment_count() {
 #[test]
 #[serial_test::serial]
 fn test_line_counts_use_deltas() {
+    let _guard = test_support::init();
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
@@ -736,6 +756,7 @@ fn test_line_counts_use_deltas() {
 #[test]
 #[serial_test::serial]
 fn test_multi_day_session_counts_correctly() {
+    let _guard = test_support::init();
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());
@@ -810,6 +831,7 @@ fn test_multi_day_session_counts_correctly() {
 #[test]
 #[serial_test::serial]
 fn test_monthly_sessions_no_overcount() {
+    let _guard = test_support::init();
     use tempfile::TempDir;
     let temp_dir = TempDir::new().unwrap();
     std::env::set_var("XDG_DATA_HOME", temp_dir.path());

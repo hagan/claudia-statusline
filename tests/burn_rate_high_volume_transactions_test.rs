@@ -1,18 +1,16 @@
 //! Integration test for burn rate calculation with high transaction volumes
 //!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+//!
 //! Tests that burn rate remains accurate when sessions accumulate hundreds
 //! or thousands of cost updates over hours, days, or weeks. This validates:
 //! - Cumulative cost accuracy (no rounding drift)
 //! - Burn rate stability as costs grow
 //! - Database UPSERT precision with many updates
 //! - High-frequency updates over extended periods
-//!
-//! ⚠️  CONFIG CACHING LIMITATION ⚠️
-//! Config is initialized ONCE per process using OnceLock, so the FIRST test
-//! that calls get_config() fixes all settings for the entire test binary.
-//!
-//! Solution: Only the first test can set env vars that affect config.
-//! Subsequent tests inherit those settings.
+
+mod test_support;
 
 use std::env;
 use tempfile::TempDir;
@@ -20,6 +18,9 @@ use tempfile::TempDir;
 #[test]
 fn test_high_volume_transactions_over_week() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
+
+    // Initialize test environment isolation
+    let _guard = test_support::init();
 
     // Simulate a real-world scenario: 1 week of active work
     // Reduced from 700 to 50 iterations for faster CI (still validates accumulation)
@@ -176,6 +177,7 @@ fn test_high_volume_transactions_over_week() {
 
 #[test]
 fn test_cumulative_rounding_with_tiny_costs() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test edge case: Many tiny cost increments (e.g., $0.001 each)
@@ -278,6 +280,7 @@ fn test_cumulative_rounding_with_tiny_costs() {
 
 #[test]
 fn test_high_frequency_updates_short_session() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test high-frequency updates: 100 updates over 10 seconds
@@ -388,6 +391,7 @@ fn test_high_frequency_updates_short_session() {
 
 #[test]
 fn test_mixed_update_sizes_over_days() {
+    let _guard = test_support::init();
     use statusline::database::{SessionUpdate, SqliteDatabase};
 
     // Test realistic scenario: Mix of small, medium, and large cost updates

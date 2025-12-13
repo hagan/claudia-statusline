@@ -1,4 +1,9 @@
 //! Integration tests for database maintenance functionality
+//!
+//! Uses test_support for environment isolation to ensure tests don't read
+//! host configuration files.
+
+mod test_support;
 
 use std::fs;
 use std::path::PathBuf;
@@ -135,6 +140,7 @@ fn setup_test_database() -> (TempDir, PathBuf) {
 
 #[test]
 fn test_db_maintain_command_exists() {
+    let _guard = test_support::init();
     let output = Command::new(get_binary_path())
         .arg("db-maintain")
         .arg("--help")
@@ -151,6 +157,7 @@ fn test_db_maintain_command_exists() {
 
 #[test]
 fn test_db_maintain_basic_execution() {
+    let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
     let output = Command::new(get_binary_path())
@@ -166,6 +173,7 @@ fn test_db_maintain_basic_execution() {
 
 #[test]
 fn test_db_maintain_verbose_output() {
+    let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
     let output = Command::new(get_binary_path())
@@ -191,6 +199,7 @@ fn test_db_maintain_verbose_output() {
 
 #[test]
 fn test_db_maintain_force_vacuum() {
+    let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
     let output = Command::new(get_binary_path())
@@ -207,6 +216,7 @@ fn test_db_maintain_force_vacuum() {
 
 #[test]
 fn test_db_maintain_no_prune() {
+    let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
     let output = Command::new(get_binary_path())
@@ -224,6 +234,7 @@ fn test_db_maintain_no_prune() {
 
 #[test]
 fn test_db_maintain_missing_database() {
+    let _guard = test_support::init();
     // Create a temp dir but don't create a database
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -249,6 +260,7 @@ fn test_db_maintain_missing_database() {
 
 #[test]
 fn test_maintenance_script_exists() {
+    let _guard = test_support::init();
     let script_path = PathBuf::from("scripts/maintenance.sh");
     assert!(script_path.exists(), "Maintenance script should exist");
 
@@ -267,6 +279,7 @@ fn test_maintenance_script_exists() {
 
 #[test]
 fn test_maintenance_script_help() {
+    let _guard = test_support::init();
     let output = Command::new("bash")
         .arg("scripts/maintenance.sh")
         .arg("--help")
@@ -286,6 +299,7 @@ fn test_maintenance_script_help() {
 #[test]
 #[ignore] // This test would require a corrupted database to test integrity check failure
 fn test_db_maintain_integrity_check_failure() {
+    let _guard = test_support::init();
     // This test would need to:
     // 1. Create a database
     // 2. Corrupt it somehow
@@ -298,6 +312,7 @@ fn test_db_maintain_integrity_check_failure() {
 // Test for data pruning with old records
 #[test]
 fn test_db_maintain_pruning() {
+    let _guard = test_support::init();
     // Just use the normal setup which creates a proper database
     let (temp_dir, db_path) = setup_test_database();
 
