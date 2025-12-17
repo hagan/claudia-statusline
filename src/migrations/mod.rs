@@ -166,8 +166,10 @@ impl Migration for InitialJsonToSqlite {
     }
 
     fn up(&self, tx: &Transaction) -> Result<()> {
-        // Load existing JSON data
-        let stats_data = StatsData::load();
+        // Load existing JSON data (use JSON-only to avoid SQLite recursion)
+        // IMPORTANT: Do NOT use StatsData::load() here as it tries SQLite first,
+        // which would call SqliteDatabase::new() and trigger infinite recursion
+        let stats_data = StatsData::load_from_json_only();
 
         // Import sessions
         for (session_id, session) in &stats_data.sessions {

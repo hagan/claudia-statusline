@@ -163,6 +163,23 @@ impl StatsData {
         default_data
     }
 
+    /// Load stats data from JSON file only (for migrations, avoids SQLite recursion)
+    /// This method does NOT try SQLite first, making it safe to call during migrations
+    pub fn load_from_json_only() -> Self {
+        let path = Self::get_stats_file_path();
+
+        if path.exists() {
+            if let Ok(contents) = fs::read_to_string(&path) {
+                if let Ok(data) = serde_json::from_str(&contents) {
+                    return data;
+                }
+            }
+        }
+
+        // Return default if JSON doesn't exist or can't be parsed
+        Self::default()
+    }
+
     /// Load stats data from SQLite database (Phase 2)
     pub fn load_from_sqlite() -> Result<Self> {
         let db_path = Self::get_sqlite_path()?;
