@@ -925,6 +925,22 @@ impl SqliteDatabase {
         Some(max_tokens as usize)
     }
 
+    /// Reset max_tokens_observed for a session after compaction completes
+    ///
+    /// This allows Phase 2 heuristic compaction detection to start fresh
+    /// after a compaction event, preventing false positive "Compacting..." states.
+    ///
+    /// Called by the PostCompact hook handler (via SessionStart[compact]).
+    pub fn reset_session_max_tokens(&self, session_id: &str) -> Result<()> {
+        let conn = self.get_connection()?;
+        conn.execute(
+            "UPDATE sessions SET max_tokens_observed = 0 WHERE session_id = ?1",
+            params![session_id],
+        )?;
+        log::debug!("Reset max_tokens_observed to 0 for session {}", session_id);
+        Ok(())
+    }
+
     /// Get token breakdown for a session
     ///
     /// Returns (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
@@ -2730,6 +2746,67 @@ mod tests {
             active_time,
             Some(0),
             "Active time should NOT accumulate across long gaps"
+        );
+    }
+
+    #[test]
+    fn test_reset_session_max_tokens() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        let session_id = "test-reset-max-tokens";
+
+        // Create a session with max_tokens_observed
+        let update = SessionUpdate {
+            cost: 1.0,
+            lines_added: 10,
+            lines_removed: 5,
+            model_name: Some("Opus".to_string()),
+            workspace_dir: None,
+            device_id: None,
+            token_breakdown: None,
+            max_tokens_observed: Some(150000), // 150K tokens
+            active_time_seconds: None,
+            last_activity: None,
+        };
+        db.update_session(session_id, update).unwrap();
+
+        // Verify max_tokens was set
+        let max_before = db.get_session_max_tokens(session_id);
+        assert_eq!(
+            max_before,
+            Some(150000),
+            "max_tokens_observed should be 150000"
+        );
+
+        // Reset max_tokens (simulates PostCompact handler)
+        db.reset_session_max_tokens(session_id).unwrap();
+
+        // Verify max_tokens is now 0
+        let max_after = db.get_session_max_tokens(session_id);
+        assert_eq!(
+            max_after,
+            Some(0),
+            "max_tokens_observed should be reset to 0 after PostCompact"
+        );
+    }
+
+    #[test]
+    fn test_reset_session_max_tokens_nonexistent_session() {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test.db");
+        let db = SqliteDatabase::new(&db_path).unwrap();
+
+        // Reset on non-existent session should not error (no rows affected)
+        let result = db.reset_session_max_tokens("nonexistent-session");
+        assert!(
+            result.is_ok(),
+            "Reset on non-existent session should succeed"
         );
     }
 }

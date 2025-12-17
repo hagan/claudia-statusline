@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - **Current directory** with `~` shorthand
 - **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
 - **Context usage** with progress bar (45% [====------])
-- **Real-time compaction detection** - instant feedback via hooks (~600x faster)
+- **Real-time compaction detection** (experimental) - instant feedback via hooks (~600x faster)
   - Normal: `79% [========>-] ⚠` (warning when approaching limit)
   - In Progress: `Compacting... ⠋` (hook-based, <1ms detection)
   - Completed: `35% [===>------] ✓` (checkmark after successful compact)
@@ -47,7 +47,7 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 - **4 model formats** (abbreviation: O4.5, full: Claude Opus 4.5, name: Opus, version: 4.5)
 - SQLite database for reliability
 - **Token rate metrics** (opt-in) - display tokens/second with cache efficiency tracking
-- **Hook-based compaction detection** (opt-in) - instant real-time feedback via Claude Code hooks
+- **Hook-based compaction detection** (experimental, opt-in) - instant real-time feedback via Claude Code hooks
 - **Adaptive context learning** (experimental, opt-in) - learns actual context limits by observing usage
 - No configuration needed (smart defaults)
 
@@ -384,12 +384,12 @@ See [Installation Guide](docs/INSTALLATION.md#building-from-source) for details.
 </details>
 
 <details>
-<summary><b>Hook-Based Compaction Detection</b></summary>
+<summary><b>Hook-Based Compaction Detection (Experimental)</b></summary>
 
 Get **instant real-time feedback** when Claude compacts your context (~600x faster than token-based detection):
 
 ```json
-# Configure Claude Code hooks (in ~/.claude/settings.json or settings.local.json):
+// Configure Claude Code hooks (in ~/.claude/settings.json or settings.local.json):
 {
   "hooks": {
     "PreCompact": [
@@ -402,12 +402,13 @@ Get **instant real-time feedback** when Claude compacts your context (~600x fast
         ]
       }
     ],
-    "Stop": [
+    "SessionStart": [
       {
+        "matcher": "compact",
         "hooks": [
           {
             "type": "command",
-            "command": "statusline hook stop"
+            "command": "statusline hook postcompact"
           }
         ]
       }
@@ -417,10 +418,14 @@ Get **instant real-time feedback** when Claude compacts your context (~600x fast
 ```
 
 **How it works:**
-- Claude fires `PreCompact` hook when compaction starts
-- Statusline shows "Compacting..." instead of percentage
-- Claude fires `Stop` hook when done
-- Falls back to token-based detection if hooks not configured
+1. Claude fires `PreCompact` hook when compaction starts
+2. Statusline shows "Compacting..." instead of percentage
+3. Claude fires `SessionStart[compact]` when compaction completes
+4. Statusline returns to normal display
+5. Falls back to token-based detection if hooks not configured
+
+> **Note**: Claude Code doesn't have a dedicated `PostCompact` hook. Use
+> `SessionStart` with matcher `"compact"` which fires after compaction.
 
 **Benefits:**
 - <1ms detection vs 60s+ token analysis

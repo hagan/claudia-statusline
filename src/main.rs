@@ -205,6 +205,18 @@ enum HookAction {
         #[arg(long)]
         session_id: Option<String>,
     },
+
+    /// PostCompact hook - called after compaction completes (via SessionStart[compact])
+    ///
+    /// Configure in Claude Code settings with SessionStart hook and matcher "compact":
+    /// ```json
+    /// "SessionStart": [{"matcher": "compact", "hooks": [{"type": "command", "command": "statusline hook postcompact"}]}]
+    /// ```
+    Postcompact {
+        /// Session ID from Claude (if not provided, reads from stdin JSON)
+        #[arg(long)]
+        session_id: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -1624,6 +1636,18 @@ fn handle_hook_command(action: HookAction) -> Result<()> {
 
             hook_handler::handle_stop(&sid)?;
             println!("Stop hook processed for session: {}", sid);
+        }
+        HookAction::Postcompact { session_id } => {
+            // If CLI arg provided, use it; otherwise read from stdin
+            let sid = if let Some(s) = session_id {
+                s
+            } else {
+                let (s, _) = read_hook_json_from_stdin()?;
+                s
+            };
+
+            hook_handler::handle_postcompact(&sid)?;
+            println!("PostCompact hook processed for session: {}", sid);
         }
     }
     Ok(())
