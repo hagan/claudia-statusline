@@ -46,6 +46,14 @@ fn execute_git_command<P: AsRef<Path>>(dir: P, args: &[&str]) -> Option<Output> 
 /// Internal function that executes a git command with proper timeout support.
 ///
 /// Returns the command output if successful, or None if timeout/failure occurs.
+///
+/// Note: This implementation avoids spawning threads to read stdout/stderr,
+/// which can fail on FreeBSD with EAGAIN. Instead, we wait for the process
+/// to complete and then read the pipes sequentially.
+///
+/// Safe commands: `git status --porcelain`, `git rev-parse`, `git branch` -
+/// these produce small output well under the ~64KB pipe buffer limit.
+/// Unsafe: commands like `git log` or `git diff` with large output could deadlock.
 fn execute_git_with_timeout<P: AsRef<Path>>(
     dir: P,
     args: &[&str],
@@ -60,24 +68,7 @@ fn execute_git_with_timeout<P: AsRef<Path>>(
 
     let mut child = cmd.spawn().ok()?;
 
-    // Capture stdout and stderr
-    let mut stdout = child.stdout.take()?;
-    let mut stderr = child.stderr.take()?;
-
-    // Start threads to read the output
-    let stdout_handle = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        stdout.read_to_end(&mut output).ok();
-        output
-    });
-
-    let stderr_handle = std::thread::spawn(move || {
-        let mut output = Vec::new();
-        stderr.read_to_end(&mut output).ok();
-        output
-    });
-
-    // Wait for the timeout duration
+    // Wait for the timeout duration, polling for completion
     let timeout = Duration::from_millis(timeout_ms as u64);
     let start = Instant::now();
 
@@ -85,6 +76,7 @@ fn execute_git_with_timeout<P: AsRef<Path>>(
         if start.elapsed() > timeout {
             // Timeout reached, kill the process
             let _ = child.kill();
+            let _ = child.wait(); // Reap the process
             log::info!(
                 "Git command timed out after {}ms: git {}",
                 timeout_ms,
@@ -95,9 +87,18 @@ fn execute_git_with_timeout<P: AsRef<Path>>(
 
         match child.try_wait() {
             Ok(Some(status)) => {
-                // Process finished, collect output
-                let stdout_data = stdout_handle.join().unwrap_or_default();
-                let stderr_data = stderr_handle.join().unwrap_or_default();
+                // Process finished, read output sequentially
+                // This is safe for small outputs (git status) and avoids
+                // thread spawning which fails on FreeBSD
+                let mut stdout_data = Vec::new();
+                let mut stderr_data = Vec::new();
+
+                if let Some(mut stdout) = child.stdout.take() {
+                    let _ = stdout.read_to_end(&mut stdout_data);
+                }
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_end(&mut stderr_data);
+                }
 
                 return Some(Output {
                     status,

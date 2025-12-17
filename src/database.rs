@@ -2,12 +2,10 @@ use crate::common::{current_date, current_month, current_timestamp};
 use crate::config;
 use crate::retry::{retry_if_retryable, RetryConfig};
 use chrono::Local;
-use r2d2::{Pool, PooledConnection};
-use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, Connection, OptionalExtension, Result, Transaction};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 // Track which database files have been migrated to avoid redundant migration checks
 static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
@@ -189,12 +187,8 @@ impl SessionUpdate {
 pub struct SqliteDatabase {
     #[allow(dead_code)]
     path: PathBuf,
-    pool: Arc<Pool<SqliteConnectionManager>>,
+    conn: Mutex<Connection>,
 }
-
-#[allow(dead_code)]
-type DbPool = Pool<SqliteConnectionManager>;
-type DbConnection = PooledConnection<SqliteConnectionManager>;
 
 impl SqliteDatabase {
     pub fn new(db_path: &Path) -> Result<Self> {
@@ -229,32 +223,14 @@ impl SqliteDatabase {
         // Get configuration
         let config = config::get_config();
 
-        // Create connection pool
-        let manager = SqliteConnectionManager::file(db_path).with_init(move |conn| {
-            // Enable WAL mode for concurrent access
-            conn.pragma_update(None, "journal_mode", "WAL")?;
-            conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms)?;
-            conn.pragma_update(None, "synchronous", "NORMAL")?; // Balance between safety and speed
-            Ok(())
-        });
+        // Open connection directly - avoids thread-spawning issues on FreeBSD
+        // (r2d2's scheduled-thread-pool fails with EAGAIN on FreeBSD)
+        let conn = Connection::open(db_path)?;
 
-        let pool = Pool::builder()
-            .max_size(config.database.max_connections)
-            .build(manager)
-            .map_err(|e| {
-                rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-                    Some(format!("Failed to create connection pool: {}", e)),
-                )
-            })?;
-
-        // Initialize database with schema using a connection from the pool
-        let conn = pool.get().map_err(|e| {
-            rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
-                Some(format!("Failed to get connection from pool: {}", e)),
-            )
-        })?;
+        // Apply pragmas for WAL mode and concurrency
+        conn.pragma_update(None, "journal_mode", "WAL")?;
+        conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms)?;
+        conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         // Check if this is a new database by looking for existing sessions table
         // A truly new database has no tables at all
@@ -311,9 +287,6 @@ impl SqliteDatabase {
                 "#,
             )?;
         }
-
-        // Drop the connection before running migrations (migrations need exclusive access)
-        drop(conn);
 
         // Run migrations only if not already done for this database file
         // This avoids redundant migration checks on hot paths (update_session, etc.)
@@ -375,10 +348,10 @@ impl SqliteDatabase {
             }
         }
 
-        // Create the database wrapper with correct schema
+        // Create the database wrapper with the connection
         let db = Self {
             path: db_path.to_path_buf(),
-            pool: Arc::new(pool),
+            conn: Mutex::new(conn),
         };
 
         Ok(db)
@@ -432,25 +405,14 @@ impl SqliteDatabase {
         })
     }
 
-    fn get_connection(&self) -> Result<DbConnection> {
-        // Use retry logic for getting database connections
-        let retry_config = RetryConfig::for_db_ops();
-
-        retry_if_retryable(&retry_config, || {
-            self.pool.get().map_err(|e| {
-                let error = rusqlite::Error::SqliteFailure(
-                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                    Some(format!("Failed to get connection from pool: {}", e)),
-                );
-                crate::error::StatuslineError::Database(error)
-            })
-        })
-        .map_err(|e| match e {
-            crate::error::StatuslineError::Database(db_err) => db_err,
-            _ => rusqlite::Error::SqliteFailure(
+    fn get_connection(&self) -> Result<MutexGuard<'_, Connection>> {
+        // Lock the mutex to get exclusive access to the connection
+        // If the mutex is poisoned (previous panic while holding lock), recover the inner value
+        self.conn.lock().map_err(|_| {
+            rusqlite::Error::SqliteFailure(
                 rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
-                Some(e.to_string()),
-            ),
+                Some("Connection mutex poisoned".to_string()),
+            )
         })
     }
 

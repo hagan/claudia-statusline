@@ -245,9 +245,6 @@ pub struct CostConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DatabaseConfig {
-    /// Maximum connection pool size
-    pub max_connections: u32,
-
     /// Busy timeout in milliseconds
     pub busy_timeout_ms: u32,
 
@@ -859,7 +856,6 @@ impl Default for CostConfig {
 impl Default for DatabaseConfig {
     fn default() -> Self {
         DatabaseConfig {
-            max_connections: 5,
             busy_timeout_ms: 10000,
             path: "stats.db".to_string(),
             json_backup: true, // Default to true for backward compatibility
@@ -1177,7 +1173,6 @@ medium_threshold = 20.0  # Yellow between low and medium, red above
 
 [database]
 # Database connection settings
-max_connections = 5
 busy_timeout_ms = 10000
 path = "stats.db"  # Relative to data directory
 json_backup = true  # Maintain JSON backup alongside SQLite (set to false for SQLite-only mode)

@@ -24,10 +24,6 @@ pub enum StatuslineError {
     #[error("Database error: {0}")]
     Database(#[from] rusqlite::Error),
 
-    /// Connection pool errors
-    #[error("Connection pool error: {0}")]
-    ConnectionPool(#[from] r2d2::Error),
-
     /// Git operation errors
     #[error("Git operation failed: {0}")]
     GitOperation(String),
