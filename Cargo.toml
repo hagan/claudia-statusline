@@ -27,8 +27,6 @@ toml = "0.8"  # TOML parsing and serialization
 chrono = { version = "0.4", features = ["serde"] }
 fs2 = "0.4"  # For file locking across processes
 rusqlite = { version = "0.31", features = ["bundled", "chrono"] }  # SQLite for concurrent stats
-r2d2 = "0.8"  # Connection pooling
-r2d2_sqlite = "0.24"  # SQLite adapter for r2d2
 thiserror = "1.0"  # Unified error handling
 dirs = "5.0"  # For finding config directories
 clap = { version = "4.5", features = ["derive"] }  # CLI argument parsing
