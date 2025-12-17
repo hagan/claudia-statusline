@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **PostCompact hook handler**: New `statusline hook postcompact` command for proper post-compaction cleanup
+  - Triggered via Claude Code's `SessionStart` hook with matcher `"compact"`
+  - Clears compaction state file created by PreCompact
+  - Resets `max_tokens_observed` to prevent Phase 2 false positives
+  - Fixes long-standing "Compacting..." persistence bug after auto-compact events
+
+### Changed
+
+- **Hook configuration**: Updated recommended hook setup to use `SessionStart[compact]` instead of `Stop`
+  - `Stop` hook fires after EVERY agent response (wrong for post-compaction cleanup)
+  - `SessionStart[compact]` fires exactly once when compaction completes
+
+### Fixed
+
+- **Compaction cleanup**: "Compacting..." no longer persists after compaction completes
+  - Root cause: Claude Code doesn't have a dedicated `PostCompact` hook
+  - Discovery: `SessionStart` with matcher `"compact"` IS the post-compaction hook
+  - Previous workaround using `Stop` hook was incorrect (fired too frequently)
+
 ## [2.21.1] - 2025-11-29
 
 ### Fixed
