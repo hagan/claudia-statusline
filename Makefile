@@ -62,6 +62,13 @@ help:
 	@echo "  $(YELLOW)make tag$(NC)          - Create git tag for release"
 	@echo "  $(YELLOW)make release-build$(NC) - Build release with version tag"
 	@echo ""
+	@echo "$(GREEN)Release upload targets:$(NC)"
+	@echo "  $(YELLOW)make upload-release TAG=vX.X.X$(NC)      - Upload binary to GitHub release"
+	@echo "  $(YELLOW)make upload-release-turso TAG=vX.X.X$(NC) - Upload Turso variant"
+	@echo "  $(YELLOW)make upload-windows TAG=vX.X.X$(NC)      - Upload Windows binary"
+	@echo "  $(YELLOW)make upload-macos TAG=vX.X.X$(NC)        - Upload macOS binary"
+	@echo "  $(YELLOW)make upload-freebsd TAG=vX.X.X$(NC)      - Upload FreeBSD binary"
+	@echo ""
 	@echo "$(GREEN)Installation paths:$(NC)"
 	@echo "  Binary: $(INSTALL_DIR)/$(BINARY_NAME)"
 	@echo ""
@@ -307,6 +314,65 @@ ifeq ($(UNAME_S),Darwin)
 else
     SED_INPLACE := sed -i
 endif
+
+# Upload release binary to GitHub (for manual platform uploads)
+# Usage: make upload-release TAG=v2.21.1
+.PHONY: upload-release
+upload-release: release
+	@if [ -z "$(TAG)" ]; then \
+		echo "$(RED)Error: TAG is required$(NC)"; \
+		echo "Usage: make upload-release TAG=v2.21.1"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Uploading release binary for $(TAG)...$(NC)"
+	@./scripts/upload-release.sh $(TAG)
+
+# Upload release binary with Turso sync feature
+# Usage: make upload-release-turso TAG=v2.21.1
+.PHONY: upload-release-turso
+upload-release-turso:
+	@if [ -z "$(TAG)" ]; then \
+		echo "$(RED)Error: TAG is required$(NC)"; \
+		echo "Usage: make upload-release-turso TAG=v2.21.1"; \
+		exit 1; \
+	fi
+	@echo "$(BLUE)Building with turso-sync feature...$(NC)"
+	@$(CARGO) build --release --features turso-sync
+	@echo "$(BLUE)Uploading Turso release binary for $(TAG)...$(NC)"
+	@./scripts/upload-release.sh $(TAG) --turso
+
+# Upload Windows release (run from Windows)
+# Usage: make upload-windows TAG=v2.21.1
+.PHONY: upload-windows
+upload-windows: release
+	@if [ -z "$(TAG)" ]; then \
+		echo "$(RED)Error: TAG is required$(NC)"; \
+		echo "Usage: make upload-windows TAG=v2.21.1"; \
+		exit 1; \
+	fi
+	@./scripts/upload-windows-release.sh $(TAG)
+
+# Upload macOS release (run from Mac)
+# Usage: make upload-macos TAG=v2.21.1
+.PHONY: upload-macos
+upload-macos: release
+	@if [ -z "$(TAG)" ]; then \
+		echo "$(RED)Error: TAG is required$(NC)"; \
+		echo "Usage: make upload-macos TAG=v2.21.1"; \
+		exit 1; \
+	fi
+	@./scripts/upload-macos-release.sh $(TAG)
+
+# Upload FreeBSD release (run from FreeBSD)
+# Usage: make upload-freebsd TAG=v2.21.1
+.PHONY: upload-freebsd
+upload-freebsd: release
+	@if [ -z "$(TAG)" ]; then \
+		echo "$(RED)Error: TAG is required$(NC)"; \
+		echo "Usage: make upload-freebsd TAG=v2.21.1"; \
+		exit 1; \
+	fi
+	@./scripts/upload-freebsd-release.sh $(TAG)
 
 # Manual testing with isolated test database
 .PHONY: test-manual

@@ -31,21 +31,21 @@ jobs:
           # Check if this commit is on main
           if git branch -r --contains $TAG_COMMIT | grep -q 'origin/main'; then
             echo "on-main=true" >> $GITHUB_OUTPUT
-            echo "✅ Tag is on main branch"
+            echo "Tag is on main branch"
           else
             echo "on-main=false" >> $GITHUB_OUTPUT
-            echo "❌ Tag is NOT on main branch"
+            echo "Tag is NOT on main branch"
             echo "ERROR: Releases can only be created from tags on the main branch"
             exit 1
           fi
 
-  build:
+  # Build Linux binaries only - these are reliable from CI
+  build-linux:
     needs: check-branch
     if: needs.check-branch.outputs.on-main == 'true'
     strategy:
       matrix:
         include:
-          # Linux builds
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: statusline-linux-amd64
@@ -54,20 +54,6 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: statusline-linux-arm64
             use-cross: true
-
-          # macOS builds
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: statusline-darwin-amd64
-
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: statusline-darwin-arm64
-
-          # Windows build
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: statusline-windows-amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -91,37 +77,20 @@ jobs:
         if: ${{ !matrix.use-cross }}
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Strip binary (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Strip binary
         run: |
-          if [[ "${{ matrix.target }}" == *"musl"* ]] || [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            echo "Skipping strip for ${{ matrix.target }}"
-          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            strip target/${{ matrix.target }}/release/statusline
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            echo "Skipping strip for ARM64"
           else
             strip target/${{ matrix.target }}/release/statusline
           fi
 
-      - name: Create archive (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Create archive
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ matrix.artifact }}.tar.gz statusline
           cd ../../../
-          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
-          else
-            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
-          fi
-
-      - name: Create archive (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: powershell
-        run: |
-          cd target\${{ matrix.target }}\release
-          Compress-Archive -Path statusline.exe -DestinationPath ..\..\..\${{ matrix.artifact }}.zip
-          cd ..\..\..
-          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ASCII ${{ matrix.artifact }}.zip.sha256
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -130,13 +99,13 @@ jobs:
           path: |
             ${{ matrix.artifact }}.*
 
-  build-turso:
+  # Build Linux Turso variants
+  build-linux-turso:
     needs: check-branch
     if: needs.check-branch.outputs.on-main == 'true'
     strategy:
       matrix:
         include:
-          # Linux builds with Turso sync
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: statusline-turso-linux-amd64
@@ -145,20 +114,6 @@ jobs:
             target: aarch64-unknown-linux-gnu
             artifact: statusline-turso-linux-arm64
             use-cross: true
-
-          # macOS builds with Turso sync
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            artifact: statusline-turso-darwin-amd64
-
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact: statusline-turso-darwin-arm64
-
-          # Windows build with Turso sync
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact: statusline-turso-windows-amd64
 
     runs-on: ${{ matrix.os }}
 
@@ -182,37 +137,20 @@ jobs:
         if: ${{ !matrix.use-cross }}
         run: cargo build --release --features turso-sync --target ${{ matrix.target }}
 
-      - name: Strip binary (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Strip binary
         run: |
-          if [[ "${{ matrix.target }}" == *"musl"* ]] || [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
-            echo "Skipping strip for ${{ matrix.target }}"
-          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            strip target/${{ matrix.target }}/release/statusline
+          if [[ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]]; then
+            echo "Skipping strip for ARM64"
           else
             strip target/${{ matrix.target }}/release/statusline
           fi
 
-      - name: Create archive (Unix)
-        if: matrix.os != 'windows-latest'
+      - name: Create archive
         run: |
           cd target/${{ matrix.target }}/release
           tar czf ../../../${{ matrix.artifact }}.tar.gz statusline
           cd ../../../
-          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            shasum -a 256 ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
-          else
-            sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
-          fi
-
-      - name: Create archive (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: powershell
-        run: |
-          cd target\${{ matrix.target }}\release
-          Compress-Archive -Path statusline.exe -DestinationPath ..\..\..\${{ matrix.artifact }}.zip
-          cd ..\..\..
-          Get-FileHash ${{ matrix.artifact }}.zip -Algorithm SHA256 | Select-Object -ExpandProperty Hash | Out-File -Encoding ASCII ${{ matrix.artifact }}.zip.sha256
+          sha256sum ${{ matrix.artifact }}.tar.gz > ${{ matrix.artifact }}.tar.gz.sha256
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -222,7 +160,7 @@ jobs:
             ${{ matrix.artifact }}.*
 
   release:
-    needs: [build, build-turso]
+    needs: [build-linux, build-linux-turso]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -250,12 +188,12 @@ jobs:
       - name: Prepare release assets
         run: |
           # Move all artifacts to the root directory
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.sha256" \) -exec mv {} . \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.sha256" \) -exec mv {} . \;
 
           # List all files for debugging
-          ls -la *.tar.gz *.zip *.sha256 || true
+          ls -la *.tar.gz *.sha256 || true
 
-      - name: Create Release with Assets
+      - name: Create Draft Release with Assets
         uses: softprops/action-gh-release@v1
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
@@ -265,21 +203,60 @@ jobs:
           name: Claudia Statusline ${{ steps.version.outputs.version }}
           files: |
             *.tar.gz
-            *.zip
             *.sha256
           body: |
             ## Claudia Statusline ${{ steps.version.outputs.version }}
 
             High-performance, secure statusline for Claude Code with SQLite dual-storage backend.
 
-            ### ⚠️ Security Notice (v2.2.1)
-            This release contains critical security fixes. All users should upgrade immediately.
+            ### Release Status
+
+            > **Note**: This is a DRAFT release. Linux binaries are built automatically by CI.
+            > Windows, macOS, and FreeBSD binaries are compiled manually and uploaded separately.
+            >
+            > **Do not publish** until all platform binaries have been uploaded.
+
+            ### Available Binaries
+
+            **Linux (CI-built):**
+            | Platform | File | Status |
+            |----------|------|--------|
+            | Linux x86_64 | `statusline-linux-amd64.tar.gz` | Ready |
+            | Linux ARM64 | `statusline-linux-arm64.tar.gz` | Ready |
+            | Linux x86_64 (Turso) | `statusline-turso-linux-amd64.tar.gz` | Ready |
+            | Linux ARM64 (Turso) | `statusline-turso-linux-arm64.tar.gz` | Ready |
+
+            **Manual Upload Required:**
+            | Platform | File | Status |
+            |----------|------|--------|
+            | Windows x86_64 | `statusline-windows-amd64.zip` | Pending |
+            | macOS Intel | `statusline-darwin-amd64.tar.gz` | Pending |
+            | macOS Apple Silicon | `statusline-darwin-arm64.tar.gz` | Pending |
+            | FreeBSD x86_64 | `statusline-freebsd-amd64.tar.gz` | Pending |
+
+            ### Manual Upload Instructions
+
+            After Linux builds complete, upload platform binaries from local machines:
+
+            ```bash
+            # Windows (from Windows machine)
+            ./scripts/upload-windows-release.sh ${{ steps.version.outputs.version }}
+
+            # macOS (from Mac)
+            ./scripts/upload-macos-release.sh ${{ steps.version.outputs.version }}
+
+            # FreeBSD (from FreeBSD machine)
+            ./scripts/upload-freebsd-release.sh ${{ steps.version.outputs.version }}
+
+            # Or use unified script (auto-detects platform)
+            ./scripts/upload-release.sh ${{ steps.version.outputs.version }}
+            ./scripts/upload-release.sh ${{ steps.version.outputs.version }} --turso
+            ```
 
             ### Installation
 
             #### Quick Install (Linux/macOS)
             ```bash
-            # Detect architecture and download appropriate binary
             ARCH=$(uname -m)
             OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
@@ -292,42 +269,15 @@ jobs:
             sudo mv statusline /usr/local/bin/
             ```
 
-            #### Manual Download
-
-            Download the appropriate binary for your platform:
-
-            **Standard Binaries (Default - Recommended for most users)**:
-            - **Linux x86_64**: `statusline-linux-amd64.tar.gz`
-            - **Linux ARM64**: `statusline-linux-arm64.tar.gz`
-            - **macOS Intel**: `statusline-darwin-amd64.tar.gz`
-            - **macOS Apple Silicon**: `statusline-darwin-arm64.tar.gz`
-            - **Windows**: `statusline-windows-amd64.zip`
-
-            **Turso Sync Variants (Experimental - For cloud sync across machines)**:
-            - **Linux x86_64**: `statusline-turso-linux-amd64.tar.gz`
-            - **Linux ARM64**: `statusline-turso-linux-arm64.tar.gz`
-            - **macOS Intel**: `statusline-turso-darwin-amd64.tar.gz`
-            - **macOS Apple Silicon**: `statusline-turso-darwin-arm64.tar.gz`
-            - **Windows**: `statusline-turso-windows-amd64.zip`
-
-            > **Note**: Turso variants include cloud sync capabilities. Requires additional configuration.
-            > See README.md "Cloud Sync (Optional Feature)" section for setup instructions.
-
-            ### Changes
-
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for complete details.
-
-            Key features in v2.2.0:
-            - SQLite dual-storage backend for better concurrent access
-            - Automatic migration from JSON to SQLite
-            - Multi-platform CI/CD with automated releases
-            - Comprehensive test suite (75 tests)
-
             ### Verification
 
-            SHA256 checksums are provided for each binary. To verify:
+            SHA256 checksums are provided for each binary:
             ```bash
             sha256sum -c statusline-linux-amd64.tar.gz.sha256
             ```
-          draft: false
+
+            ### Changes
+
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
+          draft: true
           prerelease: false
