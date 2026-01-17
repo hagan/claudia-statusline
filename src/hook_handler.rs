@@ -149,7 +149,9 @@ pub fn handle_postcompact(session_id: &str) -> Result<()> {
 /// Clear state file directly without validation (for empty session_id workaround)
 fn clear_state_file_directly(session_id: &str) -> Result<()> {
     let cache_dir = dirs::cache_dir()
-        .ok_or_else(|| crate::error::StatuslineError::Config("Cannot determine cache directory".to_string()))?
+        .ok_or_else(|| {
+            crate::error::StatuslineError::Config("Cannot determine cache directory".to_string())
+        })?
         .join("claudia-statusline");
     let state_file = cache_dir.join(format!("state-{}.json", session_id));
     if state_file.exists() {
