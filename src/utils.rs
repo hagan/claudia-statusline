@@ -358,15 +358,14 @@ pub fn get_token_breakdown_from_transcript(
     };
 
     // Process all assistant messages:
-    // - MAX for context-related tokens (input, cache_read) - represents peak context usage
+    // - LAST for context-related tokens (input, cache_read) - represents CURRENT context usage
+    //   This is what users see on the statusline (e.g., "9%" after compaction, not "64%")
     // - SUM for generated tokens (output, cache_creation) - represents total work done
     //
-    // This distinction is critical for accurate token rate calculation:
-    // - Context tokens (input/cache_read) grow with conversation length, MAX shows peak
-    // - Generated tokens (output) are per-message, SUM shows total output across session
-    let mut max_context_total = 0u32;
-    let mut max_input = 0u32;
-    let mut max_cache_read = 0u32;
+    // IMPORTANT: For compaction detection heuristics (Phase 2), the database tracks
+    // max_tokens_observed separately. This function returns CURRENT values for display.
+    let mut last_input = 0u32;
+    let mut last_cache_read = 0u32;
     let mut sum_output = 0u32;
     let mut sum_cache_creation = 0u32;
     let mut has_data = false;
@@ -387,13 +386,11 @@ pub fn get_token_breakdown_from_transcript(
                     sum_output = sum_output.saturating_add(output);
                     sum_cache_creation = sum_cache_creation.saturating_add(cache_creation);
 
-                    // MAX: input and cache_read (peak context usage for context window tracking)
-                    let context_total = input + cache_read;
-                    if context_total > max_context_total {
-                        max_context_total = context_total;
-                        max_input = input;
-                        max_cache_read = cache_read;
-                    }
+                    // LAST: input and cache_read (CURRENT context usage for display)
+                    // We overwrite on each iteration to keep only the most recent values
+                    // This ensures the statusline shows current context %, not historical peak
+                    last_input = input;
+                    last_cache_read = cache_read;
                 }
             }
         }
@@ -401,9 +398,9 @@ pub fn get_token_breakdown_from_transcript(
 
     if has_data {
         Some(TokenBreakdown {
-            input_tokens: max_input,
+            input_tokens: last_input,
             output_tokens: sum_output,
-            cache_read_tokens: max_cache_read,
+            cache_read_tokens: last_cache_read,
             cache_creation_tokens: sum_cache_creation,
         })
     } else {

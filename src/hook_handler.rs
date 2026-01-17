@@ -100,16 +100,28 @@ pub fn handle_postcompact(session_id: &str) -> Result<()> {
     // Clear the "compacting" state file created by PreCompact hook
     clear_state(session_id)?;
 
-    // Reset max_tokens_observed for this session
-    // This ensures Phase 2 heuristic detection starts fresh
-    // and won't give false positives from pre-compaction token counts
+    // Reset max_tokens_observed to prevent Phase 2 false positives
+    // This ensures heuristic detection starts fresh after compaction
     let db_path = get_data_dir().join("stats.db");
     if db_path.exists() {
         if let Ok(db) = SqliteDatabase::new(&db_path) {
-            if let Err(e) = db.reset_session_max_tokens(session_id) {
-                log::warn!("Failed to reset max_tokens after compaction: {}", e);
+            if session_id.is_empty() {
+                // Workaround for Claude Code bug #9567: hooks receive empty session_id
+                // Since only one session compacts at a time, reset all sessions
+                match db.reset_all_sessions_max_tokens() {
+                    Ok(count) => log::info!(
+                        "Reset max_tokens for {} sessions (empty session_id workaround)",
+                        count
+                    ),
+                    Err(e) => log::warn!("Failed to reset all max_tokens: {}", e),
+                }
             } else {
-                log::debug!("Reset max_tokens_observed for session {}", session_id);
+                // Normal case: reset specific session
+                if let Err(e) = db.reset_session_max_tokens(session_id) {
+                    log::warn!("Failed to reset max_tokens after compaction: {}", e);
+                } else {
+                    log::debug!("Reset max_tokens_observed for session {}", session_id);
+                }
             }
         }
     }

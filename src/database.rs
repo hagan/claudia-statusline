@@ -941,6 +941,23 @@ impl SqliteDatabase {
         Ok(())
     }
 
+    /// Reset max_tokens_observed for ALL sessions
+    ///
+    /// Workaround for Claude Code bug #9567 where hooks receive empty session_id.
+    /// Since only one session compacts at a time, resetting all is safe.
+    /// The tracking will rebuild on the next statusline call.
+    ///
+    /// Returns the number of sessions affected.
+    pub fn reset_all_sessions_max_tokens(&self) -> Result<usize> {
+        let conn = self.get_connection()?;
+        let rows_affected = conn.execute("UPDATE sessions SET max_tokens_observed = 0", [])?;
+        log::info!(
+            "Reset max_tokens_observed to 0 for all {} sessions (empty session_id workaround)",
+            rows_affected
+        );
+        Ok(rows_affected)
+    }
+
     /// Get token breakdown for a session
     ///
     /// Returns (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
