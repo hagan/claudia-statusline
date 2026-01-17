@@ -25,7 +25,7 @@ The installer will:
 
 **Requirements:**
 - `curl` or `wget`
-- `jq` for configuration ([install jq](https://stedolan.github.io/jq/download/))
+- `python3` or `jq` (optional - for auto-configuration; installer will give manual instructions if neither available)
 
 ## Platform-Specific Installation
 
@@ -137,7 +137,6 @@ See [WINDOWS_BUILD.md](../WINDOWS_BUILD.md) for detailed Windows instructions an
 ### Prerequisites
 
 - **Rust toolchain** 1.70+ ([install Rust](https://rustup.rs/))
-- **jq** for installer script ([install jq](https://stedolan.github.io/jq/download/))
 - **Make** (optional but recommended)
 - **Git** (optional, for repository status features)
 

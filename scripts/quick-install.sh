@@ -173,15 +173,38 @@ configure_claude() {
         local temp_config
         temp_config=$(mktemp)
 
-        jq '. + {
-            "statusLine": {
-                "type": "command",
-                "command": "'"$INSTALL_DIR/statusline"'",
-                "padding": 0
-            }
-        }' "$config_file" > "$temp_config" && mv "$temp_config" "$config_file"
-
-        success "Claude Code configured successfully!"
+        # Try jq first, then Python, then manual instructions
+        if command -v jq &>/dev/null; then
+            jq '. + {
+                "statusLine": {
+                    "type": "command",
+                    "command": "'"$INSTALL_DIR/statusline"'",
+                    "padding": 0
+                }
+            }' "$config_file" > "$temp_config" && mv "$temp_config" "$config_file"
+            success "Claude Code configured successfully!"
+        elif command -v python3 &>/dev/null; then
+            python3 -c "
+import json
+with open('$config_file', 'r') as f:
+    config = json.load(f)
+config['statusLine'] = {
+    'type': 'command',
+    'command': '$INSTALL_DIR/statusline',
+    'padding': 0
+}
+with open('$config_file', 'w') as f:
+    json.dump(config, f, indent=2)
+"
+            success "Claude Code configured successfully!"
+        else
+            warning "Neither jq nor python3 found. Please add manually to $config_file:"
+            echo '  "statusLine": {'
+            echo '    "type": "command",'
+            echo "    \"command\": \"$INSTALL_DIR/statusline\","
+            echo '    "padding": 0'
+            echo '  }'
+        fi
     fi
 }
 

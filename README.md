@@ -21,8 +21,6 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 
 **That's it!** The installer downloads the right binary, installs it, and configures Claude Code automatically.
 
-**Requirements**: `curl` and `jq` ([install jq](https://stedolan.github.io/jq/download/))
-
 **Need help?** See [Installation Guide](docs/INSTALLATION.md) for all platforms and options.
 
 ## What You Get
