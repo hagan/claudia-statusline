@@ -379,3 +379,251 @@ fn test_hook_idempotency() {
         );
     }
 }
+
+// ==================== PostCompact Hook Tests ====================
+// These tests verify the new PostCompact handler (via SessionStart[compact])
+
+#[test]
+fn test_hook_postcompact_clears_state_file() {
+    let session_id = format!("test-postcompact-{}", std::process::id());
+    let binary = get_test_binary();
+
+    // Create state first (simulates PreCompact)
+    Command::new(&binary)
+        .args([
+            "hook",
+            "precompact",
+            &format!("--session-id={}", session_id),
+            "--trigger=auto",
+        ])
+        .output()
+        .expect("Failed to execute precompact");
+
+    let cache_dir = dirs::cache_dir().unwrap().join("claudia-statusline");
+    let state_file = cache_dir.join(format!("state-{}.json", session_id));
+    assert!(
+        state_file.exists(),
+        "State file should exist after precompact"
+    );
+
+    // Run postcompact hook (simulates SessionStart[compact])
+    let output = Command::new(&binary)
+        .args([
+            "hook",
+            "postcompact",
+            &format!("--session-id={}", session_id),
+        ])
+        .output()
+        .expect("Failed to execute postcompact hook");
+
+    assert!(output.status.success(), "PostCompact hook failed");
+
+    // Verify state file was removed
+    assert!(
+        !state_file.exists(),
+        "State file should be removed after postcompact"
+    );
+}
+
+#[test]
+fn test_hook_postcompact_without_precompact() {
+    let session_id = format!("test-postcompact-nopre-{}", std::process::id());
+    let binary = get_test_binary();
+
+    // PostCompact without PreCompact should not error (idempotent)
+    let output = Command::new(&binary)
+        .args([
+            "hook",
+            "postcompact",
+            &format!("--session-id={}", session_id),
+        ])
+        .output()
+        .expect("Failed to execute postcompact hook");
+
+    assert!(
+        output.status.success(),
+        "PostCompact should succeed even without prior state"
+    );
+}
+
+#[test]
+fn test_full_compaction_lifecycle_with_postcompact() {
+    let session_id = format!("test-lifecycle-{}", std::process::id());
+    let binary = get_test_binary();
+    let temp_dir = TempDir::new().unwrap();
+    let transcript = create_test_transcript(&temp_dir);
+    let input = create_test_input(&session_id, &transcript);
+
+    let cache_dir = dirs::cache_dir().unwrap().join("claudia-statusline");
+    let state_file = cache_dir.join(format!("state-{}.json", session_id));
+
+    // Helper to get statusline output
+    let get_output = || -> String {
+        let output = Command::new(&binary)
+            .env_remove("NO_COLOR")
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .and_then(|mut child| {
+                child.stdin.as_mut().unwrap().write_all(input.as_bytes())?;
+                child.wait_with_output()
+            })
+            .expect("Failed to run statusline");
+
+        String::from_utf8_lossy(&output.stdout).to_string()
+    };
+
+    // Phase 1: Normal state (no compaction)
+    let _ = fs::remove_file(&state_file); // Ensure clean start
+    let output1 = get_output();
+    assert!(
+        output1.contains("%") || output1.contains("["),
+        "Phase 1: Should show percentage in normal state"
+    );
+
+    // Phase 2: PreCompact - compaction starts
+    Command::new(&binary)
+        .args([
+            "hook",
+            "precompact",
+            &format!("--session-id={}", session_id),
+            "--trigger=auto",
+        ])
+        .output()
+        .expect("Failed to trigger precompact");
+
+    let output2 = get_output();
+    assert!(
+        output2.contains("Compacting"),
+        "Phase 2: Should show 'Compacting...' during compaction"
+    );
+
+    // Phase 3: PostCompact - compaction completes (via SessionStart[compact])
+    Command::new(&binary)
+        .args([
+            "hook",
+            "postcompact",
+            &format!("--session-id={}", session_id),
+        ])
+        .output()
+        .expect("Failed to trigger postcompact");
+
+    let output3 = get_output();
+    assert!(
+        output3.contains("%") || output3.contains("["),
+        "Phase 3: Should return to percentage after postcompact"
+    );
+    assert!(
+        !output3.contains("Compacting"),
+        "Phase 3: Should not show 'Compacting...' after postcompact"
+    );
+
+    // Cleanup
+    let _ = fs::remove_file(&state_file);
+}
+
+#[test]
+fn test_postcompact_idempotency() {
+    let session_id = format!("test-postcompact-idemp-{}", std::process::id());
+    let binary = get_test_binary();
+
+    // Create state
+    Command::new(&binary)
+        .args([
+            "hook",
+            "precompact",
+            &format!("--session-id={}", session_id),
+            "--trigger=auto",
+        ])
+        .output()
+        .expect("Failed to execute precompact");
+
+    // Call postcompact multiple times - should all succeed
+    for i in 0..3 {
+        let output = Command::new(&binary)
+            .args([
+                "hook",
+                "postcompact",
+                &format!("--session-id={}", session_id),
+            ])
+            .output()
+            .expect("Failed to execute postcompact");
+
+        assert!(
+            output.status.success(),
+            "PostCompact call {} should succeed",
+            i + 1
+        );
+    }
+}
+
+#[test]
+fn test_postcompact_with_empty_session_id() {
+    // Test workaround for Claude Code bug #9567: hooks receive empty session_id
+    // PostCompact should succeed and reset ALL sessions' max_tokens
+    //
+    // Note: Claude Code sends empty session_id via stdin JSON, not CLI args.
+    // The CLI validates non-empty session_id, but stdin JSON bypasses this.
+    let binary = get_test_binary();
+
+    // First, create a state file with a real session_id (PreCompact works normally)
+    let real_session_id = format!("test-empty-workaround-{}", std::process::id());
+    Command::new(&binary)
+        .args([
+            "hook",
+            "precompact",
+            &format!("--session-id={}", real_session_id),
+            "--trigger=auto",
+        ])
+        .output()
+        .expect("Failed to execute precompact");
+
+    // Verify state file was created
+    let cache_dir = dirs::cache_dir().unwrap().join("claudia-statusline");
+    let state_file = cache_dir.join(format!("state-{}.json", real_session_id));
+    assert!(
+        state_file.exists(),
+        "State file should exist after precompact"
+    );
+
+    // Run postcompact with empty session_id via stdin JSON (simulates Claude Code bug #9567)
+    // This tests the reset_all_sessions_max_tokens() workaround
+    let hook_json = r#"{"session_id": "", "hook_event_name": "SessionStart"}"#;
+    let mut child = Command::new(&binary)
+        .args(["hook", "postcompact"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn postcompact");
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(hook_json.as_bytes())
+        .expect("Failed to write stdin");
+
+    let output = child.wait_with_output().expect("Failed to wait for output");
+
+    assert!(
+        output.status.success(),
+        "PostCompact should succeed with empty session_id from stdin"
+    );
+
+    // Note: The state file for real_session_id won't be cleared because
+    // clear_state("") looks for state-.json, not state-{real_session_id}.json
+    // This is expected behavior - the workaround resets the DATABASE, not state files.
+    // In real usage, PreCompact also receives empty session_id, creating state-.json.
+
+    // Verify output confirms processing
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PostCompact hook processed"),
+        "Should confirm PostCompact was processed"
+    );
+
+    // Cleanup
+    let _ = fs::remove_file(&state_file);
+}

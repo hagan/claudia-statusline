@@ -225,7 +225,10 @@ See [CONFIGURATION.md](CONFIGURATION.md#adaptive-context-learning-experimental) 
 # PreCompact hook - called when compaction starts
 statusline hook precompact --session-id=<SESSION_ID> --trigger=<auto|manual>
 
-# Stop hook - called when compaction completes
+# PostCompact hook - called after compaction completes (via SessionStart[compact])
+statusline hook postcompact --session-id=<SESSION_ID>
+
+# Stop hook - called after each agent response (not for compaction cleanup!)
 statusline hook stop --session-id=<SESSION_ID>
 ```
 
@@ -243,12 +246,13 @@ statusline hook stop --session-id=<SESSION_ID>
         ]
       }
     ],
-    "Stop": [
+    "SessionStart": [
       {
+        "matcher": "compact",
         "hooks": [
           {
             "type": "command",
-            "command": "statusline hook stop"
+            "command": "statusline hook postcompact"
           }
         ]
       }
@@ -256,6 +260,9 @@ statusline hook stop --session-id=<SESSION_ID>
   }
 }
 ```
+
+> **Note**: Claude Code doesn't have a dedicated `PostCompact` hook. Instead, use
+> `SessionStart` with matcher `"compact"` which fires after compaction completes.
 
 **How it works:**
 - Claude Code sends hook data as JSON via stdin (no wrapper scripts needed!)
@@ -265,6 +272,11 @@ statusline hook stop --session-id=<SESSION_ID>
 - Shows "Compacting..." instead of percentage when active
 - Falls back to token-based detection if hooks not configured
 
+**Hook lifecycle:**
+1. **PreCompact** fires → Creates state file → Statusline shows "Compacting..."
+2. Compaction runs...
+3. **SessionStart[compact]** fires → Clears state file → Statusline returns to normal
+
 **Benefits:**
 - **~600x faster**: <1ms detection vs 60s+ token analysis
 - **Real-time feedback**: Instant visual confirmation
@@ -272,8 +284,8 @@ statusline hook stop --session-id=<SESSION_ID>
 - **Session-safe**: Multi-instance isolation
 
 **Automatic cleanup:**
-- State files automatically cleaned up on Stop hook
-- Stale states (>2 minutes) automatically cleared
+- State files automatically cleaned up by PostCompact hook
+- Stale states (>2 minutes) automatically cleared as fallback
 - No manual maintenance required
 
 See README.md for complete hook setup guide.
