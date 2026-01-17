@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.22.0] - 2025-01-17
+
 ### Added
 
 - **PostCompact hook handler**: New `statusline hook postcompact` command for proper post-compaction cleanup
@@ -14,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Clears compaction state file created by PreCompact
   - Resets `max_tokens_observed` to prevent Phase 2 false positives
   - Fixes long-standing "Compacting..." persistence bug after auto-compact events
+- **Empty session_id workaround**: Handles Claude Code bug #9567 where hooks receive empty session_id
+  - When session_id is empty, resets ALL sessions' max_tokens (safe: only one compacts at a time)
+  - New `reset_all_sessions_max_tokens()` database method
+  - Integration test for the workaround scenario
 
 ### Changed
 
@@ -23,6 +29,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Context % display**: Now shows CURRENT tokens instead of historical MAX after compaction
+  - Before: Showed 64% (peak) after compaction when actual was 9%
+  - After: Correctly shows current context usage
+  - Database still tracks MAX for Phase 2 heuristic detection
 - **Compaction cleanup**: "Compacting..." no longer persists after compaction completes
   - Root cause: Claude Code doesn't have a dedicated `PostCompact` hook
   - Discovery: `SessionStart` with matcher `"compact"` IS the post-compaction hook
