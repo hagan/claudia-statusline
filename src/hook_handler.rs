@@ -97,17 +97,18 @@ pub fn handle_postcompact(session_id: &str) -> Result<()> {
     use crate::common::get_data_dir;
     use crate::database::SqliteDatabase;
 
-    // Clear the "compacting" state file created by PreCompact hook
-    clear_state(session_id)?;
+    // Handle empty session_id specially (Claude Code bug #9567)
+    if session_id.is_empty() {
+        log::info!("PostCompact received empty session_id (Claude Code bug #9567 workaround)");
 
-    // Reset max_tokens_observed to prevent Phase 2 false positives
-    // This ensures heuristic detection starts fresh after compaction
-    let db_path = get_data_dir().join("stats.db");
-    if db_path.exists() {
-        if let Ok(db) = SqliteDatabase::new(&db_path) {
-            if session_id.is_empty() {
-                // Workaround for Claude Code bug #9567: hooks receive empty session_id
-                // Since only one session compacts at a time, reset all sessions
+        // Try to clear state-.json if it exists (PreCompact may have created it with empty ID)
+        // Ignore errors since the file might not exist
+        let _ = clear_state_file_directly("");
+
+        // Reset ALL sessions' max_tokens since we don't know which session compacted
+        let db_path = get_data_dir().join("stats.db");
+        if db_path.exists() {
+            if let Ok(db) = SqliteDatabase::new(&db_path) {
                 match db.reset_all_sessions_max_tokens() {
                     Ok(count) => log::info!(
                         "Reset max_tokens for {} sessions (empty session_id workaround)",
@@ -115,13 +116,24 @@ pub fn handle_postcompact(session_id: &str) -> Result<()> {
                     ),
                     Err(e) => log::warn!("Failed to reset all max_tokens: {}", e),
                 }
+            }
+        }
+
+        log::info!("PostCompact hook (via SessionStart[compact]): session=<empty>");
+        return Ok(());
+    }
+
+    // Normal case: clear state file for specific session
+    clear_state(session_id)?;
+
+    // Reset max_tokens_observed to prevent Phase 2 false positives
+    let db_path = get_data_dir().join("stats.db");
+    if db_path.exists() {
+        if let Ok(db) = SqliteDatabase::new(&db_path) {
+            if let Err(e) = db.reset_session_max_tokens(session_id) {
+                log::warn!("Failed to reset max_tokens after compaction: {}", e);
             } else {
-                // Normal case: reset specific session
-                if let Err(e) = db.reset_session_max_tokens(session_id) {
-                    log::warn!("Failed to reset max_tokens after compaction: {}", e);
-                } else {
-                    log::debug!("Reset max_tokens_observed for session {}", session_id);
-                }
+                log::debug!("Reset max_tokens_observed for session {}", session_id);
             }
         }
     }
@@ -131,6 +143,19 @@ pub fn handle_postcompact(session_id: &str) -> Result<()> {
         session_id
     );
 
+    Ok(())
+}
+
+/// Clear state file directly without validation (for empty session_id workaround)
+fn clear_state_file_directly(session_id: &str) -> Result<()> {
+    let cache_dir = dirs::cache_dir()
+        .ok_or_else(|| crate::error::StatuslineError::Config("Cannot determine cache directory".to_string()))?
+        .join("claudia-statusline");
+    let state_file = cache_dir.join(format!("state-{}.json", session_id));
+    if state_file.exists() {
+        std::fs::remove_file(&state_file)?;
+        log::debug!("Removed state file: {:?}", state_file);
+    }
     Ok(())
 }
 

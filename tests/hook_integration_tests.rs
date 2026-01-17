@@ -557,3 +557,73 @@ fn test_postcompact_idempotency() {
         );
     }
 }
+
+#[test]
+fn test_postcompact_with_empty_session_id() {
+    // Test workaround for Claude Code bug #9567: hooks receive empty session_id
+    // PostCompact should succeed and reset ALL sessions' max_tokens
+    //
+    // Note: Claude Code sends empty session_id via stdin JSON, not CLI args.
+    // The CLI validates non-empty session_id, but stdin JSON bypasses this.
+    let binary = get_test_binary();
+
+    // First, create a state file with a real session_id (PreCompact works normally)
+    let real_session_id = format!("test-empty-workaround-{}", std::process::id());
+    Command::new(&binary)
+        .args([
+            "hook",
+            "precompact",
+            &format!("--session-id={}", real_session_id),
+            "--trigger=auto",
+        ])
+        .output()
+        .expect("Failed to execute precompact");
+
+    // Verify state file was created
+    let cache_dir = dirs::cache_dir().unwrap().join("claudia-statusline");
+    let state_file = cache_dir.join(format!("state-{}.json", real_session_id));
+    assert!(
+        state_file.exists(),
+        "State file should exist after precompact"
+    );
+
+    // Run postcompact with empty session_id via stdin JSON (simulates Claude Code bug #9567)
+    // This tests the reset_all_sessions_max_tokens() workaround
+    let hook_json = r#"{"session_id": "", "hook_event_name": "SessionStart"}"#;
+    let mut child = Command::new(&binary)
+        .args(["hook", "postcompact"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("Failed to spawn postcompact");
+
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(hook_json.as_bytes())
+        .expect("Failed to write stdin");
+
+    let output = child.wait_with_output().expect("Failed to wait for output");
+
+    assert!(
+        output.status.success(),
+        "PostCompact should succeed with empty session_id from stdin"
+    );
+
+    // Note: The state file for real_session_id won't be cleared because
+    // clear_state("") looks for state-.json, not state-{real_session_id}.json
+    // This is expected behavior - the workaround resets the DATABASE, not state files.
+    // In real usage, PreCompact also receives empty session_id, creating state-.json.
+
+    // Verify output confirms processing
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("PostCompact hook processed"),
+        "Should confirm PostCompact was processed"
+    );
+
+    // Cleanup
+    let _ = fs::remove_file(&state_file);
+}
