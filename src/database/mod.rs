@@ -17,8 +17,13 @@ mod sync;
 mod tests;
 
 // Re-exports: public API surface
+//
+// Some items are only consumed via the library crate (not the binary directly).
+#[allow(unused_imports)]
 pub use analytics::SessionWithModel;
-pub use maintenance::{perform_maintenance, MaintenanceResult};
+pub use maintenance::perform_maintenance;
+#[allow(unused_imports)]
+pub use maintenance::MaintenanceResult;
 pub use schema::{SessionUpdate, SCHEMA};
 
 // Track which database files have been migrated to avoid redundant migration checks

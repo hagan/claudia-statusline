@@ -609,6 +609,40 @@ impl SqliteDatabase {
         Ok(rows_affected)
     }
 
+    /// Get the start_time for a session (ISO 8601 string)
+    ///
+    /// Used by auto-reset desync detection to compare in-memory vs database start times.
+    pub fn get_session_start_time(&self, session_id: &str) -> Option<String> {
+        let conn = self.get_connection().ok()?;
+        conn.query_row(
+            "SELECT start_time FROM sessions WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .ok()
+    }
+
+    /// Get active_time_seconds and last_activity for a session
+    ///
+    /// Returns (active_time_seconds, last_activity) for JSON backup persistence
+    /// and active_time burn rate mode.
+    pub fn get_session_active_time(
+        &self,
+        session_id: &str,
+    ) -> Option<(Option<u64>, Option<String>)> {
+        let conn = self.get_connection().ok()?;
+        conn.query_row(
+            "SELECT active_time_seconds, last_activity FROM sessions WHERE session_id = ?1",
+            params![session_id],
+            |row| {
+                let active_time: Option<i64> = row.get(0).ok();
+                let last_activity: Option<String> = row.get(1).ok();
+                Ok((active_time.map(|t| t as u64), last_activity))
+            },
+        )
+        .ok()
+    }
+
     /// Get token breakdown for a session
     ///
     /// Returns (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens)
