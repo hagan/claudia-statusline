@@ -3,6 +3,61 @@ use crate::common::current_date;
 use rusqlite::Connection;
 use tempfile::TempDir;
 
+// =============================================================================
+// Re-export Verification Test
+//
+// This test serves as a compile-time safety net for the database module
+// refactoring. It references every public item that must be accessible through
+// `crate::database::*`. If any re-export is accidentally removed from mod.rs,
+// this test will fail to compile -- catching the regression before it reaches
+// any downstream consumer.
+//
+// This test does NOT call any functions or create databases. It only proves
+// that the items exist at the expected paths. If it compiles, the API surface
+// is correct.
+// =============================================================================
+
+#[test]
+fn test_public_api_surface() {
+    // SqliteDatabase -- must be constructable via ::new() function pointer
+    let _: fn(&std::path::Path) -> rusqlite::Result<super::SqliteDatabase> =
+        super::SqliteDatabase::new;
+
+    // SessionUpdate -- must be constructable with all fields
+    let _update = super::SessionUpdate {
+        cost: 0.0,
+        lines_added: 0,
+        lines_removed: 0,
+        model_name: None,
+        workspace_dir: None,
+        device_id: None,
+        token_breakdown: None,
+        max_tokens_observed: None,
+        active_time_seconds: None,
+        last_activity: None,
+    };
+
+    // MaintenanceResult -- must be constructable with all fields
+    let _result = super::MaintenanceResult {
+        checkpoint_done: false,
+        optimize_done: false,
+        vacuum_done: false,
+        prune_done: false,
+        records_pruned: 0,
+        integrity_ok: true,
+    };
+
+    // SessionWithModel -- must be accessible (size_of proves the type exists)
+    let _ = std::mem::size_of::<super::SessionWithModel>();
+
+    // SCHEMA const -- must be accessible as a &str
+    let _: &str = super::SCHEMA;
+
+    // perform_maintenance free function -- must be accessible with correct signature
+    let _: fn(bool, bool, bool) -> rusqlite::Result<super::MaintenanceResult> =
+        super::perform_maintenance;
+}
+
 #[test]
 fn test_database_creation() {
     let temp_dir = TempDir::new().unwrap();
