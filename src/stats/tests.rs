@@ -681,6 +681,7 @@ fn test_public_api_surface() {
     use super::MonthlyStats;
     use super::SessionStats;
     use super::StatsData;
+    use super::StatsProvider;
     use super::TokenRateMetrics;
 
     // Functions that must be accessible via crate::stats::
@@ -720,6 +721,9 @@ fn test_public_api_surface() {
     };
     let _ = AllTimeStats::default();
 
+    // Verify StatsProvider is constructable
+    let _ = StatsProvider::new(None, 0.0, 0.0, 0, 0, None, None);
+
     // Verify function types are importable (use fn pointer coercions)
     let _: fn() -> StatsData = get_or_load_stats_data;
     let _: fn(&StatsData) -> f64 = get_daily_total;
@@ -736,4 +740,204 @@ fn test_public_api_surface() {
 
     // update_stats_data is generic, verify it's callable
     let _ = update_stats_data as fn(fn(&mut StatsData) -> (f64, f64)) -> (f64, f64);
+}
+
+// ── StatsProvider tests ──────────────────────────────────────────────────
+
+use super::StatsProvider;
+use crate::provider::DataProvider;
+use std::time::Duration;
+
+/// Expected keys that StatsProvider::collect() must always produce.
+const EXPECTED_KEYS: &[&str] = &[
+    "stats_cost",
+    "stats_cost_short",
+    "stats_burn_rate",
+    "stats_burn_rate_reset",
+    "stats_daily_total",
+    "stats_session_time",
+    "stats_lines",
+    "stats_lines_added",
+    "stats_lines_removed",
+    "stats_token_rate",
+    "stats_token_input_rate",
+    "stats_token_output_rate",
+    "stats_token_cache_rate",
+    "stats_token_cache_hit",
+    "stats_token_cache_roi",
+    "stats_token_session_total",
+    "stats_token_daily_total",
+];
+
+/// All 17 expected keys are always present in collect() output,
+/// even when the provider has no data.
+#[test]
+fn test_stats_provider_all_keys_present() {
+    let provider = StatsProvider::new(None, 0.0, 0.0, 0, 0, None, None);
+    let result = provider.collect().expect("collect should succeed");
+
+    for key in EXPECTED_KEYS {
+        assert!(
+            result.contains_key(*key),
+            "Missing expected key: {}",
+            key
+        );
+    }
+
+    assert_eq!(
+        result.len(),
+        EXPECTED_KEYS.len(),
+        "Should have exactly {} keys, got {}",
+        EXPECTED_KEYS.len(),
+        result.len()
+    );
+}
+
+/// DataProvider trait contract: name, priority, timeout, is_available.
+#[test]
+fn test_stats_provider_trait_contract() {
+    let provider = StatsProvider::new(None, 0.0, 0.0, 0, 0, None, None);
+
+    assert_eq!(provider.name(), "stats");
+    assert_eq!(provider.priority(), 50);
+    assert_eq!(provider.timeout(), Duration::from_millis(200));
+    assert!(provider.is_available(), "Stats provider should always be available");
+}
+
+/// Cost variable formatting: raw numeric values without currency symbols.
+#[test]
+fn test_stats_provider_cost_variables() {
+    let provider = StatsProvider::new(None, 12.50, 45.00, 0, 0, None, None);
+    let result = provider.collect().expect("collect should succeed");
+
+    assert_eq!(result.get("stats_cost").unwrap(), "12.50");
+    assert_eq!(result.get("stats_cost_short").unwrap(), "12.5");
+    assert_eq!(result.get("stats_daily_total").unwrap(), "45.00");
+}
+
+/// Small cost values use two decimal places even in short format.
+#[test]
+fn test_stats_provider_cost_small_values() {
+    let provider = StatsProvider::new(None, 0.05, 0.10, 0, 0, None, None);
+    let result = provider.collect().expect("collect should succeed");
+
+    assert_eq!(result.get("stats_cost").unwrap(), "0.05");
+    assert_eq!(result.get("stats_cost_short").unwrap(), "0.05");
+    assert_eq!(result.get("stats_daily_total").unwrap(), "0.10");
+}
+
+/// Lines changed variables: "+N -M" format with individual breakdown.
+#[test]
+fn test_stats_provider_lines_changed() {
+    let provider = StatsProvider::new(None, 0.0, 0.0, 50, 10, None, None);
+    let result = provider.collect().expect("collect should succeed");
+
+    assert_eq!(result.get("stats_lines").unwrap(), "+50 -10");
+    assert_eq!(result.get("stats_lines_added").unwrap(), "+50");
+    assert_eq!(result.get("stats_lines_removed").unwrap(), "-10");
+}
+
+/// With no session, zero cost: all values should be empty strings.
+#[test]
+fn test_stats_provider_empty_state() {
+    let provider = StatsProvider::new(None, 0.0, 0.0, 0, 0, None, None);
+    let result = provider.collect().expect("collect should succeed");
+
+    // Cost-related should be empty
+    assert_eq!(result.get("stats_cost").unwrap(), "");
+    assert_eq!(result.get("stats_cost_short").unwrap(), "");
+    assert_eq!(result.get("stats_burn_rate").unwrap(), "");
+    assert_eq!(result.get("stats_burn_rate_reset").unwrap(), "");
+    assert_eq!(result.get("stats_daily_total").unwrap(), "");
+    assert_eq!(result.get("stats_session_time").unwrap(), "");
+
+    // Lines should be empty
+    assert_eq!(result.get("stats_lines").unwrap(), "");
+    assert_eq!(result.get("stats_lines_added").unwrap(), "");
+    assert_eq!(result.get("stats_lines_removed").unwrap(), "");
+
+    // Token rates should be empty
+    assert_eq!(result.get("stats_token_rate").unwrap(), "");
+    assert_eq!(result.get("stats_token_input_rate").unwrap(), "");
+    assert_eq!(result.get("stats_token_output_rate").unwrap(), "");
+    assert_eq!(result.get("stats_token_cache_rate").unwrap(), "");
+    assert_eq!(result.get("stats_token_cache_hit").unwrap(), "");
+    assert_eq!(result.get("stats_token_cache_roi").unwrap(), "");
+    assert_eq!(result.get("stats_token_session_total").unwrap(), "");
+    assert_eq!(result.get("stats_token_daily_total").unwrap(), "");
+}
+
+/// StatsProvider can be boxed as DataProvider and registered with orchestrator.
+#[test]
+fn test_stats_provider_registerable_with_orchestrator() {
+    use crate::provider::ProviderOrchestrator;
+
+    let provider = StatsProvider::new(None, 5.00, 10.00, 25, 5, None, None);
+
+    let mut orch = ProviderOrchestrator::new();
+    orch.register(Box::new(provider));
+
+    let result = orch.collect_all();
+
+    // Verify stats variables appear in orchestrator output
+    assert_eq!(result.get("stats_cost").unwrap(), "5.00");
+    assert_eq!(result.get("stats_lines").unwrap(), "+25 -5");
+}
+
+/// Verify burn_rate_reset is empty when not in auto_reset mode.
+/// (auto_reset detection requires database state that we don't set up here)
+#[test]
+fn test_stats_provider_burn_rate_reset_not_auto_reset() {
+    let provider = StatsProvider::new(
+        Some("test-session".into()),
+        10.0,
+        10.0,
+        0,
+        0,
+        None,
+        None,
+    );
+    let result = provider.collect().expect("collect should succeed");
+
+    // Default mode is wall_clock, so reset should always be empty
+    assert_eq!(result.get("stats_burn_rate_reset").unwrap(), "");
+}
+
+/// Verify configurable min_duration_seconds field exists and defaults correctly.
+#[test]
+fn test_burn_rate_config_min_duration_default() {
+    let config = crate::config::BurnRateConfig::default();
+    assert_eq!(
+        config.min_duration_seconds, 60,
+        "Default min_duration_seconds should be 60"
+    );
+}
+
+/// Verify min_duration_seconds deserializes from TOML with default.
+#[test]
+fn test_burn_rate_config_min_duration_serde_default() {
+    // A BurnRateConfig without min_duration_seconds should default to 60
+    let toml = r#"
+        mode = "wall_clock"
+        inactivity_threshold_minutes = 60
+    "#;
+
+    let config: crate::config::BurnRateConfig = toml::from_str(toml).unwrap();
+    assert_eq!(
+        config.min_duration_seconds, 60,
+        "Absent min_duration_seconds should default to 60"
+    );
+
+    // Explicit override
+    let toml_custom = r#"
+        mode = "wall_clock"
+        inactivity_threshold_minutes = 60
+        min_duration_seconds = 120
+    "#;
+
+    let config_custom: crate::config::BurnRateConfig = toml::from_str(toml_custom).unwrap();
+    assert_eq!(
+        config_custom.min_duration_seconds, 120,
+        "Explicit min_duration_seconds should be respected"
+    );
 }
