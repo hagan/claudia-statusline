@@ -1,3 +1,31 @@
+//! Data provider system for parallel variable collection.
+//!
+//! This module implements the provider architecture that decouples data
+//! collection from rendering in the statusline pipeline. Instead of
+//! sequentially calling each data source (git, stats, context, etc.),
+//! the orchestrator runs all providers in parallel using
+//! [`std::thread::scope`], enforces per-provider timeouts, and merges
+//! results by priority into a single `HashMap<String, String>` consumed
+//! by the layout renderer.
+//!
+//! # Architecture
+//!
+//! ```text
+//! [GitProvider] --\
+//! [StatsProvider] --> [ProviderOrchestrator] --> HashMap<String, String> --> LayoutRenderer
+//! [GsdProvider] --/
+//! ```
+//!
+//! Each provider implements the `DataProvider` trait, which defines:
+//! - `name()` -- identifier for logging
+//! - `priority()` -- conflict resolution (higher wins)
+//! - `timeout()` -- maximum execution time
+//! - `is_available()` -- pre-flight check (no I/O)
+//! - `collect()` -- variable collection (runs in thread)
+//!
+//! Providers that timeout, fail, or are unavailable produce empty results
+//! rather than blocking the orchestrator or the statusline render.
+
 use std::collections::HashMap;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -237,10 +265,10 @@ mod tests {
     fn test_orchestrator_merges_two_providers() {
         let mut orch = ProviderOrchestrator::new();
 
-        let provider_a = TestProvider::new("provider_a", 50)
-            .with_variables(vars(&[("key_a", "val_a")]));
-        let provider_b = TestProvider::new("provider_b", 50)
-            .with_variables(vars(&[("key_b", "val_b")]));
+        let provider_a =
+            TestProvider::new("provider_a", 50).with_variables(vars(&[("key_a", "val_a")]));
+        let provider_b =
+            TestProvider::new("provider_b", 50).with_variables(vars(&[("key_b", "val_b")]));
 
         orch.register(Box::new(provider_a));
         orch.register(Box::new(provider_b));
@@ -254,10 +282,10 @@ mod tests {
     fn test_orchestrator_priority_merge() {
         let mut orch = ProviderOrchestrator::new();
 
-        let low_priority = TestProvider::new("low", 10)
-            .with_variables(vars(&[("shared_key", "low")]));
-        let high_priority = TestProvider::new("high", 90)
-            .with_variables(vars(&[("shared_key", "high")]));
+        let low_priority =
+            TestProvider::new("low", 10).with_variables(vars(&[("shared_key", "low")]));
+        let high_priority =
+            TestProvider::new("high", 90).with_variables(vars(&[("shared_key", "high")]));
 
         orch.register(Box::new(low_priority));
         orch.register(Box::new(high_priority));
@@ -274,8 +302,8 @@ mod tests {
     fn test_orchestrator_skips_unavailable() {
         let mut orch = ProviderOrchestrator::new();
 
-        let available = TestProvider::new("available", 50)
-            .with_variables(vars(&[("available", "yes")]));
+        let available =
+            TestProvider::new("available", 50).with_variables(vars(&[("available", "yes")]));
         let unavailable = TestProvider::new("unavailable", 50)
             .with_variables(vars(&[("unavailable", "no")]))
             .unavailable();
@@ -302,8 +330,7 @@ mod tests {
             .with_delay(Duration::from_millis(500));
 
         // Fast provider: no delay, 1s timeout
-        let fast = TestProvider::new("fast", 50)
-            .with_variables(vars(&[("fast", "yes")]));
+        let fast = TestProvider::new("fast", 50).with_variables(vars(&[("fast", "yes")]));
 
         orch.register(Box::new(slow));
         orch.register(Box::new(fast));
@@ -320,6 +347,9 @@ mod tests {
     fn test_orchestrator_empty_providers() {
         let orch = ProviderOrchestrator::new();
         let result = orch.collect_all();
-        assert!(result.is_empty(), "Empty orchestrator should return empty HashMap");
+        assert!(
+            result.is_empty(),
+            "Empty orchestrator should return empty HashMap"
+        );
     }
 }
