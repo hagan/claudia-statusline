@@ -48,6 +48,8 @@ pub mod layout;
 /// Database schema migration system
 pub mod migrations;
 pub mod models;
+/// Data provider system for parallel variable collection
+pub mod provider;
 /// Retry logic with exponential backoff for transient failures
 pub mod retry;
 /// Hook-based state management for real-time event tracking
