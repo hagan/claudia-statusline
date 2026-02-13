@@ -230,7 +230,7 @@ impl ProviderOrchestrator {
 mod test_provider;
 
 #[cfg(test)]
-pub use test_provider::TestProvider;
+pub use test_provider::{ProviderBehavior, TestProvider};
 
 #[cfg(test)]
 mod tests {
@@ -351,5 +351,187 @@ mod tests {
             result.is_empty(),
             "Empty orchestrator should return empty HashMap"
         );
+    }
+
+    #[test]
+    fn test_provider_panic_handled() {
+        let mut orch = ProviderOrchestrator::new();
+
+        let panicker = TestProvider::new("panicker", 50)
+            .with_variables(vars(&[("panic_key", "should_not_appear")]))
+            .with_behavior(ProviderBehavior::Panic("test panic".to_string()));
+
+        let normal = TestProvider::new("normal", 50)
+            .with_variables(vars(&[("normal", "works")]));
+
+        orch.register(Box::new(panicker));
+        orch.register(Box::new(normal));
+
+        let result = orch.collect_all();
+        assert_eq!(
+            result.get("normal").map(|s| s.as_str()),
+            Some("works"),
+            "Normal provider should still contribute after another provider panics"
+        );
+        assert!(
+            result.get("panic_key").is_none(),
+            "Panicking provider's variables should not appear"
+        );
+    }
+
+    #[test]
+    fn test_provider_collection_error_handled() {
+        let mut orch = ProviderOrchestrator::new();
+
+        let erroring = TestProvider::new("erroring", 50)
+            .with_variables(vars(&[("err_key", "should_not_appear")]))
+            .with_behavior(ProviderBehavior::Error("db failed".to_string()));
+
+        let normal =
+            TestProvider::new("normal", 50).with_variables(vars(&[("ok", "data")]));
+
+        orch.register(Box::new(erroring));
+        orch.register(Box::new(normal));
+
+        let result = orch.collect_all();
+        assert_eq!(
+            result.get("ok").map(|s| s.as_str()),
+            Some("data"),
+            "Normal provider should contribute when another returns CollectionError"
+        );
+        assert!(
+            result.get("err_key").is_none(),
+            "Errored provider's variables should not appear"
+        );
+    }
+
+    #[test]
+    fn test_concurrent_execution_timing() {
+        use std::time::Instant;
+
+        let mut orch = ProviderOrchestrator::new();
+
+        // 3 providers, each with 100ms delay, 1s timeout
+        for i in 0..3 {
+            let provider = TestProvider::new(&format!("provider_{}", i), 50)
+                .with_variables(vars(&[(&format!("key_{}", i), &format!("val_{}", i))]))
+                .with_delay(Duration::from_millis(100))
+                .with_timeout(Duration::from_secs(1));
+            orch.register(Box::new(provider));
+        }
+
+        let start = Instant::now();
+        let result = orch.collect_all();
+        let elapsed = start.elapsed();
+
+        // If sequential: ~300ms. If parallel: ~100ms + overhead.
+        // 250ms upper bound proves parallelism.
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "3 providers with 100ms delay each should complete in < 250ms if parallel, \
+             but took {:?} (sequential would be ~300ms)",
+            elapsed
+        );
+
+        // Verify all 3 providers contributed
+        assert_eq!(result.len(), 3, "All 3 providers should contribute variables");
+        for i in 0..3 {
+            assert_eq!(
+                result.get(&format!("key_{}", i)).map(|s| s.as_str()),
+                Some(format!("val_{}", i)).as_deref(),
+            );
+        }
+    }
+
+    #[test]
+    fn test_mixed_success_timeout_error_panic() {
+        let mut orch = ProviderOrchestrator::new();
+
+        // Provider A: normal, succeeds
+        let provider_a = TestProvider::new("success", 50)
+            .with_variables(vars(&[("a", "success")]));
+
+        // Provider B: 500ms delay with 50ms timeout -> will timeout
+        let provider_b = TestProvider::new("slow", 50)
+            .with_variables(vars(&[("b", "timeout")]))
+            .with_delay(Duration::from_millis(500))
+            .with_timeout(Duration::from_millis(50));
+
+        // Provider C: returns CollectionError
+        let provider_c = TestProvider::new("erroring", 50)
+            .with_variables(vars(&[("c", "error")]))
+            .with_behavior(ProviderBehavior::Error("failed".to_string()));
+
+        // Provider D: panics
+        let provider_d = TestProvider::new("panicker", 50)
+            .with_variables(vars(&[("d", "panic")]))
+            .with_behavior(ProviderBehavior::Panic("boom".to_string()));
+
+        orch.register(Box::new(provider_a));
+        orch.register(Box::new(provider_b));
+        orch.register(Box::new(provider_c));
+        orch.register(Box::new(provider_d));
+
+        let result = orch.collect_all();
+
+        // Only the healthy provider should contribute
+        assert_eq!(
+            result.get("a").map(|s| s.as_str()),
+            Some("success"),
+            "Healthy provider should contribute"
+        );
+        assert!(result.get("b").is_none(), "Timed-out provider should not contribute");
+        assert!(result.get("c").is_none(), "Errored provider should not contribute");
+        assert!(result.get("d").is_none(), "Panicked provider should not contribute");
+        assert_eq!(
+            result.len(),
+            1,
+            "Only the successful provider should have contributed variables"
+        );
+    }
+
+    #[test]
+    fn test_provider_empty_variables() {
+        let mut orch = ProviderOrchestrator::new();
+
+        // Provider that returns an empty HashMap
+        let empty_provider = TestProvider::new("empty", 50);
+
+        // Provider with actual data
+        let data_provider =
+            TestProvider::new("data", 50).with_variables(vars(&[("key", "val")]));
+
+        orch.register(Box::new(empty_provider));
+        orch.register(Box::new(data_provider));
+
+        let result = orch.collect_all();
+        assert_eq!(
+            result.get("key").map(|s| s.as_str()),
+            Some("val"),
+            "Data provider's variables should be present"
+        );
+        assert_eq!(
+            result.len(),
+            1,
+            "Only the data provider's variable should be in the result"
+        );
+    }
+
+    #[test]
+    fn test_single_provider() {
+        let mut orch = ProviderOrchestrator::new();
+
+        let solo = TestProvider::new("solo", 50)
+            .with_variables(vars(&[("solo", "value")]));
+
+        orch.register(Box::new(solo));
+
+        let result = orch.collect_all();
+        assert_eq!(
+            result.get("solo").map(|s| s.as_str()),
+            Some("value"),
+            "Single provider should return its variables"
+        );
+        assert_eq!(result.len(), 1);
     }
 }

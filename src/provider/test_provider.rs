@@ -1,12 +1,23 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use super::{DataProvider, ProviderResult};
+use super::{DataProvider, ProviderError, ProviderResult};
+
+/// Controls what `collect()` does when called.
+#[derive(Clone)]
+pub enum ProviderBehavior {
+    /// Return variables normally (default).
+    Normal,
+    /// Panic with the given message.
+    Panic(String),
+    /// Return a `ProviderError::CollectionError` with the given message.
+    Error(String),
+}
 
 /// A configurable test provider for unit testing the provider system.
 ///
 /// Allows tests to control every aspect of provider behavior: name, priority,
-/// timeout, availability, returned variables, and simulated delay.
+/// timeout, availability, returned variables, simulated delay, and failure mode.
 pub struct TestProvider {
     pub name: String,
     pub priority: u32,
@@ -14,6 +25,7 @@ pub struct TestProvider {
     pub available: bool,
     pub variables: HashMap<String, String>,
     pub delay: Option<Duration>,
+    pub behavior: ProviderBehavior,
 }
 
 impl TestProvider {
@@ -28,6 +40,7 @@ impl TestProvider {
             available: true,
             variables: HashMap::new(),
             delay: None,
+            behavior: ProviderBehavior::Normal,
         }
     }
 
@@ -54,6 +67,12 @@ impl TestProvider {
         self.available = false;
         self
     }
+
+    /// Set the behavior for `collect()` (normal, panic, or error).
+    pub fn with_behavior(mut self, behavior: ProviderBehavior) -> Self {
+        self.behavior = behavior;
+        self
+    }
 }
 
 impl DataProvider for TestProvider {
@@ -77,6 +96,12 @@ impl DataProvider for TestProvider {
         if let Some(delay) = self.delay {
             std::thread::sleep(delay);
         }
-        Ok(self.variables.clone())
+        match &self.behavior {
+            ProviderBehavior::Normal => Ok(self.variables.clone()),
+            ProviderBehavior::Panic(msg) => panic!("{}", msg),
+            ProviderBehavior::Error(msg) => {
+                Err(ProviderError::CollectionError(msg.clone()))
+            }
+        }
     }
 }
