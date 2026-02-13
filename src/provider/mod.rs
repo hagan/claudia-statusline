@@ -152,11 +152,18 @@ impl ProviderOrchestrator {
     /// Providers that timeout, fail, or panic produce no variables rather
     /// than blocking the orchestrator.
     pub fn collect_all(&self) -> HashMap<String, String> {
-        // Filter to available providers only
+        // Filter to available providers, logging skipped ones
         let available: Vec<&dyn DataProvider> = self
             .providers
             .iter()
-            .filter(|p| p.is_available())
+            .filter(|p| {
+                if p.is_available() {
+                    true
+                } else {
+                    log::debug!("Skipping unavailable provider '{}'", p.name());
+                    false
+                }
+            })
             .map(|p| p.as_ref())
             .collect();
 
@@ -188,12 +195,20 @@ impl ProviderOrchestrator {
 
                 loop {
                     if handle.is_finished() {
+                        let elapsed = start.elapsed();
                         match handle.join() {
                             Ok(Ok(vars)) => {
+                                log::debug!(
+                                    "Provider '{}' completed in {:?}",
+                                    name, elapsed
+                                );
                                 results.push((priority, vars));
                             }
                             Ok(Err(e)) => {
-                                log::debug!("Provider '{}' failed: {:?}", name, e);
+                                log::debug!(
+                                    "Provider '{}' failed: {:?}",
+                                    name, e
+                                );
                             }
                             Err(_) => {
                                 log::warn!("Provider '{}' panicked", name);
