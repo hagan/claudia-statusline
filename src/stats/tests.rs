@@ -669,3 +669,71 @@ fn test_calculate_token_rates_from_raw_cache_edge_cases() {
     assert!(metrics.cache_hit_ratio.unwrap() < 0.01);
     assert!(metrics.cache_roi.unwrap() < 0.01);
 }
+
+/// Verify all public API items are accessible through expected paths.
+/// This test acts as a permanent safety net against accidental re-export removal.
+/// If any re-export is accidentally removed, this test will fail at compile time.
+#[test]
+fn test_public_api_surface() {
+    // Types that must be accessible via crate::stats::
+    use super::AllTimeStats;
+    use super::DailyStats;
+    use super::MonthlyStats;
+    use super::SessionStats;
+    use super::StatsData;
+    use super::TokenRateMetrics;
+
+    // Functions that must be accessible via crate::stats::
+    use super::calculate_cache_metrics;
+    use super::calculate_token_rates;
+    use super::calculate_token_rates_with_db;
+    use super::calculate_token_rates_with_db_and_transcript;
+    use super::get_daily_total;
+    use super::get_or_load_stats_data;
+    use super::get_session_duration;
+    use super::get_session_duration_by_mode;
+    use super::update_stats_data;
+
+    // Suppress unused variable warnings -- we only care about import resolution
+    let _ = StatsData::default;
+    let _ = SessionStats {
+        last_updated: String::new(),
+        cost: 0.0,
+        lines_added: 0,
+        lines_removed: 0,
+        start_time: None,
+        max_tokens_observed: None,
+        active_time_seconds: None,
+        last_activity: None,
+    };
+    let _ = DailyStats {
+        total_cost: 0.0,
+        sessions: Vec::new(),
+        lines_added: 0,
+        lines_removed: 0,
+    };
+    let _ = MonthlyStats {
+        total_cost: 0.0,
+        sessions: 0,
+        lines_added: 0,
+        lines_removed: 0,
+    };
+    let _ = AllTimeStats::default();
+
+    // Verify function types are importable (use fn pointer coercions)
+    let _: fn() -> StatsData = get_or_load_stats_data;
+    let _: fn(&StatsData) -> f64 = get_daily_total;
+    let _: fn(&str) -> Option<u64> = get_session_duration;
+    let _: fn(&str) -> Option<u64> = get_session_duration_by_mode;
+    let _: fn(&str) -> Option<TokenRateMetrics> = calculate_token_rates;
+
+    // These need concrete types for fn pointer coercion
+    let _ = calculate_token_rates_with_db as fn(&str, &crate::database::SqliteDatabase) -> Option<TokenRateMetrics>;
+    let _ = calculate_token_rates_with_db_and_transcript
+        as fn(&str, &crate::database::SqliteDatabase, Option<&str>) -> Option<TokenRateMetrics>;
+    let _ = calculate_cache_metrics
+        as fn(&crate::config::Config, u32, u32, u32) -> (Option<f64>, Option<f64>);
+
+    // update_stats_data is generic, verify it's callable
+    let _ = update_stats_data as fn(fn(&mut StatsData) -> (f64, f64)) -> (f64, f64);
+}
