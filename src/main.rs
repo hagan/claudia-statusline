@@ -38,6 +38,8 @@ mod hook_handler;
 mod layout;
 mod migrations;
 mod models;
+#[allow(dead_code)]
+mod provider;
 mod retry;
 mod state;
 mod stats;

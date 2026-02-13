@@ -382,8 +382,9 @@ fn format_statusline_string(
                     .and_then(crate::stats::get_session_duration_by_mode)
                     .or_else(|| transcript_path.and_then(parse_duration));
 
+                let config = crate::config::get_config();
                 let burn_rate = duration.and_then(|d| {
-                    if d > 60 {
+                    if d > config.burn_rate.min_duration_seconds {
                         Some((total_cost * 3600.0) / d as f64)
                     } else {
                         None
@@ -593,8 +594,9 @@ fn format_statusline_with_layout(
                 .and_then(crate::stats::get_session_duration_by_mode)
                 .or_else(|| transcript_path.and_then(parse_duration));
 
+            let config = crate::config::get_config();
             let burn_rate = duration.and_then(|d| {
-                if d > 60 {
+                if d > config.burn_rate.min_duration_seconds {
                     Some((total_cost * 3600.0) / d as f64)
                 } else {
                     None

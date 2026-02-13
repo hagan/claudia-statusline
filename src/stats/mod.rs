@@ -10,6 +10,7 @@
 mod aggregation;
 mod cache;
 mod persistence;
+mod provider;
 mod session;
 
 #[cfg(test)]
@@ -29,6 +30,8 @@ pub use session::{get_session_duration_by_mode, SessionStats};
 pub use aggregation::get_daily_total;
 #[allow(unused_imports)]
 pub use cache::{calculate_cache_metrics, calculate_token_rates, calculate_token_rates_with_db};
+#[allow(unused_imports)]
+pub use provider::StatsProvider;
 #[allow(unused_imports)]
 pub use session::get_session_duration;
 

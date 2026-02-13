@@ -356,6 +356,16 @@ pub struct BurnRateConfig {
     /// Default: 60 minutes (1 hour)
     /// Reasonable range: 15-120 minutes
     pub inactivity_threshold_minutes: u32,
+
+    /// Minimum session duration in seconds before showing burn rate
+    ///
+    /// Sessions shorter than this threshold will not display a burn rate,
+    /// since very short sessions produce unreliable $/hr estimates.
+    ///
+    /// Default: 60 seconds (1 minute)
+    /// Reasonable range: 30-300 seconds
+    #[serde(default = "default_min_duration_seconds")]
+    pub min_duration_seconds: u64,
 }
 
 /// Layout configuration for customizable statusline format
@@ -925,11 +935,16 @@ impl Default for GitConfig {
     }
 }
 
+fn default_min_duration_seconds() -> u64 {
+    60
+}
+
 impl Default for BurnRateConfig {
     fn default() -> Self {
         BurnRateConfig {
             mode: "wall_clock".to_string(), // Default to wall_clock for backward compatibility
             inactivity_threshold_minutes: 60, // 1 hour default
+            min_duration_seconds: default_min_duration_seconds(), // 60 seconds minimum
         }
     }
 }
@@ -1240,6 +1255,11 @@ mode = "wall_clock"
 # Default: 60 minutes (1 hour)
 inactivity_threshold_minutes = 60
 
+# Minimum session duration (seconds) before showing burn rate
+# Sessions shorter than this produce unreliable $/hr estimates
+# Default: 60 seconds
+# min_duration_seconds = 60
+
 [token_rate]
 # Enable token rate metrics display (tokens per second)
 # Default: false (opt-in feature)
@@ -1320,6 +1340,13 @@ pub fn get_config() -> &'static Config {
         if let Ok(val) = env::var("STATUSLINE_BURN_RATE_THRESHOLD") {
             if let Ok(threshold) = val.parse::<u32>() {
                 config.burn_rate.inactivity_threshold_minutes = threshold;
+            }
+        }
+
+        // Override burn_rate.min_duration_seconds from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_BURN_RATE_MIN_DURATION") {
+            if let Ok(seconds) = val.parse::<u64>() {
+                config.burn_rate.min_duration_seconds = seconds;
             }
         }
 

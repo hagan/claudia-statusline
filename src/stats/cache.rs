@@ -148,8 +148,9 @@ pub fn calculate_token_rates_with_db_and_transcript(
         get_session_duration(session_id)?
     };
 
-    // Require at least 60 seconds for meaningful rates
-    if duration < 60 {
+    // Require minimum session duration for meaningful rates
+    // Uses the same configurable threshold as burn rate
+    if duration < config.burn_rate.min_duration_seconds {
         return None;
     }
 
