@@ -1,14 +1,27 @@
 use std::collections::HashMap;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
+
+use thiserror::Error;
 
 /// Errors that can occur during provider execution.
-#[derive(Debug)]
+#[derive(Error, Debug)]
 pub enum ProviderError {
-    /// Provider is not available
+    /// Provider is not available (e.g., not in a git repo).
+    #[error("Provider '{0}' is not available")]
     Unavailable(String),
-    /// Provider timed out
-    Timeout { provider: String, limit: Duration },
-    /// Provider collection error
+
+    /// Provider execution exceeded its timeout limit.
+    #[error("Provider '{provider}' timed out after {limit:?}")]
+    Timeout {
+        /// Name of the provider that timed out.
+        provider: String,
+        /// The timeout duration that was exceeded.
+        limit: Duration,
+    },
+
+    /// Provider encountered an error during variable collection.
+    #[error("Provider collection error: {0}")]
     CollectionError(String),
 }
 
@@ -16,46 +29,172 @@ pub enum ProviderError {
 pub type ProviderResult = Result<HashMap<String, String>, ProviderError>;
 
 /// A data provider that collects variables for the statusline layout.
+///
+/// Providers run in parallel via [`ProviderOrchestrator`]. Each provider
+/// returns a `HashMap<String, String>` where keys are layout variable
+/// names (e.g., "directory", "git", "cost") and values are the
+/// pre-formatted strings ready for template substitution.
+///
+/// # Implementing a Provider
+///
+/// All providers must be `Send + Sync` because they are shared across
+/// scoped threads during parallel execution.
+///
+/// The [`is_available`](DataProvider::is_available) method is called before
+/// spawning a thread and should be fast (no I/O). Pass context at
+/// construction time and check internal state in `is_available`.
+///
+/// The [`collect`](DataProvider::collect) method runs in a scoped thread
+/// with a per-provider timeout enforced by the orchestrator.
 pub trait DataProvider: Send + Sync {
     /// Human-readable name for logging and diagnostics.
     fn name(&self) -> &str;
 
     /// Priority for variable conflict resolution (higher wins).
+    ///
+    /// When two providers set the same variable key, the provider with
+    /// the higher priority value wins. Recommended scale: 0-100, with
+    /// 50 as the default for standard providers.
     fn priority(&self) -> u32;
 
     /// Maximum time this provider is allowed to run.
+    ///
+    /// If the provider's [`collect`](DataProvider::collect) method does
+    /// not complete within this duration, the orchestrator discards its
+    /// results and uses an empty variable map instead.
     fn timeout(&self) -> Duration;
 
     /// Quick check whether this provider can run in the current context.
+    ///
+    /// Called before spawning a thread. Should be fast (no I/O).
+    /// Examples: checking if the current directory is a git repo,
+    /// checking if a config feature is enabled.
     fn is_available(&self) -> bool;
 
-    /// Collect variables. Called in a scoped thread.
+    /// Collect variables for the statusline layout.
+    ///
+    /// Called in a scoped thread by the orchestrator. Returns a
+    /// `HashMap<String, String>` mapping variable names to their
+    /// formatted values, or a [`ProviderError`] on failure.
     fn collect(&self) -> ProviderResult;
 }
 
-/// Orchestrates parallel execution of data providers.
+/// Orchestrates parallel execution of data providers with timeout enforcement.
+///
+/// The orchestrator holds a collection of [`DataProvider`] implementations,
+/// runs them in parallel using [`std::thread::scope`], enforces per-provider
+/// timeouts, and merges results by priority (higher priority wins conflicts).
 pub struct ProviderOrchestrator {
     providers: Vec<Box<dyn DataProvider>>,
 }
 
+impl Default for ProviderOrchestrator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProviderOrchestrator {
-    /// Create a new empty orchestrator.
+    /// Create a new empty orchestrator with no registered providers.
     pub fn new() -> Self {
         Self {
             providers: Vec::new(),
         }
     }
 
-    /// Register a provider with the orchestrator.
+    /// Register a data provider with the orchestrator.
+    ///
+    /// Providers are executed in the order they are registered, but
+    /// results are merged by priority (lower priority first, so higher
+    /// priority values overwrite lower ones for the same key).
     pub fn register(&mut self, provider: Box<dyn DataProvider>) {
         self.providers.push(provider);
     }
 
-    /// Execute all available providers and merge results.
+    /// Execute all available providers in parallel and merge their results.
     ///
-    /// STUB: Returns empty HashMap. Implementation pending (GREEN phase).
+    /// This method:
+    /// 1. Filters providers to those where [`is_available`](DataProvider::is_available) returns `true`
+    /// 2. Spawns one scoped thread per available provider
+    /// 3. Polls each thread for completion, enforcing per-provider timeouts
+    /// 4. Collects successful results as `(priority, variables)` pairs
+    /// 5. Sorts by priority ascending and merges with `HashMap::extend`,
+    ///    so higher-priority providers overwrite lower-priority ones
+    ///
+    /// Providers that timeout, fail, or panic produce no variables rather
+    /// than blocking the orchestrator.
     pub fn collect_all(&self) -> HashMap<String, String> {
-        HashMap::new()
+        // Filter to available providers only
+        let available: Vec<&dyn DataProvider> = self
+            .providers
+            .iter()
+            .filter(|p| p.is_available())
+            .map(|p| p.as_ref())
+            .collect();
+
+        if available.is_empty() {
+            return HashMap::new();
+        }
+
+        // Collect results with timeouts using scoped threads
+        let mut results: Vec<(u32, HashMap<String, String>)> = Vec::new();
+
+        thread::scope(|s| {
+            // Spawn a thread per provider, collecting handles with metadata
+            let handles: Vec<_> = available
+                .iter()
+                .map(|provider| {
+                    let timeout = provider.timeout();
+                    let name = provider.name().to_string();
+                    let priority = provider.priority();
+
+                    let handle = s.spawn(move || provider.collect());
+
+                    (handle, timeout, name, priority)
+                })
+                .collect();
+
+            // Collect results, enforcing per-provider timeouts
+            for (handle, timeout, name, priority) in handles {
+                let start = Instant::now();
+
+                loop {
+                    if handle.is_finished() {
+                        match handle.join() {
+                            Ok(Ok(vars)) => {
+                                results.push((priority, vars));
+                            }
+                            Ok(Err(e)) => {
+                                log::debug!("Provider '{}' failed: {:?}", name, e);
+                            }
+                            Err(_) => {
+                                log::warn!("Provider '{}' panicked", name);
+                            }
+                        }
+                        break;
+                    }
+
+                    if start.elapsed() > timeout {
+                        log::warn!("Provider '{}' timed out after {:?}", name, timeout);
+                        // Thread will be joined when scope exits,
+                        // but we skip collecting its result
+                        break;
+                    }
+
+                    thread::sleep(Duration::from_millis(5));
+                }
+            }
+        });
+
+        // Merge results by priority: sort ascending, then extend
+        // so higher priority values overwrite lower priority ones
+        results.sort_by_key(|(priority, _)| *priority);
+        let mut merged = HashMap::new();
+        for (_, vars) in results {
+            merged.extend(vars);
+        }
+
+        merged
     }
 }
 
