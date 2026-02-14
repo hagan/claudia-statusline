@@ -28,6 +28,10 @@ pub mod config;
 mod roadmap;
 #[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
 mod state;
+#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
+mod todos;
+#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
+mod update;
 
 pub use config::GsdConfig;
 
@@ -143,6 +147,28 @@ fn init_empty_vars() -> HashMap<String, String> {
     vars
 }
 
+/// Smart truncation: trim to last full word before character limit, append ellipsis.
+///
+/// Per CONTEXT.md locked decision: task names are truncated to fit statusline
+/// horizontal space. The algorithm finds the last space before the limit and
+/// truncates there, unless doing so would cut more than half the string (in
+/// which case it truncates at the exact limit).
+///
+/// Returns the original string unchanged if it fits within `max_len` or if
+/// `max_len` is 0 (no limit).
+pub(crate) fn smart_truncate(s: &str, max_len: usize) -> String {
+    if max_len == 0 || s.len() <= max_len {
+        return s.to_string();
+    }
+    let truncated = &s[..max_len];
+    if let Some(last_space) = truncated.rfind(' ') {
+        if last_space > max_len / 2 {
+            return format!("{}...", &s[..last_space]);
+        }
+    }
+    format!("{}...", &s[..max_len])
+}
+
 impl DataProvider for GsdProvider {
     fn name(&self) -> &str {
         "gsd"
@@ -164,5 +190,66 @@ impl DataProvider for GsdProvider {
         let vars = init_empty_vars();
         // File readers will be wired here in Plan 03
         Ok(vars)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_smart_truncate_short_string() {
+        assert_eq!(smart_truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_smart_truncate_exact_limit() {
+        assert_eq!(smart_truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn test_smart_truncate_no_limit() {
+        assert_eq!(smart_truncate("hello world", 0), "hello world");
+    }
+
+    #[test]
+    fn test_smart_truncate_word_boundary() {
+        // "Implementing the provider trait system" with limit 30
+        // At position 30: "Implementing the provider trai"
+        // Last space at 25: "Implementing the provider"
+        // 25 > 30/2=15, so truncate at word boundary
+        assert_eq!(
+            smart_truncate("Implementing the provider trait system", 30),
+            "Implementing the provider..."
+        );
+    }
+
+    #[test]
+    fn test_smart_truncate_no_good_boundary() {
+        // "abcdefghijklmnop" with limit 10 -- no spaces at all
+        assert_eq!(
+            smart_truncate("abcdefghijklmnop", 10),
+            "abcdefghij..."
+        );
+    }
+
+    #[test]
+    fn test_smart_truncate_space_too_early() {
+        // "a bcdefghijklmnop" with limit 10 -- space at position 1
+        // 1 is NOT > 10/2=5, so truncate at exact limit
+        assert_eq!(
+            smart_truncate("a bcdefghijklmnop", 10),
+            "a bcdefghi..."
+        );
+    }
+
+    #[test]
+    fn test_smart_truncate_empty_string() {
+        assert_eq!(smart_truncate("", 10), "");
+    }
+
+    #[test]
+    fn test_smart_truncate_single_char_over() {
+        assert_eq!(smart_truncate("ab", 1), "a...");
     }
 }
