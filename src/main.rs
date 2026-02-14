@@ -30,6 +30,8 @@ mod common;
 mod config;
 mod context_learning;
 mod database;
+#[allow(dead_code)]
+mod gsd;
 mod display;
 mod error;
 mod git;

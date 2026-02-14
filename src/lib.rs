@@ -35,6 +35,8 @@ pub mod common;
 pub mod config;
 /// Adaptive context window learning from usage patterns
 pub mod context_learning;
+/// GSD project tracking data provider
+pub mod gsd;
 /// SQLite database backend for persistent statistics
 pub mod database;
 pub mod display;
