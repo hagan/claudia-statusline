@@ -1,4 +1,5 @@
 use crate::error::{Result, StatuslineError};
+use crate::gsd::config::GsdConfig;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::env;
@@ -42,6 +43,9 @@ pub struct Config {
 
     /// Token rate metrics configuration
     pub token_rate: TokenRateConfig,
+
+    /// GSD project tracking configuration
+    pub gsd: GsdConfig,
 }
 
 /// Display-related configuration
