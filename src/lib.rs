@@ -69,6 +69,7 @@ pub use config::Config;
 pub use display::{format_output, format_output_to_string};
 pub use error::{Result, StatuslineError};
 pub use git::get_git_status;
+pub use gsd::GsdProvider;
 pub use models::{Cost, Model, StatuslineInput, Workspace};
 pub use stats::{
     get_daily_total, get_or_load_stats_data, update_stats_data, StatsData, StatsProvider,
