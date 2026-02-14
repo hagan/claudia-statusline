@@ -14,8 +14,9 @@
 //! ~/.claude/cache/    ──┘
 //! ```
 //!
-//! File readers are wired in Plan 02; this module provides the skeleton
-//! structure, config integration, auto-detection, and empty variable map.
+//! File readers (state, roadmap, todos, update) are implemented in Plan 02
+//! sub-modules. This module provides the skeleton structure, config
+//! integration, auto-detection, and empty variable map.
 
 use crate::provider::{DataProvider, ProviderResult};
 use std::collections::HashMap;
@@ -23,6 +24,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub mod config;
+#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
+mod roadmap;
+#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
+mod state;
 
 pub use config::GsdConfig;
 
