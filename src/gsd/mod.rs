@@ -24,13 +24,9 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub mod config;
-#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
 mod roadmap;
-#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
 mod state;
-#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
 mod todos;
-#[allow(dead_code)] // Wired into GsdProvider::collect() in Plan 03
 mod update;
 
 pub use config::GsdConfig;
@@ -60,7 +56,6 @@ pub struct GsdProvider {
     update_delay_seconds: u64,
 }
 
-#[allow(dead_code)] // Public API - used by library consumers
 impl GsdProvider {
     /// Create a new GsdProvider from configuration and current working directory.
     ///
@@ -94,6 +89,30 @@ impl GsdProvider {
             todo_staleness_seconds: config.todo_staleness_seconds,
             update_delay_seconds: config.update_delay_seconds,
         }
+    }
+
+    /// Build the convenience `gsd_summary` variable from populated phase and progress vars.
+    ///
+    /// Produces outputs like:
+    /// - "P4: GSD Provider 3/6" (phase + progress available)
+    /// - "P4: GSD Provider" (phase available, no progress)
+    /// - "" (no phase data at all -- stays empty from init_empty_vars)
+    fn build_summary(vars: &mut HashMap<String, String>) {
+        let phase = vars.get("gsd_phase").cloned().unwrap_or_default();
+        let progress = vars.get("gsd_progress_fraction").cloned().unwrap_or_default();
+
+        if phase.is_empty() {
+            // No phase data, summary stays empty
+            return;
+        }
+
+        let summary = if progress.is_empty() {
+            phase
+        } else {
+            format!("{} {}", phase, progress)
+        };
+
+        vars.insert("gsd_summary".into(), summary);
     }
 }
 
@@ -187,8 +206,25 @@ impl DataProvider for GsdProvider {
     }
 
     fn collect(&self) -> ProviderResult {
-        let vars = init_empty_vars();
-        // File readers will be wired here in Plan 03
+        let mut vars = init_empty_vars();
+
+        if let Some(ref planning_dir) = self.planning_dir {
+            // Each reader fills its own subset of vars.
+            // Errors in one reader don't affect others (fill_vars returns gracefully).
+            state::fill_vars(planning_dir, &mut vars);
+            roadmap::fill_vars(planning_dir, &mut vars);
+            todos::fill_vars(
+                &self.home_dir,
+                self.task_truncation_limit,
+                self.todo_staleness_seconds,
+                &mut vars,
+            );
+            update::fill_vars(&self.home_dir, self.update_delay_seconds, &mut vars);
+
+            // Build convenience summary from populated vars
+            Self::build_summary(&mut vars);
+        }
+
         Ok(vars)
     }
 }
