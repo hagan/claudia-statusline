@@ -1578,3 +1578,389 @@ fn test_template_conditional_with_sep() {
         "~/test | S4.5"
     );
 }
+
+// =========================================================================
+// Phase 5 Plan 3: Template engine edge case tests
+// =========================================================================
+
+#[test]
+fn test_template_deeply_nested_3_levels_all_present() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}{if b}{if c}deep{endif}{endif}{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("b".to_string(), "1".to_string());
+    vars.insert("c".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "deep");
+}
+
+#[test]
+fn test_template_deeply_nested_3_levels_ab_only() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}{if b}{if c}deep{endif}{endif}{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("b".to_string(), "1".to_string());
+    // c absent -- inner {if c} is false, outputs nothing
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_deeply_nested_3_levels_a_only() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}{if b}{if c}deep{endif}{endif}{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_deeply_nested_3_levels_none() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}{if b}{if c}deep{endif}{endif}{endif}",
+        "",
+    );
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_adjacent_conditionals_all() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}A{endif}{if b}B{endif}{if c}C{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("b".to_string(), "1".to_string());
+    vars.insert("c".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "ABC");
+}
+
+#[test]
+fn test_template_adjacent_conditionals_a_and_c() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}A{endif}{if b}B{endif}{if c}C{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("c".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "AC");
+}
+
+#[test]
+fn test_template_adjacent_conditionals_b_only() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}A{endif}{if b}B{endif}{if c}C{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("b".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "B");
+}
+
+#[test]
+fn test_template_adjacent_conditionals_none() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}A{endif}{if b}B{endif}{if c}C{endif}",
+        "",
+    );
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_empty_if_with_else_fallback() {
+    // Empty if-branch, non-empty else
+    let renderer = LayoutRenderer::with_format("{if var}{else}fallback{endif}", "");
+
+    // var is empty -- should show fallback
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "fallback");
+
+    // var is absent -- should show fallback
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "fallback");
+
+    // var is present -- empty if-branch, so outputs nothing
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "hello".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_content_with_empty_else() {
+    // Non-empty if-branch, empty else
+    let renderer = LayoutRenderer::with_format("{if var}content{else}{endif}", "");
+
+    // var present -- shows content
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "hello".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "content");
+
+    // var absent -- else branch is empty, outputs nothing
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_whitespace_in_conditions() {
+    // Extra whitespace around condition components should be trimmed
+    let renderer = LayoutRenderer::with_format("{if  var  ==  value }content{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "value".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "content");
+}
+
+#[test]
+fn test_template_variable_names_with_underscores_and_numbers() {
+    let renderer = LayoutRenderer::with_format(
+        "{if gsd_phase_number}P{gsd_phase_number}{endif}",
+        "",
+    );
+    let mut vars = HashMap::new();
+    vars.insert("gsd_phase_number".to_string(), "5".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "P5");
+}
+
+#[test]
+fn test_template_variable_names_with_underscores_absent() {
+    let renderer = LayoutRenderer::with_format(
+        "{if gsd_phase_number}P{gsd_phase_number}{endif}",
+        "",
+    );
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_multiple_brace_escapes() {
+    let renderer = LayoutRenderer::with_format("{{hello}} world {{goodbye}}", "");
+    let vars = HashMap::new();
+    assert_eq!(
+        renderer.render_template(&vars, false),
+        "{hello} world {goodbye}"
+    );
+}
+
+#[test]
+fn test_template_brace_escape_inside_conditional() {
+    let renderer = LayoutRenderer::with_format("{if var}cost: {{12.50}}{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "yes".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "cost: {12.50}");
+}
+
+#[test]
+fn test_template_brace_escape_inside_conditional_false() {
+    let renderer = LayoutRenderer::with_format("{if var}cost: {{12.50}}{endif}", "");
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_comparison_with_empty_string() {
+    // {if var == } checks if var equals empty string
+    let renderer = LayoutRenderer::with_format("{if var == }is empty{endif}", "");
+
+    // var set to empty string -- should match
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "is empty");
+
+    // var set to non-empty -- should not match
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "hello".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_inequality_with_empty_string() {
+    let renderer = LayoutRenderer::with_format("{if var != }not empty{endif}", "");
+
+    // var set to non-empty -- should match
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "hello".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "not empty");
+
+    // var set to empty -- should not match
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_nesting_depth_exceeded() {
+    // Build template with 11 nested {if} blocks -- exceeds MAX_NESTING_DEPTH of 10
+    let mut template = String::new();
+    for _i in 0..11 {
+        template.push_str("{if x}");
+    }
+    template.push_str("deep");
+    for _i in 0..11 {
+        template.push_str("{endif}");
+    }
+
+    let renderer = LayoutRenderer::with_format(&template, "");
+    let mut vars = HashMap::new();
+    vars.insert("x".to_string(), "1".to_string());
+
+    // Should produce [tmpl err] because nesting exceeds max depth
+    assert_eq!(renderer.render_template(&vars, false), "[tmpl err]");
+}
+
+#[test]
+fn test_template_nesting_depth_at_limit() {
+    // Exactly 10 levels -- should be OK
+    let mut template = String::new();
+    for _i in 0..10 {
+        template.push_str("{if x}");
+    }
+    template.push_str("ok");
+    for _i in 0..10 {
+        template.push_str("{endif}");
+    }
+
+    let renderer = LayoutRenderer::with_format(&template, "");
+    let mut vars = HashMap::new();
+    vars.insert("x".to_string(), "1".to_string());
+
+    assert_eq!(renderer.render_template(&vars, false), "ok");
+}
+
+#[test]
+fn test_template_unclosed_else() {
+    // {if var}content{else} without {endif}
+    let renderer = LayoutRenderer::with_format("{if var}content{else}", "");
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "[tmpl err]");
+}
+
+#[test]
+fn test_template_extra_endif() {
+    // {if var}content{endif}{endif} -- extra {endif} is a stray terminator
+    let renderer = LayoutRenderer::with_format("{if var}content{endif}{endif}", "");
+    let vars = HashMap::new();
+    // parse_template should detect stray {endif} -> parse error
+    assert_eq!(renderer.render_template(&vars, false), "[tmpl err]");
+}
+
+#[test]
+fn test_template_default_template_full_data() {
+    // Use the actual default.tmpl content and verify it renders correctly with full data
+    let default_tmpl = include_str!("../templates/default.tmpl");
+    let renderer = LayoutRenderer::with_format(default_tmpl, " | ");
+
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("git".to_string(), "main +2".to_string());
+    vars.insert("gsd_phase".to_string(), "P5: Layout".to_string());
+    vars.insert("gsd_icon".to_string(), "\u{F0AE2}".to_string());
+    vars.insert("gsd_summary".to_string(), "P5\u{00b7}Layout 4/6 [2/3]".to_string());
+    vars.insert("gsd_task".to_string(), "Writing tests".to_string());
+    vars.insert("gsd_task_full".to_string(), "Writing tests (2/5)".to_string());
+    vars.insert("gsd_separator".to_string(), "\u{00b7}".to_string());
+    vars.insert("gsd_update".to_string(), "".to_string());
+    vars.insert("context".to_string(), "75%".to_string());
+    vars.insert("model".to_string(), "O4.6".to_string());
+    vars.insert("cost".to_string(), "$12.50".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    // Verify all segments are present in order
+    assert!(result.contains("~/proj"), "Should contain directory: {}", result);
+    assert!(result.contains("main +2"), "Should contain git: {}", result);
+    assert!(result.contains("\u{F0AE2}"), "Should contain GSD icon: {}", result);
+    assert!(result.contains("P5\u{00b7}Layout 4/6 [2/3]"), "Should contain GSD summary: {}", result);
+    assert!(result.contains("Writing tests (2/5)"), "Should contain task: {}", result);
+    assert!(result.contains("75%"), "Should contain context: {}", result);
+    assert!(result.contains("O4.6"), "Should contain model: {}", result);
+    assert!(result.contains("$12.50"), "Should contain cost: {}", result);
+}
+
+#[test]
+fn test_template_default_template_gsd_absent() {
+    // Default template with no GSD variables -- GSD segment should be hidden
+    let default_tmpl = include_str!("../templates/default.tmpl");
+    let renderer = LayoutRenderer::with_format(default_tmpl, " | ");
+
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("git".to_string(), "main".to_string());
+    vars.insert("context".to_string(), "50%".to_string());
+    vars.insert("model".to_string(), "S4.5".to_string());
+    vars.insert("cost".to_string(), "$5.00".to_string());
+    // No gsd_phase -- GSD segment should be hidden
+
+    let result = renderer.render_template(&vars, false);
+    // Should contain all non-GSD segments
+    assert!(result.contains("~/proj"), "Should contain directory: {}", result);
+    assert!(result.contains("main"), "Should contain git: {}", result);
+    assert!(result.contains("50%"), "Should contain context: {}", result);
+    assert!(result.contains("S4.5"), "Should contain model: {}", result);
+    assert!(result.contains("$5.00"), "Should contain cost: {}", result);
+    // GSD icon and summary should NOT be present
+    assert!(!result.contains("\u{F0AE2}"), "Should not contain GSD icon: {}", result);
+    assert!(!result.contains("gsd"), "Should not contain gsd text: {}", result);
+}
+
+#[test]
+fn test_template_variable_only_no_conditionals() {
+    // Backward compatibility: template with only variable substitution
+    let renderer = LayoutRenderer::with_format("{directory} | {git} | {cost}", "");
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/test".to_string());
+    vars.insert("git".to_string(), "main".to_string());
+    vars.insert("cost".to_string(), "$10".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "~/test | main | $10");
+}
+
+#[test]
+fn test_template_default_template_partial_gsd() {
+    // GSD with phase but no task -- task sub-segment should be hidden
+    let default_tmpl = include_str!("../templates/default.tmpl");
+    let renderer = LayoutRenderer::with_format(default_tmpl, " | ");
+
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("gsd_phase".to_string(), "P5: Layout".to_string());
+    vars.insert("gsd_icon".to_string(), "\u{F0AE2}".to_string());
+    vars.insert("gsd_summary".to_string(), "P5\u{00b7}Layout 4/6".to_string());
+    vars.insert("gsd_separator".to_string(), "\u{00b7}".to_string());
+    // No gsd_task, no gsd_update, no gsd_task_full
+    vars.insert("model".to_string(), "S4.5".to_string());
+    vars.insert("cost".to_string(), "$5.00".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert!(result.contains("P5\u{00b7}Layout 4/6"), "Should contain summary: {}", result);
+    // gsd_separator should not appear as a standalone segment since gsd_task is absent
+    // (the separator between gsd_summary and gsd_task is inside the {if gsd_task} block)
+}
+
+#[test]
+fn test_template_default_template_with_update() {
+    // GSD with update indicator
+    let default_tmpl = include_str!("../templates/default.tmpl");
+    let renderer = LayoutRenderer::with_format(default_tmpl, " | ");
+
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("gsd_phase".to_string(), "P5: Layout".to_string());
+    vars.insert("gsd_icon".to_string(), "\u{F0AE2}".to_string());
+    vars.insert("gsd_summary".to_string(), "P5\u{00b7}Layout 4/6".to_string());
+    vars.insert("gsd_separator".to_string(), "\u{00b7}".to_string());
+    vars.insert("gsd_update".to_string(), "\u{2191}v1.19.0".to_string());
+    vars.insert("model".to_string(), "S4.5".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert!(result.contains("\u{2191}v1.19.0"), "Should contain update indicator: {}", result);
+}

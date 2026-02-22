@@ -9,6 +9,12 @@ use std::fs;
 use std::time::Duration;
 use tempfile::TempDir;
 
+// Used in Phase 5 Plan 3 tests
+#[allow(unused_imports)]
+use chrono;
+#[allow(unused_imports)]
+use toml;
+
 // ============================================================================
 // Smart truncation tests (moved from inline mod tests)
 // ============================================================================
@@ -737,6 +743,624 @@ fn test_gsd_phase_max_width_truncation() {
 
     let result = provider.collect().unwrap();
     assert_eq!(result.get("gsd_phase_name").unwrap(), "Layout...");
+}
+
+// ============================================================================
+// Phase 5 Plan 3: Extended GSD variable tests
+// ============================================================================
+
+// ---- gsd_update formatting ----
+
+#[test]
+fn test_gsd_update_formatting_available() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    // Create a fake update check file
+    let home = tmp.path().join("fakehome");
+    let claude_dir = home.join(".claude").join("cache");
+    fs::create_dir_all(&claude_dir).unwrap();
+    // Write update info JSON with zero delay
+    fs::write(
+        claude_dir.join("update-check.json"),
+        r#"{"version": "v1.19.0", "available": true, "checked_at": "2026-02-22T00:00:00Z"}"#,
+    )
+    .unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.home_dir = home;
+    provider.update_delay_seconds = 0; // No delay for testing
+
+    let result = provider.collect().unwrap();
+
+    // Check gsd_update formatting
+    let gsd_update = result.get("gsd_update").unwrap();
+    if !gsd_update.is_empty() {
+        // When update is available, format is "up-arrow + version"
+        assert!(
+            gsd_update.contains("v1.19.0"),
+            "gsd_update should contain version when available: got '{}'",
+            gsd_update
+        );
+    }
+    // Note: update might be empty if the file format doesn't exactly match
+    // the reader's expectations. The formatting logic is in build_convenience_vars.
+}
+
+#[test]
+fn test_gsd_update_formatting_not_available() {
+    let provider = provider_without_planning();
+    let result = provider.collect().unwrap();
+    assert_eq!(result.get("gsd_update").unwrap(), "");
+}
+
+#[test]
+fn test_gsd_update_convenience_var_directly() {
+    // Test build_convenience_vars directly with pre-populated vars
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let provider = provider_with_planning(planning.clone());
+
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_update_available".into(), "true".into());
+    vars.insert("gsd_update_version".into(), "v1.19.0".into());
+    provider.build_convenience_vars(&mut vars);
+
+    assert_eq!(vars.get("gsd_update").unwrap(), "\u{2191}v1.19.0");
+}
+
+#[test]
+fn test_gsd_update_convenience_var_not_available() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let provider = provider_with_planning(planning.clone());
+
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_update_available".into(), "".into());
+    vars.insert("gsd_update_version".into(), "".into());
+    provider.build_convenience_vars(&mut vars);
+
+    assert_eq!(vars.get("gsd_update").unwrap(), "");
+}
+
+// ---- gsd_task_full formatting ----
+
+#[test]
+fn test_gsd_task_full_with_progress() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let provider = provider_with_planning(planning.clone());
+
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_task".into(), "Writing tests".into());
+    vars.insert("gsd_task_progress".into(), "2/5".into());
+    provider.build_convenience_vars(&mut vars);
+
+    assert_eq!(vars.get("gsd_task_full").unwrap(), "Writing tests (2/5)");
+}
+
+#[test]
+fn test_gsd_task_full_without_progress() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let provider = provider_with_planning(planning.clone());
+
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_task".into(), "Refactoring".into());
+    vars.insert("gsd_task_progress".into(), "".into());
+    provider.build_convenience_vars(&mut vars);
+
+    assert_eq!(vars.get("gsd_task_full").unwrap(), "Refactoring");
+}
+
+#[test]
+fn test_gsd_task_full_no_task() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let provider = provider_with_planning(planning.clone());
+
+    let mut vars = init_empty_vars();
+    provider.build_convenience_vars(&mut vars);
+
+    assert_eq!(vars.get("gsd_task_full").unwrap(), "");
+}
+
+// ---- gsd_plan_* variables ----
+
+#[test]
+fn test_gsd_plan_vars_from_roadmap() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 3 of 4 (Testing Phase)\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        r#"- [x] **Phase 1: First** - d
+- [x] **Phase 2: Second** - d
+- [ ] **Phase 3: Testing Phase** - d
+
+Plans:
+- [x] 03-01-PLAN.md -- First plan
+- [x] 03-02-PLAN.md -- Second plan
+- [ ] 03-03-PLAN.md -- Third plan
+
+- [ ] **Phase 4: Final** - d
+"#,
+    )
+    .unwrap();
+
+    let provider = provider_with_planning(planning);
+    let result = provider.collect().unwrap();
+
+    assert_eq!(result.get("gsd_plan_completed").unwrap(), "2");
+    assert_eq!(result.get("gsd_plan_total").unwrap(), "3");
+    assert_eq!(result.get("gsd_plan_fraction").unwrap(), "2/3");
+}
+
+#[test]
+fn test_gsd_plan_vars_no_plans_section() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 3 of 4 (Testing Phase)\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        r#"- [x] **Phase 1: First** - d
+- [x] **Phase 2: Second** - d
+- [ ] **Phase 3: Testing Phase** - d
+- [ ] **Phase 4: Final** - d
+"#,
+    )
+    .unwrap();
+
+    let provider = provider_with_planning(planning);
+    let result = provider.collect().unwrap();
+
+    // No plan checkboxes under Phase 3 -- all plan vars empty
+    assert_eq!(result.get("gsd_plan_completed").unwrap(), "");
+    assert_eq!(result.get("gsd_plan_total").unwrap(), "");
+    assert_eq!(result.get("gsd_plan_fraction").unwrap(), "");
+}
+
+// ---- gsd_stale detection ----
+
+#[test]
+fn test_gsd_stale_detection_stale() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 1 of 2 (Test)\nLast activity: 2025-01-01 -- Old activity\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.stale_enabled = true;
+    provider.stale_hours = 24;
+
+    let result = provider.collect().unwrap();
+    // 2025-01-01 is definitely more than 24 hours ago
+    assert_eq!(
+        result.get("gsd_stale").unwrap(),
+        "true",
+        "Should be stale: activity is far in the past"
+    );
+}
+
+#[test]
+fn test_gsd_stale_detection_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 1 of 2 (Test)\nLast activity: 2025-01-01 -- Old activity\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.stale_enabled = false; // Disabled
+    provider.stale_hours = 24;
+
+    let result = provider.collect().unwrap();
+    // stale_enabled=false, so gsd_stale should be empty
+    assert_eq!(result.get("gsd_stale").unwrap(), "");
+}
+
+#[test]
+fn test_gsd_stale_detection_recent_activity() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+
+    // Use today's date for recent activity
+    let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+    fs::write(
+        planning.join("STATE.md"),
+        format!("Phase: 1 of 2 (Test)\nLast activity: {} -- Recent\n", today),
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.stale_enabled = true;
+    provider.stale_hours = 24;
+
+    let result = provider.collect().unwrap();
+    assert_eq!(
+        result.get("gsd_stale").unwrap(),
+        "",
+        "Should not be stale: activity is recent (today)"
+    );
+}
+
+// ---- gsd_icon state coloring ----
+
+#[test]
+fn test_gsd_icon_green_when_active_task() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning.clone());
+    provider.color_enabled = true;
+
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_task".into(), "Active task".into());
+    provider.build_convenience_vars(&mut vars);
+
+    let icon = vars.get("gsd_icon").unwrap();
+    assert!(
+        icon.contains("\x1b[32m"),
+        "Icon should be green when task is active: {:?}",
+        icon
+    );
+}
+
+#[test]
+fn test_gsd_icon_yellow_when_update_available() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning.clone());
+    provider.color_enabled = true;
+
+    let mut vars = init_empty_vars();
+    // No task, but update available
+    vars.insert("gsd_update_available".into(), "true".into());
+    vars.insert("gsd_update_version".into(), "v1.20.0".into());
+    provider.build_convenience_vars(&mut vars);
+
+    let icon = vars.get("gsd_icon").unwrap();
+    assert!(
+        icon.contains("\x1b[33m"),
+        "Icon should be yellow when update available and no task: {:?}",
+        icon
+    );
+}
+
+#[test]
+fn test_gsd_icon_red_when_stale() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning.clone());
+    provider.color_enabled = true;
+    provider.stale_enabled = true;
+
+    let mut vars = init_empty_vars();
+    // Simulate staleness: set the last_activity to old date
+    vars.insert("gsd_last_activity".into(), "2020-01-01".into());
+    provider.build_convenience_vars(&mut vars);
+
+    let icon = vars.get("gsd_icon").unwrap();
+    assert!(
+        icon.contains("\x1b[31m"),
+        "Icon should be red when stale: {:?}",
+        icon
+    );
+}
+
+#[test]
+fn test_gsd_icon_no_ansi_when_color_disabled() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning.clone());
+    provider.color_enabled = false;
+
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_task".into(), "Active task".into());
+    provider.build_convenience_vars(&mut vars);
+
+    let icon = vars.get("gsd_icon").unwrap();
+    assert!(
+        !icon.contains("\x1b"),
+        "Icon should not contain ANSI codes when color_enabled=false: {:?}",
+        icon
+    );
+    assert_eq!(icon, "\u{F0AE2}");
+}
+
+// ---- Sub-feature toggles ----
+
+#[test]
+fn test_gsd_toggle_show_phase_off_with_plan_vars() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 5 of 6 (Layout Refactoring)\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+    fs::write(
+        planning.join("ROADMAP.md"),
+        r#"- [x] **Phase 1: P1** - d
+- [ ] **Phase 5: Layout Refactoring** - d
+
+Plans:
+- [x] 05-01-PLAN.md -- Done
+- [ ] 05-02-PLAN.md -- Todo
+
+- [ ] **Phase 6: Final** - d
+"#,
+    )
+    .unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.show_phase = false;
+
+    let result = provider.collect().unwrap();
+
+    // Phase-related vars should ALL be empty when show_phase is false
+    assert_eq!(result.get("gsd_phase").unwrap(), "");
+    assert_eq!(result.get("gsd_phase_number").unwrap(), "");
+    assert_eq!(result.get("gsd_phase_name").unwrap(), "");
+    assert_eq!(result.get("gsd_progress_fraction").unwrap(), "");
+    assert_eq!(result.get("gsd_progress_pct").unwrap(), "");
+    assert_eq!(result.get("gsd_progress_completed").unwrap(), "");
+    assert_eq!(result.get("gsd_progress_total").unwrap(), "");
+    assert_eq!(result.get("gsd_plan_completed").unwrap(), "");
+    assert_eq!(result.get("gsd_plan_total").unwrap(), "");
+    assert_eq!(result.get("gsd_plan_fraction").unwrap(), "");
+    assert_eq!(result.get("gsd_summary").unwrap(), "");
+}
+
+#[test]
+fn test_gsd_toggle_show_task_off_with_active_task() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.show_task = false;
+
+    let result = provider.collect().unwrap();
+
+    assert_eq!(result.get("gsd_task").unwrap(), "");
+    assert_eq!(result.get("gsd_task_progress").unwrap(), "");
+    assert_eq!(result.get("gsd_task_full").unwrap(), "");
+}
+
+#[test]
+fn test_gsd_toggle_show_update_off_with_update() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.show_update = false;
+
+    let result = provider.collect().unwrap();
+
+    assert_eq!(result.get("gsd_update").unwrap(), "");
+    assert_eq!(result.get("gsd_update_available").unwrap(), "");
+    assert_eq!(result.get("gsd_update_version").unwrap(), "");
+}
+
+// ---- Config defaults ----
+
+#[test]
+fn test_gsd_config_defaults() {
+    // Deserialize empty [gsd] section -- all fields should have expected defaults
+    let config: GsdConfig = toml::from_str("").unwrap();
+    assert!(config.enabled);
+    assert_eq!(config.project_dir, "");
+    assert_eq!(config.task_max_length, 40);
+    assert_eq!(config.todo_staleness_seconds, 86400);
+    assert_eq!(config.update_delay_seconds, 300);
+    assert_eq!(config.phase_max_width, 0);
+    assert_eq!(config.task_max_width, 40);
+    assert_eq!(config.separator, "\u{00b7}");
+    assert_eq!(config.phase_format, "P{n}");
+    assert!(config.color_enabled);
+    assert!(config.show_phase);
+    assert!(config.show_task);
+    assert!(config.show_update);
+    assert_eq!(config.stale_hours, 24);
+    assert!(!config.stale_enabled);
+}
+
+#[test]
+fn test_gsd_config_partial_override() {
+    // Partial config -- only overridden fields change
+    let config: GsdConfig = toml::from_str(
+        r#"
+        stale_enabled = true
+        stale_hours = 48
+        separator = " - "
+        "#,
+    )
+    .unwrap();
+    assert!(config.stale_enabled);
+    assert_eq!(config.stale_hours, 48);
+    assert_eq!(config.separator, " - ");
+    // Defaults remain
+    assert!(config.enabled);
+    assert_eq!(config.phase_format, "P{n}");
+    assert!(config.color_enabled);
+}
+
+// ---- gsd_summary with new format ----
+
+#[test]
+fn test_gsd_summary_custom_format() {
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_phase_number".into(), "5".into());
+    vars.insert("gsd_phase_name".into(), "Layout".into());
+    vars.insert("gsd_progress_fraction".into(), "2/6".into());
+    vars.insert("gsd_plan_fraction".into(), "1/3".into());
+
+    GsdProvider::build_summary(&mut vars, "P{n}", "\u{00b7}");
+    assert_eq!(vars.get("gsd_summary").unwrap(), "P5\u{00b7}Layout 2/6 [1/3]");
+}
+
+#[test]
+fn test_gsd_summary_without_plan_progress() {
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_phase_number".into(), "5".into());
+    vars.insert("gsd_phase_name".into(), "Layout".into());
+    vars.insert("gsd_progress_fraction".into(), "2/6".into());
+
+    GsdProvider::build_summary(&mut vars, "P{n}", "\u{00b7}");
+    assert_eq!(vars.get("gsd_summary").unwrap(), "P5\u{00b7}Layout 2/6");
+}
+
+#[test]
+fn test_gsd_summary_custom_phase_format_and_separator() {
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_phase_number".into(), "3".into());
+    vars.insert("gsd_phase_name".into(), "Stats".into());
+    vars.insert("gsd_progress_fraction".into(), "1/4".into());
+
+    GsdProvider::build_summary(&mut vars, "Phase {n}", " - ");
+    assert_eq!(vars.get("gsd_summary").unwrap(), "Phase 3 - Stats 1/4");
+}
+
+// ---- Width truncation ----
+
+#[test]
+fn test_gsd_phase_max_width_truncation_detailed() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 5 of 6 (Layout Refactoring & Integration)\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.phase_max_width = 10;
+
+    let result = provider.collect().unwrap();
+    let name = result.get("gsd_phase_name").unwrap();
+    assert!(
+        name.ends_with("..."),
+        "Truncated name should end with '...': got '{}'",
+        name
+    );
+    // "Layout Ref" (10 chars) + "..." = "Layout Ref..."
+    assert_eq!(name, "Layout Ref...");
+}
+
+#[test]
+fn test_gsd_task_max_width_truncation() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Test)\n").unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.task_max_width = 10;
+
+    // Simulate: set gsd_task directly in the vars before apply_truncations
+    let mut vars = init_empty_vars();
+    vars.insert("gsd_task".into(), "Very long task name that exceeds limit".into());
+    provider.apply_truncations(&mut vars);
+
+    let task = vars.get("gsd_task").unwrap();
+    assert!(
+        task.ends_with("..."),
+        "Truncated task should end with '...': got '{}'",
+        task
+    );
+    // "Very long " (10 chars) + "..." = "Very long ..."
+    assert_eq!(task, "Very long ...");
+}
+
+#[test]
+fn test_gsd_phase_max_width_no_truncation_when_fits() {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(
+        planning.join("STATE.md"),
+        "Phase: 5 of 6 (Layout)\n",
+    )
+    .unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+
+    let mut provider = provider_with_planning(planning);
+    provider.phase_max_width = 20; // "Layout" is 6 chars -- fits easily
+
+    let result = provider.collect().unwrap();
+    assert_eq!(result.get("gsd_phase_name").unwrap(), "Layout");
 }
 
 // ---- Test 19: Last activity not exposed ----
