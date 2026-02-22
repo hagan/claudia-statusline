@@ -1167,3 +1167,414 @@ fn test_token_rate_with_metrics_rate_display_options() {
         token_rate
     );
 }
+
+// =========================================================================
+// Conditional template engine tests (render_template)
+// =========================================================================
+
+#[test]
+fn test_template_simple_variable_substitution() {
+    // Backward compat: simple variable substitution works through AST path
+    let renderer = LayoutRenderer::with_format("{cost} {model}", "");
+    let mut vars = HashMap::new();
+    vars.insert("cost".to_string(), "12.50".to_string());
+    vars.insert("model".to_string(), "opus".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "12.50 opus");
+}
+
+#[test]
+fn test_template_conditional_true() {
+    let renderer = LayoutRenderer::with_format("{if git}branch: {git}{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("git".to_string(), "main".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "branch: main");
+}
+
+#[test]
+fn test_template_conditional_false() {
+    let renderer = LayoutRenderer::with_format("{if git}branch: {git}{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("git".to_string(), "".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_conditional_false_missing() {
+    // Variable completely absent from map
+    let renderer = LayoutRenderer::with_format("{if git}branch: {git}{endif}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_conditional_with_else_true() {
+    let renderer = LayoutRenderer::with_format("{if git}{git}{else}no git{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("git".to_string(), "main".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "main");
+}
+
+#[test]
+fn test_template_conditional_with_else_false() {
+    let renderer = LayoutRenderer::with_format("{if git}{git}{else}no git{endif}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "no git");
+}
+
+#[test]
+fn test_template_negation() {
+    let renderer = LayoutRenderer::with_format("{if !gsd_phase}no gsd{endif}", "");
+    let vars = HashMap::new(); // gsd_phase absent -> negation is true
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "no gsd");
+}
+
+#[test]
+fn test_template_negation_with_empty_value() {
+    let renderer = LayoutRenderer::with_format("{if !gsd_phase}no gsd{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("gsd_phase".to_string(), "".to_string()); // empty -> negation is true
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "no gsd");
+}
+
+#[test]
+fn test_template_negation_false() {
+    let renderer = LayoutRenderer::with_format("{if !gsd_phase}no gsd{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("gsd_phase".to_string(), "Phase 5".to_string()); // non-empty -> negation is false
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_equality() {
+    let renderer = LayoutRenderer::with_format("{if model == opus}fast{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("model".to_string(), "opus".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "fast");
+}
+
+#[test]
+fn test_template_equality_false() {
+    let renderer = LayoutRenderer::with_format("{if model == opus}fast{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("model".to_string(), "sonnet".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_inequality() {
+    let renderer = LayoutRenderer::with_format("{if model != opus}not opus{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("model".to_string(), "sonnet".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "not opus");
+}
+
+#[test]
+fn test_template_inequality_false() {
+    let renderer = LayoutRenderer::with_format("{if model != opus}not opus{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("model".to_string(), "opus".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_inequality_missing_var() {
+    // Missing variable with != should be true (absent != value)
+    let renderer = LayoutRenderer::with_format("{if model != opus}not opus{endif}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "not opus");
+}
+
+#[test]
+fn test_template_nested_conditionals() {
+    let renderer = LayoutRenderer::with_format(
+        "{if git}{if gsd_phase}both{else}git only{endif}{endif}",
+        "",
+    );
+
+    // Both present
+    let mut vars = HashMap::new();
+    vars.insert("git".to_string(), "main".to_string());
+    vars.insert("gsd_phase".to_string(), "Phase 5".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "both");
+
+    // Only git
+    let mut vars = HashMap::new();
+    vars.insert("git".to_string(), "main".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "git only");
+
+    // Neither
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "");
+}
+
+#[test]
+fn test_template_brace_escaping() {
+    let renderer = LayoutRenderer::with_format("cost: {{12.50}}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "cost: {12.50}");
+}
+
+#[test]
+fn test_template_brace_escaping_mixed() {
+    let renderer = LayoutRenderer::with_format("{{literal}} and {var}", "");
+    let mut vars = HashMap::new();
+    vars.insert("var".to_string(), "value".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "{literal} and value");
+}
+
+#[test]
+fn test_template_unknown_variable_show() {
+    let renderer = LayoutRenderer::with_format("{unknown}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, true);
+    assert_eq!(result, "{unknown}");
+}
+
+#[test]
+fn test_template_unknown_variable_hide() {
+    let renderer = LayoutRenderer::with_format("{unknown}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_parse_error() {
+    let renderer = LayoutRenderer::with_format("{if git}no endif", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "[tmpl err]");
+}
+
+#[test]
+fn test_template_parse_error_stray_else() {
+    let renderer = LayoutRenderer::with_format("text{else}more", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "[tmpl err]");
+}
+
+#[test]
+fn test_template_parse_error_stray_endif() {
+    let renderer = LayoutRenderer::with_format("text{endif}more", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "[tmpl err]");
+}
+
+#[test]
+fn test_template_empty() {
+    let renderer = LayoutRenderer::with_format("", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "");
+}
+
+#[test]
+fn test_template_mixed_segments() {
+    // Realistic mixed template with conditionals
+    let renderer = LayoutRenderer::with_format(
+        "dir: {directory}{if git} | {git}{endif}{if gsd_phase} | {gsd_summary}{endif}",
+        "",
+    );
+
+    // All segments present
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("git".to_string(), "main".to_string());
+    vars.insert("gsd_phase".to_string(), "Phase 5".to_string());
+    vars.insert("gsd_summary".to_string(), "P5: Layout 2/6".to_string());
+    assert_eq!(
+        renderer.render_template(&vars, false),
+        "dir: ~/proj | main | P5: Layout 2/6"
+    );
+
+    // Only directory and git
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("git".to_string(), "main".to_string());
+    assert_eq!(
+        renderer.render_template(&vars, false),
+        "dir: ~/proj | main"
+    );
+
+    // Only directory
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "dir: ~/proj");
+}
+
+#[test]
+fn test_template_literal_only() {
+    let renderer = LayoutRenderer::with_format("hello world", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "hello world");
+}
+
+#[test]
+fn test_template_separator_handling() {
+    // Conditionals with separators
+    let renderer = LayoutRenderer::with_format(
+        "{directory}{if git} | {git}{endif}{if model} | {model}{endif}",
+        "",
+    );
+
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/proj".to_string());
+    vars.insert("model".to_string(), "opus".to_string());
+    // git is missing -- separator before git should not appear
+    assert_eq!(
+        renderer.render_template(&vars, false),
+        "~/proj | opus"
+    );
+}
+
+#[test]
+fn test_template_conditional_no_space_after_if() {
+    // {if!var} syntax (no space after if)
+    let renderer = LayoutRenderer::with_format("{if !var}hidden{endif}", "");
+    let vars = HashMap::new();
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "hidden");
+}
+
+#[test]
+fn test_template_deeply_nested() {
+    // 3 levels of nesting
+    let renderer = LayoutRenderer::with_format(
+        "{if a}{if b}{if c}deep{else}ab{endif}{else}a only{endif}{else}none{endif}",
+        "",
+    );
+
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("b".to_string(), "1".to_string());
+    vars.insert("c".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "deep");
+
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("b".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "ab");
+
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "a only");
+
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "none");
+}
+
+#[test]
+fn test_template_multiple_conditionals_in_sequence() {
+    let renderer = LayoutRenderer::with_format(
+        "{if a}A{endif}{if b}B{endif}{if c}C{endif}",
+        "",
+    );
+
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "1".to_string());
+    vars.insert("c".to_string(), "1".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "AC");
+}
+
+#[test]
+fn test_template_equality_with_spaces() {
+    // Spaces around == should be trimmed
+    let renderer = LayoutRenderer::with_format("{if model == opus}yes{endif}", "");
+    let mut vars = HashMap::new();
+    vars.insert("model".to_string(), "opus".to_string());
+    assert_eq!(renderer.render_template(&vars, false), "yes");
+}
+
+#[test]
+fn test_template_unclosed_brace_as_literal() {
+    // A { without a matching } should be treated as literal
+    let renderer = LayoutRenderer::with_format("price: {5", "");
+    let vars = HashMap::new();
+    assert_eq!(renderer.render_template(&vars, false), "price: {5");
+}
+
+#[test]
+fn test_template_render_backward_compat() {
+    // Verify render_template produces same result as render for simple templates
+    let renderer = LayoutRenderer::with_format("{directory} {model}", "");
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/test".to_string());
+    vars.insert("model".to_string(), "S4.5".to_string());
+
+    let legacy = renderer.render(&vars);
+    let template = renderer.render_template(&vars, false);
+    assert_eq!(legacy, template);
+}
+
+#[test]
+fn test_template_with_sep_replacement() {
+    // {sep} should be replaced before AST parsing
+    let renderer = LayoutRenderer::with_format("{directory}{sep}{model}", " | ");
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/test".to_string());
+    vars.insert("model".to_string(), "S4.5".to_string());
+
+    let result = renderer.render_template(&vars, false);
+    assert_eq!(result, "~/test | S4.5");
+}
+
+#[test]
+fn test_template_conditional_with_sep() {
+    // Conditional segments with separator
+    let renderer = LayoutRenderer::with_format(
+        "{directory}{if git}{sep}{git}{endif}{if model}{sep}{model}{endif}",
+        " | ",
+    );
+
+    let mut vars = HashMap::new();
+    vars.insert("directory".to_string(), "~/test".to_string());
+    vars.insert("model".to_string(), "S4.5".to_string());
+    // git missing -- its separator should not appear
+    assert_eq!(
+        renderer.render_template(&vars, false),
+        "~/test | S4.5"
+    );
+}
