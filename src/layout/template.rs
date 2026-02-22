@@ -319,6 +319,28 @@ fn eval_condition(condition: &Condition, vars: &HashMap<String, String>) -> bool
 }
 
 // ---------------------------------------------------------------------------
+// Default template (embedded at compile time)
+// ---------------------------------------------------------------------------
+
+/// The default conditional template, embedded from src/templates/default.tmpl.
+///
+/// Uses {if} conditionals so absent segments (no GSD, no git, etc.) are
+/// auto-hidden rather than leaving empty separators.
+const DEFAULT_TEMPLATE: &str = include_str!("../templates/default.tmpl");
+
+/// Load a user template override from the config directory.
+///
+/// Checks `~/.config/claudia-statusline/template.tmpl`. If it exists and
+/// is readable, returns its contents. Otherwise returns None.
+fn load_user_template() -> Option<String> {
+    let config_dir = dirs::config_dir()?;
+    let path = config_dir
+        .join("claudia-statusline")
+        .join("template.tmpl");
+    std::fs::read_to_string(&path).ok()
+}
+
+// ---------------------------------------------------------------------------
 // LayoutRenderer
 // ---------------------------------------------------------------------------
 
@@ -350,6 +372,17 @@ impl LayoutRenderer {
 
         let separator = config.separator.clone();
         Self::new_with_ast(template, separator)
+    }
+
+    /// Create a renderer using the conditional default template.
+    ///
+    /// Loads user template override from config directory first;
+    /// falls back to the compiled-in default template.
+    #[allow(dead_code)]
+    pub fn default_template(separator: &str) -> Self {
+        let template = load_user_template()
+            .unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
+        Self::new_with_ast(template, separator.to_string())
     }
 
     /// Create a renderer with a specific format string

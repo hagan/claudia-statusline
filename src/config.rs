@@ -6,6 +6,11 @@ use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Serde default helper: returns `true`.
+fn default_true() -> bool {
+    true
+}
+
 /// Main configuration structure for the statusline
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -449,6 +454,11 @@ pub struct LayoutConfig {
     /// Per-component configuration overrides
     #[serde(default)]
     pub components: ComponentsConfig,
+
+    /// Show unknown template variables as literal `{var}` in output (default: true).
+    /// When false, unknown variables render as empty string.
+    #[serde(default = "default_true")]
+    pub show_unknown_vars: bool,
 }
 
 /// Per-component configuration for fine-grained customization
@@ -586,8 +596,9 @@ impl Default for LayoutConfig {
         Self {
             preset: "default".to_string(),
             format: String::new(), // Empty = use preset
-            separator: " • ".to_string(),
+            separator: " \u{2022} ".to_string(), // " • "
             components: ComponentsConfig::default(),
+            show_unknown_vars: true,
         }
     }
 }

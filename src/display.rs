@@ -651,6 +651,23 @@ fn format_statusline_with_layout(
     renderer.render(&variables)
 }
 
+/// Render the statusline from a pre-collected variable map using the
+/// conditional template engine.
+///
+/// This is the orchestrator-based render path: providers populate a HashMap,
+/// core variables (directory, model, context, etc.) are added by the caller,
+/// and this function renders everything through the AST template.
+///
+/// Falls back to the legacy render() path if the template fails to parse.
+#[allow(dead_code)]
+pub fn render_with_vars(
+    variables: &std::collections::HashMap<String, String>,
+    layout_config: &config::LayoutConfig,
+) -> String {
+    let renderer = LayoutRenderer::default_template(&layout_config.separator);
+    renderer.render_template(variables, layout_config.show_unknown_vars)
+}
+
 /// Format output with explicit display configuration (prints to stdout)
 fn format_output_with_config(
     current_dir: &str,
