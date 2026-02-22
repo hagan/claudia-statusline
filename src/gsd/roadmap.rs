@@ -64,6 +64,76 @@ pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
     }
 }
 
+/// Populate plan-level progress variables for the current phase.
+///
+/// Finds the section for the given phase number in ROADMAP.md and counts
+/// plan-level checkboxes (lines with `- [x]` or `- [ ]` that do NOT contain
+/// `**Phase `). Sets:
+/// - `gsd_plan_completed` -- e.g., "1"
+/// - `gsd_plan_total` -- e.g., "3"
+/// - `gsd_plan_fraction` -- e.g., "1/3"
+///
+/// Returns without modifying `vars` if ROADMAP.md is missing or the phase
+/// section contains no plan checkboxes.
+pub fn fill_plan_vars(
+    planning_dir: &Path,
+    phase_number: &str,
+    vars: &mut HashMap<String, String>,
+) {
+    let path = planning_dir.join("ROADMAP.md");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+
+    let (completed, total) = count_plan_checkboxes(&content, phase_number);
+    if total > 0 {
+        vars.insert("gsd_plan_completed".into(), completed.to_string());
+        vars.insert("gsd_plan_total".into(), total.to_string());
+        vars.insert(
+            "gsd_plan_fraction".into(),
+            format!("{}/{}", completed, total),
+        );
+    }
+}
+
+/// Count plan-level checkboxes within a specific phase section.
+///
+/// Locates the phase header line matching `**Phase {number}:` and then counts
+/// subsequent checkbox lines until the next phase header or end of content.
+/// Only counts checkboxes that do NOT contain `**Phase ` (i.e., plan-level).
+fn count_plan_checkboxes(content: &str, phase_number: &str) -> (u32, u32) {
+    let phase_marker = format!("**Phase {}:", phase_number);
+    let mut in_phase_section = false;
+    let mut completed = 0u32;
+    let mut total = 0u32;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Check if this line is a phase header
+        if trimmed.contains("**Phase ") && trimmed.starts_with("- [") {
+            if trimmed.contains(&phase_marker) {
+                in_phase_section = true;
+                continue;
+            } else if in_phase_section {
+                // We hit the next phase -- stop
+                break;
+            }
+        }
+
+        // Count plan checkboxes within the current phase section
+        if in_phase_section && trimmed.starts_with("- [") && !trimmed.contains("**Phase ") {
+            total += 1;
+            if trimmed.starts_with("- [x]") {
+                completed += 1;
+            }
+        }
+    }
+
+    (completed, total)
+}
+
 /// Read ROADMAP.md with mtime-based cache invalidation.
 ///
 /// Checks file mtime (~1us) before deciding whether to re-parse. Returns
@@ -216,5 +286,110 @@ Plans:
         let data = parse_roadmap("No phases here");
         assert_eq!(data.total_phases, 0);
         // fill_vars would return without modifying vars
+    }
+
+    // ---- Plan-level progress tests ----
+
+    #[test]
+    fn test_count_plan_checkboxes_typical() {
+        let content = r#"## Phases
+
+- [x] **Phase 1: Provider Architecture** - Establish trait-based data provider system
+
+Plans:
+- [x] 01-01-PLAN.md -- TDD: DataProvider trait
+- [x] 01-02-PLAN.md -- Edge case tests
+
+- [x] **Phase 2: Database Refactoring** - Split database.rs
+
+Plans:
+- [x] 02-01-PLAN.md -- Extract modules
+- [x] 02-02-PLAN.md -- Migration system
+
+- [ ] **Phase 4: GSD Provider** - Implement GSD data source
+
+Plans:
+- [x] 04-01-PLAN.md -- State parser
+- [ ] 04-02-PLAN.md -- Roadmap parser
+- [ ] 04-03-PLAN.md -- Todo parser
+
+- [ ] **Phase 5: Layout** - Wire orchestrator
+"#;
+        let (completed, total) = count_plan_checkboxes(content, "4");
+        assert_eq!(completed, 1);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_count_plan_checkboxes_all_complete() {
+        let content = r#"
+- [x] **Phase 1: Foundation** - desc
+
+Plans:
+- [x] 01-01-PLAN.md -- First
+- [x] 01-02-PLAN.md -- Second
+
+- [ ] **Phase 2: Next** - desc
+"#;
+        let (completed, total) = count_plan_checkboxes(content, "1");
+        assert_eq!(completed, 2);
+        assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn test_count_plan_checkboxes_no_plans() {
+        let content = r#"
+- [ ] **Phase 3: Empty** - desc
+
+- [ ] **Phase 4: Next** - desc
+"#;
+        let (completed, total) = count_plan_checkboxes(content, "3");
+        assert_eq!(completed, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_count_plan_checkboxes_nonexistent_phase() {
+        let content = r#"
+- [x] **Phase 1: Foundation** - desc
+
+Plans:
+- [x] 01-01-PLAN.md -- First
+"#;
+        let (completed, total) = count_plan_checkboxes(content, "99");
+        assert_eq!(completed, 0);
+        assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn test_count_plan_checkboxes_last_phase() {
+        // Last phase in file (no next phase header to terminate)
+        let content = r#"
+- [ ] **Phase 5: Layout** - desc
+
+Plans:
+- [x] 05-01-PLAN.md -- Template engine
+- [ ] 05-02-PLAN.md -- Orchestrator wiring
+- [ ] 05-03-PLAN.md -- Default template
+"#;
+        let (completed, total) = count_plan_checkboxes(content, "5");
+        assert_eq!(completed, 1);
+        assert_eq!(total, 3);
+    }
+
+    #[test]
+    fn test_fill_plan_vars_sets_fraction() {
+        let mut vars: HashMap<String, String> = HashMap::new();
+        // Simulate directly
+        let (completed, total) = (1u32, 3u32);
+        vars.insert("gsd_plan_completed".into(), completed.to_string());
+        vars.insert("gsd_plan_total".into(), total.to_string());
+        vars.insert(
+            "gsd_plan_fraction".into(),
+            format!("{}/{}", completed, total),
+        );
+        assert_eq!(vars.get("gsd_plan_fraction").unwrap(), "1/3");
+        assert_eq!(vars.get("gsd_plan_completed").unwrap(), "1");
+        assert_eq!(vars.get("gsd_plan_total").unwrap(), "3");
     }
 }

@@ -42,6 +42,8 @@ pub mod database;
 pub mod display;
 pub mod error;
 pub mod git;
+/// GitProvider wraps git module as a DataProvider
+pub mod git_provider;
 pub mod git_utils;
 /// Hook handlers for Claude Code PreCompact and Stop events
 pub mod hook_handler;
@@ -69,6 +71,8 @@ pub use config::Config;
 pub use display::{format_output, format_output_to_string};
 pub use error::{Result, StatuslineError};
 pub use git::get_git_status;
+#[allow(unused_imports)]
+pub use git_provider::GitProvider;
 pub use gsd::GsdProvider;
 pub use models::{Cost, Model, StatuslineInput, Workspace};
 pub use stats::{

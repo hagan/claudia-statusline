@@ -8,6 +8,7 @@
 //!
 //! Primary: `Phase: N of M (Name)` -- from Current Position section
 //! Fallback: `**Current focus:** Phase N - Name` -- from header
+//! Last activity: `Last activity: 2026-02-14 -- description`
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -25,6 +26,7 @@ struct CachedParse {
 struct StateData {
     phase_number: Option<u32>,
     phase_name: Option<String>,
+    last_activity_date: Option<String>,
 }
 
 /// Global cache for STATE.md parse results, keyed by file mtime.
@@ -36,6 +38,7 @@ static STATE_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
 /// - `gsd_phase` -- formatted as "P{number}: {name}" (e.g., "P4: GSD Provider")
 /// - `gsd_phase_number` -- phase number as string (e.g., "4")
 /// - `gsd_phase_name` -- phase name (e.g., "GSD Provider")
+/// - `gsd_last_activity` -- date string (e.g., "2026-02-14") for staleness check
 ///
 /// Returns without modifying `vars` if STATE.md is missing, unreadable, or
 /// contains no recognizable phase patterns.
@@ -50,6 +53,10 @@ pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
         vars.insert("gsd_phase".into(), format!("P{}: {}", number, name));
         vars.insert("gsd_phase_number".into(), number.to_string());
         vars.insert("gsd_phase_name".into(), name.clone());
+    }
+
+    if let Some(ref date) = data.last_activity_date {
+        vars.insert("gsd_last_activity".into(), date.clone());
     }
 }
 
@@ -79,15 +86,17 @@ fn read_with_cache(path: &Path) -> Option<StateData> {
     Some(data)
 }
 
-/// Parse STATE.md content for phase number and name.
+/// Parse STATE.md content for phase number, name, and last activity date.
 ///
 /// Uses two patterns with priority:
 /// 1. Primary: `Phase: N of M (Name)` -- more structured, preferred
 /// 2. Fallback: `**Current focus:** Phase N - Name` -- less structured
+/// 3. Last activity: `Last activity: YYYY-MM-DD -- description`
 fn parse_state(content: &str) -> StateData {
     let mut data = StateData {
         phase_number: None,
         phase_name: None,
+        last_activity_date: None,
     };
 
     for line in content.lines() {
@@ -112,6 +121,22 @@ fn parse_state(content: &str) -> StateData {
                         }
                     }
                 }
+            }
+        }
+
+        // Last activity pattern: "Last activity: 2026-02-14 -- description"
+        if trimmed.starts_with("Last activity:") {
+            let rest = trimmed.trim_start_matches("Last activity:").trim();
+            // Extract the date portion (YYYY-MM-DD)
+            // Could be "2026-02-14 -- description" or just "2026-02-14"
+            let date_str = if let Some(sep_pos) = rest.find(" --") {
+                rest[..sep_pos].trim()
+            } else {
+                rest.split_whitespace().next().unwrap_or("")
+            };
+            // Validate it looks like a date (YYYY-MM-DD)
+            if date_str.len() == 10 && date_str.chars().nth(4) == Some('-') && date_str.chars().nth(7) == Some('-') {
+                data.last_activity_date = Some(date_str.to_string());
             }
         }
     }
@@ -170,6 +195,7 @@ mod tests {
         let data = parse_state("");
         assert_eq!(data.phase_number, None);
         assert_eq!(data.phase_name, None);
+        assert_eq!(data.last_activity_date, None);
     }
 
     #[test]
@@ -195,6 +221,7 @@ mod tests {
         let data = StateData {
             phase_number: Some(4),
             phase_name: Some("GSD Provider".to_string()),
+            last_activity_date: None,
         };
         // Simulate what fill_vars does
         if let (Some(number), Some(ref name)) = (data.phase_number, &data.phase_name) {
@@ -205,5 +232,41 @@ mod tests {
         assert_eq!(vars.get("gsd_phase").unwrap(), "P4: GSD Provider");
         assert_eq!(vars.get("gsd_phase_number").unwrap(), "4");
         assert_eq!(vars.get("gsd_phase_name").unwrap(), "GSD Provider");
+    }
+
+    #[test]
+    fn test_parse_state_last_activity() {
+        let content = "Last activity: 2026-02-14 -- Plan 04-03 complete\n";
+        let data = parse_state(content);
+        assert_eq!(data.last_activity_date.as_deref(), Some("2026-02-14"));
+    }
+
+    #[test]
+    fn test_parse_state_last_activity_no_description() {
+        let content = "Last activity: 2026-02-22\n";
+        let data = parse_state(content);
+        assert_eq!(data.last_activity_date.as_deref(), Some("2026-02-22"));
+    }
+
+    #[test]
+    fn test_parse_state_last_activity_invalid_date() {
+        let content = "Last activity: not-a-date\n";
+        let data = parse_state(content);
+        assert_eq!(data.last_activity_date, None);
+    }
+
+    #[test]
+    fn test_parse_state_combined() {
+        let content = r#"## Current Position
+
+Phase: 5 of 6 (Layout Refactoring)
+Plan: 1 of 3 in current phase
+Status: Plan 05-01 complete
+Last activity: 2026-02-22 -- Plan 05-01 complete
+"#;
+        let data = parse_state(content);
+        assert_eq!(data.phase_number, Some(5));
+        assert_eq!(data.phase_name.as_deref(), Some("Layout Refactoring"));
+        assert_eq!(data.last_activity_date.as_deref(), Some("2026-02-22"));
     }
 }

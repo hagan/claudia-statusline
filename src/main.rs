@@ -35,6 +35,8 @@ mod gsd;
 mod display;
 mod error;
 mod git;
+#[allow(dead_code)]
+mod git_provider;
 mod git_utils;
 mod hook_handler;
 mod layout;
