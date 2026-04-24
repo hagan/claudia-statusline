@@ -223,12 +223,11 @@ fn test_cumulative_rounding_with_tiny_costs() {
     eprintln!("Adding 99 more $0.001 transactions (reduced from 999 for faster CI)...");
 
     let mut total_cost = 0.001;
-    let mut total_lines = 1;
 
     // Add 99 more tiny transactions (reduced from 999 for faster CI)
     for i in 1..100 {
         total_cost += 0.001;
-        total_lines += 1;
+        let total_lines = i + 1;
 
         db.update_session(
             "tiny-costs",
