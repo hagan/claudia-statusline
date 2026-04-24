@@ -1388,16 +1388,8 @@ fn test_gsd_cache_distinguishes_paths_with_identical_mtimes() {
     fs::create_dir_all(&planning_a).unwrap();
     fs::create_dir_all(&planning_b).unwrap();
 
-    fs::write(
-        planning_a.join("STATE.md"),
-        "Phase: 1 of 6 (Alpha Phase)\n",
-    )
-    .unwrap();
-    fs::write(
-        planning_b.join("STATE.md"),
-        "Phase: 4 of 6 (Bravo Phase)\n",
-    )
-    .unwrap();
+    fs::write(planning_a.join("STATE.md"), "Phase: 1 of 6 (Alpha Phase)\n").unwrap();
+    fs::write(planning_b.join("STATE.md"), "Phase: 4 of 6 (Bravo Phase)\n").unwrap();
 
     fs::write(
         planning_a.join("ROADMAP.md"),
