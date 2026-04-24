@@ -196,7 +196,7 @@ fn test_pipeline_gsd_absent() {
     );
     // No gsd_ variables should be present
     assert!(
-        result.get("gsd_phase").is_none(),
+        !result.contains_key("gsd_phase"),
         "GSD vars should not appear when GSD provider is absent"
     );
 }
@@ -218,7 +218,7 @@ fn test_pipeline_unavailable_git() {
 
     // Git should not contribute (unavailable)
     assert!(
-        result.get("git").is_none(),
+        !result.contains_key("git"),
         "Unavailable git should not contribute"
     );
     // Stats and GSD should still be present

@@ -323,7 +323,7 @@ mod tests {
         let result = orch.collect_all();
         assert_eq!(result.get("available").map(|s| s.as_str()), Some("yes"));
         assert!(
-            result.get("unavailable").is_none(),
+            !result.contains_key("unavailable"),
             "Unavailable provider's variables should not appear"
         );
     }
@@ -347,7 +347,7 @@ mod tests {
         let result = orch.collect_all();
         assert_eq!(result.get("fast").map(|s| s.as_str()), Some("yes"));
         assert!(
-            result.get("slow_key").is_none(),
+            !result.contains_key("slow_key"),
             "Timed-out provider's variables should not appear"
         );
     }
@@ -382,7 +382,7 @@ mod tests {
             "Normal provider should still contribute after another provider panics"
         );
         assert!(
-            result.get("panic_key").is_none(),
+            !result.contains_key("panic_key"),
             "Panicking provider's variables should not appear"
         );
     }
@@ -407,7 +407,7 @@ mod tests {
             "Normal provider should contribute when another returns CollectionError"
         );
         assert!(
-            result.get("err_key").is_none(),
+            !result.contains_key("err_key"),
             "Errored provider's variables should not appear"
         );
     }
@@ -491,15 +491,15 @@ mod tests {
             "Healthy provider should contribute"
         );
         assert!(
-            result.get("b").is_none(),
+            !result.contains_key("b"),
             "Timed-out provider should not contribute"
         );
         assert!(
-            result.get("c").is_none(),
+            !result.contains_key("c"),
             "Errored provider should not contribute"
         );
         assert!(
-            result.get("d").is_none(),
+            !result.contains_key("d"),
             "Panicked provider should not contribute"
         );
         assert_eq!(
