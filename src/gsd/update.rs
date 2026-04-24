@@ -7,11 +7,11 @@
 //! 3. Enough time has passed since the check (delay threshold met)
 //!
 //! The delay threshold avoids showing the indicator during an active download.
-//! Uses mtime-based caching via `OnceLock<Mutex<...>>` to avoid re-parsing
+//! Uses (path, mtime) caching via `OnceLock<Mutex<...>>` to avoid re-parsing
 //! unchanged files.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -26,7 +26,13 @@ struct UpdateCheck {
 }
 
 /// Cached parse result to avoid re-reading unchanged files.
+///
+/// Keyed by (path, mtime): mtime alone is insufficient because filesystems
+/// with coarse mtime resolution (e.g. Linux ext4 at 1s) can produce identical
+/// mtimes for different files written close in time, causing cache collisions
+/// across distinct home directories (e.g. test isolation with TempDir).
 struct CachedParse {
+    path: PathBuf,
     mtime: SystemTime,
     data: UpdateData,
 }
@@ -66,10 +72,10 @@ pub fn fill_vars(home_dir: &Path, delay_seconds: u64, vars: &mut HashMap<String,
     }
 }
 
-/// Read update check file with mtime-based cache invalidation.
+/// Read update check file with (path, mtime)-based cache invalidation.
 ///
 /// Checks file mtime (~1us) before deciding whether to re-parse. Returns
-/// cached data if mtime is unchanged from last parse.
+/// cached data only when both path and mtime match the cached entry.
 fn read_with_cache(path: &Path, delay_seconds: u64) -> Option<UpdateData> {
     let current_mtime = std::fs::metadata(path).ok()?.modified().ok()?;
 
@@ -77,15 +83,16 @@ fn read_with_cache(path: &Path, delay_seconds: u64) -> Option<UpdateData> {
     let mut guard = cache.lock().ok()?;
 
     if let Some(ref cached) = *guard {
-        if cached.mtime == current_mtime {
+        if cached.path == path && cached.mtime == current_mtime {
             return Some(cached.data.clone());
         }
     }
 
-    // Mtime changed or no cache -- re-parse
+    // Path or mtime changed -- re-parse
     let content = std::fs::read_to_string(path).ok()?;
     let data = parse_update_check(&content, delay_seconds)?;
     *guard = Some(CachedParse {
+        path: path.to_path_buf(),
         mtime: current_mtime,
         data: data.clone(),
     });

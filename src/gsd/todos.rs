@@ -13,7 +13,7 @@
 //! all files while still detecting new writes.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, SystemTime};
 
@@ -26,8 +26,14 @@ struct TodoItem {
     active_form: Option<String>,
 }
 
-/// Cached parse result keyed by most-recent file mtime.
+/// Cached parse result keyed by (todos_dir, most-recent file mtime).
+///
+/// Keying by the directory path alongside mtime is required: under test
+/// isolation (and at runtime, when HOME changes), the same mtime value can
+/// appear for files in different directories, and mtime alone would return
+/// stale cached results from the previous directory.
 struct CachedParse {
+    dir: PathBuf,
     mtime: SystemTime,
     data: TodoData,
 }
@@ -118,13 +124,13 @@ fn find_active_task(
     // Sort by mtime descending (most recent first)
     files.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Check cache against most recent file's mtime
+    // Check cache against (todos_dir, most recent file's mtime)
     let most_recent_mtime = files[0].1;
     let cache = TODOS_CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache.lock().ok()?;
 
     if let Some(ref cached) = *guard {
-        if cached.mtime == most_recent_mtime {
+        if cached.dir == todos_dir && cached.mtime == most_recent_mtime {
             return Some(cached.data.clone());
         }
     }
@@ -132,6 +138,7 @@ fn find_active_task(
     // Cache miss -- scan files
     let data = scan_todo_files(&files, task_truncation_limit);
     *guard = Some(CachedParse {
+        dir: todos_dir,
         mtime: most_recent_mtime,
         data: data.clone(),
     });

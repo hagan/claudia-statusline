@@ -1,7 +1,7 @@
 //! STATE.md parser for GSD phase information.
 //!
 //! Extracts the current phase number and name from `.planning/STATE.md` using
-//! line-based pattern matching. Uses mtime-based caching via `OnceLock<Mutex<...>>`
+//! line-based pattern matching. Uses (path, mtime) caching via `OnceLock<Mutex<...>>`
 //! to avoid re-parsing unchanged files (~1us metadata check vs ~100us full parse).
 //!
 //! # Patterns parsed
@@ -11,12 +11,18 @@
 //! Last activity: `Last activity: 2026-02-14 -- description`
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 /// Cached parse result to avoid re-reading unchanged files.
+///
+/// Keyed by (path, mtime): mtime alone is insufficient because filesystems
+/// with coarse mtime resolution (e.g. Linux ext4 at 1s) can produce identical
+/// mtimes for different files written close in time, causing cache collisions
+/// across distinct planning directories.
 struct CachedParse {
+    path: PathBuf,
     mtime: SystemTime,
     data: StateData,
 }
@@ -29,7 +35,7 @@ struct StateData {
     last_activity_date: Option<String>,
 }
 
-/// Global cache for STATE.md parse results, keyed by file mtime.
+/// Global cache for STATE.md parse results, keyed by (path, mtime).
 static STATE_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
 
 /// Populate GSD phase variables from STATE.md.
@@ -60,10 +66,10 @@ pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
     }
 }
 
-/// Read STATE.md with mtime-based cache invalidation.
+/// Read STATE.md with (path, mtime)-based cache invalidation.
 ///
 /// Checks file mtime (~1us) before deciding whether to re-parse. Returns
-/// cached data if mtime is unchanged from last parse.
+/// cached data only when both path and mtime match the cached entry.
 fn read_with_cache(path: &Path) -> Option<StateData> {
     let current_mtime = std::fs::metadata(path).ok()?.modified().ok()?;
 
@@ -71,15 +77,16 @@ fn read_with_cache(path: &Path) -> Option<StateData> {
     let mut guard = cache.lock().ok()?;
 
     if let Some(ref cached) = *guard {
-        if cached.mtime == current_mtime {
+        if cached.path == path && cached.mtime == current_mtime {
             return Some(cached.data.clone());
         }
     }
 
-    // Mtime changed or no cache -- re-parse
+    // Path or mtime changed -- re-parse
     let content = std::fs::read_to_string(path).ok()?;
     let data = parse_state(&content);
     *guard = Some(CachedParse {
+        path: path.to_path_buf(),
         mtime: current_mtime,
         data: data.clone(),
     });

@@ -9,12 +9,6 @@ use std::fs;
 use std::time::Duration;
 use tempfile::TempDir;
 
-// Used in Phase 5 Plan 3 tests
-#[allow(unused_imports)]
-use chrono;
-#[allow(unused_imports)]
-use toml;
-
 // ============================================================================
 // Smart truncation tests (moved from inline mod tests)
 // ============================================================================
@@ -1364,5 +1358,94 @@ fn test_gsd_last_activity_not_in_output() {
     assert!(
         !result.contains_key("gsd_last_activity"),
         "gsd_last_activity should be removed before returning"
+    );
+}
+
+// ---- Test 20: Reader caches must key on path, not mtime alone ----
+//
+// Regression test for a race condition observed on Linux CI: on filesystems
+// with coarse mtime resolution (ext4 defaults to 1s), two distinct STATE.md
+// or ROADMAP.md files written in the same second receive identical mtimes.
+// Before the fix, the GSD reader caches (state.rs, roadmap.rs, update.rs,
+// todos.rs) keyed only on mtime, so a second call for a different file would
+// match the cached entry and return the first file's data. macOS APFS has
+// nanosecond mtime, which hid the bug locally.
+//
+// This test forces the collision deterministically by assigning the same
+// mtime to files in two distinct planning directories, then asserts each
+// provider returns its own content.
+
+#[test]
+fn test_gsd_cache_distinguishes_paths_with_identical_mtimes() {
+    use std::fs::FileTimes;
+    use std::time::SystemTime;
+
+    // Two distinct planning dirs with different content.
+    let tmp_a = TempDir::new().unwrap();
+    let tmp_b = TempDir::new().unwrap();
+    let planning_a = tmp_a.path().join(".planning");
+    let planning_b = tmp_b.path().join(".planning");
+    fs::create_dir_all(&planning_a).unwrap();
+    fs::create_dir_all(&planning_b).unwrap();
+
+    fs::write(
+        planning_a.join("STATE.md"),
+        "Phase: 1 of 6 (Alpha Phase)\n",
+    )
+    .unwrap();
+    fs::write(
+        planning_b.join("STATE.md"),
+        "Phase: 4 of 6 (Bravo Phase)\n",
+    )
+    .unwrap();
+
+    fs::write(
+        planning_a.join("ROADMAP.md"),
+        "- [x] **Phase 1: Alpha** - d\n- [ ] **Phase 2: Zeta** - d\n",
+    )
+    .unwrap();
+    fs::write(
+        planning_b.join("ROADMAP.md"),
+        "- [x] **Phase 1: B1** - d\n- [x] **Phase 2: B2** - d\n- [x] **Phase 3: B3** - d\n- [ ] **Phase 4: Bravo** - d\n",
+    )
+    .unwrap();
+
+    fs::write(planning_a.join("config.json"), "{}").unwrap();
+    fs::write(planning_b.join("config.json"), "{}").unwrap();
+
+    // Force identical mtimes across both pairs of files (simulates ext4's 1s
+    // resolution aliasing concurrent writes).
+    let pinned_mtime = SystemTime::now();
+    let times = FileTimes::new()
+        .set_modified(pinned_mtime)
+        .set_accessed(pinned_mtime);
+    for path in [
+        planning_a.join("STATE.md"),
+        planning_b.join("STATE.md"),
+        planning_a.join("ROADMAP.md"),
+        planning_b.join("ROADMAP.md"),
+    ] {
+        let f = fs::OpenOptions::new().write(true).open(&path).unwrap();
+        f.set_times(times).unwrap();
+    }
+
+    // Collect in order A -> B; without the path-aware cache, B's read returns
+    // A's cached data.
+    let provider_a = provider_with_planning(planning_a);
+    let result_a = provider_a.collect().unwrap();
+    assert_eq!(result_a.get("gsd_phase_name").unwrap(), "Alpha Phase");
+    assert_eq!(result_a.get("gsd_progress_fraction").unwrap(), "1/2");
+
+    let provider_b = provider_with_planning(planning_b);
+    let result_b = provider_b.collect().unwrap();
+    assert_eq!(
+        result_b.get("gsd_phase_name").unwrap(),
+        "Bravo Phase",
+        "STATE.md cache must distinguish by path, not mtime alone"
+    );
+    assert_eq!(
+        result_b.get("gsd_progress_fraction").unwrap(),
+        "3/4",
+        "ROADMAP.md cache must distinguish by path, not mtime alone"
     );
 }
