@@ -122,7 +122,7 @@ fn find_active_task(
     }
 
     // Sort by mtime descending (most recent first)
-    files.sort_by(|a, b| b.1.cmp(&a.1));
+    files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
     // Check cache against (todos_dir, most recent file's mtime)
     let most_recent_mtime = files[0].1;
