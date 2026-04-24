@@ -300,10 +300,7 @@ impl DataProvider for StatsProvider {
                 "stats_lines".into(),
                 format!("+{} -{}", self.lines_added, self.lines_removed),
             );
-            vars.insert(
-                "stats_lines_added".into(),
-                format!("+{}", self.lines_added),
-            );
+            vars.insert("stats_lines_added".into(), format!("+{}", self.lines_added));
             vars.insert(
                 "stats_lines_removed".into(),
                 format!("-{}", self.lines_removed),

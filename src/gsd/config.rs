@@ -46,7 +46,6 @@ pub struct GsdConfig {
     pub update_delay_seconds: u64,
 
     // --- New fields added in Phase 5 Plan 02 ---
-
     /// Maximum width for phase name display (0 = no limit)
     pub phase_max_width: usize,
     /// Maximum width for task name display (default: 40)

@@ -75,11 +75,7 @@ pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
 ///
 /// Returns without modifying `vars` if ROADMAP.md is missing or the phase
 /// section contains no plan checkboxes.
-pub fn fill_plan_vars(
-    planning_dir: &Path,
-    phase_number: &str,
-    vars: &mut HashMap<String, String>,
-) {
+pub fn fill_plan_vars(planning_dir: &Path, phase_number: &str, vars: &mut HashMap<String, String>) {
     let path = planning_dir.join("ROADMAP.md");
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,

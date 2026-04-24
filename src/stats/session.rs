@@ -190,15 +190,15 @@ impl StatsData {
         }
 
         // Update daily stats
-        let daily = self
-            .daily
-            .entry(today.clone())
-            .or_insert_with(|| super::aggregation::DailyStats {
-                total_cost: 0.0,
-                sessions: Vec::new(),
-                lines_added: 0,
-                lines_removed: 0,
-            });
+        let daily =
+            self.daily
+                .entry(today.clone())
+                .or_insert_with(|| super::aggregation::DailyStats {
+                    total_cost: 0.0,
+                    sessions: Vec::new(),
+                    lines_added: 0,
+                    lines_removed: 0,
+                });
 
         let is_new_session = !daily.sessions.contains(&session_id.to_string());
         if is_new_session {
@@ -210,15 +210,15 @@ impl StatsData {
         daily.lines_removed = (daily.lines_removed as i64 + lines_removed_delta).max(0) as u64;
 
         // Update monthly stats
-        let monthly = self
-            .monthly
-            .entry(month.clone())
-            .or_insert_with(|| super::aggregation::MonthlyStats {
-                total_cost: 0.0,
-                sessions: 0,
-                lines_added: 0,
-                lines_removed: 0,
-            });
+        let monthly =
+            self.monthly
+                .entry(month.clone())
+                .or_insert_with(|| super::aggregation::MonthlyStats {
+                    total_cost: 0.0,
+                    sessions: 0,
+                    lines_added: 0,
+                    lines_removed: 0,
+                });
 
         // Increment monthly session count only if this is a new session for the month
         // Note: When loading from SQLite, daily.sessions vectors are empty (we don't persist them),

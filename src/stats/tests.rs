@@ -732,7 +732,8 @@ fn test_public_api_surface() {
     let _: fn(&str) -> Option<TokenRateMetrics> = calculate_token_rates;
 
     // These need concrete types for fn pointer coercion
-    let _ = calculate_token_rates_with_db as fn(&str, &crate::database::SqliteDatabase) -> Option<TokenRateMetrics>;
+    let _ = calculate_token_rates_with_db
+        as fn(&str, &crate::database::SqliteDatabase) -> Option<TokenRateMetrics>;
     let _ = calculate_token_rates_with_db_and_transcript
         as fn(&str, &crate::database::SqliteDatabase, Option<&str>) -> Option<TokenRateMetrics>;
     let _ = calculate_cache_metrics
@@ -777,11 +778,7 @@ fn test_stats_provider_all_keys_present() {
     let result = provider.collect().expect("collect should succeed");
 
     for key in EXPECTED_KEYS {
-        assert!(
-            result.contains_key(*key),
-            "Missing expected key: {}",
-            key
-        );
+        assert!(result.contains_key(*key), "Missing expected key: {}", key);
     }
 
     assert_eq!(
@@ -801,7 +798,10 @@ fn test_stats_provider_trait_contract() {
     assert_eq!(provider.name(), "stats");
     assert_eq!(provider.priority(), 50);
     assert_eq!(provider.timeout(), Duration::from_millis(200));
-    assert!(provider.is_available(), "Stats provider should always be available");
+    assert!(
+        provider.is_available(),
+        "Stats provider should always be available"
+    );
 }
 
 /// Cost variable formatting: raw numeric values without currency symbols.
@@ -888,15 +888,7 @@ fn test_stats_provider_registerable_with_orchestrator() {
 /// (auto_reset detection requires database state that we don't set up here)
 #[test]
 fn test_stats_provider_burn_rate_reset_not_auto_reset() {
-    let provider = StatsProvider::new(
-        Some("test-session".into()),
-        10.0,
-        10.0,
-        0,
-        0,
-        None,
-        None,
-    );
+    let provider = StatsProvider::new(Some("test-session".into()), 10.0, 10.0, 0, 0, None, None);
     let result = provider.collect().expect("collect should succeed");
 
     // Default mode is wall_clock, so reset should always be empty

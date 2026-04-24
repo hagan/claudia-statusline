@@ -115,8 +115,7 @@ fn parse_state(content: &str) -> StateData {
                     if let Some(paren_pos) = rest2.find(" (") {
                         if let Some(name_end) = rest2.rfind(')') {
                             if paren_pos + 2 < name_end {
-                                data.phase_name =
-                                    Some(rest2[paren_pos + 2..name_end].to_string());
+                                data.phase_name = Some(rest2[paren_pos + 2..name_end].to_string());
                             }
                         }
                     }
@@ -135,7 +134,10 @@ fn parse_state(content: &str) -> StateData {
                 rest.split_whitespace().next().unwrap_or("")
             };
             // Validate it looks like a date (YYYY-MM-DD)
-            if date_str.len() == 10 && date_str.chars().nth(4) == Some('-') && date_str.chars().nth(7) == Some('-') {
+            if date_str.len() == 10
+                && date_str.chars().nth(4) == Some('-')
+                && date_str.chars().nth(7) == Some('-')
+            {
                 data.last_activity_date = Some(date_str.to_string());
             }
         }
@@ -146,9 +148,7 @@ fn parse_state(content: &str) -> StateData {
         for line in content.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("**Current focus:**") {
-                let rest = trimmed
-                    .trim_start_matches("**Current focus:**")
-                    .trim();
+                let rest = trimmed.trim_start_matches("**Current focus:**").trim();
                 // Match "Phase N - Name"
                 if let Some(stripped) = rest.strip_prefix("Phase ") {
                     // "4 - GSD Provider"
@@ -176,7 +176,8 @@ mod tests {
 
     #[test]
     fn test_parse_state_primary_pattern() {
-        let content = "## Current Position\n\nPhase: 4 of 6 (GSD Provider)\nPlan: 1 of 3 in current phase\n";
+        let content =
+            "## Current Position\n\nPhase: 4 of 6 (GSD Provider)\nPlan: 1 of 3 in current phase\n";
         let data = parse_state(content);
         assert_eq!(data.phase_number, Some(4));
         assert_eq!(data.phase_name.as_deref(), Some("GSD Provider"));
@@ -208,7 +209,8 @@ mod tests {
 
     #[test]
     fn test_parse_state_primary_takes_precedence() {
-        let content = "**Current focus:** Phase 3 - Stats Refactoring\n\nPhase: 4 of 6 (GSD Provider)\n";
+        let content =
+            "**Current focus:** Phase 3 - Stats Refactoring\n\nPhase: 4 of 6 (GSD Provider)\n";
         let data = parse_state(content);
         // Primary pattern (Phase: N of M) should win
         assert_eq!(data.phase_number, Some(4));

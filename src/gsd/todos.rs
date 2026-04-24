@@ -160,10 +160,7 @@ fn scan_todo_files(
             .or_else(|| todos.iter().find(|t| t.status == "pending"));
 
         if let Some(task) = active {
-            let raw_name = task
-                .active_form
-                .as_deref()
-                .unwrap_or(&task.content);
+            let raw_name = task.active_form.as_deref().unwrap_or(&task.content);
 
             let name = super::smart_truncate(raw_name, task_truncation_limit);
 

@@ -99,9 +99,7 @@ impl DataProvider for TestProvider {
         match &self.behavior {
             ProviderBehavior::Normal => Ok(self.variables.clone()),
             ProviderBehavior::Panic(msg) => panic!("{}", msg),
-            ProviderBehavior::Error(msg) => {
-                Err(ProviderError::CollectionError(msg.clone()))
-            }
+            ProviderBehavior::Error(msg) => Err(ProviderError::CollectionError(msg.clone())),
         }
     }
 }

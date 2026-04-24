@@ -135,8 +135,7 @@ fn parse_until_terminator(
                     *pos = close_pos + 1;
 
                     // Parse the if-branch (stops at {else} or {endif})
-                    let (if_branch, terminator) =
-                        parse_until_terminator(input, pos, depth + 1)?;
+                    let (if_branch, terminator) = parse_until_terminator(input, pos, depth + 1)?;
 
                     let else_branch = match terminator {
                         BranchTerminator::Else => {
@@ -146,14 +145,10 @@ fn parse_until_terminator(
                             match end_terminator {
                                 BranchTerminator::EndIf => else_nodes,
                                 BranchTerminator::Else => {
-                                    return Err(
-                                        "multiple {else} in single conditional".to_string()
-                                    );
+                                    return Err("multiple {else} in single conditional".to_string());
                                 }
                                 BranchTerminator::EndOfInput => {
-                                    return Err(
-                                        "unclosed {if} block (missing {endif})".to_string()
-                                    );
+                                    return Err("unclosed {if} block (missing {endif})".to_string());
                                 }
                             }
                         }
@@ -303,18 +298,10 @@ fn evaluate(nodes: &[TemplateNode], vars: &HashMap<String, String>, show_unknown
 /// Evaluate a condition against a variable map.
 fn eval_condition(condition: &Condition, vars: &HashMap<String, String>) -> bool {
     match condition {
-        Condition::Truthy(var) => vars
-            .get(var.as_str())
-            .is_some_and(|v| !v.is_empty()),
-        Condition::Negated(var) => vars
-            .get(var.as_str())
-            .is_none_or(|v| v.is_empty()),
-        Condition::Equals(var, value) => {
-            vars.get(var.as_str()) == Some(value)
-        }
-        Condition::NotEquals(var, value) => {
-            vars.get(var.as_str()) != Some(value)
-        }
+        Condition::Truthy(var) => vars.get(var.as_str()).is_some_and(|v| !v.is_empty()),
+        Condition::Negated(var) => vars.get(var.as_str()).is_none_or(|v| v.is_empty()),
+        Condition::Equals(var, value) => vars.get(var.as_str()) == Some(value),
+        Condition::NotEquals(var, value) => vars.get(var.as_str()) != Some(value),
     }
 }
 
@@ -334,9 +321,7 @@ const DEFAULT_TEMPLATE: &str = include_str!("../templates/default.tmpl");
 /// is readable, returns its contents. Otherwise returns None.
 fn load_user_template() -> Option<String> {
     let config_dir = dirs::config_dir()?;
-    let path = config_dir
-        .join("claudia-statusline")
-        .join("template.tmpl");
+    let path = config_dir.join("claudia-statusline").join("template.tmpl");
     std::fs::read_to_string(&path).ok()
 }
 
@@ -380,8 +365,7 @@ impl LayoutRenderer {
     /// falls back to the compiled-in default template.
     #[allow(dead_code)]
     pub fn default_template(separator: &str) -> Self {
-        let template = load_user_template()
-            .unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
+        let template = load_user_template().unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
         Self::new_with_ast(template, separator.to_string())
     }
 

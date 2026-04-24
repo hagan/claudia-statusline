@@ -123,14 +123,13 @@ impl GsdProvider {
     /// Updates gsd_summary to use configurable phase_format and separator.
     /// Format: "{phase_format}{separator}{phase_name} {progress}[{plan_fraction}]"
     /// Example with defaults: "P5\u{00b7}Layout 2/6 [1/3]"
-    fn build_summary(
-        vars: &mut HashMap<String, String>,
-        phase_format: &str,
-        separator: &str,
-    ) {
+    fn build_summary(vars: &mut HashMap<String, String>, phase_format: &str, separator: &str) {
         let phase_number = vars.get("gsd_phase_number").cloned().unwrap_or_default();
         let phase_name = vars.get("gsd_phase_name").cloned().unwrap_or_default();
-        let progress = vars.get("gsd_progress_fraction").cloned().unwrap_or_default();
+        let progress = vars
+            .get("gsd_progress_fraction")
+            .cloned()
+            .unwrap_or_default();
         let plan_fraction = vars.get("gsd_plan_fraction").cloned().unwrap_or_default();
 
         if phase_number.is_empty() && phase_name.is_empty() {
@@ -153,16 +152,25 @@ impl GsdProvider {
         }
 
         // Also update gsd_phase to use the new format
-        vars.insert("gsd_phase".into(), format!("{}: {}", phase_prefix, phase_name));
+        vars.insert(
+            "gsd_phase".into(),
+            format!("{}: {}", phase_prefix, phase_name),
+        );
         vars.insert("gsd_summary".into(), summary);
     }
 
     /// Build convenience variables: gsd_update, gsd_task_full, gsd_stale, gsd_icon
     fn build_convenience_vars(&self, vars: &mut HashMap<String, String>) {
         // gsd_update: formatted update string
-        let update_available = vars.get("gsd_update_available").cloned().unwrap_or_default();
+        let update_available = vars
+            .get("gsd_update_available")
+            .cloned()
+            .unwrap_or_default();
         let update_version = vars.get("gsd_update_version").cloned().unwrap_or_default();
-        let gsd_update = if !update_available.is_empty() && update_available != "false" && !update_version.is_empty() {
+        let gsd_update = if !update_available.is_empty()
+            && update_available != "false"
+            && !update_version.is_empty()
+        {
             format!("\u{2191}{}", update_version) // up arrow + version
         } else {
             String::new()
@@ -187,7 +195,8 @@ impl GsdProvider {
         let last_activity = vars.get("gsd_last_activity").cloned().unwrap_or_default();
         let gsd_stale = if self.stale_enabled && !last_activity.is_empty() {
             // Parse date and check staleness
-            if let Ok(activity_date) = chrono::NaiveDate::parse_from_str(&last_activity, "%Y-%m-%d") {
+            if let Ok(activity_date) = chrono::NaiveDate::parse_from_str(&last_activity, "%Y-%m-%d")
+            {
                 let now = chrono::Local::now().date_naive();
                 let hours_since = (now - activity_date).num_hours();
                 if hours_since > self.stale_hours as i64 {

@@ -35,8 +35,6 @@ pub mod common;
 pub mod config;
 /// Adaptive context window learning from usage patterns
 pub mod context_learning;
-/// GSD project tracking data provider
-pub mod gsd;
 /// SQLite database backend for persistent statistics
 pub mod database;
 pub mod display;
@@ -45,6 +43,8 @@ pub mod git;
 /// GitProvider wraps git module as a DataProvider
 pub mod git_provider;
 pub mod git_utils;
+/// GSD project tracking data provider
+pub mod gsd;
 /// Hook handlers for Claude Code PreCompact and Stop events
 pub mod hook_handler;
 /// Layout rendering module for customizable statusline format

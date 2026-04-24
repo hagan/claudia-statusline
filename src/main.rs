@@ -30,14 +30,14 @@ mod common;
 mod config;
 mod context_learning;
 mod database;
-#[allow(dead_code)]
-mod gsd;
 mod display;
 mod error;
 mod git;
 #[allow(dead_code)]
 mod git_provider;
 mod git_utils;
+#[allow(dead_code)]
+mod gsd;
 mod hook_handler;
 mod layout;
 mod migrations;
@@ -604,9 +604,21 @@ fn handle_list_vars(cli: &Cli) -> Result<()> {
     orchestrator.register(Box::new(git_provider::GitProvider::new(&current_dir)));
 
     // Register StatsProvider
-    let total_cost = input.cost.as_ref().and_then(|c| c.total_cost_usd).unwrap_or(0.0);
-    let lines_added = input.cost.as_ref().and_then(|c| c.total_lines_added).unwrap_or(0);
-    let lines_removed = input.cost.as_ref().and_then(|c| c.total_lines_removed).unwrap_or(0);
+    let total_cost = input
+        .cost
+        .as_ref()
+        .and_then(|c| c.total_cost_usd)
+        .unwrap_or(0.0);
+    let lines_added = input
+        .cost
+        .as_ref()
+        .and_then(|c| c.total_lines_added)
+        .unwrap_or(0);
+    let lines_removed = input
+        .cost
+        .as_ref()
+        .and_then(|c| c.total_lines_removed)
+        .unwrap_or(0);
     let daily_total = {
         let data = stats::get_or_load_stats_data();
         let today = chrono::Local::now().format("%Y-%m-%d").to_string();
@@ -666,7 +678,10 @@ fn handle_list_vars(cli: &Cli) -> Result<()> {
             input.session_id.as_deref(),
             None,
         ) {
-            core_vars.insert("context_pct".into(), format!("{}", ctx.percentage.round() as u32));
+            core_vars.insert(
+                "context_pct".into(),
+                format!("{}", ctx.percentage.round() as u32),
+            );
         }
     }
 
@@ -732,14 +747,19 @@ fn handle_list_vars(cli: &Cli) -> Result<()> {
 
     // Print template info
     println!("=== template ===");
-    println!("  Default template: {}", include_str!("templates/default.tmpl").trim());
-    let user_tmpl = dirs::config_dir()
-        .map(|d| d.join("claudia-statusline").join("template.tmpl"));
+    println!(
+        "  Default template: {}",
+        include_str!("templates/default.tmpl").trim()
+    );
+    let user_tmpl = dirs::config_dir().map(|d| d.join("claudia-statusline").join("template.tmpl"));
     if let Some(ref path) = user_tmpl {
         if path.exists() {
             println!("  User override:    {} (active)", path.display());
         } else {
-            println!("  User override:    {} (not found, using default)", path.display());
+            println!(
+                "  User override:    {} (not found, using default)",
+                path.display()
+            );
         }
     }
     println!();

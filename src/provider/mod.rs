@@ -198,17 +198,11 @@ impl ProviderOrchestrator {
                         let elapsed = start.elapsed();
                         match handle.join() {
                             Ok(Ok(vars)) => {
-                                log::debug!(
-                                    "Provider '{}' completed in {:?}",
-                                    name, elapsed
-                                );
+                                log::debug!("Provider '{}' completed in {:?}", name, elapsed);
                                 results.push((priority, vars));
                             }
                             Ok(Err(e)) => {
-                                log::debug!(
-                                    "Provider '{}' failed: {:?}",
-                                    name, e
-                                );
+                                log::debug!("Provider '{}' failed: {:?}", name, e);
                             }
                             Err(_) => {
                                 log::warn!("Provider '{}' panicked", name);
@@ -376,8 +370,7 @@ mod tests {
             .with_variables(vars(&[("panic_key", "should_not_appear")]))
             .with_behavior(ProviderBehavior::Panic("test panic".to_string()));
 
-        let normal = TestProvider::new("normal", 50)
-            .with_variables(vars(&[("normal", "works")]));
+        let normal = TestProvider::new("normal", 50).with_variables(vars(&[("normal", "works")]));
 
         orch.register(Box::new(panicker));
         orch.register(Box::new(normal));
@@ -402,8 +395,7 @@ mod tests {
             .with_variables(vars(&[("err_key", "should_not_appear")]))
             .with_behavior(ProviderBehavior::Error("db failed".to_string()));
 
-        let normal =
-            TestProvider::new("normal", 50).with_variables(vars(&[("ok", "data")]));
+        let normal = TestProvider::new("normal", 50).with_variables(vars(&[("ok", "data")]));
 
         orch.register(Box::new(erroring));
         orch.register(Box::new(normal));
@@ -449,7 +441,11 @@ mod tests {
         );
 
         // Verify all 3 providers contributed
-        assert_eq!(result.len(), 3, "All 3 providers should contribute variables");
+        assert_eq!(
+            result.len(),
+            3,
+            "All 3 providers should contribute variables"
+        );
         for i in 0..3 {
             assert_eq!(
                 result.get(&format!("key_{}", i)).map(|s| s.as_str()),
@@ -463,8 +459,7 @@ mod tests {
         let mut orch = ProviderOrchestrator::new();
 
         // Provider A: normal, succeeds
-        let provider_a = TestProvider::new("success", 50)
-            .with_variables(vars(&[("a", "success")]));
+        let provider_a = TestProvider::new("success", 50).with_variables(vars(&[("a", "success")]));
 
         // Provider B: 500ms delay with 50ms timeout -> will timeout
         let provider_b = TestProvider::new("slow", 50)
@@ -495,9 +490,18 @@ mod tests {
             Some("success"),
             "Healthy provider should contribute"
         );
-        assert!(result.get("b").is_none(), "Timed-out provider should not contribute");
-        assert!(result.get("c").is_none(), "Errored provider should not contribute");
-        assert!(result.get("d").is_none(), "Panicked provider should not contribute");
+        assert!(
+            result.get("b").is_none(),
+            "Timed-out provider should not contribute"
+        );
+        assert!(
+            result.get("c").is_none(),
+            "Errored provider should not contribute"
+        );
+        assert!(
+            result.get("d").is_none(),
+            "Panicked provider should not contribute"
+        );
         assert_eq!(
             result.len(),
             1,
@@ -513,8 +517,7 @@ mod tests {
         let empty_provider = TestProvider::new("empty", 50);
 
         // Provider with actual data
-        let data_provider =
-            TestProvider::new("data", 50).with_variables(vars(&[("key", "val")]));
+        let data_provider = TestProvider::new("data", 50).with_variables(vars(&[("key", "val")]));
 
         orch.register(Box::new(empty_provider));
         orch.register(Box::new(data_provider));
@@ -536,8 +539,7 @@ mod tests {
     fn test_single_provider() {
         let mut orch = ProviderOrchestrator::new();
 
-        let solo = TestProvider::new("solo", 50)
-            .with_variables(vars(&[("solo", "value")]));
+        let solo = TestProvider::new("solo", 50).with_variables(vars(&[("solo", "value")]));
 
         orch.register(Box::new(solo));
 

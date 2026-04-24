@@ -137,7 +137,10 @@ fn test_pipeline_full_providers() {
     let stats = IntegrationTestProvider::new(
         "stats",
         50,
-        vars(&[("stats_session_cost", "12.50"), ("stats_daily_total", "45.00")]),
+        vars(&[
+            ("stats_session_cost", "12.50"),
+            ("stats_daily_total", "45.00"),
+        ]),
     );
     let gsd = IntegrationTestProvider::new(
         "gsd",
@@ -176,16 +179,9 @@ fn test_pipeline_full_providers() {
 fn test_pipeline_gsd_absent() {
     let mut orch = ProviderOrchestrator::new();
 
-    let git = IntegrationTestProvider::new(
-        "git",
-        50,
-        vars(&[("git", "main"), ("git_branch", "main")]),
-    );
-    let stats = IntegrationTestProvider::new(
-        "stats",
-        50,
-        vars(&[("stats_session_cost", "5.00")]),
-    );
+    let git =
+        IntegrationTestProvider::new("git", 50, vars(&[("git", "main"), ("git_branch", "main")]));
+    let stats = IntegrationTestProvider::new("stats", 50, vars(&[("stats_session_cost", "5.00")]));
 
     orch.register(Box::new(git));
     orch.register(Box::new(stats));
@@ -209,23 +205,10 @@ fn test_pipeline_gsd_absent() {
 fn test_pipeline_unavailable_git() {
     let mut orch = ProviderOrchestrator::new();
 
-    let git = IntegrationTestProvider::new(
-        "git",
-        50,
-        vars(&[("git", "main")]),
-    )
-    .unavailable();
+    let git = IntegrationTestProvider::new("git", 50, vars(&[("git", "main")])).unavailable();
 
-    let stats = IntegrationTestProvider::new(
-        "stats",
-        50,
-        vars(&[("stats_session_cost", "5.00")]),
-    );
-    let gsd = IntegrationTestProvider::new(
-        "gsd",
-        50,
-        vars(&[("gsd_phase", "P1: Test")]),
-    );
+    let stats = IntegrationTestProvider::new("stats", 50, vars(&[("stats_session_cost", "5.00")]));
+    let gsd = IntegrationTestProvider::new("gsd", 50, vars(&[("gsd_phase", "P1: Test")]));
 
     orch.register(Box::new(git));
     orch.register(Box::new(stats));
@@ -234,7 +217,10 @@ fn test_pipeline_unavailable_git() {
     let result = orch.collect_all();
 
     // Git should not contribute (unavailable)
-    assert!(result.get("git").is_none(), "Unavailable git should not contribute");
+    assert!(
+        result.get("git").is_none(),
+        "Unavailable git should not contribute"
+    );
     // Stats and GSD should still be present
     assert_eq!(
         result.get("stats_session_cost").map(|s| s.as_str()),
@@ -305,21 +291,9 @@ fn test_render_default_template_full_data() {
         "Should contain task: {}",
         result
     );
-    assert!(
-        result.contains("55%"),
-        "Should contain context: {}",
-        result
-    );
-    assert!(
-        result.contains("O4.6"),
-        "Should contain model: {}",
-        result
-    );
-    assert!(
-        result.contains("$12.50"),
-        "Should contain cost: {}",
-        result
-    );
+    assert!(result.contains("55%"), "Should contain context: {}", result);
+    assert!(result.contains("O4.6"), "Should contain model: {}", result);
+    assert!(result.contains("$12.50"), "Should contain cost: {}", result);
 }
 
 #[test]
@@ -337,7 +311,11 @@ fn test_render_default_template_gsd_hidden() {
 
     let result = renderer.render_template(&v, false);
 
-    assert!(result.contains("~/projects/app"), "Directory present: {}", result);
+    assert!(
+        result.contains("~/projects/app"),
+        "Directory present: {}",
+        result
+    );
     assert!(result.contains("main"), "Git present: {}", result);
     assert!(result.contains("50%"), "Context present: {}", result);
     assert!(result.contains("S4.5"), "Model present: {}", result);
@@ -515,7 +493,11 @@ fn test_provider_public_api_surface() {
 
     // ProviderOrchestrator
     let mut orch = ProviderOrchestrator::new();
-    orch.register(Box::new(IntegrationTestProvider::new("t", 50, HashMap::new())));
+    orch.register(Box::new(IntegrationTestProvider::new(
+        "t",
+        50,
+        HashMap::new(),
+    )));
     let _: HashMap<String, String> = orch.collect_all();
 
     // ProviderError variants (compile-time check that they exist)
@@ -545,7 +527,11 @@ fn test_layout_renderer_from_config() {
     v.insert("model".into(), "S4.5".into());
     let result = renderer.render(&v);
     // Default format includes {directory} and {model}
-    assert!(result.contains("~/test"), "Should render directory: {}", result);
+    assert!(
+        result.contains("~/test"),
+        "Should render directory: {}",
+        result
+    );
     assert!(result.contains("S4.5"), "Should render model: {}", result);
 }
 

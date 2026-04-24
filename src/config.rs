@@ -595,7 +595,7 @@ impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
             preset: "default".to_string(),
-            format: String::new(), // Empty = use preset
+            format: String::new(),               // Empty = use preset
             separator: " \u{2022} ".to_string(), // " • "
             components: ComponentsConfig::default(),
             show_unknown_vars: true,

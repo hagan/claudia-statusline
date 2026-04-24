@@ -49,20 +49,14 @@ fn test_smart_truncate_word_boundary() {
 #[test]
 fn test_smart_truncate_no_good_boundary() {
     // "abcdefghijklmnop" with limit 10 -- no spaces at all
-    assert_eq!(
-        smart_truncate("abcdefghijklmnop", 10),
-        "abcdefghij..."
-    );
+    assert_eq!(smart_truncate("abcdefghijklmnop", 10), "abcdefghij...");
 }
 
 #[test]
 fn test_smart_truncate_space_too_early() {
     // "a bcdefghijklmnop" with limit 10 -- space at position 1
     // 1 is NOT > 10/2=5, so truncate at exact limit
-    assert_eq!(
-        smart_truncate("a bcdefghijklmnop", 10),
-        "a bcdefghi..."
-    );
+    assert_eq!(smart_truncate("a bcdefghijklmnop", 10), "a bcdefghi...");
 }
 
 #[test]
@@ -169,11 +163,7 @@ fn test_gsd_all_keys_present() {
 
     // All expected keys must be present
     for key in EXPECTED_KEYS {
-        assert!(
-            result.contains_key(*key),
-            "Missing key: {}",
-            key
-        );
+        assert!(result.contains_key(*key), "Missing key: {}", key);
     }
 
     // gsd_separator is also present
@@ -318,11 +308,7 @@ fn test_gsd_summary_assembly() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 4 of 6 (GSD Provider)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 4 of 6 (GSD Provider)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
     fs::write(
         planning.join("ROADMAP.md"),
@@ -353,11 +339,7 @@ fn test_gsd_summary_phase_only() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 4 of 6 (GSD Provider)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 4 of 6 (GSD Provider)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
     // No ROADMAP.md
 
@@ -383,7 +365,10 @@ fn test_build_summary_directly() {
     vars.insert("gsd_phase_name".into(), "GSD Provider".into());
     vars.insert("gsd_progress_fraction".into(), "3/6".into());
     GsdProvider::build_summary(&mut vars, "P{n}", "\u{00b7}");
-    assert_eq!(vars.get("gsd_summary").unwrap(), "P4\u{00b7}GSD Provider 3/6");
+    assert_eq!(
+        vars.get("gsd_summary").unwrap(),
+        "P4\u{00b7}GSD Provider 3/6"
+    );
 
     // Phase only
     let mut vars = init_empty_vars();
@@ -408,7 +393,10 @@ fn test_build_summary_directly() {
     vars.insert("gsd_progress_fraction".into(), "2/6".into());
     vars.insert("gsd_plan_fraction".into(), "1/3".into());
     GsdProvider::build_summary(&mut vars, "P{n}", "\u{00b7}");
-    assert_eq!(vars.get("gsd_summary").unwrap(), "P5\u{00b7}Layout 2/6 [1/3]");
+    assert_eq!(
+        vars.get("gsd_summary").unwrap(),
+        "P5\u{00b7}Layout 2/6 [1/3]"
+    );
 
     // Custom format
     let mut vars = init_empty_vars();
@@ -426,11 +414,7 @@ fn test_gsd_graceful_degradation_missing_files() {
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
     // Only STATE.md and config.json -- no ROADMAP.md
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 4 of 6 (GSD Provider)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 4 of 6 (GSD Provider)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
 
     let provider = provider_with_planning(planning);
@@ -474,16 +458,15 @@ fn test_gsd_detect_planning_dir() {
     // Put .planning/ at project level
     let planning = project.join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 2 of 4 (Testing)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 2 of 4 (Testing)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
 
     // Auto-detect from deeper/ should find project/.planning/
     let detected = detect_planning_dir(&deeper);
-    assert!(detected.is_some(), "Should detect .planning/ from nested dir");
+    assert!(
+        detected.is_some(),
+        "Should detect .planning/ from nested dir"
+    );
     assert_eq!(detected.unwrap(), planning);
 
     // Auto-detect from subdir/ should also find it
@@ -493,7 +476,10 @@ fn test_gsd_detect_planning_dir() {
 
     // Auto-detect from project/ itself
     let detected = detect_planning_dir(&project);
-    assert!(detected.is_some(), "Should detect .planning/ from project root");
+    assert!(
+        detected.is_some(),
+        "Should detect .planning/ from project root"
+    );
     assert_eq!(detected.unwrap(), planning);
 }
 
@@ -504,11 +490,7 @@ fn test_gsd_config_override_project_dir() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 1 of 2 (Override Test)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 1 of 2 (Override Test)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
 
     let mut config = default_config();
@@ -537,9 +519,18 @@ fn test_gsd_no_planning_all_empty() {
     );
 
     let result = provider.collect().unwrap();
-    assert_eq!(result.len(), EXPECTED_KEY_COUNT, "All {} keys should exist", EXPECTED_KEY_COUNT);
+    assert_eq!(
+        result.len(),
+        EXPECTED_KEY_COUNT,
+        "All {} keys should exist",
+        EXPECTED_KEY_COUNT
+    );
     for (key, val) in &result {
-        assert_eq!(val, "", "Key '{}' value should be empty, got '{}'", key, val);
+        assert_eq!(
+            val, "",
+            "Key '{}' value should be empty, got '{}'",
+            key, val
+        );
     }
 }
 
@@ -578,11 +569,7 @@ fn test_gsd_icon_with_planning_no_color() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 4 of 6 (GSD Provider)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 4 of 6 (GSD Provider)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
 
     let mut provider = provider_with_planning(planning);
@@ -592,7 +579,10 @@ fn test_gsd_icon_with_planning_no_color() {
     let icon = result.get("gsd_icon").unwrap();
     // With color_enabled=false but planning_dir present, icon is the raw character
     assert_eq!(icon, "\u{F0AE2}");
-    assert!(!icon.contains("\x1b"), "Icon should not contain ANSI escapes when color disabled");
+    assert!(
+        !icon.contains("\x1b"),
+        "Icon should not contain ANSI escapes when color disabled"
+    );
 }
 
 // ---- Test 15: Separator in output ----
@@ -625,11 +615,7 @@ fn test_gsd_toggle_show_phase_off() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 4 of 6 (GSD Provider)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 4 of 6 (GSD Provider)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
     fs::write(
         planning.join("ROADMAP.md"),
@@ -895,11 +881,7 @@ fn test_gsd_plan_vars_from_roadmap() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 3 of 4 (Testing Phase)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 3 of 4 (Testing Phase)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
     fs::write(
         planning.join("ROADMAP.md"),
@@ -930,11 +912,7 @@ fn test_gsd_plan_vars_no_plans_section() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 3 of 4 (Testing Phase)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 3 of 4 (Testing Phase)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
     fs::write(
         planning.join("ROADMAP.md"),
@@ -1265,7 +1243,10 @@ fn test_gsd_summary_custom_format() {
     vars.insert("gsd_plan_fraction".into(), "1/3".into());
 
     GsdProvider::build_summary(&mut vars, "P{n}", "\u{00b7}");
-    assert_eq!(vars.get("gsd_summary").unwrap(), "P5\u{00b7}Layout 2/6 [1/3]");
+    assert_eq!(
+        vars.get("gsd_summary").unwrap(),
+        "P5\u{00b7}Layout 2/6 [1/3]"
+    );
 }
 
 #[test]
@@ -1331,7 +1312,10 @@ fn test_gsd_task_max_width_truncation() {
 
     // Simulate: set gsd_task directly in the vars before apply_truncations
     let mut vars = init_empty_vars();
-    vars.insert("gsd_task".into(), "Very long task name that exceeds limit".into());
+    vars.insert(
+        "gsd_task".into(),
+        "Very long task name that exceeds limit".into(),
+    );
     provider.apply_truncations(&mut vars);
 
     let task = vars.get("gsd_task").unwrap();
@@ -1349,11 +1333,7 @@ fn test_gsd_phase_max_width_no_truncation_when_fits() {
     let tmp = TempDir::new().unwrap();
     let planning = tmp.path().join(".planning");
     fs::create_dir_all(&planning).unwrap();
-    fs::write(
-        planning.join("STATE.md"),
-        "Phase: 5 of 6 (Layout)\n",
-    )
-    .unwrap();
+    fs::write(planning.join("STATE.md"), "Phase: 5 of 6 (Layout)\n").unwrap();
     fs::write(planning.join("config.json"), "{}").unwrap();
 
     let mut provider = provider_with_planning(planning);
