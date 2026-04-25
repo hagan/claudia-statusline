@@ -1525,3 +1525,162 @@ fn test_gsd_update_cache_reevaluates_delay_after_threshold() {
         Some("1.19.0"),
     );
 }
+
+// ============================================================================
+// F2 regression: todos.rs cache must not poison from partial-write fallback,
+// and the cache key must include config knobs.
+//
+// Bug 1: scan_todo_files silently falls back to an older file when the most
+// recent file fails JSON parsing (mid-write). find_active_task then cached
+// that fallback under the unparseable file's mtime. Subsequent calls with
+// unchanged mtime returned the stale fallback even after the newer file was
+// written successfully (mtime aliasing).
+//
+// Bug 2: Cache key omits task_truncation_limit and staleness_seconds, so two
+// providers in the same process with different config aliased each other's
+// cached data.
+// ============================================================================
+
+#[test]
+#[serial_test::serial]
+fn test_gsd_todos_does_not_cache_partial_write_fallback() {
+    use std::fs::FileTimes;
+    use std::time::SystemTime;
+
+    super::todos::reset_todos_cache_for_tests();
+
+    let tmp = TempDir::new().unwrap();
+    let todos_dir = tmp.path().join(".claude").join("todos");
+    fs::create_dir_all(&todos_dir).unwrap();
+
+    let older = todos_dir.join("older.json");
+    let newer = todos_dir.join("newer.json");
+
+    // older: valid JSON with an in_progress task "OldTask"
+    fs::write(
+        &older,
+        r#"[{"content": "OldTask", "status": "in_progress"}]"#,
+    )
+    .unwrap();
+
+    // newer: malformed JSON (simulates a mid-write file)
+    fs::write(&newer, "{this is not json").unwrap();
+
+    // Pin mtimes so the malformed file is deterministically newer.
+    let now = SystemTime::now();
+    let newer_mtime = now;
+    let older_mtime = now - Duration::from_secs(60);
+    let newer_times = FileTimes::new()
+        .set_modified(newer_mtime)
+        .set_accessed(newer_mtime);
+    let older_times = FileTimes::new()
+        .set_modified(older_mtime)
+        .set_accessed(older_mtime);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&newer)
+        .unwrap()
+        .set_times(newer_times)
+        .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&older)
+        .unwrap()
+        .set_times(older_times)
+        .unwrap();
+
+    // First call: malformed newer.json -> fallback to older.json -> "OldTask".
+    let mut vars1: HashMap<String, String> = HashMap::new();
+    super::todos::fill_vars(tmp.path(), 100, 86400, &mut vars1);
+    assert_eq!(
+        vars1.get("gsd_task").map(String::as_str),
+        Some("OldTask"),
+        "fallback path should still produce data from the older file (vars1={:?})",
+        vars1
+    );
+
+    // Now overwrite newer.json with VALID JSON for "NewTask", but pin its
+    // mtime back to the original value. This simulates a partial-write that
+    // completed and synced to a file whose mtime was already set during the
+    // partial state (rare but exactly the bug).
+    fs::write(
+        &newer,
+        r#"[{"content": "NewTask", "status": "in_progress"}]"#,
+    )
+    .unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&newer)
+        .unwrap()
+        .set_times(newer_times)
+        .unwrap();
+
+    // Do NOT reset the cache. On the buggy code path the cache holds the
+    // OldTask fallback under newer_mtime; mtime is unchanged so we hit the
+    // cache and return OldTask. On the fixed code path the cache was never
+    // populated (used_most_recent=false) so we re-scan and get NewTask.
+    let mut vars2: HashMap<String, String> = HashMap::new();
+    super::todos::fill_vars(tmp.path(), 100, 86400, &mut vars2);
+    assert_eq!(
+        vars2.get("gsd_task").map(String::as_str),
+        Some("NewTask"),
+        "after newer.json parses cleanly, the cache must not serve the stale fallback (vars2={:?})",
+        vars2
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn test_gsd_todos_cache_key_includes_config_knobs() {
+    super::todos::reset_todos_cache_for_tests();
+
+    let tmp = TempDir::new().unwrap();
+    let todos_dir = tmp.path().join(".claude").join("todos");
+    fs::create_dir_all(&todos_dir).unwrap();
+
+    let path = todos_dir.join("only.json");
+    // A task long enough that smart_truncate(_, 5) will truncate it but
+    // smart_truncate(_, 100) will leave it whole.
+    fs::write(
+        &path,
+        r#"[{"content": "Long task name that exceeds short truncation limit", "status": "in_progress"}]"#,
+    )
+    .unwrap();
+
+    // First call with a tight truncation limit.
+    let mut vars1: HashMap<String, String> = HashMap::new();
+    super::todos::fill_vars(tmp.path(), 5, 86400, &mut vars1);
+    let task1 = vars1
+        .get("gsd_task")
+        .cloned()
+        .expect("gsd_task should be set with truncation_limit=5");
+
+    // Second call with a much wider truncation limit, same dir, same mtime.
+    // On the buggy cache (key omits truncation_limit), call 2 returns call
+    // 1's cached truncated value. On the fixed cache, call 2 sees a key
+    // miss and re-scans with the larger limit.
+    let mut vars2: HashMap<String, String> = HashMap::new();
+    super::todos::fill_vars(tmp.path(), 100, 86400, &mut vars2);
+    let task2 = vars2
+        .get("gsd_task")
+        .cloned()
+        .expect("gsd_task should be set with truncation_limit=100");
+
+    assert_ne!(
+        task1, task2,
+        "cache key must include task_truncation_limit; got task1={:?} task2={:?}",
+        task1, task2
+    );
+    assert!(
+        task2.len() > task1.len(),
+        "wider truncation limit should yield a longer (or equal-length but unequal) value; task1={:?} task2={:?}",
+        task1,
+        task2
+    );
+    // Sanity: with limit=100 the task fits whole.
+    assert!(
+        task2.contains("Long task name that exceeds short truncation limit"),
+        "task2 should contain the full task text; got {:?}",
+        task2
+    );
+}
