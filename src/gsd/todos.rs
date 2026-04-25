@@ -26,15 +26,21 @@ struct TodoItem {
     active_form: Option<String>,
 }
 
-/// Cached parse result keyed by (todos_dir, most-recent file mtime).
+/// Cached parse result keyed by (todos_dir, most-recent file mtime, config).
 ///
 /// Keying by the directory path alongside mtime is required: under test
 /// isolation (and at runtime, when HOME changes), the same mtime value can
 /// appear for files in different directories, and mtime alone would return
 /// stale cached results from the previous directory.
+///
+/// `task_truncation_limit` and `staleness_seconds` are part of the cache
+/// key (F2 / D-13): two providers in the same process with different config
+/// must not alias each other's cached data.
 struct CachedParse {
     dir: PathBuf,
     mtime: SystemTime,
+    task_truncation_limit: usize,
+    staleness_seconds: u64,
     data: TodoData,
 }
 
@@ -47,6 +53,15 @@ struct TodoData {
 
 /// Global cache for todo directory scan results.
 static TODOS_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
+
+/// Reset the global todos cache. Test-only helper to isolate per-test state.
+#[cfg(test)]
+pub(super) fn reset_todos_cache_for_tests() {
+    let cache = TODOS_CACHE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = cache.lock() {
+        *g = None;
+    }
+}
 
 /// Populate GSD task variables from Claude Code todo JSON files.
 ///
@@ -124,33 +139,55 @@ fn find_active_task(
     // Sort by mtime descending (most recent first)
     files.sort_by_key(|entry| std::cmp::Reverse(entry.1));
 
-    // Check cache against (todos_dir, most recent file's mtime)
+    // Check cache against (todos_dir, most recent file's mtime, config knobs).
+    // Config knobs participate in the key so concurrent providers with
+    // different config don't alias (F2 / D-13).
     let most_recent_mtime = files[0].1;
     let cache = TODOS_CACHE.get_or_init(|| Mutex::new(None));
     let mut guard = cache.lock().ok()?;
 
     if let Some(ref cached) = *guard {
-        if cached.dir == todos_dir && cached.mtime == most_recent_mtime {
+        if cached.dir == todos_dir
+            && cached.mtime == most_recent_mtime
+            && cached.task_truncation_limit == task_truncation_limit
+            && cached.staleness_seconds == staleness_seconds
+        {
             return Some(cached.data.clone());
         }
     }
 
-    // Cache miss -- scan files
-    let data = scan_todo_files(&files, task_truncation_limit);
-    *guard = Some(CachedParse {
-        dir: todos_dir,
-        mtime: most_recent_mtime,
-        data: data.clone(),
-    });
+    // Cache miss -- scan files. scan_todo_files reports whether the most
+    // recent file parsed cleanly. We only persist the result in the cache
+    // when it did; otherwise the data came from a fallback (older) file
+    // and caching it under most_recent_mtime would poison subsequent reads
+    // even after the newer file was written successfully (F2 / D-12).
+    let (data, used_most_recent) = scan_todo_files(&files, task_truncation_limit);
+    if used_most_recent {
+        *guard = Some(CachedParse {
+            dir: todos_dir,
+            mtime: most_recent_mtime,
+            task_truncation_limit,
+            staleness_seconds,
+            data: data.clone(),
+        });
+    }
     Some(data)
 }
 
 /// Scan at most 10 todo files for the first active task.
+///
+/// Returns `(data, used_most_recent)` where `used_most_recent` is `true` iff
+/// the most recent file (`files[0]`) parsed cleanly. Callers use this signal
+/// to decide whether the result is safe to cache under the most-recent
+/// file's mtime (F2 / D-12).
 fn scan_todo_files(
     files: &[(std::path::PathBuf, SystemTime)],
     task_truncation_limit: usize,
-) -> TodoData {
-    for (path, _) in files.iter().take(10) {
+) -> (TodoData, bool) {
+    let mut used_most_recent = false;
+    let mut found: Option<TodoData> = None;
+
+    for (idx, (path, _)) in files.iter().take(10).enumerate() {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(_) => continue,
@@ -159,6 +196,18 @@ fn scan_todo_files(
             Ok(t) => t,
             Err(_) => continue,
         };
+
+        // First parseable file is the most recent if and only if idx == 0.
+        if idx == 0 {
+            used_most_recent = true;
+        }
+
+        if found.is_some() {
+            // We already have a task from an earlier (more recent) file;
+            // we just needed to confirm whether iteration 0 parsed (which
+            // it did, since `found` is set). Stop here.
+            break;
+        }
 
         // Priority: in_progress > pending (skip completed-only lists)
         let active = todos
@@ -176,17 +225,31 @@ fn scan_todo_files(
             let total = todos.len();
             let progress = format!("{}/{}", completed, total);
 
-            return TodoData {
+            found = Some(TodoData {
                 task_name: Some(name),
                 task_progress: Some(progress),
-            };
+            });
+
+            // If the most-recent file is this file (idx == 0), we know
+            // used_most_recent is already true and there's nothing else
+            // to learn -- stop scanning.
+            if idx == 0 {
+                break;
+            }
+            // Otherwise we have a fallback task but still need to confirm
+            // whether the most-recent file (which we already skipped via
+            // continue) eventually parses on a re-attempt. It can't --
+            // we already passed it. So used_most_recent stays false and
+            // we can break.
+            break;
         }
     }
 
-    TodoData {
+    let data = found.unwrap_or(TodoData {
         task_name: None,
         task_progress: None,
-    }
+    });
+    (data, used_most_recent)
 }
 
 #[cfg(test)]

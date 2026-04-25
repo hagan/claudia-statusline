@@ -266,12 +266,16 @@ impl GsdProvider {
     }
 
     /// Apply width truncations to phase_name and task.
+    ///
+    /// Width fields are interpreted as **character counts** (Unicode scalar
+    /// values), not byte counts. Byte-index slicing previously panicked when
+    /// a width fell inside a multi-byte UTF-8 sequence (F3 fix).
     fn apply_truncations(&self, vars: &mut HashMap<String, String>) {
         // phase_max_width truncation on gsd_phase_name
         if self.phase_max_width > 0 {
             if let Some(name) = vars.get("gsd_phase_name").cloned() {
-                if name.len() > self.phase_max_width {
-                    let truncated = &name[..self.phase_max_width];
+                if name.chars().count() > self.phase_max_width {
+                    let truncated = truncate_to_chars(&name, self.phase_max_width);
                     vars.insert("gsd_phase_name".into(), format!("{}...", truncated));
                 }
             }
@@ -280,12 +284,25 @@ impl GsdProvider {
         // task_max_width truncation on gsd_task (fixed width with ellipsis)
         if self.task_max_width > 0 {
             if let Some(task) = vars.get("gsd_task").cloned() {
-                if task.len() > self.task_max_width {
-                    let truncated = &task[..self.task_max_width];
+                if task.chars().count() > self.task_max_width {
+                    let truncated = truncate_to_chars(&task, self.task_max_width);
                     vars.insert("gsd_task".into(), format!("{}...", truncated));
                 }
             }
         }
+    }
+}
+
+/// Truncate `s` to at most `max_chars` Unicode scalar values, returning a
+/// borrowed slice that ends on a character boundary.
+///
+/// Returns `s` unchanged if it has fewer than `max_chars` characters.
+/// Used by `apply_truncations` and `smart_truncate` to avoid panicking on
+/// byte-index slices that fall inside multi-byte UTF-8 sequences (F3).
+fn truncate_to_chars(s: &str, max_chars: usize) -> &str {
+    match s.char_indices().nth(max_chars) {
+        Some((byte_idx, _)) => &s[..byte_idx],
+        None => s,
     }
 }
 
@@ -360,16 +377,22 @@ fn init_empty_vars() -> HashMap<String, String> {
 /// Returns the original string unchanged if it fits within `max_len` or if
 /// `max_len` is 0 (no limit).
 pub(crate) fn smart_truncate(s: &str, max_len: usize) -> String {
-    if max_len == 0 || s.len() <= max_len {
+    // `max_len` is a **character count**, not a byte count. Byte-index
+    // slicing previously panicked when `max_len` landed inside a multi-byte
+    // UTF-8 sequence (F3 fix).
+    if max_len == 0 || s.chars().count() <= max_len {
         return s.to_string();
     }
-    let truncated = &s[..max_len];
+    let truncated = truncate_to_chars(s, max_len);
     if let Some(last_space) = truncated.rfind(' ') {
-        if last_space > max_len / 2 {
+        // ' ' is ASCII, so its byte index is also a char boundary -- safe to
+        // slice at `last_space`. The "more than half meaningful" heuristic
+        // is preserved by comparing against `truncated.len() / 2`.
+        if last_space > truncated.len() / 2 {
             return format!("{}...", &s[..last_space]);
         }
     }
-    format!("{}...", &s[..max_len])
+    format!("{}...", truncated)
 }
 
 impl DataProvider for GsdProvider {

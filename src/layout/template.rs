@@ -376,12 +376,14 @@ impl LayoutRenderer {
     }
 
     /// Internal constructor that parses the template into an AST.
+    ///
+    /// `{sep}` is parsed as a regular variable; it is bound to the safe
+    /// separator at render time in `render_template`. This avoids
+    /// pre-parse text substitution, which would let a user-configured
+    /// separator containing template syntax (e.g. `"{else}"`,
+    /// `"}{if git}"`) inject AST structure into the parsed template.
     fn new_with_ast(template: String, separator: String) -> Self {
-        // Pre-process: replace {sep} with separator before AST parsing
-        let safe_separator = sanitize_for_terminal(&separator);
-        let template_for_ast = template.replace("{sep}", &safe_separator);
-
-        let (ast, parse_error) = match parse_template(&template_for_ast) {
+        let (ast, parse_error) = match parse_template(&template) {
             Ok(nodes) => (Some(nodes), None),
             Err(err) => (None, Some(err)),
         };
@@ -443,6 +445,17 @@ impl LayoutRenderer {
     ///
     /// The template is parsed once at construction time and evaluated against
     /// the provided variables at render time.
+    ///
+    /// # Security
+    ///
+    /// Variable values from `variables` are sanitized via
+    /// [`crate::utils::sanitize_for_terminal`] before substitution, matching
+    /// the legacy [`crate::display::VariableBuilder`] security boundary. The
+    /// `{sep}` special variable is bound to the (also-sanitized) renderer
+    /// separator. Sanitizing at render time is a load-bearing invariant: the
+    /// AST evaluator concatenates variable values directly into the output
+    /// string, so any ANSI escape sequences or control characters in raw
+    /// provider values would otherwise reach the terminal verbatim.
     #[allow(dead_code)]
     pub fn render_template(
         &self,
@@ -452,7 +465,20 @@ impl LayoutRenderer {
         match &self.ast {
             Some(nodes) => {
                 let safe_separator = sanitize_for_terminal(&self.separator);
-                let result = evaluate(nodes, variables, show_unknown);
+                // Build a fresh variable map: sanitize each provider value
+                // (closes F4), then bind `sep` AFTER the sanitize pass to
+                // avoid double-sanitization (separator is already
+                // sanitized). Parse-time text replacement of `{sep}` is
+                // also unsafe because separators are user-controlled and
+                // `sanitize_for_terminal` does not strip braces (closes B5);
+                // `{sep}` is therefore parsed as a regular variable and
+                // resolved here.
+                let mut sanitized: HashMap<String, String> = variables
+                    .iter()
+                    .map(|(k, v)| (k.clone(), sanitize_for_terminal(v)))
+                    .collect();
+                sanitized.insert("sep".into(), safe_separator.clone());
+                let result = evaluate(nodes, &sanitized, show_unknown);
                 clean_separators(&result, &safe_separator)
             }
             None => "[tmpl err]".to_string(),
