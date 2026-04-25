@@ -2024,3 +2024,43 @@ fn test_template_separator_does_not_inject_ast() {
         out2
     );
 }
+
+#[test]
+fn test_template_sanitizes_provider_values() {
+    // F4 regression: provider-supplied values flow through the AST evaluator
+    // without sanitize_for_terminal in the unfixed code, allowing ANSI escape
+    // sequences and control characters to reach the terminal. The legacy
+    // display.rs::VariableBuilder sanitizes these values; render_template
+    // must apply the same boundary at render time.
+    let renderer = LayoutRenderer::with_format("{gsd_task}", " | ");
+
+    // Sub-test 1: ANSI escape sequence around literal "EVIL".
+    let mut vars = HashMap::new();
+    vars.insert("gsd_task".to_string(), "\x1b[31mEVIL\x1b[0m".to_string());
+    let out = renderer.render_template(&vars, false);
+    assert!(
+        out.contains("EVIL"),
+        "literal text must survive; got {:?}",
+        out
+    );
+    assert!(
+        !out.contains('\x1b'),
+        "ANSI escape must be stripped; got {:?}",
+        out
+    );
+
+    // Sub-test 2: control character (BEL = 0x07) must be stripped.
+    let mut vars2 = HashMap::new();
+    vars2.insert("gsd_task".to_string(), "before\x07after".to_string());
+    let out2 = renderer.render_template(&vars2, false);
+    assert!(
+        out2.contains("before") && out2.contains("after"),
+        "literal text must survive; got {:?}",
+        out2
+    );
+    assert!(
+        !out2.contains('\x07'),
+        "BEL control character must be stripped; got {:?}",
+        out2
+    );
+}
