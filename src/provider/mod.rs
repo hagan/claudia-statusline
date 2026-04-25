@@ -27,6 +27,7 @@
 //! rather than blocking the orchestrator or the statusline render.
 
 use std::collections::HashMap;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -202,8 +203,25 @@ impl ProviderOrchestrator {
                     let name = provider.name().to_string();
                     let priority = provider.priority();
 
+                    // Capture a separate name copy that the spawned closure
+                    // owns, so a panic message can reference the provider
+                    // even after the metadata `name` moves into the tuple.
+                    let panic_name = name.clone();
+
                     let spawn_time = Instant::now();
-                    let handle = s.spawn(move || provider.collect());
+                    // Wrap collect() in catch_unwind so a panic — whether
+                    // during the polling loop's window or AFTER the loop
+                    // has detached the handle on the timeout branch —
+                    // never propagates through `thread::scope`'s auto-join
+                    // (PR #29 review BLOCK B2).
+                    let handle = s.spawn(move || {
+                        catch_unwind(AssertUnwindSafe(|| provider.collect())).unwrap_or_else(|_| {
+                            Err(ProviderError::CollectionError(format!(
+                                "provider '{}' panicked",
+                                panic_name
+                            )))
+                        })
+                    });
 
                     (handle, timeout, name, priority, spawn_time)
                 })
@@ -595,6 +613,59 @@ mod tests {
              spawn_time-based clock. Buggy in-loop reset clock would let B \
              sneak through (it has 100ms of fresh budget after the loop \
              waited 100ms on A, plenty for B's remaining 100ms)."
+        );
+    }
+
+    /// Regression test for PR #29 BLOCK B2.
+    ///
+    /// When the polling loop breaks on the timeout branch, the
+    /// `ScopedJoinHandle` is dropped without an explicit `join()`. If that
+    /// detached thread later panics, the panic is held inside the scope and
+    /// re-raised at scope exit, crashing `collect_all()` and (since the
+    /// orchestrator runs at the top of the statusline render path) the whole
+    /// process.
+    ///
+    /// The fix wraps each provider's `collect()` in
+    /// `std::panic::catch_unwind(AssertUnwindSafe(...))` inside the spawned
+    /// closure, so any panic — early or late — is converted into a
+    /// `ProviderError::CollectionError` before it can propagate.
+    ///
+    /// Test design (CONTEXT.md D-04/D-05): A panicking provider whose
+    /// `with_uncooperative_delay` outlasts its 50ms timeout. After Task 1's
+    /// orchestrator fix the polling loop reaches the timeout branch and
+    /// detaches the handle around t≈55ms. The thread keeps sleeping until
+    /// t≈200ms and only then runs the `panic!`. That panic surfaces at the
+    /// `thread::scope` join boundary at scope exit. Without the
+    /// `catch_unwind` wrap this aborts the whole call.
+    #[test]
+    fn test_orchestrator_timeout_then_panic() {
+        let mut orch = ProviderOrchestrator::new();
+
+        let late_panicker = TestProvider::new("late_panicker", 50)
+            .with_variables(vars(&[("late_panic_key", "should_not_appear")]))
+            .with_uncooperative_delay(Duration::from_millis(200))
+            .with_timeout(Duration::from_millis(50))
+            .with_behavior(ProviderBehavior::Panic("late panic".to_string()));
+
+        let normal = TestProvider::new("normal", 50).with_variables(vars(&[("ok", "yes")]));
+
+        orch.register(Box::new(late_panicker));
+        orch.register(Box::new(normal));
+
+        // The assertion is implicit: if the panic propagates through
+        // `thread::scope` this call aborts. Reaching the assertions below
+        // means catch_unwind contained it.
+        let result = orch.collect_all();
+
+        assert_eq!(
+            result.get("ok").map(|s| s.as_str()),
+            Some("yes"),
+            "Normal provider should still contribute when a sibling provider \
+             times out and then panics"
+        );
+        assert!(
+            !result.contains_key("late_panic_key"),
+            "Panicking provider's variables should not appear in result"
         );
     }
 
