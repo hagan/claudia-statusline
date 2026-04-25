@@ -40,7 +40,11 @@ pub mod database;
 pub mod display;
 pub mod error;
 pub mod git;
+/// GitProvider wraps git module as a DataProvider
+pub mod git_provider;
 pub mod git_utils;
+/// GSD project tracking data provider
+pub mod gsd;
 /// Hook handlers for Claude Code PreCompact and Stop events
 pub mod hook_handler;
 /// Layout rendering module for customizable statusline format
@@ -48,6 +52,8 @@ pub mod layout;
 /// Database schema migration system
 pub mod migrations;
 pub mod models;
+/// Data provider system for parallel variable collection
+pub mod provider;
 /// Retry logic with exponential backoff for transient failures
 pub mod retry;
 /// Hook-based state management for real-time event tracking
@@ -65,8 +71,13 @@ pub use config::Config;
 pub use display::{format_output, format_output_to_string};
 pub use error::{Result, StatuslineError};
 pub use git::get_git_status;
+#[allow(unused_imports)]
+pub use git_provider::GitProvider;
+pub use gsd::GsdProvider;
 pub use models::{Cost, Model, StatuslineInput, Workspace};
-pub use stats::{get_daily_total, get_or_load_stats_data, update_stats_data, StatsData};
+pub use stats::{
+    get_daily_total, get_or_load_stats_data, update_stats_data, StatsData, StatsProvider,
+};
 pub use theme::{get_theme_manager, Theme, ThemeManager};
 pub use version::{short_version, version_string};
 

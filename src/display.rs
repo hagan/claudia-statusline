@@ -382,8 +382,9 @@ fn format_statusline_string(
                     .and_then(crate::stats::get_session_duration_by_mode)
                     .or_else(|| transcript_path.and_then(parse_duration));
 
+                let config = crate::config::get_config();
                 let burn_rate = duration.and_then(|d| {
-                    if d > 60 {
+                    if d > config.burn_rate.min_duration_seconds {
                         Some((total_cost * 3600.0) / d as f64)
                     } else {
                         None
@@ -593,8 +594,9 @@ fn format_statusline_with_layout(
                 .and_then(crate::stats::get_session_duration_by_mode)
                 .or_else(|| transcript_path.and_then(parse_duration));
 
+            let config = crate::config::get_config();
             let burn_rate = duration.and_then(|d| {
-                if d > 60 {
+                if d > config.burn_rate.min_duration_seconds {
                     Some((total_cost * 3600.0) / d as f64)
                 } else {
                     None
@@ -647,6 +649,23 @@ fn format_statusline_with_layout(
     let variables = builder.build();
     let renderer = LayoutRenderer::from_config(layout_config);
     renderer.render(&variables)
+}
+
+/// Render the statusline from a pre-collected variable map using the
+/// conditional template engine.
+///
+/// This is the orchestrator-based render path: providers populate a HashMap,
+/// core variables (directory, model, context, etc.) are added by the caller,
+/// and this function renders everything through the AST template.
+///
+/// Falls back to the legacy render() path if the template fails to parse.
+#[allow(dead_code)]
+pub fn render_with_vars(
+    variables: &std::collections::HashMap<String, String>,
+    layout_config: &config::LayoutConfig,
+) -> String {
+    let renderer = LayoutRenderer::default_template(&layout_config.separator);
+    renderer.render_template(variables, layout_config.show_unknown_vars)
 }
 
 /// Format output with explicit display configuration (prints to stdout)

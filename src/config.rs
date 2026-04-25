@@ -1,9 +1,15 @@
 use crate::error::{Result, StatuslineError};
+use crate::gsd::config::GsdConfig;
 use log::warn;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Serde default helper: returns `true`.
+fn default_true() -> bool {
+    true
+}
 
 /// Main configuration structure for the statusline
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -42,6 +48,9 @@ pub struct Config {
 
     /// Token rate metrics configuration
     pub token_rate: TokenRateConfig,
+
+    /// GSD project tracking configuration
+    pub gsd: GsdConfig,
 }
 
 /// Display-related configuration
@@ -356,6 +365,16 @@ pub struct BurnRateConfig {
     /// Default: 60 minutes (1 hour)
     /// Reasonable range: 15-120 minutes
     pub inactivity_threshold_minutes: u32,
+
+    /// Minimum session duration in seconds before showing burn rate
+    ///
+    /// Sessions shorter than this threshold will not display a burn rate,
+    /// since very short sessions produce unreliable $/hr estimates.
+    ///
+    /// Default: 60 seconds (1 minute)
+    /// Reasonable range: 30-300 seconds
+    #[serde(default = "default_min_duration_seconds")]
+    pub min_duration_seconds: u64,
 }
 
 /// Layout configuration for customizable statusline format
@@ -435,6 +454,11 @@ pub struct LayoutConfig {
     /// Per-component configuration overrides
     #[serde(default)]
     pub components: ComponentsConfig,
+
+    /// Show unknown template variables as literal `{var}` in output (default: true).
+    /// When false, unknown variables render as empty string.
+    #[serde(default = "default_true")]
+    pub show_unknown_vars: bool,
 }
 
 /// Per-component configuration for fine-grained customization
@@ -571,9 +595,10 @@ impl Default for LayoutConfig {
     fn default() -> Self {
         Self {
             preset: "default".to_string(),
-            format: String::new(), // Empty = use preset
-            separator: " • ".to_string(),
+            format: String::new(),               // Empty = use preset
+            separator: " \u{2022} ".to_string(), // " • "
             components: ComponentsConfig::default(),
+            show_unknown_vars: true,
         }
     }
 }
@@ -925,11 +950,16 @@ impl Default for GitConfig {
     }
 }
 
+fn default_min_duration_seconds() -> u64 {
+    60
+}
+
 impl Default for BurnRateConfig {
     fn default() -> Self {
         BurnRateConfig {
             mode: "wall_clock".to_string(), // Default to wall_clock for backward compatibility
             inactivity_threshold_minutes: 60, // 1 hour default
+            min_duration_seconds: default_min_duration_seconds(), // 60 seconds minimum
         }
     }
 }
@@ -1240,6 +1270,11 @@ mode = "wall_clock"
 # Default: 60 minutes (1 hour)
 inactivity_threshold_minutes = 60
 
+# Minimum session duration (seconds) before showing burn rate
+# Sessions shorter than this produce unreliable $/hr estimates
+# Default: 60 seconds
+# min_duration_seconds = 60
+
 [token_rate]
 # Enable token rate metrics display (tokens per second)
 # Default: false (opt-in feature)
@@ -1320,6 +1355,13 @@ pub fn get_config() -> &'static Config {
         if let Ok(val) = env::var("STATUSLINE_BURN_RATE_THRESHOLD") {
             if let Ok(threshold) = val.parse::<u32>() {
                 config.burn_rate.inactivity_threshold_minutes = threshold;
+            }
+        }
+
+        // Override burn_rate.min_duration_seconds from environment if set (for testing)
+        if let Ok(val) = env::var("STATUSLINE_BURN_RATE_MIN_DURATION") {
+            if let Ok(seconds) = val.parse::<u64>() {
+                config.burn_rate.min_duration_seconds = seconds;
             }
         }
 

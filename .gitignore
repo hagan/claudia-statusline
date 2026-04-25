@@ -11,6 +11,10 @@ CLAUDE.md
 AGENTS.md
 .claude/
 
+# GSD planning artifacts (kept in private docs mount, not in repo)
+/.planning
+/.planning/
+
 # Temporary files
 *.tmp
 
