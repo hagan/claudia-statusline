@@ -1441,3 +1441,87 @@ fn test_gsd_cache_distinguishes_paths_with_identical_mtimes() {
         "ROADMAP.md cache must distinguish by path, not mtime alone"
     );
 }
+
+// ============================================================================
+// B4 regression: update.rs cache must not freeze the delay-threshold decision.
+//
+// Bug: read_with_cache cached UpdateData (a time-DEPENDENT decision) keyed on
+// (path, mtime). The first call before the delay threshold cached
+// update_available=false; later calls past the threshold returned that stale
+// cache because mtime hadn't changed -- the delay decision was never re-evaluated.
+//
+// Fix: cache the raw parsed JSON (UpdateRecord) and apply the delay-threshold
+// computation in fill_vars on every call against SystemTime::now(), so cache
+// content is time-independent.
+// ============================================================================
+
+#[test]
+#[serial_test::serial]
+fn test_gsd_update_cache_reevaluates_delay_after_threshold() {
+    use std::fs::FileTimes;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    // Reset the global update cache so prior tests don't pollute state.
+    super::update::reset_update_cache_for_tests();
+
+    let tmp = TempDir::new().unwrap();
+    let cache_dir = tmp.path().join(".claude").join("cache");
+    fs::create_dir_all(&cache_dir).unwrap();
+    let update_path = cache_dir.join("gsd-update-check.json");
+
+    // Write the file with `checked` = NOW so the delay threshold has not yet
+    // been met when we make the first call.
+    let now_unix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let content = format!(
+        r#"{{"update_available": true, "installed": "1.18.0", "latest": "1.19.0", "checked": {}}}"#,
+        now_unix
+    );
+    fs::write(&update_path, content).unwrap();
+
+    // Pin the file's mtime so it stays constant across the wall-clock sleep.
+    // This isolates the test's intent: only the wall clock advances, not mtime.
+    let pinned_mtime = SystemTime::now();
+    let times = FileTimes::new()
+        .set_modified(pinned_mtime)
+        .set_accessed(pinned_mtime);
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(&update_path)
+        .unwrap();
+    f.set_times(times).unwrap();
+    drop(f);
+
+    // First call: delay_seconds=1, elapsed since `checked` is ~0s. Threshold
+    // not yet met -- update vars must NOT be set.
+    let mut vars1: HashMap<String, String> = HashMap::new();
+    super::update::fill_vars(tmp.path(), 1, &mut vars1);
+    assert!(
+        !vars1.contains_key("gsd_update_available"),
+        "before delay threshold, update vars must not be set; got vars1={:?}",
+        vars1
+    );
+
+    // Sleep just past the 1s threshold without modifying the file.
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Second call: same path, same mtime, but wall clock advanced past the
+    // threshold. On the buggy cache (caches the decision), this returns the
+    // cached update_available=false and the assertion below fails. On the
+    // fixed cache (caches raw JSON, recomputes decision), gsd_update_available
+    // is now "true".
+    let mut vars2: HashMap<String, String> = HashMap::new();
+    super::update::fill_vars(tmp.path(), 1, &mut vars2);
+    assert_eq!(
+        vars2.get("gsd_update_available").map(String::as_str),
+        Some("true"),
+        "after delay threshold elapses, update must surface; cache must not freeze the decision (vars2={:?})",
+        vars2
+    );
+    assert_eq!(
+        vars2.get("gsd_update_version").map(String::as_str),
+        Some("1.19.0"),
+    );
+}
