@@ -90,6 +90,22 @@ pub trait DataProvider: Send + Sync {
     /// If the provider's [`collect`](DataProvider::collect) method does
     /// not complete within this duration, the orchestrator discards its
     /// results and uses an empty variable map instead.
+    ///
+    /// # Contract
+    ///
+    /// Implementors **MUST** self-terminate (return early) when their
+    /// internal elapsed time exceeds this value. The orchestrator's polling
+    /// loop detaches handles whose `spawn_time.elapsed() > timeout`, but
+    /// [`std::thread::scope`] still joins the underlying thread at scope
+    /// exit, so a non-cooperative provider would still block wall-clock
+    /// latency and defeat the orchestrator's parallel-timeout guarantee.
+    /// See PR #29 review BLOCK B1 in `.planning/PR-29-REVIEW.md`.
+    ///
+    /// Cooperative termination patterns:
+    /// - For CPU-bound work, sample `Instant::elapsed()` between work units
+    ///   and `return Err(ProviderError::Timeout { .. })` once over budget.
+    /// - For blocking I/O, use a non-blocking handle plus a poll-sleep loop
+    ///   that bails on the deadline.
     fn timeout(&self) -> Duration;
 
     /// Quick check whether this provider can run in the current context.
@@ -175,7 +191,10 @@ impl ProviderOrchestrator {
         let mut results: Vec<(u32, HashMap<String, String>)> = Vec::new();
 
         thread::scope(|s| {
-            // Spawn a thread per provider, collecting handles with metadata
+            // Spawn a thread per provider, collecting handles with metadata.
+            // `spawn_time` is captured at spawn site so each provider's
+            // deadline is measured from when *it* was spawned, not from when
+            // the polling loop reaches it. See PR #29 review BLOCK B3.
             let handles: Vec<_> = available
                 .iter()
                 .map(|provider| {
@@ -183,19 +202,22 @@ impl ProviderOrchestrator {
                     let name = provider.name().to_string();
                     let priority = provider.priority();
 
+                    let spawn_time = Instant::now();
                     let handle = s.spawn(move || provider.collect());
 
-                    (handle, timeout, name, priority)
+                    (handle, timeout, name, priority, spawn_time)
                 })
                 .collect();
 
-            // Collect results, enforcing per-provider timeouts
-            for (handle, timeout, name, priority) in handles {
-                let start = Instant::now();
-
+            // Collect results, enforcing per-provider timeouts.
+            // The timeout check uses `spawn_time.elapsed()` (NOT a fresh
+            // `Instant::now()` per iteration) so timeouts run concurrently
+            // across providers — B's clock does not start over once the
+            // loop finishes polling A.
+            for (handle, timeout, name, priority, spawn_time) in handles {
                 loop {
                     if handle.is_finished() {
-                        let elapsed = start.elapsed();
+                        let elapsed = spawn_time.elapsed();
                         match handle.join() {
                             Ok(Ok(vars)) => {
                                 log::debug!("Provider '{}' completed in {:?}", name, elapsed);
@@ -211,10 +233,14 @@ impl ProviderOrchestrator {
                         break;
                     }
 
-                    if start.elapsed() > timeout {
+                    if spawn_time.elapsed() > timeout {
                         log::warn!("Provider '{}' timed out after {:?}", name, timeout);
-                        // Thread will be joined when scope exits,
-                        // but we skip collecting its result
+                        // Thread will be joined when scope exits, but we
+                        // skip collecting its result. The DataProvider
+                        // timeout() contract requires implementors to
+                        // self-terminate before this point — without that
+                        // contract, scope-join still bounds wall-clock to
+                        // the slowest provider's actual run time.
                         break;
                     }
 
@@ -452,6 +478,124 @@ mod tests {
                 Some(format!("val_{}", i)).as_deref(),
             );
         }
+    }
+
+    /// Regression test for PR #29 BLOCK B1.
+    ///
+    /// `thread::scope` joins every spawned thread at scope exit. If a provider
+    /// sleeps unconditionally past its timeout, the polling loop's "skip
+    /// collecting result" branch is not enough — the wall-clock latency of
+    /// `collect_all()` is still bounded by the slowest provider, not by its
+    /// timeout. The fix is two-part:
+    ///   1. The orchestrator captures `spawn_time` and uses it for the timeout
+    ///      check (no in-loop `Instant::now()` reset).
+    ///   2. `DataProvider::timeout()` is a contract: implementors MUST
+    ///      cooperatively self-terminate before the deadline.
+    ///
+    /// This test asserts the wall-clock guarantee: a provider with a 5s sleep
+    /// and a 50ms timeout must not block `collect_all()` beyond ~5x the
+    /// timeout (250ms margin per CONTEXT.md D-03).
+    #[test]
+    fn test_orchestrator_bounds_wall_clock() {
+        use std::time::Instant;
+
+        let mut orch = ProviderOrchestrator::new();
+
+        let slow_blocker = TestProvider::new("slow_blocker", 50)
+            .with_variables(vars(&[("slow_blocker_key", "should_not_appear")]))
+            .with_delay(Duration::from_millis(5000))
+            .with_timeout(Duration::from_millis(50));
+
+        orch.register(Box::new(slow_blocker));
+
+        let start = Instant::now();
+        let result = orch.collect_all();
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < Duration::from_millis(250),
+            "collect_all() must bound wall-clock latency at ~5x the longest \
+             per-provider timeout, but took {:?} (timeout was 50ms; cooperative \
+             cancellation contract not honored)",
+            elapsed,
+        );
+        assert!(
+            !result.contains_key("slow_blocker_key"),
+            "Timed-out provider's variables should not appear in result"
+        );
+    }
+
+    /// Regression test for PR #29 BLOCK B3.
+    ///
+    /// The buggy code captures `let start = Instant::now();` at the top of the
+    /// for-loop body that polls each handle. Each handle gets a fresh clock
+    /// only once the loop reaches it, so B's effective deadline is
+    /// `spawn_to_loop_arrival + B.timeout` rather than just `B.timeout`. Per
+    /// the cross-AI review (`.planning/PR-29-REVIEW.md`, B3 quote):
+    /// "If A waits 500ms and B's timeout is 200ms, B effectively gets 700ms
+    ///  wall-clock from spawn before we notice it timed out."
+    ///
+    /// The fix is to capture `spawn_time` at spawn site and use
+    /// `spawn_time.elapsed()` in the polling check.
+    ///
+    /// Test design (CONTEXT.md D-07): an over-budget non-cooperative B that
+    /// the buggy clock allows to sneak through but the correct clock catches.
+    ///
+    /// - A: cooperative `with_delay(100ms)` + `with_timeout(200ms)` — finishes
+    ///   at t=100ms, succeeds.
+    /// - B: `with_uncooperative_delay(200ms)` + `with_timeout(150ms)` — its
+    ///   thread sleeps 200ms unconditionally and returns Ok at t=200ms.
+    ///   - Buggy: loop reaches B at t≈100ms after collecting A. Resets clock.
+    ///     B is not yet finished. Buggy clock counts 0..100ms while waiting.
+    ///     At t=200ms B finishes (buggy_elapsed=100ms < 150ms). Buggy
+    ///     collects Ok(b=2). **B falsely succeeds.**
+    ///   - Correct: spawn_time.elapsed=100ms at first poll. Continues polling.
+    ///     At t≈155ms (next 5ms tick after spawn_elapsed crosses 150ms),
+    ///     timeout branch fires. B is properly timed out. **B excluded.**
+    ///
+    /// Asserts: `a=1` present (A always succeeds), `b` absent (correct B3
+    /// catches the over-budget B). This test is the *opposite direction* to
+    /// what 05.1-01-PLAN.md initially specified; the plan's "both succeed"
+    /// assertion would not have actually exercised B3 because B's polling
+    /// loop checks `is_finished()` before the (broken) timeout clock, so a
+    /// B that completes before the loop reaches it bypasses the bug. See
+    /// SUMMARY for the deviation rationale.
+    #[test]
+    fn test_orchestrator_concurrent_timeouts() {
+        let mut orch = ProviderOrchestrator::new();
+
+        let provider_a = TestProvider::new("provider_a", 50)
+            .with_variables(vars(&[("a", "1")]))
+            .with_delay(Duration::from_millis(100))
+            .with_timeout(Duration::from_millis(200));
+
+        // Uncooperative B: simulates a real-world provider that ignores its
+        // deadline (e.g. a blocking syscall that can't be interrupted). The
+        // orchestrator's spawn_time-based clock must time it out at 150ms
+        // even though the polling loop only reaches B around t=100ms.
+        let provider_b = TestProvider::new("provider_b", 50)
+            .with_variables(vars(&[("b", "2")]))
+            .with_uncooperative_delay(Duration::from_millis(200))
+            .with_timeout(Duration::from_millis(150));
+
+        orch.register(Box::new(provider_a));
+        orch.register(Box::new(provider_b));
+
+        let result = orch.collect_all();
+
+        assert_eq!(
+            result.get("a").map(|s| s.as_str()),
+            Some("1"),
+            "Provider A (100ms cooperative work, 200ms timeout) should succeed"
+        );
+        assert!(
+            !result.contains_key("b"),
+            "Provider B (200ms uncooperative work, 150ms timeout) is over \
+             its budget and must be timed out by the orchestrator's \
+             spawn_time-based clock. Buggy in-loop reset clock would let B \
+             sneak through (it has 100ms of fresh budget after the loop \
+             waited 100ms on A, plenty for B's remaining 100ms)."
+        );
     }
 
     #[test]
