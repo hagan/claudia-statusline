@@ -1970,3 +1970,57 @@ fn test_template_default_template_with_update() {
         result
     );
 }
+
+// =========================================================================
+// Phase 05.1 Plan 03: Provider Hardening - Template Engine Safety
+// =========================================================================
+
+#[test]
+fn test_template_separator_does_not_inject_ast() {
+    // B5 regression: a user-configured separator like "{else}" or "}{if git}"
+    // must NOT be text-replaced into the template before AST parse, or it
+    // injects template structure into the parsed AST. The fix binds {sep}
+    // as a regular variable resolved at render time.
+    //
+    // Sub-test 1: separator "{else}" — would inject an orphan {else} keyword
+    // into the AST, either parse-failing the template or wrecking the
+    // surrounding conditional structure.
+    let renderer = LayoutRenderer::with_format("{git}{sep}{stats}", "{else}");
+    let mut vars = HashMap::new();
+    vars.insert("git".to_string(), "main".to_string());
+    vars.insert("stats".to_string(), "$1.23".to_string());
+
+    let out = renderer.render_template(&vars, false);
+    assert!(
+        out.contains("{else}"),
+        "literal separator text must appear; got {:?}",
+        out
+    );
+    assert!(out.contains("main"), "git value must appear; got {:?}", out);
+    assert!(
+        out.contains("$1.23"),
+        "stats value must appear; got {:?}",
+        out
+    );
+
+    // Sub-test 2: canonical injection example from PR-29-REVIEW.md.
+    // Separator "}{if git}" — the } would close a brace and {if git} would
+    // inject a conditional block opener if pre-replaced.
+    let renderer2 = LayoutRenderer::with_format("{git}{sep}{stats}", "}{if git}");
+    let out2 = renderer2.render_template(&vars, false);
+    assert!(
+        out2.contains("}{if git}"),
+        "literal separator text must appear; got {:?}",
+        out2
+    );
+    assert!(
+        out2.contains("main"),
+        "git value must appear; got {:?}",
+        out2
+    );
+    assert!(
+        out2.contains("$1.23"),
+        "stats value must appear; got {:?}",
+        out2
+    );
+}
