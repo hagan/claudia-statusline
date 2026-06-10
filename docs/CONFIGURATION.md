@@ -66,10 +66,6 @@ Create `~/.config/claudia-statusline/config.toml` with your preferences.
 ```toml
 # Database Configuration
 [database]
-# Enable JSON backup alongside SQLite (default: true)
-# Set to false for SQLite-only mode (30% faster reads)
-json_backup = true
-
 # Data retention policies (in days, 0 = keep forever)
 retention_days_sessions = 90    # Keep session data for 90 days
 retention_days_daily = 365      # Keep daily stats for 1 year
@@ -115,9 +111,9 @@ auth_token = "${TURSO_AUTH_TOKEN}"  # Environment variable or literal token
 Most users don't need a config file - defaults work great! But if you want to customize:
 
 ```toml
-# Minimal config for SQLite-only mode (faster)
+# Minimal config - tune database retention
 [database]
-json_backup = false
+retention_days_sessions = 90
 ```
 
 ## Layout Customization
@@ -727,7 +723,7 @@ show_lines_changed = false
 
 Real-time token consumption tracking with configurable display options.
 
-> **Note**: Token rate features require SQLite-only mode (`json_backup = false`).
+> **Note**: Token rate features always work in v3.0.0+ (SQLite-only).
 
 ### Basic Configuration
 
@@ -885,56 +881,28 @@ Prune old data automatically with cron:
 
 ## Database Configuration
 
-### SQLite-Only Mode (Recommended)
+SQLite is the canonical store. All advanced features work out of the box:
 
-For best performance and full feature support, disable JSON backup:
-
-```toml
-[database]
-json_backup = false
-```
-
-**Benefits:**
-- ~30% faster reads
-- Lower memory usage
-- No JSON file I/O overhead
-- Better concurrent access
-- **Required for advanced features** (see below)
-
-**Advanced features requiring SQLite-only mode:**
+**Advanced features (always available in v3.0.0+):**
 - **Token rates**: Real-time token consumption tracking (`[token_rate] enabled = true`)
 - **Rolling window rates**: Responsive rate updates (`rate_window_seconds > 0`)
 - **Adaptive context learning**: Automatic context window detection
 - **Cloud sync**: Multi-device synchronization (when enabled)
 
-**Migration:**
+**Cleaning up a leftover JSON file:**
 ```bash
-# Migrate to SQLite-only mode
 statusline migrate --finalize
 ```
 
-### Dual-Write Mode (Deprecated)
+### json_backup (removed in v3.0.0)
 
-> **⚠️ Deprecated**: JSON backup mode will be removed in v3.0.
-> Advanced features (token rates, context learning) are disabled in this mode.
-
-Keep both SQLite and JSON:
-
-```toml
-[database]
-json_backup = true  # Default (deprecated)
-```
-
-**When to use:**
-- Transitioning from old versions (temporary)
-- Want backup in human-readable format
-- Debugging or development
-
-**Limitations:**
-- Token rate metrics disabled
-- Rolling window rates disabled
-- Adaptive context learning disabled
-- Shows deprecation warning on startup
+The `database.json_backup` field is no longer documented as part of the
+active config surface. v2.x configs that still contain it parse successfully
+but the value is functionally meaningless: the binary emits a one-line stderr
+deprecation note when set to `true` and continues rendering from SQLite.
+Remove the field from your config to silence the note. A leftover stats.json
+file is still read once on startup for recovery **when SQLite is missing or
+unusable** (see MIGRATION_GUIDE.md).
 
 ## Git Configuration
 
