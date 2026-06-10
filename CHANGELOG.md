@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-06-10
+
+> **Major Release**: Conditional template engine, provider extensibility, and a clean SQLite-only data store.
+
+### Highlights
+
+- **Conditional template engine** ({if}/{else}/{endif}, {{ }} brace escaping) is now available in user templates — most v2.x users gain expressive layout control with zero config changes.
+- **Provider extensibility** — git, stats, and project-state data are now produced by parallel `DataProvider` implementations behind a stable trait. `--list-vars` exposes everything renderable.
+- **SQLite is the only stats backend** — JSON backup writes are gone; a leftover stats.json is still readable as a one-shot recovery when SQLite is missing or unusable.
+
+### Showcase: GSD project integration
+
+For users running the Get Shit Done (GSD) workflow, the new `GsdProvider` ships ready-to-render variables: `{gsd_phase}`, `{gsd_progress_fraction}` (with `{gsd_progress_pct}`, `{gsd_progress_completed}`, and `{gsd_progress_total}` companions), `{gsd_task}`, `{gsd_update}`, plus a composed `{gsd_summary}`. GSD support auto-detects from `.planning/STATE.md` + `.planning/config.json` and gracefully degrades when absent.
+
+### Breaking Changes
+
+- **`json_backup` writes removed.** All JSON write paths are gone across `src/stats/`, `src/config.rs`, `src/main.rs`, and `src/lib.rs`. SQLite is now the single source of truth.
+- **`json_backup = true` in v2.x configs is treated as ignored legacy.** Upgrading users see a one-line stderr deprecation note (`note: 'json_backup' is ignored in v3.0.0 (writes removed); see MIGRATION_GUIDE.md`) and the binary continues rendering normally from SQLite. **No hard error.** **No startup blocking.** No manual intervention is required to upgrade — your existing config will keep working as-is.
+- **Default `database.json_backup` is now `false`** (newly generated configs and configs that re-emit defaults will not contain the field).
+- **`STATUSLINE_JSON_BACKUP` env var removed.** It was test-only; no production users were relying on it.
+- **Health output field renamed.** `statusline health --json` and the text-mode health report now refer to the field as `legacy_json_backup_configured` (informational; not a runtime toggle). Scripts parsing the old `json_backup` key from health JSON need to update the key name.
+
+### Migration
+
+See [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md). TL;DR: nothing is required for upgrade — `json_backup = true` in your existing config produces a stderr note and continues working. To silence the note, remove the line from your config. If you have a stale `stats.json` you want to clean up, run `statusline migrate --finalize` to archive it (or `--finalize --delete-json` to delete it). Rolling back to JSON dual-write requires installing v2.22.x.
+
+### Behavior Changes
+
+- **`phase_max_width` and `task_max_width` are now character-counted, not byte-counted** (in `src/gsd/mod.rs::apply_truncations` and `smart_truncate`). ASCII users see no change. Non-ASCII users with previously byte-tight limits will now see correctly UTF-8-bounded output instead of panics or mojibake. This aligns runtime behavior with the docstrings' stated "max characters" semantics. (Phase 05.1 / HARDEN-F3.)
+
+### Removed
+
+- JSON backup write-path code in `src/stats/persistence.rs`, `src/stats/mod.rs`, `src/stats/cache.rs`.
+- `JSON_BACKUP_WARNING_SHOWN` OnceLock and `warn_json_backup_deprecated()` function (replaced by a compact one-line OnceLock-gated warning at config-load).
+- `STATUSLINE_JSON_BACKUP` env-var override in `src/config.rs`.
+- `check_migration_status()` function and call in `src/main.rs` (deprecation warning fires from config-load now).
+- Two stale `// TODO: calculate based on burn_rate mode` markers at `src/main.rs:464-465` and `src/lib.rs:180-181` (resolved as part of the JSON cleanup).
+
+### Preserved
+
+- `StatsData::load()` JSON fallback — a leftover `stats.json` is read once and imported into SQLite when SQLite is missing or unusable (one-shot recovery; not an unconditional migration on every run).
+- `statusline migrate --finalize` — still archives or deletes leftover JSON when invoked explicitly.
+- `render_from_json()` library API — unaffected (this is StatuslineInput JSON parsing, not stats JSON).
+
+### Internal
+
+- Phase 05.1 hardening (orchestrator wall-clock latency bound, panic safety via `catch_unwind`, per-spawn timeout clocks, update-cache freshness, todos cache key, char-safe truncation, separator injection fix, provider value sanitization) shipped behind the scenes.
+- Test count: 1058 passing (up from a pre-Phase-5 baseline of 612), 0 failed, 19 ignored (verified with `cargo test --all -- --test-threads=4`).
+
 ## [2.22.1] - 2026-01-17
 
 ### Fixed
@@ -287,93 +336,6 @@ These tests validate **real-world long-running sessions** with hundreds or thous
    - **Impact**: Developers understand limitation and know how to work around it
 
 **All issues resolved** - Tests now safe, fast, and correctly isolated ✅
-
-## [2.21.0] - TBD
-
-> **Minor Release**: Configurable Burn Rate Calculation Modes
-
-### Added - Burn Rate Configuration
-
-**Three burn rate calculation modes** to solve the "multi-day session" problem:
-
-Previously, long-running sessions (e.g., 22 days) showed unrealistically low burn rates ($0.02/hr) because they included idle time (nights, weekends). Now you can choose how duration is calculated:
-
-**Configuration** (`~/.config/claudia-statusline/config.toml`):
-```toml
-[burn_rate]
-mode = "wall_clock"  # or "active_time" or "auto_reset"
-inactivity_threshold_minutes = 60  # Default: 1 hour
-```
-
-**Modes:**
-1. **`"wall_clock"`** (default) - Current behavior, total elapsed time
-   - Backward compatible
-   - Includes all idle time
-   - Example: $8.99 over 22 days = $0.02/hr
-
-2. **`"active_time"`** (recommended) - Only active conversation time
-   - Tracks time between consecutive messages
-   - Excludes gaps > inactivity_threshold (default: 60 min)
-   - Provides realistic cost-per-hour rates
-   - Example: $8.99 over 2 hours = $4.50/hr
-
-3. **`"auto_reset"`** - Archives and resets sessions after inactivity
-   - Automatically archives current session after inactivity_threshold
-   - Archives to `session_archive` table (preserves all history)
-   - Resets counters (cost, lines, duration) to zero
-   - Next message creates fresh session
-   - Daily/monthly stats continue to accumulate correctly
-   - Each work period tracked independently
-
-### Implementation Details
-
-**Database:**
-- Migration v5:
-  - Added `active_time_seconds` and `last_activity` columns to sessions table
-  - Added `session_archive` table for auto_reset mode history
-  - Preserves start_time, end_time, cost, lines, model, workspace, device_id
-  - Indexed by session_id and archived_at date
-- Automatic migration on next run
-- Existing sessions show wall-clock until new messages accumulate active time
-
-**Tracking:**
-- Active time automatically tracked in `active_time mode` (database.rs:630-690)
-- Auto-reset archives sessions after threshold (database.rs:560-604)
-- Time gaps < threshold add to active_time_seconds
-- Time gaps >= threshold excluded from active time (or trigger reset in auto_reset mode)
-- All tracking transparent to user
-
-**Display:**
-- Burn rate calculation respects configured mode (display.rs:365-368)
-- Uses `get_session_duration_by_mode()` function (stats.rs:732-770)
-- Auto-reset mode shows current work period duration
-- Graceful fallback to wall-clock if database query fails
-
-### Testing
-
-**Unit tests** (database.rs):
-- `test_active_time_tracking_storage` - Verifies active_time persistence
-- `test_active_time_accumulation` - Tests time accumulation within threshold
-- `test_active_time_ignores_long_gaps` - Validates idle period exclusion
-
-**Integration tests** (separate processes for config isolation):
-- `burn_rate_active_time_accumulation_test.rs` - Active time auto-accumulation
-- `burn_rate_active_time_threshold_test.rs` - Inactivity threshold exclusion
-- `burn_rate_auto_reset_basic_test.rs` - Session archive and reset behavior
-- `burn_rate_auto_reset_daily_stats_test.rs` - Daily stats preservation across resets
-- `burn_rate_auto_reset_threshold_test.rs` - No reset within threshold
-
-**All tests passing**, including 8 new burn rate tests.
-
-### Migration
-
-**Automatic** - Migration v5 runs on first use after upgrade:
-```bash
-# Optional: Run manually
-statusline migrate --run
-```
-
-**No data loss** - Existing sessions preserved, new tracking begins immediately.
 
 ## [2.20.0] - 2025-11-16
 
