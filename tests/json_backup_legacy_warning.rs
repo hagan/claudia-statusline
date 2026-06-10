@@ -50,12 +50,7 @@ fn run_with_config(config_body: &str) -> std::process::Output {
         .spawn()
         .unwrap();
 
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(b"{}")
-        .unwrap();
+    child.stdin.as_mut().unwrap().write_all(b"{}").unwrap();
 
     child.wait_with_output().unwrap()
 }
@@ -95,7 +90,10 @@ fn json_backup_true_in_config_warns_and_continues() {
 fn json_backup_false_in_config_no_warning() {
     let output = run_with_config("[database]\njson_backup = false\n");
 
-    assert!(output.status.success(), "binary must exit 0 with json_backup = false");
+    assert!(
+        output.status.success(),
+        "binary must exit 0 with json_backup = false"
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -110,7 +108,10 @@ fn json_backup_absent_no_warning() {
     // A config with no [database] json_backup line at all.
     let output = run_with_config("[display]\ntheme = \"dark\"\n");
 
-    assert!(output.status.success(), "binary must exit 0 when json_backup is absent");
+    assert!(
+        output.status.success(),
+        "binary must exit 0 when json_backup is absent"
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

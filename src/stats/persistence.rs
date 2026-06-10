@@ -1,19 +1,16 @@
-//! Persistence layer: JSON file I/O, SQLite dual-write, and stats orchestration.
+//! SQLite persistence and stats orchestration.
 //!
-//! Contains load/save methods, file locking, migration helpers, and the
-//! top-level `update_stats_data` orchestration function.
+//! JSON read fallback (`StatsData::load`) is retained for v2.x recovery only —
+//! it fires when SQLite is missing or unusable; writes are SQLite-only as of v3.0.0.
+//!
+//! Contains load/save methods, migration helpers, and the top-level
+//! `update_stats_data` orchestration function.
 
 use super::StatsData;
-use crate::common::get_data_dir;
-use crate::config::get_config;
 use crate::database::SqliteDatabase;
 use crate::error::{Result, StatuslineError};
-use crate::retry::{retry_if_retryable, RetryConfig};
-use fs2::FileExt;
-use log::{debug, error, warn};
-use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, Write};
-use std::path::{Path, PathBuf};
+use log::{error, warn};
+use std::fs;
 
 impl StatsData {
     pub fn load() -> Self {
@@ -139,24 +136,8 @@ impl StatsData {
     }
 
     pub fn save(&self) -> Result<()> {
-        let config = get_config();
-
-        // Save to JSON if backup is enabled
-        if config.database.json_backup {
-            let path = Self::get_stats_file_path();
-
-            // Acquire and lock the file with retry
-            let mut file = acquire_stats_file(&path)?;
-
-            // Save the data using our helper
-            save_stats_data(&mut file, self);
-        } else {
-            log::info!("Skipping JSON backup (json_backup=false, SQLite-only mode)");
-        }
-
-        // Always save to SQLite (it's now the primary storage)
+        // v3.0.0+: writes are SQLite-only. The JSON backup write path was removed.
         perform_sqlite_dual_write(self);
-
         Ok(())
     }
 }
@@ -172,160 +153,6 @@ impl StatsData {
 /// Returns the current `StatsData`, either loaded from disk or a new default instance.
 pub fn get_or_load_stats_data() -> StatsData {
     StatsData::load()
-}
-
-fn get_stats_backup_path() -> Result<PathBuf> {
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
-    Ok(get_data_dir().join(format!("stats_backup_{}.json", timestamp)))
-}
-
-// Helper function to acquire and lock the stats file with retry
-pub(crate) fn acquire_stats_file(path: &Path) -> Result<File> {
-    // Ensure directory exists with secure permissions (0o700 on Unix)
-    if let Some(parent) = path.parent() {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            std::fs::DirBuilder::new()
-                .mode(0o700)
-                .recursive(true)
-                .create(parent)?;
-        }
-
-        #[cfg(not(unix))]
-        {
-            fs::create_dir_all(parent)?;
-        }
-    }
-
-    // Use retry configuration for file operations
-    let retry_config = RetryConfig::for_file_ops();
-
-    // Try to open the file with retry and secure permissions (0o600 on Unix)
-    let file = retry_if_retryable(&retry_config, || {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .mode(0o600) // Owner read/write only on Unix (for new files)
-                .open(path)
-                .map_err(StatuslineError::from)
-        }
-
-        #[cfg(not(unix))]
-        {
-            OpenOptions::new()
-                .read(true)
-                .write(true)
-                .create(true)
-                .truncate(false)
-                .open(path)
-                .map_err(StatuslineError::from)
-        }
-    })?;
-
-    // Fix permissions on existing files (mode flag only applies to new files)
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if let Ok(metadata) = file.metadata() {
-            let mut perms = metadata.permissions();
-            perms.set_mode(0o600);
-            let _ = fs::set_permissions(path, perms); // Best effort - don't fail if it doesn't work
-        }
-    }
-
-    // Try to acquire exclusive lock with retry (non-blocking)
-    // CRITICAL: Use try_lock_exclusive() instead of lock_exclusive()
-    // lock_exclusive() blocks indefinitely, causing hangs when multiple
-    // Claude instances run simultaneously. try_lock_exclusive() returns
-    // immediately with WouldBlock error if lock is held, allowing retry.
-    retry_if_retryable(&retry_config, || {
-        match file.try_lock_exclusive() {
-            Ok(()) => Ok(()),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Transient: another process holds the lock, retry is appropriate
-                log::debug!("Stats file lock contention (WouldBlock), will retry");
-                Err(StatuslineError::lock(
-                    "Stats file temporarily locked by another process",
-                ))
-            }
-            Err(e) => {
-                // Hard failure: permissions, I/O error, etc.
-                log::warn!("Stats file lock failed unexpectedly: {}", e);
-                Err(StatuslineError::lock(format!(
-                    "Failed to lock stats file: {}",
-                    e
-                )))
-            }
-        }
-    })?;
-
-    Ok(file)
-}
-
-// Helper function to load stats data from file
-pub(crate) fn load_stats_data(file: &mut File, path: &Path) -> StatsData {
-    let mut contents = String::new();
-    if file.read_to_string(&mut contents).is_ok() && !contents.is_empty() {
-        match serde_json::from_str(&contents) {
-            Ok(data) => {
-                // Migrate JSON data to SQLite if needed
-                if let Err(e) = StatsData::migrate_to_sqlite(&data) {
-                    log::warn!("Failed to migrate JSON to SQLite: {}", e);
-                }
-                data
-            }
-            Err(e) => {
-                warn!(
-                    "Stats file corrupted: {}. Creating backup and starting fresh.",
-                    e
-                );
-                // Try to create a backup of the corrupted file
-                if let Ok(backup_path) = get_stats_backup_path() {
-                    if let Err(e) = std::fs::copy(path, &backup_path) {
-                        error!("Failed to backup corrupted stats file: {}", e);
-                    } else {
-                        // Fix permissions on backup (fs::copy preserves source permissions)
-                        #[cfg(unix)]
-                        {
-                            use std::os::unix::fs::PermissionsExt;
-                            if let Ok(metadata) = fs::metadata(&backup_path) {
-                                let mut perms = metadata.permissions();
-                                perms.set_mode(0o600);
-                                let _ = fs::set_permissions(&backup_path, perms);
-                            }
-                        }
-
-                        warn!("Corrupted stats backed up to: {:?}", backup_path);
-                    }
-                }
-                StatsData::default()
-            }
-        }
-    } else {
-        StatsData::default()
-    }
-}
-
-// Helper function to save stats data to file
-pub(crate) fn save_stats_data(file: &mut File, stats_data: &StatsData) {
-    // Write back to file (truncate and write)
-    if let Err(e) = file.set_len(0) {
-        error!("Failed to truncate stats file: {}", e);
-    }
-    if let Err(e) = file.seek(std::io::SeekFrom::Start(0)) {
-        error!("Failed to seek stats file: {}", e);
-    }
-
-    let json = serde_json::to_string_pretty(stats_data).unwrap_or_else(|_| "{}".to_string());
-    if let Err(e) = file.write_all(json.as_bytes()) {
-        error!("Failed to write stats file: {}", e);
-    }
 }
 
 // Helper function to write to SQLite (primary storage)
@@ -398,44 +225,11 @@ pub fn update_stats_data<F>(updater: F) -> (f64, f64)
 where
     F: FnOnce(&mut StatsData) -> (f64, f64),
 {
-    let config = get_config();
-    let path = StatsData::get_stats_file_path();
-
-    // Load existing stats data
-    let mut stats_data = if config.database.json_backup {
-        // Show deprecation warning (once per process)
-        super::warn_json_backup_deprecated();
-
-        // Acquire and lock the file with retry
-        let mut file = match acquire_stats_file(&path) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("Failed to acquire stats file after retries: {}", e);
-                return (0.0, 0.0);
-            }
-        };
-
-        let mut data = load_stats_data(&mut file, &path);
-
-        // Apply the update
-        let result = updater(&mut data);
-
-        // Save updated stats data to JSON
-        save_stats_data(&mut file, &data);
-
-        // Perform SQLite write
-        perform_sqlite_dual_write(&data);
-
-        // File lock is automatically released when file is dropped
-        return result;
-    } else {
-        // SQLite-only mode: load from SQLite
-        debug!("Operating in SQLite-only mode (json_backup=false)");
-        StatsData::load_from_sqlite().unwrap_or_else(|e| {
-            warn!("Failed to load from SQLite: {}", e);
-            StatsData::default()
-        })
-    };
+    // v3.0.0+: SQLite-only. Load from SQLite, apply the update, write back to SQLite.
+    let mut stats_data = StatsData::load_from_sqlite().unwrap_or_else(|e| {
+        warn!("Failed to load from SQLite: {}", e);
+        StatsData::default()
+    });
 
     // Apply the update
     let result = updater(&mut stats_data);

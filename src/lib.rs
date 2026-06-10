@@ -177,8 +177,11 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
                             device_id: Some(device_id),
                             token_breakdown,
                             max_tokens_observed: None, // updated separately
-                            active_time_seconds: None, // TODO: calculate based on burn_rate mode
-                            last_activity: None,       // TODO: calculate based on burn_rate mode
+                            // active_time_seconds / last_activity are owned and computed by
+                            // SqliteDatabase::update_session (src/database/session.rs); not available at
+                            // this SessionUpdate construction site. v3.0.0 cleanup per CONTEXT.md D-13.
+                            active_time_seconds: None,
+                            last_activity: None,
                         },
                     )
                 });

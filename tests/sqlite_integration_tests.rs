@@ -29,9 +29,11 @@ fn get_test_binary() -> String {
         .unwrap()
 }
 
-// Test the dual-write functionality
+// v3.0.0 (Plan 06-01): converted from the former `test_dual_write_creates_both_files`.
+// After JSON write removal, the binary writes ONLY to SQLite. This regression asserts
+// that stats.db is created and stats.json is NOT.
 #[test]
-fn test_dual_write_creates_both_files() {
+fn test_sqlite_write_no_json_file() {
     let _guard = test_support::init();
     let temp_dir = TempDir::new().unwrap();
     let data_dir = temp_dir.path().join("claudia-statusline");
@@ -60,7 +62,6 @@ fn test_dual_write_creates_both_files() {
     let mut child = std::process::Command::new(get_test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
-        .env("STATUSLINE_JSON_BACKUP", "true")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -75,33 +76,18 @@ fn test_dual_write_creates_both_files() {
         .unwrap();
 
     // Wait for process to complete
-    let output = child.wait_with_output().unwrap();
+    let _output = child.wait_with_output().unwrap();
 
-    // Debug output if test fails
-    if !json_path.exists() {
-        println!("Expected JSON path: {:?}", json_path);
-        println!("Data dir: {:?}", data_dir);
-        if let Ok(entries) = fs::read_dir(&data_dir) {
-            println!("Data dir files:");
-            for entry in entries.flatten() {
-                println!("  - {:?}", entry.file_name());
-            }
-        }
-        println!("Process exited with: {:?}", output.status);
-        println!("Stdout: {}", String::from_utf8_lossy(&output.stdout));
-        println!("Stderr: {}", String::from_utf8_lossy(&output.stderr));
-    }
-
-    // Both files should exist
-    assert!(
-        json_path.exists(),
-        "JSON file should be created at {:?}",
-        json_path
-    );
+    // v3.0.0: SQLite is created, JSON is NOT.
     assert!(
         db_path.exists(),
         "SQLite database should be created at {:?}",
         db_path
+    );
+    assert!(
+        !json_path.exists(),
+        "v3.0.0 removed JSON writes; stats.json must NOT be created at {:?}",
+        json_path
     );
 }
 

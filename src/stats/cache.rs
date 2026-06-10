@@ -60,12 +60,7 @@ pub fn calculate_token_rates_with_db_and_transcript(
         return None;
     }
 
-    // Token rates require SQLite-only mode (json_backup = false)
-    // JSON backup doesn't store token breakdowns needed for rate calculation
-    if config.database.json_backup {
-        log::debug!("Token rates disabled: requires SQLite-only mode (json_backup = false)");
-        return None;
-    }
+    // v3.0.0+: token rates always work (SQLite-only world); no json_backup gating.
 
     // Get token breakdown from database (for totals - always accurate)
     let (input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens) =

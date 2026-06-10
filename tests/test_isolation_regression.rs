@@ -114,8 +114,8 @@ fn test_isolation_config_uses_defaults() {
 
     // Database defaults
     assert!(
-        config.database.json_backup,
-        "Default config should enable json_backup"
+        !config.database.json_backup,
+        "Default config in v3.0.0+ must NOT enable json_backup"
     );
 
     // Theme default - theme is accessed via display.theme

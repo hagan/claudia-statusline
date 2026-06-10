@@ -79,6 +79,7 @@ impl StatuslineError {
     }
 
     /// Create a lock failure error
+    #[allow(dead_code)] // v3.0.0+: sole caller (acquire_stats_file) removed with JSON writes
     pub fn lock(msg: impl Into<String>) -> Self {
         StatuslineError::LockFailed(msg.into())
     }

@@ -34,7 +34,7 @@ show_lines_changed = true
 
 # Database settings - use defaults for tests
 [database]
-json_backup = true
+busy_timeout_ms = 10000
 
 # Burn rate settings - use wall_clock for predictable tests
 [burn_rate]
@@ -112,7 +112,6 @@ fn test_baseline_config_loaded_correctly() {
     // Verify key baseline values are present
     assert!(content.contains(r#"theme = "dark""#));
     assert!(content.contains(r#"mode = "wall_clock""#));
-    assert!(content.contains("json_backup = true"));
     assert!(content.contains("enabled = false")); // adaptive_learning
     assert!(content.contains("inactivity_threshold_minutes = 30"));
 }
@@ -158,14 +157,13 @@ fn test_baseline_config_has_expected_test_values() {
         Some(30)
     );
 
-    // Database settings
+    // Database settings (v3.0.0: json_backup removed from the active config surface)
     let database = config
         .get("database")
         .expect("Should have database section");
     assert_eq!(
-        database.get("json_backup").and_then(|v| v.as_bool()),
-        Some(true),
-        "JSON backup should be enabled for test compatibility"
+        database.get("busy_timeout_ms").and_then(|v| v.as_integer()),
+        Some(10000)
     );
 
     // Adaptive learning should be disabled for predictable tests

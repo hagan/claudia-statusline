@@ -68,7 +68,6 @@ fn test_stats_save_and_load() {
     let temp_dir = TempDir::new().unwrap();
     env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
     env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
-    env::set_var("STATUSLINE_JSON_BACKUP", "true");
 
     let mut stats = StatsData::default();
     stats.update_session(
@@ -371,81 +370,12 @@ fn test_file_corruption_recovery() {
     env::remove_var("XDG_DATA_HOME");
 }
 
-#[test]
-#[cfg(unix)]
-fn test_stats_file_permissions_on_creation() {
-    use super::persistence::acquire_stats_file;
-    use std::os::unix::fs::PermissionsExt;
-    use tempfile::TempDir;
-
-    // Create a temp directory for the test
-    let temp_dir = TempDir::new().unwrap();
-    let stats_path = temp_dir
-        .path()
-        .join("claudia-statusline")
-        .join("stats.json");
-
-    // Directly call acquire_stats_file() to test file creation with 0o600 permissions
-    // This bypasses save() which uses config caching (OnceLock)
-    let _file = acquire_stats_file(&stats_path).unwrap();
-
-    // Verify stats.json has 0o600 permissions
-    let metadata = fs::metadata(&stats_path).unwrap();
-    let mode = metadata.permissions().mode();
-
-    assert_eq!(
-        mode & 0o777,
-        0o600,
-        "stats.json should have 0o600 permissions, got: {:o}",
-        mode & 0o777
-    );
-}
-
-#[test]
-#[cfg(unix)]
-#[serial]
-fn test_stats_file_permissions_fixed_on_save() {
-    use super::persistence::acquire_stats_file;
-    use std::os::unix::fs::PermissionsExt;
-    use tempfile::TempDir;
-
-    let temp_dir = TempDir::new().unwrap();
-    env::set_var("XDG_DATA_HOME", temp_dir.path());
-    env::set_var("STATUSLINE_JSON_BACKUP", "true");
-
-    let stats_path = get_data_dir().join("stats.json");
-
-    // Create stats file with world-readable permissions (0o644)
-    let stats = StatsData::default();
-    let json = serde_json::to_string_pretty(&stats).unwrap();
-    fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
-    fs::write(&stats_path, json).unwrap();
-
-    let mut perms = fs::metadata(&stats_path).unwrap().permissions();
-    perms.set_mode(0o644); // World-readable
-    fs::set_permissions(&stats_path, perms).unwrap();
-
-    // Verify it's world-readable before fix
-    let mode_before = fs::metadata(&stats_path).unwrap().permissions().mode();
-    assert_eq!(mode_before & 0o777, 0o644, "Setup: file should be 0o644");
-
-    // Directly call acquire_stats_file to fix permissions (bypasses config cache)
-    let _ = acquire_stats_file(&stats_path).unwrap();
-
-    // Verify permissions were fixed to 0o600
-    let metadata = fs::metadata(&stats_path).unwrap();
-    let mode = metadata.permissions().mode();
-
-    assert_eq!(
-        mode & 0o777,
-        0o600,
-        "stats.json should be fixed to 0o600 on save, got: {:o}",
-        mode & 0o777
-    );
-
-    env::remove_var("STATUSLINE_JSON_BACKUP");
-    env::remove_var("XDG_DATA_HOME");
-}
+// NOTE (v3.0.0, Plan 06-01): the JSON write path was removed, which deleted the
+// `acquire_stats_file` helper. Two tests that exercised it directly —
+// `test_stats_file_permissions_on_creation` and `test_stats_file_permissions_fixed_on_save`
+// — were removed because they asserted JSON-file-write permission behavior that no
+// longer exists. The read-fallback corruption-backup permission test below is retained
+// (BREAK-03 read path).
 
 #[test]
 #[cfg(unix)]
@@ -456,7 +386,6 @@ fn test_backup_file_permissions() {
 
     let temp_dir = TempDir::new().unwrap();
     env::set_var("XDG_DATA_HOME", temp_dir.path());
-    env::set_var("STATUSLINE_JSON_BACKUP", "true");
 
     let stats_path = get_data_dir().join("stats.json");
 
@@ -481,7 +410,60 @@ fn test_backup_file_permissions() {
         mode & 0o777
     );
 
-    env::remove_var("STATUSLINE_JSON_BACKUP");
+    env::remove_var("XDG_DATA_HOME");
+}
+
+/// BREAK-03 positive recovery test: with NO stats.db present but a valid stats.json
+/// on disk, `StatsData::load()` imports the JSON data into SQLite. The fallback fires
+/// precisely because SQLite is missing (load_from_sqlite() errors on absent db).
+#[test]
+#[serial]
+fn test_json_fallback_imports_when_sqlite_missing() {
+    let temp_dir = TempDir::new().unwrap();
+    env::set_var("XDG_DATA_HOME", temp_dir.path());
+
+    let data_dir = get_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let json_path = data_dir.join("stats.json");
+    let db_path = data_dir.join("stats.db");
+
+    // Sanity: no SQLite database present, so the JSON fallback is the active path.
+    assert!(!db_path.exists(), "Precondition: stats.db must NOT exist");
+
+    // Write a valid stats.json with one session.
+    let json = r#"{
+        "version": "1.0",
+        "created": "2025-08-25T00:00:00Z",
+        "last_updated": "2025-08-25T01:00:00Z",
+        "sessions": {
+            "import-session": {
+                "last_updated": "2025-08-25T01:00:00Z",
+                "cost": 12.5,
+                "lines_added": 100,
+                "lines_removed": 50,
+                "start_time": "2025-08-25T00:00:00Z"
+            }
+        },
+        "daily": {},
+        "monthly": {},
+        "all_time": {"total_cost": 12.5, "sessions": 1, "since": "2025-08-25T00:00:00Z"}
+    }"#;
+    fs::write(&json_path, json).unwrap();
+
+    // load() should fall back to JSON (no usable SQLite) and import the session.
+    let loaded = StatsData::load();
+    assert!(
+        loaded.sessions.contains_key("import-session"),
+        "JSON session should be loaded via fallback"
+    );
+    assert_eq!(loaded.sessions["import-session"].cost, 12.5);
+
+    // The import should have created the SQLite database (migrate_to_sqlite).
+    assert!(
+        db_path.exists(),
+        "JSON import should create the SQLite database"
+    );
+
     env::remove_var("XDG_DATA_HOME");
 }
 

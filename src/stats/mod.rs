@@ -1,11 +1,8 @@
 //! Statistics tracking module.
 //!
-//! This module provides persistent statistics tracking for Claude Code sessions,
-//! including costs, line changes, and usage metrics. Statistics are stored in
-//! both JSON and SQLite formats for reliability and concurrent access.
-//!
-//! **Note**: Advanced features (token rates, rolling window) require SQLite.
-//! JSON backup mode is deprecated and will be removed in v3.0.
+//! Statistics are persisted to SQLite. Legacy stats.json files are read once on
+//! startup as a recovery fallback when SQLite is missing or unusable (see BREAK-03);
+//! writes are SQLite-only as of v3.0.0.
 
 mod aggregation;
 mod cache;
@@ -41,32 +38,9 @@ pub use cache::calculate_token_rates_from_raw;
 
 use crate::common::{current_timestamp, get_data_dir};
 use crate::error::Result;
-use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::OnceLock;
-
-/// Static flag to ensure deprecation warning is only shown once per process
-pub(crate) static JSON_BACKUP_WARNING_SHOWN: OnceLock<bool> = OnceLock::new();
-
-/// Show deprecation warning for json_backup mode (only once per process)
-pub(crate) fn warn_json_backup_deprecated() {
-    JSON_BACKUP_WARNING_SHOWN.get_or_init(|| {
-        warn!(
-            "DEPRECATION: json_backup mode is deprecated and will be removed in v3.0. \
-             Advanced features (token rates, rolling window, context learning) require SQLite. \
-             Run 'statusline migrate --finalize' to migrate to SQLite-only mode."
-        );
-        // Also print to stderr for visibility (log might be filtered)
-        eprintln!(
-            "\x1b[33m⚠ DEPRECATION:\x1b[0m json_backup mode is deprecated. \
-             Token rates and other advanced features require SQLite. \
-             Run 'statusline migrate --finalize' to switch to SQLite-only mode."
-        );
-        true
-    });
-}
 
 /// Persistent stats tracking structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
