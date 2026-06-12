@@ -91,6 +91,91 @@ fn test_sqlite_write_no_json_file() {
     );
 }
 
+// v3.0.0 (BREAK-03 / D-04): JSON *reads* are preserved so a v2.x user's legacy
+// stats.json is migrated into SQLite on first run when no usable database exists.
+// This exercises the real binary end-to-end (unlike test_json_to_sqlite_migration,
+// which hand-rolls its own schema + inserts and never touches the app). Regression
+// guard for the masked data-loss bug where update_stats_data fell back to an empty
+// default instead of the JSON-reading load() path, silently dropping legacy sessions.
+#[test]
+fn test_legacy_json_migrates_to_sqlite() {
+    let _guard = test_support::init();
+    use rusqlite::Connection;
+
+    let temp_dir = TempDir::new().unwrap();
+    let data_dir = temp_dir.path().join("claudia-statusline");
+    fs::create_dir_all(&data_dir).unwrap();
+    let json_path = data_dir.join("stats.json");
+    let db_path = data_dir.join("stats.db");
+
+    // A v2.x user's existing stats.json with one historical session, no stats.db.
+    let legacy = r#"{
+        "version": "1.0",
+        "created": "2025-08-25T00:00:00Z",
+        "last_updated": "2025-08-25T01:00:00Z",
+        "sessions": {
+            "legacy-session": {
+                "last_updated": "2025-08-25T01:00:00Z",
+                "cost": 25.0,
+                "lines_added": 1000,
+                "lines_removed": 200,
+                "start_time": "2025-08-25T00:00:00Z"
+            }
+        },
+        "daily": {},
+        "monthly": {},
+        "all_time": { "total_cost": 25.0, "sessions": 1, "since": "2025-08-25T00:00:00Z" }
+    }"#;
+    fs::write(&json_path, legacy).unwrap();
+
+    // Run the binary once with a brand-new session — this must migrate the legacy
+    // session AND record the new one, not drop the legacy data.
+    let input = r#"{
+        "workspace": {"current_dir": "/test"},
+        "session_id": "fresh-session",
+        "cost": {"total_cost_usd": 5.0}
+    }"#;
+    let mut child = std::process::Command::new(get_test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap();
+
+    assert!(db_path.exists(), "stats.db should be created at {:?}", db_path);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        count, 2,
+        "legacy stats.json session must be migrated alongside the new session (got {} sessions)",
+        count
+    );
+
+    let legacy_present: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = 'legacy-session'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        legacy_present, 1,
+        "the legacy-session from stats.json must survive migration into SQLite"
+    );
+}
+
 #[test]
 fn test_concurrent_sqlite_access() {
     let _guard = test_support::init();
