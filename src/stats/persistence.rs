@@ -137,7 +137,10 @@ impl StatsData {
 
     pub fn save(&self) -> Result<()> {
         // v3.0.0+: writes are SQLite-only. The JSON backup write path was removed.
-        perform_sqlite_dual_write(self);
+        // INVARIANT: this performs no durable write — the durable write for a session
+        // is the transactional `SqliteDatabase::update_session` call. Here we only
+        // ensure the database and its migrations exist (see `ensure_sqlite_initialized`).
+        ensure_sqlite_initialized();
         Ok(())
     }
 }
@@ -155,9 +158,15 @@ pub fn get_or_load_stats_data() -> StatsData {
     StatsData::load()
 }
 
-// Helper function to write to SQLite (primary storage)
-fn perform_sqlite_dual_write(_stats_data: &StatsData) {
-    // Write to SQLite (primary storage as of Phase 2)
+/// Ensures the SQLite database exists and its migrations have run.
+///
+/// INVARIANT: this performs NO durable write of stats data. Its sole effect is to
+/// open (and thereby create + migrate) the SQLite database at the configured path.
+/// The single durable write for a session is the transactional
+/// `SqliteDatabase::update_session` call made inside the `updater` closure of
+/// `update_stats_data` (explicit transaction + `retry_if_retryable`). Do NOT add
+/// file locking here — concurrency safety lives in the SQLite transaction.
+fn ensure_sqlite_initialized() {
     let db_path = match StatsData::get_sqlite_path() {
         Ok(p) => p,
         Err(_) => {
@@ -166,6 +175,8 @@ fn perform_sqlite_dual_write(_stats_data: &StatsData) {
         }
     };
 
+    // Constructing the handle runs `run_migrations_on_db`, guaranteeing the schema
+    // exists. The handle is intentionally dropped: no row is written here.
     let _db = match SqliteDatabase::new(&db_path) {
         Ok(d) => d,
         Err(e) => {
@@ -176,17 +187,23 @@ fn perform_sqlite_dual_write(_stats_data: &StatsData) {
             return;
         }
     };
-
-    // NOTE: Migration is now handled in load_stats_data() when JSON is loaded
-    // Current session is written directly in update_session() with all migration v5 fields
-    // No need to call write_current_session_to_sqlite() as that would overwrite model_name/workspace_dir/tokens with NULL
 }
 
 /// Updates the statistics data, persisting the result to SQLite.
 ///
-/// This function loads the current data, applies the update function, and writes the
-/// result to SQLite. As of v3.0.0 the JSON backup write path (and its `fs2` file lock)
-/// was removed; concurrency safety now rests on the SQLite transaction in the write path.
+/// This function loads the current data, applies the update function, and ensures the
+/// SQLite database is initialized. As of v3.0.0 the JSON backup write path (and its
+/// `fs2` file lock) was removed; concurrency safety now rests on the SQLite transaction
+/// in the write path.
+///
+/// INVARIANT: the single durable write for a session is the transactional
+/// `SqliteDatabase::update_session` call made inside the `updater` closure (explicit
+/// transaction + `retry_if_retryable`, which retries on SQLITE_BUSY/locked/timeout).
+/// The daily/monthly aggregate UPSERTs run in that SAME transaction, so aggregate
+/// atomicity already holds. The surrounding load-modify cycle is NOT a second durable
+/// write; `ensure_sqlite_initialized()` only guarantees the database and its migrations
+/// exist. Do NOT add file locking here — concurrency safety lives in the SQLite
+/// transaction.
 ///
 /// # Arguments
 ///
@@ -238,11 +255,12 @@ where
         StatsData::load()
     });
 
-    // Apply the update
+    // Apply the update. INVARIANT: the durable write happens HERE, inside the closure,
+    // via the transactional `SqliteDatabase::update_session` path — not below.
     let result = updater(&mut stats_data);
 
-    // Save to SQLite (primary storage)
-    perform_sqlite_dual_write(&stats_data);
+    // Not a second durable write: only ensure the DB + migrations exist.
+    ensure_sqlite_initialized();
 
     result
 }

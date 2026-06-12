@@ -70,11 +70,29 @@ impl SqliteDatabase {
 
         // Open connection directly - avoids thread-spawning issues on FreeBSD
         // (r2d2's scheduled-thread-pool fails with EAGAIN on FreeBSD)
-        let conn = Connection::open(db_path)?;
+        // `mut` is required for the IMMEDIATE transaction used in the new-db init path.
+        let mut conn = Connection::open(db_path)?;
 
-        // Apply pragmas for WAL mode and concurrency
-        conn.pragma_update(None, "journal_mode", "WAL")?;
+        // Apply pragmas for WAL mode and concurrency.
+        //
+        // `busy_timeout` is set FIRST so every subsequent lock acquisition waits. Switching
+        // to WAL still needs special handling: `PRAGMA journal_mode=WAL` takes an exclusive
+        // lock and SQLite can return SQLITE_BUSY *immediately* (without invoking the busy
+        // handler) when other connections hold the database — exactly the contention created
+        // by concurrent first-run opens. Retry the WAL switch with backoff so concurrent
+        // openers converge on WAL instead of surfacing "database is locked".
         conn.pragma_update(None, "busy_timeout", config.database.busy_timeout_ms)?;
+        crate::retry::retry_if_retryable(&crate::retry::RetryConfig::for_db_ops(), || {
+            conn.pragma_update(None, "journal_mode", "WAL")
+                .map_err(crate::error::StatuslineError::Database)
+        })
+        .map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(e.to_string()),
+            ),
+        })?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
 
         // Check if this is a new database by looking for existing sessions table
@@ -93,15 +111,43 @@ impl SqliteDatabase {
         let is_new_db = !has_sessions_table;
 
         if is_new_db {
-            // NEW DATABASE: Create complete schema with all migration columns
-            conn.execute_batch(SCHEMA)?;
-
-            // Mark as fully migrated (v6 includes daily/monthly token tracking)
-            conn.execute(
-                "INSERT INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
-                 VALUES (?1, ?2, '', 'New database with complete schema (v6)', 0)",
-                params![6, chrono::Local::now().to_rfc3339()],
-            )?;
+            // NEW DATABASE: create the complete schema AND record the version ATOMICALLY.
+            //
+            // Concurrency safety: `is_new_db` is read outside a transaction, so multiple
+            // fresh processes can all observe "no sessions table" and race here. Both the
+            // SCHEMA batch (idempotent — all `CREATE TABLE/INDEX IF NOT EXISTS`) and the
+            // version record run inside ONE IMMEDIATE transaction (writers serialize at
+            // BEGIN), wrapped in `retry_if_retryable`. Committing schema + version together
+            // is what closes the race: otherwise a second process could observe "sessions
+            // table exists but schema_migrations is empty", take the migration path, and
+            // re-run an `ALTER TABLE ... ADD COLUMN device_id` that the full schema already
+            // created (the `duplicate column name: device_id` failure). `INSERT OR IGNORE`
+            // keeps a lost version-record race from raising `UNIQUE constraint failed:
+            // schema_migrations.version`. Mirrors the adapter pattern in
+            // `SqliteDatabase::update_session`.
+            crate::retry::retry_if_retryable(&crate::retry::RetryConfig::for_db_ops(), || {
+                let tx = conn
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+                    .map_err(crate::error::StatuslineError::Database)?;
+                tx.execute_batch(SCHEMA)
+                    .map_err(crate::error::StatuslineError::Database)?;
+                // Mark as fully migrated (v6 includes daily/monthly token tracking).
+                tx.execute(
+                    "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
+                     VALUES (?1, ?2, '', 'New database with complete schema (v6)', 0)",
+                    params![6, chrono::Local::now().to_rfc3339()],
+                )
+                .map_err(crate::error::StatuslineError::Database)?;
+                tx.commit().map_err(crate::error::StatuslineError::Database)?;
+                Ok(())
+            })
+            .map_err(|e| match e {
+                crate::error::StatuslineError::Database(db_err) => db_err,
+                _ => rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                    Some(e.to_string()),
+                ),
+            })?;
         } else {
             // OLD DATABASE: Only ensure base tables exist, let migrations add columns/indexes
             // This prevents "no such column" errors when creating indexes
