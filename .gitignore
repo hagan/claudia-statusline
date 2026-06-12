@@ -15,6 +15,9 @@ AGENTS.md
 /.planning
 /.planning/
 
+# Understand-Anything knowledge-graph tooling output (generated; regenerate with /understand)
+.understand-anything/
+
 # Temporary files
 *.tmp
 
