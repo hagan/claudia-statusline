@@ -123,15 +123,20 @@ fn test_stats_save_and_load() {
 
 #[test]
 #[serial]
-#[ignore = "Flaky test - OnceLock config caching can cause start_time to differ between runs"]
 fn test_session_start_time_tracking() {
     use crate::database::SessionUpdate;
     use tempfile::TempDir;
 
-    // Isolate from real database
+    // Isolate from the real database AND config. The prior flakiness was the global
+    // config cache (issue #34): a leaked STATUSLINE_BURN_RATE_MODE=auto_reset frozen in
+    // by an earlier test made update_session take the session-reset path, which changes
+    // start_time. Clear it and rebuild config from the isolated (empty) config dir so
+    // burn_rate.mode is the default "wall_clock" and start_time is stable.
     let temp_dir = TempDir::new().unwrap();
     env::set_var("XDG_DATA_HOME", temp_dir.path());
     env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+    env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    crate::config::reset_config();
 
     let mut stats = StatsData::default();
 
@@ -178,9 +183,10 @@ fn test_session_start_time_tracking() {
     assert_eq!(session.start_time, original_start);
     assert_eq!(session.cost, 2.0);
 
-    // Cleanup
+    // Cleanup; rebuild config so later tests get a clean cache.
     env::remove_var("XDG_DATA_HOME");
     env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
 }
 
 #[test]
@@ -275,9 +281,10 @@ fn test_concurrent_update_safety() {
 
 #[test]
 #[serial]
-#[ignore = "Flaky test - stack overflow due to deep test isolation nesting"]
 fn test_get_session_duration() {
-    // Skip this test in CI due to timing issues
+    // Runs locally; skipped under CI where the shared, time-sensitive setup is least
+    // reliable. (The previous "stack overflow due to deep test isolation nesting" reason
+    // was inaccurate — get_session_duration has no recursion; see issue #34.)
     if env::var("CI").is_ok() {
         println!("Skipping test_get_session_duration in CI environment");
         return;
@@ -289,6 +296,9 @@ fn test_get_session_duration() {
     let temp_path = temp_dir.path().to_str().unwrap();
     env::set_var("XDG_DATA_HOME", temp_path);
     env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
+    // Rebuild config from the isolated dir so burn_rate.mode is deterministic (#34).
+    env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    crate::config::reset_config();
 
     // Create the directory structure
     let stats_dir = Path::new(&temp_path).join("claudia-statusline");
@@ -339,6 +349,8 @@ fn test_get_session_duration() {
     assert!(get_session_duration("non-existent-session").is_none());
 
     env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
 }
 
 #[test]

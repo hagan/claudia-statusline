@@ -1285,7 +1285,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore] // Skip in CI where NO_COLOR is set
+    // Deliberate skip (#34): depends on NO_COLOR being unset, but NO_COLOR is a
+    // process-global env var read live by Colors::enabled(). CI sets it globally, and
+    // parallel (non-serial) tests in this binary toggle it, so the result is
+    // nondeterministic. A robust re-enable needs non-global color enablement.
+    #[ignore = "global NO_COLOR env race; CI sets NO_COLOR — see issue #34"]
     fn test_theme_affects_colors() {
         // Use RAII guard to ensure clean environment
         let _guard = ClearNoColor::new();

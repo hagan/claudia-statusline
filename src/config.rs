@@ -1319,13 +1319,53 @@ inherit_duration_mode = true
 }
 
 // Global configuration instance
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
-static CONFIG: OnceLock<Config> = OnceLock::new();
+/// Cached global configuration.
+///
+/// Stored as a leaked `&'static Config` so callers keep the ergonomic `&'static`
+/// return type. A `RwLock` (rather than `OnceLock`) backs it so tests can reset the
+/// cache via [`reset_config`]: the env vars consulted in [`build_config`] are read once
+/// at first access, and without a reset an env var set by an earlier test (or left over
+/// from one) would be frozen in for the rest of the process, polluting later
+/// config-dependent assertions (issue #34).
+static CONFIG: RwLock<Option<&'static Config>> = RwLock::new(None);
 
-/// Get the global configuration instance
+/// Get the global configuration instance.
+///
+/// Built once on first call (from the config file plus environment overrides) and cached
+/// for the lifetime of the process. Tests may call [`reset_config`] to force a rebuild.
 pub fn get_config() -> &'static Config {
-    CONFIG.get_or_init(|| {
+    // Fast path: already initialized.
+    if let Some(cfg) = *CONFIG.read().expect("config lock poisoned") {
+        return cfg;
+    }
+    // Slow path: build once and cache. Re-check under the write lock in case another
+    // thread initialized while we were waiting for it.
+    let mut guard = CONFIG.write().expect("config lock poisoned");
+    if let Some(cfg) = *guard {
+        return cfg;
+    }
+    let leaked: &'static Config = Box::leak(Box::new(build_config()));
+    *guard = Some(leaked);
+    leaked
+}
+
+/// Reset the cached configuration so the next [`get_config`] rebuilds from the current
+/// environment and config file.
+///
+/// Exists so tests can obtain deterministic, env-dependent config despite the
+/// process-global cache; production code never calls it. Resetting leaks the previously
+/// cached `Config`, which is harmless for the bounded number of resets in a test run.
+#[doc(hidden)]
+#[allow(dead_code)] // Used by lib/integration tests; not called from the binary.
+pub fn reset_config() {
+    *CONFIG.write().expect("config lock poisoned") = None;
+}
+
+/// Build a fully-resolved [`Config`] from the config file plus environment overrides.
+fn build_config() -> Config {
+    {
         let mut config = Config::load().unwrap_or_else(|e| {
             warn!("Failed to load config: {}. Using defaults.", e);
             Config::default()
@@ -1388,7 +1428,7 @@ pub fn get_config() -> &'static Config {
         warn_json_backup_legacy_if_set(&config);
 
         config
-    })
+    }
 }
 
 static JSON_BACKUP_DEPRECATION_WARNED: OnceLock<()> = OnceLock::new();
@@ -1418,6 +1458,52 @@ pub fn get_theme() -> String {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_config_reset_picks_up_env_changes() {
+        // Proves the anti-pollution guarantee from issue #34: the process-global config
+        // cache must not freeze env-derived values across a reset.
+        let original_theme = env::var("STATUSLINE_THEME").ok();
+        let original_claude_theme = env::var("CLAUDE_THEME").ok();
+        // CLAUDE_THEME takes precedence over STATUSLINE_THEME in build_config; clear it so
+        // this test controls the resolved theme deterministically.
+        env::remove_var("CLAUDE_THEME");
+
+        env::set_var("STATUSLINE_THEME", "dark");
+        reset_config();
+        assert_eq!(
+            get_config().display.theme,
+            "dark",
+            "config should reflect the environment after a reset"
+        );
+
+        // Without a reset the cache holds the previously built value.
+        env::set_var("STATUSLINE_THEME", "light");
+        assert_eq!(
+            get_config().display.theme,
+            "dark",
+            "cached config should not change until reset"
+        );
+
+        // After a reset it must pick up the new value (no stale cache pollution).
+        reset_config();
+        assert_eq!(
+            get_config().display.theme,
+            "light",
+            "config must reflect the current environment after reset"
+        );
+
+        // Restore prior environment and rebuild so later tests see a clean cache.
+        match original_theme {
+            Some(v) => env::set_var("STATUSLINE_THEME", v),
+            None => env::remove_var("STATUSLINE_THEME"),
+        }
+        if let Some(v) = original_claude_theme {
+            env::set_var("CLAUDE_THEME", v);
+        }
+        reset_config();
+    }
 
     #[test]
     fn test_default_config() {
