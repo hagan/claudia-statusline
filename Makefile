@@ -3,7 +3,6 @@
 
 # Configuration
 BINARY_NAME = statusline
-SOURCES = src/main.rs src/models.rs src/git.rs src/stats.rs src/display.rs src/utils.rs src/version.rs
 TARGET_DIR = target
 INSTALL_DIR = $(HOME)/.local/bin
 CARGO_TARGET = release
