@@ -151,7 +151,11 @@ fn test_legacy_json_migrates_to_sqlite() {
         .unwrap();
     child.wait_with_output().unwrap();
 
-    assert!(db_path.exists(), "stats.db should be created at {:?}", db_path);
+    assert!(
+        db_path.exists(),
+        "stats.db should be created at {:?}",
+        db_path
+    );
 
     let conn = Connection::open(&db_path).unwrap();
     let count: i64 = conn

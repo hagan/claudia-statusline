@@ -225,10 +225,17 @@ pub fn update_stats_data<F>(updater: F) -> (f64, f64)
 where
     F: FnOnce(&mut StatsData) -> (f64, f64),
 {
-    // v3.0.0+: SQLite-only. Load from SQLite, apply the update, write back to SQLite.
+    // v3.0.0+: SQLite-only writes. Load from SQLite, apply the update, write back.
+    // When no usable SQLite database exists yet, fall back to `load()` rather than an
+    // empty default: `load()` reads any legacy stats.json and migrates it into SQLite
+    // (BREAK-03 / D-04). Using `default()` here silently dropped a v2.x user's history
+    // on first run. In steady state `load_from_sqlite()` succeeds and this path is skipped.
     let mut stats_data = StatsData::load_from_sqlite().unwrap_or_else(|e| {
-        warn!("Failed to load from SQLite: {}", e);
-        StatsData::default()
+        warn!(
+            "Failed to load from SQLite, attempting legacy JSON recovery: {}",
+            e
+        );
+        StatsData::load()
     });
 
     // Apply the update
