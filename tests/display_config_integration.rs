@@ -283,8 +283,13 @@ fn test_no_double_separators_regression() {
 }
 
 #[test]
-#[serial_test::serial] // Run serially to avoid NO_COLOR env var conflicts
-#[ignore] // Flaky: NO_COLOR env var can be cached by earlier tests
+#[serial_test::serial]
+// Run serially to avoid NO_COLOR env var conflicts
+// Deliberate skip (#34): NO_COLOR is read live by Colors::enabled() (not cached), but it
+// is a process-global env var. #[serial] only excludes other #[serial] tests, so a
+// non-serial test in this binary can clear/set NO_COLOR concurrently and flip the result.
+// A robust re-enable needs non-global color enablement.
+#[ignore = "global NO_COLOR env race under parallel tests — see issue #34"]
 fn test_with_no_color_env() {
     let _guard = test_support::init();
     // Save original state
