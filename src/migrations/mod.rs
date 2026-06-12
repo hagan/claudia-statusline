@@ -1,6 +1,7 @@
+use crate::retry::{retry_if_retryable, RetryConfig};
 use crate::stats::StatsData;
 use chrono::Local;
-use rusqlite::{params, Connection, Result, Transaction};
+use rusqlite::{params, Connection, Result, Transaction, TransactionBehavior};
 use std::path::Path;
 
 /// Migration trait for database schema changes
@@ -105,8 +106,34 @@ impl MigrationRunner {
         Ok(version.unwrap_or(0))
     }
 
-    /// Run all pending migrations
+    /// Run all pending migrations.
+    ///
+    /// Concurrency-safe under concurrent first-run (multiple fresh processes racing on
+    /// the same DB file). Each migration step runs in an IMMEDIATE transaction so writers
+    /// serialize at BEGIN; the applied version is re-checked INSIDE that transaction to
+    /// close the read-then-write gap; the version is recorded with `INSERT OR IGNORE`
+    /// so a lost race never raises `UNIQUE constraint failed: schema_migrations.version`;
+    /// and the whole thing is wrapped in `retry_if_retryable` so a serialized loser that
+    /// still hits SQLITE_BUSY retries cleanly.
     pub fn migrate(&mut self) -> Result<()> {
+        // Mirror the adapter pattern in SqliteDatabase::update_session: run the loop under
+        // retry_if_retryable (which works over crate::error::Result/StatuslineError), then
+        // map the final StatuslineError back to a rusqlite::Error for our Result signature.
+        retry_if_retryable(&RetryConfig::for_db_ops(), || {
+            self.migrate_once()
+                .map_err(crate::error::StatuslineError::Database)
+        })
+        .map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(e.to_string()),
+            ),
+        })
+    }
+
+    /// Single attempt at running pending migrations. Safe to retry.
+    fn migrate_once(&mut self) -> Result<()> {
         let current = self.current_version()?;
 
         // Collect versions to run
@@ -126,16 +153,34 @@ impl MigrationRunner {
                 .find(|m| m.version() == version)
                 .expect("Migration should exist");
 
-            // Run the migration directly instead of calling run_migration
             let start = std::time::Instant::now();
-            let tx = self.conn.transaction()?;
+
+            // IMMEDIATE transaction: concurrent writers serialize at BEGIN, turning a
+            // potential constraint race into a BUSY that retry_if_retryable absorbs.
+            let tx = self
+                .conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)?;
+
+            // Re-check INSIDE the transaction: another process may have applied this
+            // version between our current_version() read and acquiring the write lock.
+            let already_applied: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = ?1",
+                params![migration.version()],
+                |row| row.get(0),
+            )?;
+            if already_applied > 0 {
+                // Already recorded by a concurrent process; don't re-run migration.up.
+                tx.commit()?;
+                continue;
+            }
 
             // Apply migration
             migration.up(&tx)?;
 
-            // Record migration
+            // Record migration. INSERT OR IGNORE so a lost race can never raise
+            // `UNIQUE constraint failed: schema_migrations.version`.
             tx.execute(
-                "INSERT INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
+                "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
                  VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![
                     migration.version(),
