@@ -67,6 +67,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      # Cache the cargo registry, git deps, and target dir. Swatinem/rust-cache
+      # handles this correctly across the Linux/macOS/Windows matrix (unlike a
+      # hand-rolled actions/cache with ~/.cargo paths that misbehave on Windows).
+      # Keyed per target so the six matrix legs don't clobber each other (#36).
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
       - name: Install cross
         if: matrix.use-cross
         run: cargo install cross --git https://github.com/cross-rs/cross
