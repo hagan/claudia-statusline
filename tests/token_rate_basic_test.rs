@@ -15,11 +15,8 @@ use tempfile::TempDir;
 /// Integration test for full token rate calculation path.
 ///
 /// This test verifies the complete flow from database to metrics calculation.
-/// Requires SQLite-only mode (json_backup = false) which conflicts with other tests.
-///
-/// Run in isolation: `cargo test --test token_rate_basic_test -- --ignored`
+/// Token rates work unconditionally in v3.0.0+.
 #[test]
-#[ignore = "requires isolated config (json_backup=false); run with: cargo test --test token_rate_basic_test -- --ignored"]
 #[serial]
 fn test_token_rate_calculation() {
     use statusline::database::{SessionUpdate, SqliteDatabase};
@@ -39,7 +36,6 @@ fn test_token_rate_calculation() {
     env::set_var("STATUSLINE_TOKEN_RATE_MODE", "summary");
     env::set_var("STATUSLINE_TOKEN_RATE_CACHE_METRICS", "true");
     env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
-    env::set_var("STATUSLINE_JSON_BACKUP", "false"); // SQLite-only mode required for token rates
 
     // Create database using the same path that statusline will use
     let data_dir = temp_home.join(".local/share/claudia-statusline");
@@ -85,14 +81,10 @@ fn test_token_rate_calculation() {
         config.token_rate.enabled,
         "Token rate should be enabled via env var"
     );
-    assert!(
-        !config.database.json_backup,
-        "JSON backup should be disabled via env var"
-    );
+    assert!(!config.database.json_backup, "v3.0.0 default is false");
 
     // Debug output
     eprintln!("Token rate enabled: {}", config.token_rate.enabled);
-    eprintln!("JSON backup: {}", config.database.json_backup);
 
     // Calculate token rates
     let metrics = statusline::stats::calculate_token_rates("test-token-session")
@@ -155,11 +147,8 @@ fn test_token_rate_calculation() {
 
 /// Test that short duration sessions return None for token rates.
 ///
-/// This test also requires isolated config but tests the minimum duration check.
-///
-/// Run in isolation: `cargo test --test token_rate_basic_test -- --ignored`
+/// Tests the minimum duration check. Token rates work unconditionally in v3.0.0+.
 #[test]
-#[ignore = "requires isolated config; run with: cargo test --test token_rate_basic_test -- --ignored"]
 #[serial]
 fn test_token_rate_short_duration() {
     let _guard = test_support::init();
@@ -171,7 +160,6 @@ fn test_token_rate_short_duration() {
     env::set_var("XDG_DATA_HOME", temp_home.join(".local/share"));
     env::set_var("XDG_CONFIG_HOME", temp_home.join(".config"));
     env::set_var("STATUSLINE_TOKEN_RATE_ENABLED", "true");
-    env::set_var("STATUSLINE_JSON_BACKUP", "false");
 
     let data_dir = temp_home.join(".local/share/claudia-statusline");
     std::fs::create_dir_all(&data_dir).unwrap();
@@ -222,5 +210,4 @@ fn test_token_rate_short_duration() {
     env::remove_var("XDG_DATA_HOME");
     env::remove_var("XDG_CONFIG_HOME");
     env::remove_var("STATUSLINE_TOKEN_RATE_ENABLED");
-    env::remove_var("STATUSLINE_JSON_BACKUP");
 }

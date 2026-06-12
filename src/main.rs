@@ -400,9 +400,6 @@ fn main() -> Result<()> {
         }
     };
 
-    // Check for migration opportunity (warn once per run)
-    check_migration_status();
-
     // Get current directory
     let current_dir = input
         .workspace
@@ -461,8 +458,11 @@ fn main() -> Result<()> {
                             device_id: Some(device_id.clone()),
                             token_breakdown,
                             max_tokens_observed: None, // updated separately
-                            active_time_seconds: None, // TODO: calculate based on burn_rate mode
-                            last_activity: None,       // TODO: calculate based on burn_rate mode
+                            // active_time_seconds / last_activity are owned and computed by
+                            // SqliteDatabase::update_session (src/database/session.rs); not available at
+                            // this SessionUpdate construction site. v3.0.0 cleanup per CONTEXT.md D-13.
+                            active_time_seconds: None,
+                            last_activity: None,
                         },
                     )
                 });
@@ -767,53 +767,18 @@ fn handle_list_vars(cli: &Cli) -> Result<()> {
     Ok(())
 }
 
-/// Check if migration is needed and warn the user
-fn check_migration_status() {
-    let config = config::get_config();
-
-    // Only warn if json_backup is enabled
-    if config.database.json_backup {
-        let json_path = stats::StatsData::get_stats_file_path();
-
-        // Check if JSON file exists
-        if json_path.exists() {
-            // Check file size to see if it has meaningful data
-            if let Ok(metadata) = std::fs::metadata(&json_path) {
-                if metadata.len() > 100 {
-                    // More than just empty JSON
-                    warn!(
-                        "JSON stats file exists at {}. Consider running 'statusline migrate --finalize' to complete migration to SQLite-only mode for better performance.",
-                        json_path.display()
-                    );
-                }
-            }
-        }
-    }
-}
-
-/// Show migration roadmap and current status
+/// Show migration status (v3.0.0+: SQLite is the canonical store)
 fn show_migration_roadmap() -> Result<()> {
     use crate::common::get_data_dir;
-    use crate::config::Config;
-
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("          SQLite Migration Roadmap for Statusline");
-    println!("═══════════════════════════════════════════════════════════════\n");
-
-    // Detect current state
     let data_dir = get_data_dir();
     let json_path = data_dir.join("stats.json");
     let db_path = data_dir.join("stats.db");
-
-    let config = Config::load().ok();
-    let json_backup_enabled = config
-        .as_ref()
-        .map(|c| c.database.json_backup)
-        .unwrap_or(true);
-
     let json_exists = json_path.exists();
     let db_exists = db_path.exists();
 
+    println!("═══════════════════════════════════════════════════════════════");
+    println!("          SQLite Migration Status (v3.0.0+)");
+    println!("═══════════════════════════════════════════════════════════════\n");
     println!("📊 CURRENT STATUS:\n");
     println!(
         "   Database (SQLite):    {}",
@@ -831,66 +796,19 @@ fn show_migration_roadmap() -> Result<()> {
             "✗ Not found"
         }
     );
-    println!(
-        "   JSON backup enabled:  {}",
-        if json_backup_enabled { "Yes" } else { "No" }
-    );
+    println!();
+    println!("   v3.0.0 removed JSON writes; SQLite is the canonical store.");
+    println!("   Legacy stats.json files are read once on startup for recovery only.\n");
 
-    println!("\n─────────────────────────────────────────────────────────────\n");
-
-    println!("📚 THREE-PHASE MIGRATION STRATEGY:\n");
-
-    println!("   Phase 1: Dual-Write (v2.2.0 - v2.6.x)");
-    println!("   ├─ JSON remains primary data source");
-    println!("   ├─ SQLite writes are best-effort (for testing)");
-    println!("   └─ Safe fallback if issues occur\n");
-
-    println!("   Phase 2: SQLite-First ★ CURRENT (v2.7.0+)");
-    println!("   ├─ SQLite is now the primary data source");
-    println!("   ├─ Reads from SQLite with automatic JSON fallback");
-    println!("   ├─ Optional JSON backup writes (configurable)");
-    println!("   └─ Better concurrency, 30% faster reads\n");
-
-    println!("   Phase 3: SQLite-Only (v3.0.0+)");
-    println!("   ├─ Remove all JSON code and dependencies");
-    println!("   ├─ Smaller binary, cleaner codebase");
-    println!("   └─ Full SQLite-native operations\n");
-
-    println!("─────────────────────────────────────────────────────────────\n");
-
-    if json_backup_enabled && json_exists {
+    if json_exists {
         println!("💡 RECOMMENDED NEXT STEPS:\n");
-        println!("   You're still writing to both SQLite and JSON.");
-        println!("   Consider finalizing your migration for better performance:\n");
-        println!("   1. Verify data integrity:");
-        println!("      $ statusline health --json\n");
-        println!("   2. Finalize migration (archives JSON):");
-        println!("      $ statusline migrate --finalize\n");
-        println!("   3. Or permanently delete JSON:");
+        println!("   A leftover stats.json file exists. Archive or delete it:\n");
+        println!("      $ statusline migrate --finalize");
         println!("      $ statusline migrate --finalize --delete-json\n");
-        println!("   ✨ Benefits: 30% faster, no write overhead, cleaner storage\n");
-    } else if !json_backup_enabled && json_exists {
-        println!("⚠️  NOTICE:\n");
-        println!("   JSON backup is disabled but old file still exists.");
-        println!("   You can safely archive or delete it:\n");
-        println!("      $ statusline migrate --finalize\n");
-    } else if !json_exists {
+    } else {
         println!("✅ MIGRATION COMPLETE:\n");
-        println!("   You're running in SQLite-only mode!");
-        println!("   No further action needed.\n");
+        println!("   No leftover JSON file. SQLite-only operation is in effect.\n");
     }
-
-    println!("─────────────────────────────────────────────────────────────\n");
-
-    println!("🔧 AVAILABLE COMMANDS:\n");
-    println!("   --run          Run schema migrations to latest version");
-    println!("   --finalize     Complete migration (archives JSON)");
-    println!("   --delete-json  Delete JSON instead of archiving (use with --finalize)");
-    println!("   --dump-schema  Dump current database schema\n");
-
-    println!("📖 For more information:");
-    println!("   https://github.com/yourusername/claudia-statusline#migration\n");
-
     Ok(())
 }
 
@@ -1107,12 +1025,12 @@ fn finalize_migration(delete_json: bool) -> Result<()> {
         config::Config::default()
     };
 
-    // Set json_backup to false
+    // v3.0.0+: this is a no-op safety belt; the runtime no longer mutates behavior on this flag.
     config.database.json_backup = false;
 
     // Save updated config
     config.save(&config_path)?;
-    println!("✅ Configuration updated: json_backup = false");
+    println!("✅ Configuration normalized: json_backup field reset (no-op in v3.0.0+)");
 
     println!("\n🎉 Migration finalized successfully!");
     println!("The statusline is now operating in SQLite-only mode.");
@@ -1300,7 +1218,7 @@ fn show_health_report(json_output: bool) -> Result<()> {
             "database_exists": db_exists,
             "json_path": json_path.display().to_string(),
             "json_exists": json_exists,
-            "json_backup": config.database.json_backup,
+            "legacy_json_backup_configured": config.database.json_backup,
             "today_total": today_total,
             "month_total": month_total,
             "all_time_total": all_time_total,
@@ -1319,11 +1237,11 @@ fn show_health_report(json_output: bool) -> Result<()> {
         println!("  JSON path: {}", json_path.display());
         println!("  JSON exists: {}", if json_exists { "✅" } else { "❌" });
         println!(
-            "  JSON backup enabled: {}",
+            "  Legacy json_backup field: {} (informational; not a runtime toggle in v3.0.0+)",
             if config.database.json_backup {
-                "✅"
+                "set"
             } else {
-                "❌"
+                "unset"
             }
         );
         println!();

@@ -57,6 +57,7 @@ impl From<config::RetrySettings> for RetryConfig {
 
 impl RetryConfig {
     /// Quick configuration for file operations (from config)
+    #[allow(dead_code)] // v3.0.0+: sole caller (acquire_stats_file) removed with JSON writes
     pub fn for_file_ops() -> Self {
         let app_config = config::get_config();
         Self::from(&app_config.retry.file_ops)

@@ -579,7 +579,7 @@ fn test_health_command_json() {
     // Check for expected fields
     assert!(json.get("database_path").is_some());
     assert!(json.get("database_exists").is_some());
-    assert!(json.get("json_backup").is_some());
+    assert!(json.get("legacy_json_backup_configured").is_some());
     assert!(json.get("today_total").is_some());
     assert!(json.get("month_total").is_some());
     assert!(json.get("all_time_total").is_some());

@@ -260,7 +260,14 @@ pub struct DatabaseConfig {
     /// Path to database file (relative to data directory)
     pub path: String,
 
-    /// Whether to maintain JSON backup alongside SQLite (default: true for compatibility)
+    /// Legacy in v3.0.0 — JSON writes were removed. The field is retained
+    /// for deserialization compatibility so existing v2.x configs still
+    /// parse, but its value has no functional effect except for emitting
+    /// a one-line stderr deprecation warning when set to true. Default is
+    /// now false. Rollback to JSON dual-write requires v2.22.x.
+    /// `skip_serializing` keeps it deserialize-only so saved/re-emitted
+    /// configs do NOT carry the field forward (D-08).
+    #[serde(skip_serializing)]
     pub json_backup: bool,
 
     /// Retention period for session data in days (0 = keep forever)
@@ -883,7 +890,7 @@ impl Default for DatabaseConfig {
         DatabaseConfig {
             busy_timeout_ms: 10000,
             path: "stats.db".to_string(),
-            json_backup: true, // Default to true for backward compatibility
+            json_backup: false, // v3.0.0+: JSON writes removed; default is now false (D-03)
             retention_days_sessions: None, // None means use default (90 days)
             retention_days_daily: None, // None means use default (365 days)
             retention_days_monthly: None, // None means use default (0 = forever)
@@ -1205,7 +1212,6 @@ medium_threshold = 20.0  # Yellow between low and medium, red above
 # Database connection settings
 busy_timeout_ms = 10000
 path = "stats.db"  # Relative to data directory
-json_backup = true  # Maintain JSON backup alongside SQLite (set to false for SQLite-only mode)
 
 # Data retention settings (for db-maintain command)
 retention_days_sessions = 90    # Keep session data for N days
@@ -1332,15 +1338,6 @@ pub fn get_config() -> &'static Config {
             config.display.theme = theme;
         }
 
-        // Override json_backup from environment if set (for testing)
-        if let Ok(val) = env::var("STATUSLINE_JSON_BACKUP") {
-            config.database.json_backup = val == "true" || val == "1";
-            // Also handle explicit false
-            if val == "false" || val == "0" {
-                config.database.json_backup = false;
-            }
-        }
-
         // Override show_context_tokens from environment if set (for testing)
         if let Ok(val) = env::var("STATUSLINE_SHOW_CONTEXT_TOKENS") {
             config.display.show_context_tokens = val == "true" || val == "1";
@@ -1385,8 +1382,29 @@ pub fn get_config() -> &'static Config {
             config.token_rate.inherit_duration_mode = val == "true" || val == "1";
         }
 
+        // v3.0.0+: emit a one-line stderr deprecation note (once per process) when a
+        // legacy `json_backup = true` is detected. This is the canonical fire-site:
+        // the fully-resolved Config is finalized here, once per process.
+        warn_json_backup_legacy_if_set(&config);
+
         config
     })
+}
+
+static JSON_BACKUP_DEPRECATION_WARNED: OnceLock<()> = OnceLock::new();
+
+/// Emits a one-line stderr deprecation note when a legacy `json_backup = true`
+/// is detected. Fires at most once per process. Per D-01/D-02 (CONTEXT.md):
+/// json_backup is ignored legacy in v3.0.0 — this is informational only,
+/// the binary continues rendering normally.
+fn warn_json_backup_legacy_if_set(cfg: &Config) {
+    if cfg.database.json_backup {
+        JSON_BACKUP_DEPRECATION_WARNED.get_or_init(|| {
+            eprintln!(
+                "note: 'json_backup' is ignored in v3.0.0 (writes removed); see MIGRATION_GUIDE.md"
+            );
+        });
+    }
 }
 
 /// Get the current theme (with environment override support)
@@ -1430,6 +1448,81 @@ mod tests {
         assert!(example.contains("Claudia Statusline Configuration"));
         assert!(example.contains("progress_bar_width"));
         assert!(example.contains("window_size"));
+    }
+
+    #[test]
+    fn test_database_config_default_json_backup_false() {
+        // D-03: the v3.0.0 default for json_backup is false.
+        let db = DatabaseConfig::default();
+        assert!(
+            !db.json_backup,
+            "v3.0.0 default for json_backup must be false"
+        );
+    }
+
+    #[test]
+    fn test_config_serialization_omits_json_backup() {
+        // FIX 3 / D-08: #[serde(skip_serializing)] on json_backup means the
+        // serialized TOML (the same path Config::save() uses) must not contain it,
+        // even when the in-memory value is true.
+        let mut config = Config::default();
+        config.database.json_backup = true;
+        let serialized = toml::to_string_pretty(&config).expect("config should serialize");
+        assert!(
+            !serialized.contains("json_backup"),
+            "serialized config must omit json_backup (skip_serializing).\n{}",
+            serialized
+        );
+    }
+
+    #[test]
+    fn test_config_still_deserializes_legacy_json_backup() {
+        // v2.x configs that still carry json_backup must parse (Deserialize retained).
+        let toml = "[database]\njson_backup = true\n";
+        let config: Config = toml::from_str(toml).expect("legacy config should parse");
+        assert!(
+            config.database.json_backup,
+            "json_backup must still deserialize from legacy v2.x configs"
+        );
+    }
+
+    #[test]
+    fn test_json_backup_legacy_warning_gates_to_once() {
+        // FIX 6: prove the once-per-process gating semantics deterministically,
+        // using a LOCAL OnceLock + counter (so the assertion does not race the
+        // process-global static used by warn_json_backup_legacy_if_set, which may
+        // already be initialized by other tests in the same binary).
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let gate: OnceLock<()> = OnceLock::new();
+        let init_count = AtomicUsize::new(0);
+
+        // Mirror the gating shape: call the initializer N times against the same
+        // OnceLock and prove the side effect fires exactly once.
+        for _ in 0..5 {
+            gate.get_or_init(|| {
+                init_count.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+
+        assert!(gate.get().is_some(), "gate should be initialized");
+        assert_eq!(
+            init_count.load(Ordering::SeqCst),
+            1,
+            "OnceLock initializer must run exactly once across N calls"
+        );
+
+        // And the production helper must not panic / re-init when called repeatedly
+        // with json_backup = true within this process.
+        let mut cfg = Config::default();
+        cfg.database.json_backup = true;
+        warn_json_backup_legacy_if_set(&cfg);
+        warn_json_backup_legacy_if_set(&cfg);
+        warn_json_backup_legacy_if_set(&cfg);
+        assert!(
+            JSON_BACKUP_DEPRECATION_WARNED.get().is_some(),
+            "process-global gate should be initialized after a true config"
+        );
     }
 
     #[test]
