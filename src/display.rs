@@ -263,7 +263,13 @@ fn format_statusline_string(
         if !db_path.exists() {
             return None;
         }
-        crate::database::SqliteDatabase::new(&db_path).ok()
+        match crate::database::SqliteDatabase::new(&db_path) {
+            Ok(db) => Some(db),
+            Err(e) => {
+                log::debug!("Display: failed to open SQLite db at {:?}: {}", db_path, e);
+                None
+            }
+        }
     });
 
     // 0. TEST indicator if in test mode
@@ -627,7 +633,13 @@ fn format_statusline_with_layout(
         if let Some(db) = crate::stats::StatsData::get_sqlite_path()
             .ok()
             .filter(|p| p.exists())
-            .and_then(|p| crate::database::SqliteDatabase::new(&p).ok())
+            .and_then(|p| match crate::database::SqliteDatabase::new(&p) {
+                Ok(db) => Some(db),
+                Err(e) => {
+                    log::debug!("Display: failed to open SQLite db at {:?}: {}", p, e);
+                    None
+                }
+            })
         {
             if let Some(token_rates) = crate::stats::calculate_token_rates_with_db_and_transcript(
                 sid,

@@ -807,7 +807,9 @@ fn finalize_migration(delete_json: bool) -> Result<()> {
     // Check if SQLite database exists
     if !sqlite_path.exists() {
         println!("⚠️  SQLite database not found. Creating and migrating...");
-        // Load from JSON and trigger migration
+        // Load from JSON and trigger migration. The value is intentionally discarded;
+        // the side effect (JSON→SQLite migration) is what we want.
+        warn!("SQLite database absent; loading stats to trigger JSON→SQLite migration");
         let _ = stats::StatsData::load();
     }
 
