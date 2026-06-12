@@ -8,7 +8,7 @@
 //! - **Stats Tracking**: Persistent tracking of costs and usage across sessions
 //! - **Configuration**: TOML-based configuration system with sensible defaults
 //! - **Error Handling**: Unified error handling with automatic retries for transient failures
-//! - **Database Support**: Dual-write to JSON and SQLite for reliability
+//! - **Database Support**: SQLite-backed persistence with JSON read fallback for legacy migration
 //!
 //! ## Quick Start
 //!

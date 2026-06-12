@@ -182,11 +182,11 @@ fn perform_sqlite_dual_write(_stats_data: &StatsData) {
     // No need to call write_current_session_to_sqlite() as that would overwrite model_name/workspace_dir/tokens with NULL
 }
 
-/// Updates the statistics data with process-safe file locking.
+/// Updates the statistics data, persisting the result to SQLite.
 ///
-/// This function acquires an exclusive lock on the stats file, loads the current data,
-/// applies the update function, and saves the result. It also performs a dual-write
-/// to SQLite for better concurrent access.
+/// This function loads the current data, applies the update function, and writes the
+/// result to SQLite. As of v3.0.0 the JSON backup write path (and its `fs2` file lock)
+/// was removed; concurrency safety now rests on the SQLite transaction in the write path.
 ///
 /// # Arguments
 ///
