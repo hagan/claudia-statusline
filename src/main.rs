@@ -44,6 +44,7 @@ mod migrations;
 mod models;
 #[allow(dead_code)]
 mod provider;
+mod render;
 mod retry;
 mod state;
 mod stats;
@@ -56,7 +57,6 @@ mod version;
 use display::{format_output, Colors};
 use error::Result;
 use models::StatuslineInput;
-use stats::{get_or_load_stats_data, update_stats_data};
 use version::version_string;
 
 /// Claudia Statusline - A high-performance statusline for Claude Code
@@ -419,145 +419,9 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Update stats tracking if we have session and cost data
-    let (daily_total, _monthly_total) =
-        if let (Some(session_id), Some(ref cost)) = (&input.session_id, &input.cost) {
-            if let Some(total_cost) = cost.total_cost_usd {
-                // Extract model name and workspace directory
-                let model_name = input
-                    .model
-                    .as_ref()
-                    .and_then(|m| m.display_name.as_ref())
-                    .map(|s| s.as_str());
-                let workspace_dir = input
-                    .workspace
-                    .as_ref()
-                    .and_then(|w| w.current_dir.as_ref())
-                    .map(|s| s.as_str());
-
-                // Extract token breakdown from transcript if available
-                let token_breakdown = input
-                    .transcript
-                    .as_ref()
-                    .and_then(|path| utils::get_token_breakdown_from_transcript(path));
-
-                // Get device ID for audit trail
-                let device_id = common::get_device_id();
-
-                // Update stats with new cost data
-                use database::SessionUpdate;
-                let result = update_stats_data(|data| {
-                    data.update_session(
-                        session_id,
-                        SessionUpdate {
-                            cost: total_cost,
-                            lines_added: cost.total_lines_added.unwrap_or(0),
-                            lines_removed: cost.total_lines_removed.unwrap_or(0),
-                            model_name: model_name.map(|s| s.to_string()),
-                            workspace_dir: workspace_dir.map(|s| s.to_string()),
-                            device_id: Some(device_id.clone()),
-                            token_breakdown,
-                            max_tokens_observed: None, // updated separately
-                            // active_time_seconds / last_activity are owned and computed by
-                            // SqliteDatabase::update_session (src/database/session.rs); not available at
-                            // this SessionUpdate construction site. v3.0.0 cleanup per CONTEXT.md D-13.
-                            active_time_seconds: None,
-                            last_activity: None,
-                        },
-                    )
-                });
-
-                // Track max_tokens_observed for compaction detection
-                // This runs regardless of adaptive_learning setting
-                if let Some(ref transcript_path) = input.transcript {
-                    if let Some(current_tokens) =
-                        utils::get_token_count_from_transcript(transcript_path)
-                    {
-                        // Update session's max_tokens_observed
-                        // This updates both in-memory stats and SQLite database
-                        update_stats_data(|data| {
-                            data.update_max_tokens(session_id, current_tokens);
-                            // Return unchanged totals
-                            use common::{current_date, current_month};
-                            let today = current_date();
-                            let month = current_month();
-                            let daily_total =
-                                data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-                            let monthly_total = data
-                                .monthly
-                                .get(&month)
-                                .map(|m| m.total_cost)
-                                .unwrap_or(0.0);
-                            (daily_total, monthly_total)
-                        });
-
-                        // Adaptive context learning: observe token usage if enabled
-                        if let Some(model_name) =
-                            input.model.as_ref().and_then(|m| m.display_name.as_ref())
-                        {
-                            let config = config::get_config();
-                            if config.context.adaptive_learning {
-                                // Get previous token count from session stats
-                                let stats_data = get_or_load_stats_data();
-                                let previous_tokens = stats_data
-                                    .sessions
-                                    .get(session_id)
-                                    .and_then(|s| s.max_tokens_observed)
-                                    .map(|t| t as usize);
-
-                                // Create context learner and observe usage
-                                use common::get_data_dir;
-                                use context_learning::ContextLearner;
-                                use database::SqliteDatabase;
-
-                                let db_path = get_data_dir().join("stats.db");
-                                if let Ok(db) = SqliteDatabase::new(&db_path) {
-                                    let learner = ContextLearner::new(db);
-                                    // Ignore errors from adaptive learning - it's experimental
-                                    // Re-use device_id retrieved earlier for consistency
-                                    let _ = learner.observe_usage(
-                                        model_name,
-                                        current_tokens as usize,
-                                        previous_tokens,
-                                        Some(transcript_path),
-                                        workspace_dir,
-                                        Some(&device_id),
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-
-                result
-            } else {
-                // Have session but no cost data - still load existing daily totals
-                let data = get_or_load_stats_data();
-                let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-                let month = chrono::Local::now().format("%Y-%m").to_string();
-
-                let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-                let monthly_total = data
-                    .monthly
-                    .get(&month)
-                    .map(|m| m.total_cost)
-                    .unwrap_or(0.0);
-                (daily_total, monthly_total)
-            }
-        } else {
-            // No session_id - still load stats data to show accumulated totals
-            let data = get_or_load_stats_data();
-            let today = chrono::Local::now().format("%Y-%m-%d").to_string();
-            let month = chrono::Local::now().format("%Y-%m").to_string();
-
-            let daily_total = data.daily.get(&today).map(|d| d.total_cost).unwrap_or(0.0);
-            let monthly_total = data
-                .monthly
-                .get(&month)
-                .map(|m| m.total_cost)
-                .unwrap_or(0.0);
-            (daily_total, monthly_total)
-        };
+    // Update stats and resolve today's daily total via the single shared
+    // implementation (see src/render.rs). The binary always updates stats.
+    let daily_total = render::update_stats_and_daily_total(&input, true);
 
     // Format and print output
     format_output(
