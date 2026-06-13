@@ -1057,6 +1057,207 @@ fn test_active_time_ignores_long_gaps() {
     );
 }
 
+// =============================================================================
+// P2 (issue #38): active-time CALCULATION coverage of update_session_tx.
+//
+// The two STORAGE tests above (test_active_time_accumulation /
+// test_active_time_ignores_long_gaps) explicitly manually-set active_time_seconds and
+// defer the automatic CALCULATION branch (session.rs:350-408) to out-of-process
+// integration tests. These tests fill that gap at the UNIT level by driving the real
+// calculation: set STATUSLINE_BURN_RATE_MODE=active_time + threshold, reset_config(),
+// then SQL-backdate last_activity to simulate inter-update gaps (NO thread::sleep).
+//
+// All four mutate process-global config, so each is #[serial] and restores the env +
+// reset_config() at the end. update_session_tx is private; we exercise it via the
+// public update_session (inline tests have crate access — no visibility widening).
+//
+// Tolerance: the calc is wall-clock now minus the backdated stored timestamp, so the
+// measured gap = backdated_seconds + tiny_execution_delta. We assert a small RANGE,
+// which is deterministic and non-flaky without sleeps.
+// =============================================================================
+
+/// Helper: backdate last_activity to `secs_ago` seconds before now via raw SQL.
+/// Mirrors tests/burn_rate_support.rs::backdate_last_activity_secs.
+fn backdate_last_activity(conn: &Connection, id: &str, secs_ago: i64) {
+    let ts = (chrono::Utc::now() - chrono::Duration::seconds(secs_ago)).to_rfc3339();
+    conn.execute(
+        "UPDATE sessions SET last_activity = ?1 WHERE session_id = ?2",
+        rusqlite::params![ts, id],
+    )
+    .unwrap();
+}
+
+/// Spell out the full 10-field SessionUpdate literal (matching the surrounding style)
+/// with only cost set; everything else None so the active_time branch keys off config
+/// and the stored last_activity, not the update struct.
+fn cost_only_update(cost: f64) -> SessionUpdate {
+    SessionUpdate {
+        cost,
+        lines_added: 0,
+        lines_removed: 0,
+        model_name: None,
+        workspace_dir: None,
+        device_id: None,
+        token_breakdown: None,
+        max_tokens_observed: None,
+        active_time_seconds: None,
+        last_activity: None,
+    }
+}
+
+fn read_active_time(conn: &Connection, id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT active_time_seconds FROM sessions WHERE session_id = ?1",
+        rusqlite::params![id],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+#[serial_test::serial]
+fn test_active_time_calc_adds_gap_below_threshold() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let db = SqliteDatabase::new(&db_path).unwrap();
+
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "active_time");
+    std::env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "30"); // 30 minutes
+    crate::config::reset_config();
+
+    let id = "calc-below-threshold";
+
+    // First update: first-update branch -> active_time becomes 0, last_activity = now.
+    db.update_session(id, cost_only_update(1.0)).unwrap();
+
+    // Backdate last_activity to 120s ago (well below the 30-min threshold).
+    let conn = Connection::open(&db_path).unwrap();
+    backdate_last_activity(&conn, id, 120);
+
+    // Second update: gap of ~120s should be ADDED to active_time.
+    db.update_session(id, cost_only_update(2.0)).unwrap();
+
+    let active_time = read_active_time(&conn, id).expect("active_time should be set");
+    assert!(
+        (120..=124).contains(&active_time),
+        "120s gap (below threshold) should be added to active_time; got {}",
+        active_time
+    );
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    std::env::remove_var("STATUSLINE_BURN_RATE_THRESHOLD");
+    crate::config::reset_config();
+}
+
+#[test]
+#[serial_test::serial]
+fn test_active_time_calc_skips_gap_above_threshold() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let db = SqliteDatabase::new(&db_path).unwrap();
+
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "active_time");
+    std::env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "30"); // 30 minutes
+    crate::config::reset_config();
+
+    let id = "calc-above-threshold";
+
+    // First update -> active_time 0.
+    db.update_session(id, cost_only_update(1.0)).unwrap();
+
+    // Backdate last_activity to 1860s ago (31 min, ABOVE the 30-min threshold).
+    let conn = Connection::open(&db_path).unwrap();
+    backdate_last_activity(&conn, id, 1860);
+
+    // Second update: gap exceeds threshold -> NOT added (idle period).
+    db.update_session(id, cost_only_update(2.0)).unwrap();
+
+    let active_time = read_active_time(&conn, id).expect("active_time should be set");
+    assert!(
+        (0..=2).contains(&active_time),
+        "31-min gap (above threshold) should NOT be added to active_time; got {}",
+        active_time
+    );
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    std::env::remove_var("STATUSLINE_BURN_RATE_THRESHOLD");
+    crate::config::reset_config();
+}
+
+#[test]
+#[serial_test::serial]
+fn test_active_time_calc_first_update_starts_at_zero() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let db = SqliteDatabase::new(&db_path).unwrap();
+
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "active_time");
+    std::env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "30");
+    crate::config::reset_config();
+
+    let id = "calc-first-update";
+
+    // Single update with no prior activity -> first-update branch (session.rs:396).
+    db.update_session(id, cost_only_update(1.0)).unwrap();
+
+    let conn = Connection::open(&db_path).unwrap();
+    let active_time = read_active_time(&conn, id);
+    assert_eq!(
+        active_time,
+        Some(0),
+        "first update in active_time mode should start active_time at 0"
+    );
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    std::env::remove_var("STATUSLINE_BURN_RATE_THRESHOLD");
+    crate::config::reset_config();
+}
+
+/// P2d: prove the daily aggregate UPSERT runs in the SAME update_session call/transaction
+/// as the session UPSERT (does not duplicate test_aggregates, which covers daily totals
+/// across multiple sessions). Single dedicated assertion: one update writes the daily row
+/// for current_date() with total_cost == the cost delta.
+#[test]
+#[serial_test::serial]
+fn test_update_session_writes_daily_in_same_tx() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().join("test.db");
+    let db = SqliteDatabase::new(&db_path).unwrap();
+
+    // Run in active_time mode for parity with the other P2 cases; daily aggregation is
+    // mode-independent, but keeping the serial config block consistent avoids bleed.
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "active_time");
+    std::env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "30");
+    crate::config::reset_config();
+
+    let id = "daily-same-tx";
+    let today = current_date();
+
+    // Single update with a known cost.
+    db.update_session(id, cost_only_update(3.5)).unwrap();
+
+    // The daily_stats row for today must already exist after that single call,
+    // proving the daily UPSERT ran in the same transaction as the session UPSERT.
+    let conn = Connection::open(&db_path).unwrap();
+    let daily_cost: f64 = conn
+        .query_row(
+            "SELECT total_cost FROM daily_stats WHERE date = ?1",
+            rusqlite::params![today],
+            |row| row.get(0),
+        )
+        .expect("daily_stats row for today must be written in the same update_session tx");
+
+    assert!(
+        (daily_cost - 3.5).abs() < 1e-9,
+        "daily total_cost should equal the cost delta from the single update; got {}",
+        daily_cost
+    );
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    std::env::remove_var("STATUSLINE_BURN_RATE_THRESHOLD");
+    crate::config::reset_config();
+}
+
 #[test]
 fn test_reset_session_max_tokens() {
     use tempfile::TempDir;
