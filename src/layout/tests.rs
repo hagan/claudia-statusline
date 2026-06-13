@@ -529,15 +529,7 @@ fn test_git_with_config_format_status() {
         color: String::new(),
     };
     let vars = VariableBuilder::new()
-        .git_with_config(
-            "main +2",
-            Some("main"),
-            Some("+2"),
-            true,
-            "",
-            "",
-            &config,
-        )
+        .git_with_config("main +2", Some("main"), Some("+2"), true, "", "", &config)
         .build();
 
     // status format inserts the raw status_only string into "git".
