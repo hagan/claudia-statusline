@@ -10,22 +10,10 @@
 //! Fallback: `**Current focus:** Phase N - Name` -- from header
 //! Last activity: `Last activity: 2026-02-14 -- description`
 
+use super::cache::{self, CachedParse};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
-
-/// Cached parse result to avoid re-reading unchanged files.
-///
-/// Keyed by (path, mtime): mtime alone is insufficient because filesystems
-/// with coarse mtime resolution (e.g. Linux ext4 at 1s) can produce identical
-/// mtimes for different files written close in time, causing cache collisions
-/// across distinct planning directories.
-struct CachedParse {
-    path: PathBuf,
-    mtime: SystemTime,
-    data: StateData,
-}
 
 /// Extracted phase information from STATE.md.
 #[derive(Clone)]
@@ -36,7 +24,7 @@ struct StateData {
 }
 
 /// Global cache for STATE.md parse results, keyed by (path, mtime).
-static STATE_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
+static STATE_CACHE: OnceLock<Mutex<Option<CachedParse<StateData>>>> = OnceLock::new();
 
 /// Populate GSD phase variables from STATE.md.
 ///
@@ -50,7 +38,7 @@ static STATE_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
 /// contains no recognizable phase patterns.
 pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
     let path = planning_dir.join("STATE.md");
-    let data = match read_with_cache(&path) {
+    let data = match cache::read_with_cache(&STATE_CACHE, &path, |c| Some(parse_state(c))) {
         Some(d) => d,
         None => return,
     };
@@ -64,33 +52,6 @@ pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
     if let Some(ref date) = data.last_activity_date {
         vars.insert("gsd_last_activity".into(), date.clone());
     }
-}
-
-/// Read STATE.md with (path, mtime)-based cache invalidation.
-///
-/// Checks file mtime (~1us) before deciding whether to re-parse. Returns
-/// cached data only when both path and mtime match the cached entry.
-fn read_with_cache(path: &Path) -> Option<StateData> {
-    let current_mtime = std::fs::metadata(path).ok()?.modified().ok()?;
-
-    let cache = STATE_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = cache.lock().ok()?;
-
-    if let Some(ref cached) = *guard {
-        if cached.path == path && cached.mtime == current_mtime {
-            return Some(cached.data.clone());
-        }
-    }
-
-    // Path or mtime changed -- re-parse
-    let content = std::fs::read_to_string(path).ok()?;
-    let data = parse_state(&content);
-    *guard = Some(CachedParse {
-        path: path.to_path_buf(),
-        mtime: current_mtime,
-        data: data.clone(),
-    });
-    Some(data)
 }
 
 /// Parse STATE.md content for phase number, name, and last activity date.

@@ -422,7 +422,7 @@ fn detect_compaction_state(
 
     // Phase 1: Check for hook-based state (fastest, most accurate)
     if let Some(sid) = session_id {
-        if let Some(hook_state) = crate::state::read_state(sid) {
+        if let Some(hook_state) = crate::session_state::read_state(sid) {
             // Hook state file exists and is fresh (not stale)
             if hook_state.state == "compacting" {
                 log::debug!(

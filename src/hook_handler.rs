@@ -6,7 +6,7 @@
 use chrono::Utc;
 
 use crate::error::Result;
-use crate::state::{clear_state, write_state, HookState};
+use crate::session_state::{clear_state, write_state, HookState};
 
 /// Handle PreCompact hook event
 ///
@@ -164,7 +164,7 @@ fn clear_state_file_directly(session_id: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::read_state;
+    use crate::session_state::read_state;
 
     fn test_session_id() -> String {
         format!("test-hook-{}", std::process::id())
