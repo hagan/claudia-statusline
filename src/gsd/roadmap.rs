@@ -9,22 +9,10 @@
 //! - `- [x] **Phase N: Name**` -- completed phase (checkbox checked)
 //! - `- [ ] **Phase N: Name**` -- incomplete phase (checkbox unchecked)
 
+use super::cache::{self, CachedParse};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
-
-/// Cached parse result to avoid re-reading unchanged files.
-///
-/// Keyed by (path, mtime): mtime alone is insufficient because filesystems
-/// with coarse mtime resolution (e.g. Linux ext4 at 1s) can produce identical
-/// mtimes for different files written close in time, causing cache collisions
-/// across distinct planning directories.
-struct CachedParse {
-    path: PathBuf,
-    mtime: SystemTime,
-    data: RoadmapData,
-}
 
 /// Extracted progress information from ROADMAP.md.
 #[derive(Clone)]
@@ -34,7 +22,7 @@ struct RoadmapData {
 }
 
 /// Global cache for ROADMAP.md parse results, keyed by (path, mtime).
-static ROADMAP_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
+static ROADMAP_CACHE: OnceLock<Mutex<Option<CachedParse<RoadmapData>>>> = OnceLock::new();
 
 /// Populate GSD progress variables from ROADMAP.md.
 ///
@@ -48,7 +36,7 @@ static ROADMAP_CACHE: OnceLock<Mutex<Option<CachedParse>>> = OnceLock::new();
 /// contains no recognizable phase checkbox patterns.
 pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
     let path = planning_dir.join("ROADMAP.md");
-    let data = match read_with_cache(&path) {
+    let data = match cache::read_with_cache(&ROADMAP_CACHE, &path, |c| Some(parse_roadmap(c))) {
         Some(d) => d,
         None => return,
     };
@@ -134,33 +122,6 @@ fn count_plan_checkboxes(content: &str, phase_number: &str) -> (u32, u32) {
     }
 
     (completed, total)
-}
-
-/// Read ROADMAP.md with (path, mtime)-based cache invalidation.
-///
-/// Checks file mtime (~1us) before deciding whether to re-parse. Returns
-/// cached data only when both path and mtime match the cached entry.
-fn read_with_cache(path: &Path) -> Option<RoadmapData> {
-    let current_mtime = std::fs::metadata(path).ok()?.modified().ok()?;
-
-    let cache = ROADMAP_CACHE.get_or_init(|| Mutex::new(None));
-    let mut guard = cache.lock().ok()?;
-
-    if let Some(ref cached) = *guard {
-        if cached.path == path && cached.mtime == current_mtime {
-            return Some(cached.data.clone());
-        }
-    }
-
-    // Path or mtime changed -- re-parse
-    let content = std::fs::read_to_string(path).ok()?;
-    let data = parse_roadmap(&content);
-    *guard = Some(CachedParse {
-        path: path.to_path_buf(),
-        mtime: current_mtime,
-        data: data.clone(),
-    });
-    Some(data)
 }
 
 /// Parse ROADMAP.md content for phase completion counts.
