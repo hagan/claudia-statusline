@@ -104,16 +104,53 @@ make lint         # Run clippy linter
 make clean        # Clean build artifacts
 ```
 
+### Cutting a Release
+
+Published release artifacts are built and uploaded by the **`release` GitHub Actions
+workflow** (`.github/workflows/release.yml`), which triggers on pushing a `v*` tag. That
+workflow is the source of truth for what ships; the local scripts/targets below are for
+bumping the version and preparing/sanity-checking the tag.
+
+Blessed path:
+
+```bash
+# 1. Bump the version (edits VERSION + Cargo.toml and related references)
+make bump-patch          # or: make bump-minor / make bump-major
+#    (equivalently: ./scripts/bump-version.sh patch)
+
+# 2. Commit the bump through the normal branch -> PR -> main flow, and update CHANGELOG.md.
+
+# 3. From an up-to-date main, create the annotated tag (reads VERSION):
+make tag                 # creates vX.Y.Z
+
+# 4. Push the tag — this is what fires the release workflow:
+git push origin "v$(cat VERSION)"     # or: git push --tags
+```
+
+Notes:
+- `scripts/release.sh` is an optional local helper that creates the tag and builds a local
+  Linux tarball for spot-checking; the multi-platform artifacts attached to the GitHub
+  Release still come from `release.yml`.
+- `make release-build` just does a clean local `--release` build + `--version` check; it does
+  not tag or publish.
+- The version lives in `VERSION` and `Cargo.toml`; `build.rs` reads `VERSION` so they must
+  agree. `make bump-*` keeps them in sync — don't edit them by hand.
+
 ### Code Organization
 
-The codebase is organized into focused modules:
+The codebase is organized into focused modules (v3.0.0 moved several into
+directories — see `docs/architecture/project-map.md` for the full map):
 
 - `main.rs` - Entry point, CLI parsing, orchestration
+- `lib.rs` / `render.rs` - Embedding API and the shared stats-update + render flow
 - `models.rs` - Data structures and types
-- `stats.rs` - Statistics tracking (SQLite-first with JSON backup)
-- `database.rs` - SQLite operations
-- `display.rs` - Output formatting and colors
-- `git.rs` - Git repository operations
+- `stats/` - Statistics tracking module (SQLite-only since v3.0.0)
+- `database/` - SQLite operations module (schema, CRUD, maintenance, sync)
+- `migrations/` - Schema migration framework
+- `display.rs` / `theme.rs` / `layout/` - Output formatting, colors, and the layout/template engine
+- `git.rs` / `git_utils.rs` / `git_provider.rs` - Git repository operations
+- `gsd/` - GSD project-tracking data provider
+- `provider/` - `DataProvider` trait and parallel `ProviderOrchestrator`
 - `utils.rs` - Utility functions
 - `config.rs` - Configuration management
 - `error.rs` - Error handling
