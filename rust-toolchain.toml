@@ -1,0 +1,14 @@
+# Pinned toolchain so local builds and CI agree on rustc/rustfmt/clippy.
+#
+# Single source of truth for the Rust version. rustup honours this file for every
+# `cargo` invocation (locally and in CI) and auto-installs the toolchain + components
+# on first use, so contributors don't hit spurious `cargo fmt`/`clippy` diffs from a
+# newer floating `stable` (the failure mode that bit issue #38 / motivated #51).
+#
+# To bump: change `channel` here AND the matching `dtolnay/rust-toolchain@<version>`
+# refs in .github/workflows/*.yml (see CONTRIBUTING.md), in one reviewed PR — so any
+# resulting rustfmt/clippy changes land deliberately, not as surprise CI breakage.
+[toolchain]
+channel = "1.96.0"
+components = ["rustfmt", "clippy"]
+profile = "minimal"

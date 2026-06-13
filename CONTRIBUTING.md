@@ -24,9 +24,21 @@ We follow a phase-based development approach with acceptance criteria for each f
 ## Development Setup
 
 ### Prerequisites
-- Rust 1.70+ (install via [rustup](https://rustup.rs/))
+- Rust (install via [rustup](https://rustup.rs/)) — the exact version is **pinned** in
+  `rust-toolchain.toml`, which rustup honours automatically (it installs the pinned
+  toolchain + `rustfmt`/`clippy` on your first `cargo` command). This keeps local
+  `cargo fmt`/`cargo clippy` byte-for-byte consistent with CI.
 - Git
 - Make (optional but recommended)
+
+#### Bumping the pinned toolchain
+The Rust version lives in two places that must stay in sync, bumped together in one PR
+so any resulting `rustfmt`/`clippy` changes land deliberately:
+1. `channel` in `rust-toolchain.toml`
+2. the `dtolnay/rust-toolchain@<version>` refs in `.github/workflows/*.yml`, e.g.:
+   ```bash
+   sed -i 's#rust-toolchain@1\.96\.0#rust-toolchain@<new>#g' .github/workflows/*.yml
+   ```
 
 ### Getting Started
 ```bash
