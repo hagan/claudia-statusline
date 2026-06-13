@@ -164,8 +164,8 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 Install/release tooling lives in `scripts/` (`install-statusline.sh`, `quick-install.sh`,
 `uninstall-statusline.sh`, `release.sh`, `bump-version.sh`, `maintenance.sh`,
 `setup-turso.sh`, `setup-turso-schema.sql`, `toggle-debug.sh`, `test-installation.sh`).
-CI is defined under `.github/workflows/` (`build`, `test`, `security`, `release-v2`,
-`test-binaries`, `test-binaries-fixed`).
+CI is defined under `.github/workflows/` (`build`, `test`, `security`, `release`,
+`test-binaries`).
 
 > Note: the `Makefile`'s `SOURCES` variable lists a flat file set
 > (`src/stats.rs`, etc.) that predates the current module-directory layout

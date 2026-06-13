@@ -17,65 +17,11 @@ on:
       - '.github/workflows/build.yml'
 
 jobs:
-  lint:
-    name: Format and Lint
-    runs-on: ubuntu-latest
-    env:
-      NO_COLOR: 1
-      CARGO_TERM_COLOR: never
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        components: rustfmt, clippy
-
-    - name: Check formatting
-      id: fmt
-      run: |
-        if cargo fmt --all -- --check; then
-          echo "✅ Formatting OK" >> $GITHUB_STEP_SUMMARY
-          echo "fmt_status=success" >> $GITHUB_OUTPUT
-        else
-          echo "❌ Formatting failed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### How to fix:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "cargo fmt --all" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "::error::Formatting check failed. Run: cargo fmt --all"
-          echo "fmt_status=failed" >> $GITHUB_OUTPUT
-          exit 1
-        fi
-
-    - name: Run clippy
-      id: clippy
-      run: |
-        if cargo clippy --all-targets --all-features -- -D warnings -A clippy::needless_borrows_for_generic_args; then
-          echo "✅ Clippy clean" >> $GITHUB_STEP_SUMMARY
-          echo "clippy_status=success" >> $GITHUB_OUTPUT
-        else
-          echo "❌ Clippy failed" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "### How to fix:" >> $GITHUB_STEP_SUMMARY
-          echo '```bash' >> $GITHUB_STEP_SUMMARY
-          echo "cargo clippy --all-targets --all-features -- -D warnings" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          echo "::error::Clippy found issues. Run: cargo clippy --all-targets --all-features -- -D warnings"
-          echo "clippy_status=failed" >> $GITHUB_OUTPUT
-          exit 1
-        fi
-
-    - name: Generate lint summary
-      if: always()
-      run: |
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "---" >> $GITHUB_STEP_SUMMARY
-        echo "📚 See [CONTRIBUTING.md](../../blob/main/CONTRIBUTING.md#ci) for local reproduction" >> $GITHUB_STEP_SUMMARY
-
+  # NOTE: formatting + clippy live in test.yml's "Format and Lint" job, which runs on
+  # every push/PR to main (no path filter). build.yml only triggers on source/build-file
+  # changes — a strict subset — so test.yml's lint always covers these builds. Keeping a
+  # second copy here was redundant (issue #36); the build job no longer gates on it.
   build:
-    needs: lint
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     env:
@@ -120,6 +66,15 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      # Cache the cargo registry, git deps, and target dir. Swatinem/rust-cache
+      # handles this correctly across the Linux/macOS/Windows matrix (unlike a
+      # hand-rolled actions/cache with ~/.cargo paths that misbehave on Windows).
+      # Keyed per target so the six matrix legs don't clobber each other (#36).
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
       - name: Install cross
         if: matrix.use-cross

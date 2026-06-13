@@ -204,7 +204,7 @@ This indirection keeps secrets out of the committed config file.
 
 ### Deploy / release
 
-- **CI** — GitHub Actions in `.github/workflows/`: `build`, `test`, `security`, `release-v2`,
+- **CI** — GitHub Actions in `.github/workflows/`: `build`, `test`, `security`, `release`,
   `test-binaries`, `test-binaries-fixed`. Per the graph, `build`/`release` jobs run
   `cargo build --release` (modeled as `deploys → src/main.rs`); `test-binaries*` are
   `workflow_run`-triggered after `build` completes (`depends_on → build`).
