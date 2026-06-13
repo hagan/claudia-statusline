@@ -5,8 +5,8 @@
 //! - burn_rate_active_time_threshold_test.rs
 //! - burn_rate_active_time_long_gaps_test.rs (24h-gap / multi-day / week-long)
 //!
-//! Every #[test] fn name and every assertion is preserved 1:1. Active-time deltas
-//! that previously required thread::sleep are reproduced deterministically by
+//! Every test fn name and every assertion is preserved 1:1. Active-time deltas
+//! that previously required wall-clock sleeps are reproduced deterministically by
 //! backdating the stored last_activity via raw SQL. Because init_burn_rate now
 //! calls reset_config(), the 24h-gap test asserts the EXACT threshold (== 60)
 //! instead of the former brittle `< 1440` hack.
@@ -27,7 +27,10 @@ fn test_active_time_automatic_accumulation() {
     let (mode, threshold) = config_mode_threshold();
     eprintln!("Config burn_rate mode: {}", mode);
     eprintln!("Config burn_rate threshold: {}", threshold);
-    assert_eq!(mode, "active_time", "Config should use env var for burn_rate mode");
+    assert_eq!(
+        mode, "active_time",
+        "Config should use env var for burn_rate mode"
+    );
 
     let (_temp, db, db_path) = new_db();
 
@@ -38,7 +41,11 @@ fn test_active_time_automatic_accumulation() {
     let conn = open(&db_path);
     let active_time_1 = session_active_time(&conn, "test-session");
 
-    assert_eq!(active_time_1, Some(0), "First message should have active_time=0");
+    assert_eq!(
+        active_time_1,
+        Some(0),
+        "First message should have active_time=0"
+    );
 
     // Backdate last_activity to 2s ago to create a measurable time delta (no sleep)
     backdate_last_activity_secs(&conn, "test-session", 2);
@@ -49,7 +56,10 @@ fn test_active_time_automatic_accumulation() {
     // Verify accumulation: active_time should be ~2 seconds
     let active_time_2 = session_active_time(&conn, "test-session");
 
-    assert!(active_time_2.is_some(), "active_time should be calculated automatically");
+    assert!(
+        active_time_2.is_some(),
+        "active_time should be calculated automatically"
+    );
     let accumulated_time = active_time_2.unwrap();
     assert!(
         (2..=5).contains(&accumulated_time),
@@ -100,7 +110,11 @@ fn test_active_time_respects_threshold() {
     // Verify: active_time should still be 0 (idle gap excluded)
     let active_time = session_active_time(&conn, "test-session-2");
 
-    assert_eq!(active_time, Some(0), "Idle gap should not accumulate to active_time");
+    assert_eq!(
+        active_time,
+        Some(0),
+        "Idle gap should not accumulate to active_time"
+    );
 }
 
 #[test]
@@ -127,7 +141,10 @@ fn test_active_time_ignores_24_hour_gap() {
     apply(
         &db,
         "long-gap",
-        update(1.0, 10, 0).model("Sonnet").workspace("/project").device("laptop"),
+        update(1.0, 10, 0)
+            .model("Sonnet")
+            .workspace("/project")
+            .device("laptop"),
     );
 
     // Verify baseline: active_time should be 0 (first message)
@@ -144,7 +161,10 @@ fn test_active_time_ignores_24_hour_gap() {
     apply(
         &db,
         "long-gap",
-        update(2.0, 20, 0).model("Sonnet").workspace("/project").device("laptop"),
+        update(2.0, 20, 0)
+            .model("Sonnet")
+            .workspace("/project")
+            .device("laptop"),
     );
 
     let active_time_2 = session_active_time(&conn, "long-gap");
@@ -164,7 +184,10 @@ fn test_active_time_ignores_24_hour_gap() {
     apply(
         &db,
         "long-gap",
-        update(3.0, 30, 0).model("Sonnet").workspace("/project").device("laptop"),
+        update(3.0, 30, 0)
+            .model("Sonnet")
+            .workspace("/project")
+            .device("laptop"),
     );
 
     let active_time_3 = session_active_time(&conn, "long-gap");
@@ -214,7 +237,10 @@ fn test_active_time_multiple_days_with_work_periods() {
     apply(
         &db,
         "multi-day",
-        update(1.0, 10, 0).model("Sonnet").workspace("/proj").device("dev"),
+        update(1.0, 10, 0)
+            .model("Sonnet")
+            .workspace("/proj")
+            .device("dev"),
     );
 
     // Simulate 5 work messages over 10 seconds (using timestamp manipulation)
@@ -233,7 +259,10 @@ fn test_active_time_multiple_days_with_work_periods() {
     }
 
     let day1_time = session_active_time(&conn, "multi-day").unwrap();
-    eprintln!("Day 1 work period: ~10 seconds, accumulated: {}s", day1_time);
+    eprintln!(
+        "Day 1 work period: ~10 seconds, accumulated: {}s",
+        day1_time
+    );
     assert!(
         (10..=15).contains(&day1_time),
         "Day 1 should accumulate ~10s, got {}s",
@@ -306,7 +335,10 @@ fn test_active_time_week_long_session() {
     apply(
         &db,
         "week-session",
-        update(0.0, 0, 0).model("Sonnet").workspace("/proj").device("dev"),
+        update(0.0, 0, 0)
+            .model("Sonnet")
+            .workspace("/proj")
+            .device("dev"),
     );
 
     let mut total_expected_work_seconds = 0;
@@ -331,14 +363,10 @@ fn test_active_time_week_long_session() {
             apply(
                 &db,
                 "week-session",
-                update(
-                    (day * 10 + msg) as f64 * 0.1,
-                    (day * 10 + msg) as u64,
-                    0,
-                )
-                .model("Sonnet")
-                .workspace("/proj")
-                .device("dev"),
+                update((day * 10 + msg) as f64 * 0.1, (day * 10 + msg) as u64, 0)
+                    .model("Sonnet")
+                    .workspace("/proj")
+                    .device("dev"),
             );
         }
 

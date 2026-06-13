@@ -7,8 +7,8 @@
 //! - burn_rate_auto_reset_daily_stats_test.rs
 //! - burn_rate_auto_reset_weekend_test.rs (weekend/vacation/multi-gap)
 //!
-//! Every #[test] fn name and every assertion is preserved 1:1. Inactivity gaps
-//! that previously required thread::sleep are reproduced deterministically by
+//! Every test fn name and every assertion is preserved 1:1. Inactivity gaps
+//! that previously required wall-clock sleeps are reproduced deterministically by
 //! backdating the stored last_activity/start_time via raw SQL.
 
 mod burn_rate_support;
@@ -26,7 +26,10 @@ fn test_auto_reset_basic_behavior() {
     let (mode, threshold) = config_mode_threshold();
     eprintln!("Config burn_rate mode: {}", mode);
     eprintln!("Config burn_rate threshold: {}", threshold);
-    assert_eq!(mode, "auto_reset", "Config should use env var for burn_rate mode");
+    assert_eq!(
+        mode, "auto_reset",
+        "Config should use env var for burn_rate mode"
+    );
     assert_eq!(threshold, 0, "Config should use env var for threshold");
 
     let (_temp, db, db_path) = new_db();
@@ -66,8 +69,14 @@ fn test_auto_reset_basic_behavior() {
     let (cost_2, lines_added_2, lines_removed_2) = session_cost_lines(&conn, "test-auto-reset");
 
     assert_eq!(cost_2, 5.0, "After reset, cost should be 5.0 (not 15.0)");
-    assert_eq!(lines_added_2, 20, "After reset, lines_added should be 20 (not 120)");
-    assert_eq!(lines_removed_2, 2, "After reset, lines_removed should be 2 (not 7)");
+    assert_eq!(
+        lines_added_2, 20,
+        "After reset, lines_added should be 20 (not 120)"
+    );
+    assert_eq!(
+        lines_removed_2, 2,
+        "After reset, lines_removed should be 2 (not 7)"
+    );
 
     // Verify session was archived to session_archive table
     assert_eq!(
@@ -81,8 +90,14 @@ fn test_auto_reset_basic_behavior() {
         archived_latest_cost_lines(&conn, "test-auto-reset");
 
     assert_eq!(archived_cost, 10.0, "Archived cost should be 10.0");
-    assert_eq!(archived_lines_added, 100, "Archived lines_added should be 100");
-    assert_eq!(archived_lines_removed, 5, "Archived lines_removed should be 5");
+    assert_eq!(
+        archived_lines_added, 100,
+        "Archived lines_added should be 100"
+    );
+    assert_eq!(
+        archived_lines_removed, 5,
+        "Archived lines_removed should be 5"
+    );
 }
 
 /// Test that sessions within inactivity threshold are NOT reset
@@ -131,8 +146,14 @@ fn test_auto_reset_respects_threshold() {
 
     // Values should be replaced (UPSERT behavior), not accumulated
     assert_eq!(cost_2, 15.0, "Cost should be replaced by UPSERT to 15.0");
-    assert_eq!(lines_added_2, 120, "Lines added should be replaced by UPSERT to 120");
-    assert_eq!(lines_removed_2, 7, "Lines removed should be replaced by UPSERT to 7");
+    assert_eq!(
+        lines_added_2, 120,
+        "Lines added should be replaced by UPSERT to 120"
+    );
+    assert_eq!(
+        lines_removed_2, 7,
+        "Lines removed should be replaced by UPSERT to 7"
+    );
 
     // Verify NO session was archived (because threshold not exceeded)
     assert_eq!(
@@ -156,7 +177,10 @@ fn test_auto_reset_respects_threshold() {
 
     assert_eq!(cost_3, 20.0, "Cost should be replaced to 20.0");
     assert_eq!(lines_added_3, 150, "Lines added should be replaced to 150");
-    assert_eq!(lines_removed_3, 10, "Lines removed should be replaced to 10");
+    assert_eq!(
+        lines_removed_3, 10,
+        "Lines removed should be replaced to 10"
+    );
 
     // Still no archived sessions
     assert_eq!(
@@ -219,8 +243,14 @@ fn test_auto_reset_cumulative_cost_no_double_count() {
     let today = statusline::common::current_date();
     let (daily_cost_1, daily_lines_1, _) = daily_stats(&conn, &today);
 
-    assert_eq!(daily_cost_1, 100.0, "First period: daily cost should be $100");
-    assert_eq!(daily_lines_1, 1000, "First period: daily lines should be 1000");
+    assert_eq!(
+        daily_cost_1, 100.0,
+        "First period: daily cost should be $100"
+    );
+    assert_eq!(
+        daily_lines_1, 1000,
+        "First period: daily lines should be 1000"
+    );
 
     // Verify session was archived
     assert_eq!(
@@ -332,9 +362,18 @@ fn test_auto_reset_daily_stats_preservation() {
     let today = statusline::common::current_date();
     let (daily_cost_1, daily_lines_added_1, daily_lines_removed_1) = daily_stats(&conn, &today);
 
-    assert_eq!(daily_cost_1, 10.0, "Daily cost after first period should be 10.0");
-    assert_eq!(daily_lines_added_1, 100, "Daily lines_added after first period should be 100");
-    assert_eq!(daily_lines_removed_1, 5, "Daily lines_removed after first period should be 5");
+    assert_eq!(
+        daily_cost_1, 10.0,
+        "Daily cost after first period should be 10.0"
+    );
+    assert_eq!(
+        daily_lines_added_1, 100,
+        "Daily lines_added after first period should be 100"
+    );
+    assert_eq!(
+        daily_lines_removed_1, 5,
+        "Daily lines_removed after first period should be 5"
+    );
 
     // Backdate to exceed threshold (triggers archive and reset)
     backdate_last_activity_secs(&conn, "test-daily-stats", 5);
@@ -353,9 +392,18 @@ fn test_auto_reset_daily_stats_preservation() {
     // Verify daily stats ACCUMULATED (not reset)
     let (daily_cost_2, daily_lines_added_2, daily_lines_removed_2) = daily_stats(&conn, &today);
 
-    assert_eq!(daily_cost_2, 15.0, "Daily cost should accumulate: 10.0 + 5.0 = 15.0");
-    assert_eq!(daily_lines_added_2, 120, "Daily lines_added should accumulate: 100 + 20 = 120");
-    assert_eq!(daily_lines_removed_2, 7, "Daily lines_removed should accumulate: 5 + 2 = 7");
+    assert_eq!(
+        daily_cost_2, 15.0,
+        "Daily cost should accumulate: 10.0 + 5.0 = 15.0"
+    );
+    assert_eq!(
+        daily_lines_added_2, 120,
+        "Daily lines_added should accumulate: 100 + 20 = 120"
+    );
+    assert_eq!(
+        daily_lines_removed_2, 7,
+        "Daily lines_removed should accumulate: 5 + 2 = 7"
+    );
 
     // Backdate and add third work period to further verify accumulation
     backdate_last_activity_secs(&conn, "test-daily-stats", 5);
@@ -373,9 +421,18 @@ fn test_auto_reset_daily_stats_preservation() {
     // Verify daily stats continue to accumulate
     let (daily_cost_3, daily_lines_added_3, daily_lines_removed_3) = daily_stats(&conn, &today);
 
-    assert_eq!(daily_cost_3, 23.0, "Daily cost should accumulate: 10.0 + 5.0 + 8.0 = 23.0");
-    assert_eq!(daily_lines_added_3, 170, "Daily lines_added should accumulate: 100 + 20 + 50 = 170");
-    assert_eq!(daily_lines_removed_3, 17, "Daily lines_removed should accumulate: 5 + 2 + 10 = 17");
+    assert_eq!(
+        daily_cost_3, 23.0,
+        "Daily cost should accumulate: 10.0 + 5.0 + 8.0 = 23.0"
+    );
+    assert_eq!(
+        daily_lines_added_3, 170,
+        "Daily lines_added should accumulate: 100 + 20 + 50 = 170"
+    );
+    assert_eq!(
+        daily_lines_removed_3, 17,
+        "Daily lines_removed should accumulate: 5 + 2 + 10 = 17"
+    );
 
     // Verify we have 2 archived sessions (first and second work periods)
     assert_eq!(
@@ -420,7 +477,10 @@ fn test_auto_reset_after_weekend() {
 
     assert_eq!(friday_cost, 25.0);
     assert_eq!(friday_lines, 500);
-    eprintln!("Friday session: cost=${}, lines={}", friday_cost, friday_lines);
+    eprintln!(
+        "Friday session: cost=${}, lines={}",
+        friday_cost, friday_lines
+    );
 
     // Simulate: Monday 9 AM - resume work (60 hours later = weekend gap)
     eprintln!("\n=== Monday 9 AM: Resuming work after weekend ===");
@@ -439,7 +499,10 @@ fn test_auto_reset_after_weekend() {
     // Verify session was RESET (not accumulated)
     let (monday_cost, monday_lines, _) = session_cost_lines(&conn, "weekend-test");
 
-    eprintln!("Monday session: cost=${}, lines={}", monday_cost, monday_lines);
+    eprintln!(
+        "Monday session: cost=${}, lines={}",
+        monday_cost, monday_lines
+    );
 
     assert_eq!(
         monday_cost, 10.0,
@@ -531,8 +594,14 @@ fn test_auto_reset_after_vacation() {
     // Verify session was reset
     let (after_cost, after_lines, _) = session_cost_lines(&conn, "vacation-test");
 
-    assert_eq!(after_cost, 5.0, "After 7-day gap, should be reset (not $105)");
-    assert_eq!(after_lines, 50, "After 7-day gap, should be reset (not 2050)");
+    assert_eq!(
+        after_cost, 5.0,
+        "After 7-day gap, should be reset (not $105)"
+    );
+    assert_eq!(
+        after_lines, 50,
+        "After 7-day gap, should be reset (not 2050)"
+    );
 
     eprintln!("✓ 7-day vacation gap handled correctly");
 
