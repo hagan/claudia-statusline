@@ -856,8 +856,14 @@ fn test_existing_database_permissions_fixed() {
 }
 
 #[test]
+#[serial_test::serial]
 fn test_active_time_tracking_storage() {
     use tempfile::TempDir;
+
+    // #38: pin NON-active_time mode + reset_config under #[serial] so the calculation
+    // branch is inert and the P2 calculation tests cannot bleed in under parallelism.
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
+    crate::config::reset_config();
 
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
@@ -907,9 +913,13 @@ fn test_active_time_tracking_storage() {
     } else {
         panic!("Failed to parse timestamps for comparison");
     }
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    crate::config::reset_config();
 }
 
 #[test]
+#[serial_test::serial]
 fn test_active_time_accumulation() {
     use chrono::{DateTime, Duration, Utc};
     use tempfile::TempDir;
@@ -923,6 +933,12 @@ fn test_active_time_accumulation() {
     //   - tests/burn_rate_active_time_threshold_test.rs (threshold handling)
     // These integration tests use separate processes with STATUSLINE_BURN_RATE_MODE env var
     // to avoid OnceLock config conflicts and properly exercise the automatic calculation path.
+    //
+    // #38: pin a NON-active_time mode + reset_config under #[serial] so the calculation
+    // branch does NOT run (this is a STORAGE test) and so the P2 calculation tests (which
+    // set active_time mode globally) cannot bleed into this test under parallelism.
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
+    crate::config::reset_config();
 
     // Create database
     let db = SqliteDatabase::new(&db_path).unwrap();
@@ -985,14 +1001,23 @@ fn test_active_time_accumulation() {
         Some(300),
         "Active time should accumulate when messages are close together"
     );
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    crate::config::reset_config();
 }
 
 #[test]
+#[serial_test::serial]
 fn test_active_time_ignores_long_gaps() {
     use tempfile::TempDir;
 
     // NOTE: This test manually sets active_time_seconds to test STORAGE, not CALCULATION.
     // The automatic threshold logic is tested in integration tests (see comment in test_active_time_accumulation).
+    //
+    // #38: pin NON-active_time mode + reset_config under #[serial] so the calculation
+    // branch is inert (STORAGE test) and the P2 calculation tests cannot bleed in.
+    std::env::set_var("STATUSLINE_BURN_RATE_MODE", "wall_clock");
+    crate::config::reset_config();
 
     let temp_dir = TempDir::new().unwrap();
     let db_path = temp_dir.path().join("test.db");
@@ -1055,6 +1080,9 @@ fn test_active_time_ignores_long_gaps() {
         Some(0),
         "Active time should NOT accumulate across long gaps"
     );
+
+    std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+    crate::config::reset_config();
 }
 
 // =============================================================================
