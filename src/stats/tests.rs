@@ -927,3 +927,145 @@ fn test_burn_rate_config_min_duration_serde_default() {
         "Explicit min_duration_seconds should be respected"
     );
 }
+
+/// P1 (issue #38, BREAK-03 / D-04): pin the PRODUCTION write path.
+///
+/// `update_stats_data()` (persistence.rs:241) is the real entry point used on every
+/// hook invocation. When no `stats.db` exists yet it does
+/// `StatsData::load_from_sqlite().unwrap_or_else(|_| StatsData::load())` — and the
+/// `load()` fallback reads a legacy v2.x `stats.json` and migrates it into SQLite via
+/// `migrate_to_sqlite -> import_sessions`. Using `default()` instead would silently
+/// wipe a v2.x user's history on first v3.x run; this test guarantees it does not.
+///
+/// Unlike the existing `test_json_fallback_imports_when_sqlite_missing` (which calls
+/// `load()` directly and only checks `db_path.exists()`), this test:
+///   (1) exercises the real `update_stats_data()` entry point, and
+///   (2) asserts the migrated SESSION ROWS are PRESENT and CORRECT inside SQLite
+///       (via `db.get_all_sessions()`), proving data survived rather than just that a
+///       db file appeared.
+///
+/// Daily/monthly note: `import_sessions` (database/session.rs:679) imports ONLY the
+/// `sessions` map — it does NOT copy the JSON `daily`/`monthly` maps. This test asserts
+/// what the code ACTUALLY does (session-level survival) and records the daily/monthly
+/// finding in the issue SUMMARY rather than asserting an aspirational behavior.
+#[test]
+#[serial]
+fn test_update_stats_data_migrates_legacy_json_when_db_missing() {
+    use crate::database::SqliteDatabase;
+
+    let temp_dir = TempDir::new().unwrap();
+    env::set_var("XDG_DATA_HOME", temp_dir.path());
+    env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+    crate::config::reset_config();
+
+    let data_dir = get_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let json_path = data_dir.join("stats.json");
+    let db_path = data_dir.join("stats.db");
+
+    // Precondition: a legacy stats.json exists, but NO stats.db. This is the exact
+    // state of a v2.x install on its first v3.x run, where the fallback must fire.
+    assert!(
+        !db_path.exists(),
+        "Precondition: stats.db must NOT exist (legacy-only state)"
+    );
+
+    // KNOWN legacy data: two sessions with distinct cost/lines, plus populated
+    // daily/monthly/all_time blocks (to verify they are NOT lost AND to observe what
+    // import_sessions migrates).
+    let json = r#"{
+        "version": "1.0",
+        "created": "2025-01-01T00:00:00Z",
+        "last_updated": "2025-01-02T12:00:00Z",
+        "sessions": {
+            "legacy-session-a": {
+                "last_updated": "2025-01-01T10:00:00Z",
+                "cost": 12.50,
+                "lines_added": 100,
+                "lines_removed": 40,
+                "start_time": "2025-01-01T09:00:00Z"
+            },
+            "legacy-session-b": {
+                "last_updated": "2025-01-02T11:00:00Z",
+                "cost": 7.25,
+                "lines_added": 33,
+                "lines_removed": 11,
+                "start_time": "2025-01-02T10:00:00Z"
+            }
+        },
+        "daily": {
+            "2025-01-01": {"total_cost": 12.50, "sessions": ["legacy-session-a"], "lines_added": 100, "lines_removed": 40},
+            "2025-01-02": {"total_cost": 7.25, "sessions": ["legacy-session-b"], "lines_added": 33, "lines_removed": 11}
+        },
+        "monthly": {
+            "2025-01": {"total_cost": 19.75, "sessions": 2, "lines_added": 133, "lines_removed": 51}
+        },
+        "all_time": {"total_cost": 19.75, "sessions": 2, "since": "2025-01-01T00:00:00Z"}
+    }"#;
+    fs::write(&json_path, json).unwrap();
+
+    // Exercise the PRODUCTION entry point with a no-op updater. The point is to prove
+    // the LOAD/fallback inside update_stats_data migrated the legacy data — not to add
+    // new sessions. (Closure satisfies FnOnce(&mut StatsData) -> (f64, f64).)
+    let _ = update_stats_data(|_stats: &mut StatsData| (0.0, 0.0));
+
+    // (1) Migration created the SQLite database.
+    assert!(
+        db_path.exists(),
+        "update_stats_data() should have created the SQLite database via fallback migration"
+    );
+
+    // (2) Both legacy sessions are PRESENT and CORRECT in SQLite (data migrated, not wiped).
+    let db = SqliteDatabase::new(&db_path).unwrap();
+    let sessions = db.get_all_sessions().unwrap();
+
+    assert_eq!(
+        sessions.len(),
+        2,
+        "v2.x history must survive: expected 2 migrated sessions, got {}",
+        sessions.len()
+    );
+
+    let a = sessions
+        .get("legacy-session-a")
+        .expect("legacy-session-a must be migrated, not wiped");
+    assert_eq!(a.cost, 12.50, "session-a cost must survive migration");
+    assert_eq!(a.lines_added, 100, "session-a lines_added must survive");
+    assert_eq!(a.lines_removed, 40, "session-a lines_removed must survive");
+
+    let b = sessions
+        .get("legacy-session-b")
+        .expect("legacy-session-b must be migrated, not wiped");
+    assert_eq!(b.cost, 7.25, "session-b cost must survive migration");
+    assert_eq!(b.lines_added, 33, "session-b lines_added must survive");
+    assert_eq!(b.lines_removed, 11, "session-b lines_removed must survive");
+
+    // (3) The result is NOT an empty default — history preserved.
+    assert!(
+        !sessions.is_empty(),
+        "fallback must not return an empty default (that is the BREAK-03 bug)"
+    );
+
+    // FINDING (recorded in SUMMARY): import_sessions migrates ONLY the sessions map.
+    // The JSON daily/monthly maps are NOT copied into daily_stats/monthly_stats by the
+    // migration path. Assert the ACTUAL behavior: no daily/monthly rows are produced
+    // purely by importing sessions (a no-op update does not write the current day either,
+    // since the updater added no cost). Session-level survival is the data-integrity
+    // guarantee this test pins.
+    let daily = db.get_all_daily_stats().unwrap();
+    let monthly = db.get_all_monthly_stats().unwrap();
+    assert!(
+        !daily.contains_key("2025-01-01") && !daily.contains_key("2025-01-02"),
+        "DOCUMENTED: import_sessions does not migrate the JSON daily map (got: {:?})",
+        daily.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        !monthly.contains_key("2025-01"),
+        "DOCUMENTED: import_sessions does not migrate the JSON monthly map (got: {:?})",
+        monthly.keys().collect::<Vec<_>>()
+    );
+
+    env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
+}

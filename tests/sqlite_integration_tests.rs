@@ -11,24 +11,6 @@ use std::sync::Arc;
 use std::thread;
 use tempfile::TempDir;
 
-/// Get the path to the test binary, with fallback paths for different build scenarios
-fn get_test_binary() -> String {
-    // Check for the environment variable that Cargo sets when running tests
-    std::env::var("CARGO_BIN_EXE_statusline")
-        .or_else(|_| -> Result<String, std::env::VarError> {
-            // Fallback: check common locations
-            if std::path::Path::new("./target/debug/statusline").exists() {
-                Ok("./target/debug/statusline".to_string())
-            } else if std::path::Path::new("./target/release/statusline").exists() {
-                Ok("./target/release/statusline".to_string())
-            } else {
-                // Default to debug path if nothing exists yet
-                Ok("./target/debug/statusline".to_string())
-            }
-        })
-        .unwrap()
-}
-
 // v3.0.0 (Plan 06-01): converted from the former `test_dual_write_creates_both_files`.
 // After JSON write removal, the binary writes ONLY to SQLite. This regression asserts
 // that stats.db is created and stats.json is NOT.
@@ -59,7 +41,7 @@ fn test_sqlite_write_no_json_file() {
     }"#;
 
     // Run statusline with the input
-    let mut child = std::process::Command::new(get_test_binary())
+    let mut child = std::process::Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
@@ -135,7 +117,7 @@ fn test_legacy_json_migrates_to_sqlite() {
         "session_id": "fresh-session",
         "cost": {"total_cost_usd": 5.0}
     }"#;
-    let mut child = std::process::Command::new(get_test_binary())
+    let mut child = std::process::Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
@@ -605,7 +587,7 @@ fn test_cost_reduction_updates_correctly() {
         "cost": {"total_cost_usd": 10.0, "total_lines_added": 200, "total_lines_removed": 50}
     }"#;
 
-    let mut output1 = std::process::Command::new(get_test_binary())
+    let mut output1 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -631,7 +613,7 @@ fn test_cost_reduction_updates_correctly() {
         "cost": {"total_cost_usd": 6.0, "total_lines_added": 210, "total_lines_removed": 55}
     }"#;
 
-    let mut output2 = std::process::Command::new(get_test_binary())
+    let mut output2 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -670,7 +652,7 @@ fn test_unchanged_cost_updates_metadata() {
         "cost": {"total_cost_usd": 5.0, "total_lines_added": 100, "total_lines_removed": 20}
     }"#;
 
-    let mut cmd1 = std::process::Command::new(get_test_binary())
+    let mut cmd1 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -692,7 +674,7 @@ fn test_unchanged_cost_updates_metadata() {
         "cost": {"total_cost_usd": 5.0, "total_lines_added": 150, "total_lines_removed": 30}
     }"#;
 
-    let mut cmd2 = std::process::Command::new(get_test_binary())
+    let mut cmd2 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -734,7 +716,7 @@ fn test_multiple_sessions_increment_count() {
             i, i
         );
 
-        let mut cmd = std::process::Command::new(get_test_binary())
+        let mut cmd = std::process::Command::new(test_support::test_binary())
             .env("NO_COLOR", "1")
             .env("XDG_DATA_HOME", temp_dir.path())
             .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -751,7 +733,7 @@ fn test_multiple_sessions_increment_count() {
     }
 
     // Check health output to verify session count
-    let health_output = std::process::Command::new(get_test_binary())
+    let health_output = std::process::Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("health")
@@ -783,7 +765,7 @@ fn test_line_counts_use_deltas() {
         "cost": {"total_cost_usd": 5.0, "total_lines_added": 200, "total_lines_removed": 50}
     }"#;
 
-    let mut cmd1 = std::process::Command::new(get_test_binary())
+    let mut cmd1 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -807,7 +789,7 @@ fn test_line_counts_use_deltas() {
         "cost": {"total_cost_usd": 6.0, "total_lines_added": 210, "total_lines_removed": 55}
     }"#;
 
-    let mut cmd2 = std::process::Command::new(get_test_binary())
+    let mut cmd2 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -844,7 +826,7 @@ fn test_multi_day_session_counts_correctly() {
         "cost": {"total_cost_usd": 10.0, "total_lines_added": 100, "total_lines_removed": 20}
     }"#;
 
-    let mut cmd1 = std::process::Command::new(get_test_binary())
+    let mut cmd1 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -867,7 +849,7 @@ fn test_multi_day_session_counts_correctly() {
         "cost": {"total_cost_usd": 15.0, "total_lines_added": 150, "total_lines_removed": 30}
     }"#;
 
-    let mut cmd2 = std::process::Command::new(get_test_binary())
+    let mut cmd2 = std::process::Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -884,7 +866,7 @@ fn test_multi_day_session_counts_correctly() {
 
     // Check health to verify session count
     // The session should be counted once globally but may appear in multiple days
-    let health_output = std::process::Command::new(get_test_binary())
+    let health_output = std::process::Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("health")
@@ -924,7 +906,7 @@ fn test_monthly_sessions_no_overcount() {
             day * 5
         );
 
-        let mut cmd = std::process::Command::new(get_test_binary())
+        let mut cmd = std::process::Command::new(test_support::test_binary())
             .env("NO_COLOR", "1")
             .env("XDG_DATA_HOME", temp_dir.path())
             .env("XDG_CONFIG_HOME", temp_dir.path())
@@ -941,7 +923,7 @@ fn test_monthly_sessions_no_overcount() {
     }
 
     // Health check should show 1 session total (not 3)
-    let health_output = std::process::Command::new(get_test_binary())
+    let health_output = std::process::Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("health")

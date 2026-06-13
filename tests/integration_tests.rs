@@ -8,31 +8,12 @@ mod test_support;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Get the path to the test-built binary
-fn get_test_binary() -> String {
-    // Use CARGO_BIN_EXE_statusline environment variable set by cargo test
-    // This points to the binary built for testing
-    std::env::var("CARGO_BIN_EXE_statusline")
-        .or_else(|_| -> Result<String, std::env::VarError> {
-            // Try to find the binary in common locations
-            if std::path::Path::new("./target/debug/statusline").exists() {
-                Ok("./target/debug/statusline".to_string())
-            } else if std::path::Path::new("./target/release/statusline").exists() {
-                Ok("./target/release/statusline".to_string())
-            } else {
-                // Fallback to debug location
-                Ok("./target/debug/statusline".to_string())
-            }
-        })
-        .unwrap()
-}
-
 #[test]
 fn test_binary_with_empty_input() {
     // Initialize test environment isolation - child process inherits env vars
     let _guard = test_support::init();
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -63,7 +44,7 @@ fn test_binary_with_workspace() {
     let _guard = test_support::init();
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -84,7 +65,7 @@ fn test_binary_with_model() {
     let _guard = test_support::init();
     let json = r#"{"model":{"display_name":"Claude Opus"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -105,7 +86,7 @@ fn test_binary_with_cost() {
     let _guard = test_support::init();
     let json = r#"{"cost":{"total_cost_usd":5.50}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -135,7 +116,7 @@ fn test_binary_with_complete_input() {
         }
     }"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -158,7 +139,7 @@ fn test_binary_handles_malformed_json() {
     let _guard = test_support::init();
     let json = r#"{"workspace":{"current_dir":"/tmp"#; // Missing closing braces
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -178,7 +159,7 @@ fn test_binary_with_unicode() {
     let _guard = test_support::init();
     let json = r#"{"workspace":{"current_dir":"/home/用户/文档"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -199,7 +180,7 @@ fn test_binary_with_null_values() {
     let _guard = test_support::init();
     let json = r#"{"workspace":{"current_dir":null},"model":{"display_name":null}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -219,7 +200,7 @@ fn test_binary_output_contains_ansi_colors() {
     let _guard = test_support::init();
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env_remove("NO_COLOR") // Ensure colors are enabled for this test
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -240,7 +221,7 @@ fn test_binary_output_contains_ansi_colors() {
 #[test]
 fn test_version_flag() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--version")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -264,7 +245,7 @@ fn test_version_flag() {
 #[test]
 fn test_version_full_flag() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--version-full")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -282,7 +263,7 @@ fn test_version_full_flag() {
 #[test]
 fn test_version_flag_short() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("-V")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -298,7 +279,7 @@ fn test_version_flag_short() {
 #[test]
 fn test_help_flag() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--help")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -316,7 +297,7 @@ fn test_help_flag() {
 #[test]
 fn test_help_flag_short() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("-h")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -335,7 +316,7 @@ fn test_binary_with_home_directory() {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/home/user".to_string());
     let json = format!(r#"{{"workspace":{{"current_dir":"{}"}}}}"#, home);
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -359,7 +340,7 @@ fn test_session_id_with_empty_cost() {
     // Test that day charge still shows when session_id exists but cost is empty
     let json = r#"{"workspace":{"current_dir":"/test"},"session_id":"test-123","cost":{}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -382,7 +363,7 @@ fn test_transcript_field_parsing() {
     // Test that 'transcript' field is properly parsed
     let json = r#"{"workspace":{"current_dir":"/test"},"transcript":"/tmp/test.jsonl"}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -404,7 +385,7 @@ fn test_session_id_without_cost() {
     // Test with session_id but no cost object at all
     let json = r#"{"workspace":{"current_dir":"/test"},"session_id":"test-456"}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -445,7 +426,7 @@ fn test_concurrent_stats_updates() {
                 i
             );
 
-            let output = Command::new(get_test_binary())
+            let output = Command::new(test_support::test_binary())
                 .env("XDG_DATA_HOME", temp_path_clone)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
@@ -484,7 +465,7 @@ fn test_no_color_environment_variable() {
     // Test that NO_COLOR=1 disables ANSI escape codes
     let json = r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Opus"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env("NO_COLOR", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -517,7 +498,7 @@ fn test_colors_enabled_by_default() {
     // Test that colors are enabled by default
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env_remove("NO_COLOR") // Ensure colors are enabled for this test
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -543,7 +524,7 @@ fn test_colors_enabled_by_default() {
 #[test]
 fn test_health_command() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("health")
         .output()
         .expect("Failed to execute binary");
@@ -564,7 +545,7 @@ fn test_health_command() {
 #[test]
 fn test_health_command_json() {
     let _guard = test_support::init();
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .args(["health", "--json"])
         .output()
         .expect("Failed to execute binary");
@@ -591,7 +572,7 @@ fn test_no_color_flag() {
     let _guard = test_support::init();
     let input = r#"{"workspace":{"current_dir":"/test"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--no-color")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -622,7 +603,7 @@ fn test_cli_precedence() {
     // Test that CLI flags override environment variables
     let input = r#"{"workspace":{"current_dir":"/test"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--no-color")
         .env("NO_COLOR", "0") // Environment says enable colors
         .stdin(std::process::Stdio::piped())
@@ -654,7 +635,7 @@ fn test_log_level_precedence() {
     let input = r#"{"workspace":{"current_dir":"/test"}}"#;
 
     // Test 1: CLI flag overrides env var
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .args(["--log-level", "debug"])
         .env("RUST_LOG", "error") // Environment says error only
         .stdin(std::process::Stdio::piped())
@@ -679,7 +660,7 @@ fn test_theme_precedence() {
     // Test that --theme flag overrides STATUSLINE_THEME and CLAUDE_THEME env vars
     let input = r#"{"workspace":{"current_dir":"/test"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .args(["--theme", "dark"])
         .env_remove("NO_COLOR") // Ensure colors are enabled for this test
         .env("STATUSLINE_THEME", "light") // Environment says light
@@ -733,7 +714,7 @@ window_size = 100000
     let input = r#"{"workspace":{"current_dir":"/test"}}"#;
 
     // Test that --config flag is used
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .args(["--config", config_path.to_str().unwrap()])
         .env("STATUSLINE_CONFIG", "/nonexistent/config.toml") // Env points to nonexistent file
         .stdin(std::process::Stdio::piped())
@@ -759,7 +740,7 @@ fn test_multiple_cli_flags_precedence() {
     // Test that multiple CLI flags work together and all override env vars
     let input = r#"{"workspace":{"current_dir":"/test"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .args(["--no-color", "--theme", "light", "--log-level", "warn"])
         .env("NO_COLOR", "0") // Env says colors enabled
         .env("STATUSLINE_THEME", "dark") // Env says dark theme
@@ -792,7 +773,7 @@ fn test_test_mode_flag() {
     // Test that --test-mode flag shows TEST indicator
     let json = r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude Sonnet"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--test-mode")
         .env_remove("NO_COLOR") // Ensure colors are enabled for this test
         .stdin(Stdio::piped())
@@ -850,7 +831,7 @@ fn test_test_mode_uses_isolated_database() {
     // Run statusline with test mode, using temp HOME for complete isolation
     let json = r#"{"session_id":"test-isolation-check","workspace":{"current_dir":"/tmp"},"cost":{"total_cost_usd":0.01}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .arg("--test-mode")
         .env("HOME", temp_home_path) // Use temp HOME, not real HOME
         .stdin(Stdio::piped())
@@ -873,7 +854,7 @@ fn test_test_mode_uses_isolated_database() {
     );
 
     // Run again to ensure we're not touching prod database
-    let output2 = Command::new(get_test_binary())
+    let output2 = Command::new(test_support::test_binary())
         .arg("--test-mode")
         .env("HOME", temp_home_path) // Use temp HOME, not real HOME
         .stdin(Stdio::piped())
@@ -906,7 +887,7 @@ fn test_test_mode_without_flag() {
     // Test that without --test-mode flag, no TEST indicator appears
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env_remove("STATUSLINE_TEST_MODE") // Ensure test mode is not set
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

@@ -447,6 +447,162 @@ fn test_git_with_config_format_branch_only() {
     assert_eq!(vars.get("git"), Some(&"main".to_string()));
 }
 
+// =============================================================================
+// P3 (issue #38): coverage for previously-untested VariableBuilder methods.
+// Pure string-map builders: deterministic, no DB/env, so NO #[serial] needed.
+// =============================================================================
+
+#[test]
+fn test_variable_builder_set_inserts_and_skips_empty() {
+    let vars = VariableBuilder::new()
+        .set("k", "v".to_string())
+        .set("k2", String::new()) // empty -> must be suppressed (variables.rs:41)
+        .build();
+
+    assert_eq!(
+        vars.get("k"),
+        Some(&"v".to_string()),
+        "non-empty value should be inserted"
+    );
+    assert!(
+        !vars.contains_key("k2"),
+        "empty value must NOT create a key (empty suppression)"
+    );
+}
+
+#[test]
+fn test_variable_builder_duration() {
+    let color = "\x1b[36m";
+    let reset = "\x1b[0m";
+
+    // Non-empty: wrapped with color/reset.
+    let vars = VariableBuilder::new()
+        .duration("2h 15m", color, reset)
+        .build();
+    assert_eq!(
+        vars.get("duration"),
+        Some(&format!("{}{}{}", color, "2h 15m", reset)),
+        "duration should be wrapped with color and reset"
+    );
+
+    // Empty formatted -> no "duration" key (variables.rs:376 guard).
+    let empty = VariableBuilder::new().duration("", color, reset).build();
+    assert!(
+        !empty.contains_key("duration"),
+        "empty duration must NOT create a key"
+    );
+}
+
+#[test]
+fn test_variable_builder_token_rate_positive_and_zero() {
+    let color = "\x1b[90m";
+    let reset = "\x1b[0m";
+
+    // Positive rate -> "{:.1} tok/s".
+    let vars = VariableBuilder::new()
+        .token_rate(12.34, color, reset)
+        .build();
+    let token_rate = vars
+        .get("token_rate")
+        .expect("positive rate should set token_rate");
+    assert!(
+        token_rate.contains("12.3 tok/s"),
+        "token_rate should format rate to 1 decimal with tok/s; got {}",
+        token_rate
+    );
+
+    // rate == 0.0 -> no key (variables.rs:550 guard).
+    let zero = VariableBuilder::new().token_rate(0.0, color, reset).build();
+    assert!(
+        !zero.contains_key("token_rate"),
+        "rate of 0.0 must NOT create a token_rate key"
+    );
+}
+
+#[test]
+fn test_git_with_config_format_status() {
+    // Covers the format == "status" branch (variables.rs:181-187), distinct from the
+    // existing branch/show_when tests.
+    let config = GitComponentConfig {
+        format: "status".to_string(),
+        show_when: "always".to_string(),
+        color: String::new(),
+    };
+    let vars = VariableBuilder::new()
+        .git_with_config("main +2", Some("main"), Some("+2"), true, "", "", &config)
+        .build();
+
+    // status format inserts the raw status_only string into "git".
+    assert_eq!(
+        vars.get("git"),
+        Some(&"+2".to_string()),
+        "status format should insert the raw status_only string"
+    );
+    // git_branch is always set when a branch is present.
+    assert_eq!(
+        vars.get("git_branch"),
+        Some(&"main".to_string()),
+        "git_branch should always be set when a branch is present"
+    );
+}
+
+#[test]
+fn test_token_rate_with_config_time_units() {
+    // Covers the "minute" and "hour" time_unit branches (variables.rs:584-588), which
+    // the existing test_token_rate_with_config_sets_all_variables (second) does not assert.
+    let rate = 10.0; // tok/s
+
+    let minute_cfg = crate::config::TokenRateComponentConfig {
+        format: "rate_only".to_string(),
+        time_unit: "minute".to_string(),
+        show_session_total: false,
+        show_daily_total: false,
+        color: String::new(),
+    };
+    let minute_vars = VariableBuilder::new()
+        .token_rate_with_config(rate, None, None, "", "", &minute_cfg)
+        .build();
+    let minute = minute_vars
+        .get("token_rate_only")
+        .expect("minute unit should set token_rate_only");
+    assert!(
+        minute.contains("tok/min"),
+        "minute unit should use tok/min; got {}",
+        minute
+    );
+    // 10 tok/s * 60 = 600 tok/min.
+    assert!(
+        minute.contains("600"),
+        "minute rate should reflect rate*60 (600); got {}",
+        minute
+    );
+
+    let hour_cfg = crate::config::TokenRateComponentConfig {
+        format: "rate_only".to_string(),
+        time_unit: "hour".to_string(),
+        show_session_total: false,
+        show_daily_total: false,
+        color: String::new(),
+    };
+    let hour_vars = VariableBuilder::new()
+        .token_rate_with_config(rate, None, None, "", "", &hour_cfg)
+        .build();
+    let hour = hour_vars
+        .get("token_rate_only")
+        .expect("hour unit should set token_rate_only");
+    assert!(
+        hour.contains("tok/hr"),
+        "hour unit should use tok/hr; got {}",
+        hour
+    );
+    // 10 tok/s * 3600 = 36000 tok/hr -> formatted token count contains "36".
+    assert!(
+        hour.contains("36"),
+        "hour rate should reflect rate*3600 (36000); got {}",
+        hour
+    );
+}
+
 #[test]
 fn test_model_with_config_format_full() {
     let config = ModelComponentConfig {

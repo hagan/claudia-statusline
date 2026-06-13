@@ -9,31 +9,8 @@
 mod test_support;
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
-
-// Helper function to get the statusline binary path
-fn get_binary_path() -> PathBuf {
-    // Try release first, then debug
-    let release_path = PathBuf::from("./target/release/statusline");
-    if release_path.exists() {
-        return release_path;
-    }
-
-    let debug_path = PathBuf::from("./target/debug/statusline");
-    if debug_path.exists() {
-        return debug_path;
-    }
-
-    // If neither exists, try to build release
-    Command::new("cargo")
-        .args(["build", "--release", "--quiet"])
-        .output()
-        .expect("Failed to build release binary");
-
-    release_path
-}
 
 fn setup_test_database_with_malicious_data() -> TempDir {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
@@ -120,7 +97,7 @@ fn test_context_learning_status_sanitizes_model_name() {
     let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("context-learning")
@@ -159,7 +136,7 @@ fn test_context_learning_details_sanitizes_workspace() {
     let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("context-learning")
@@ -185,7 +162,7 @@ fn test_context_learning_details_sanitizes_device_id() {
     let _guard = test_support::init();
     let temp_dir = setup_test_database_with_malicious_data();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("context-learning")
@@ -213,7 +190,7 @@ fn test_context_learning_handles_missing_model() {
     let temp_dir = setup_test_database_with_malicious_data();
 
     // Try to get details for a model that doesn't exist
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("context-learning")

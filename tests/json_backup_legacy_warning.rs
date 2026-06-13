@@ -14,24 +14,11 @@
 //! helper (the same pattern as `tests/sqlite_integration_tests.rs`). This test does
 //! NOT depend on `assert_cmd` (it is not a dev-dependency of this project).
 
+#[path = "test_support.rs"]
+mod test_support;
+
 use std::io::Write;
 use tempfile::TempDir;
-
-/// Get the path to the test binary, with fallback paths for different build scenarios.
-/// Mirrors the helper in `tests/sqlite_integration_tests.rs`.
-fn get_test_binary() -> String {
-    std::env::var("CARGO_BIN_EXE_statusline")
-        .or_else(|_| -> Result<String, std::env::VarError> {
-            if std::path::Path::new("./target/debug/statusline").exists() {
-                Ok("./target/debug/statusline".to_string())
-            } else if std::path::Path::new("./target/release/statusline").exists() {
-                Ok("./target/release/statusline".to_string())
-            } else {
-                Ok("./target/debug/statusline".to_string())
-            }
-        })
-        .unwrap()
-}
 
 /// Run the statusline binary with an isolated XDG_CONFIG_HOME/XDG_DATA_HOME containing
 /// the given config.toml body, feeding `{}` on stdin. Returns the captured output.
@@ -41,7 +28,7 @@ fn run_with_config(config_body: &str) -> std::process::Output {
     std::fs::create_dir_all(&config_app_dir).unwrap();
     std::fs::write(config_app_dir.join("config.toml"), config_body).unwrap();
 
-    let mut child = std::process::Command::new(get_test_binary())
+    let mut child = std::process::Command::new(test_support::test_binary())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("XDG_DATA_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
