@@ -1,8 +1,13 @@
 # SQLite Migration Guide
 
+> **⚠️ Historical document.** The JSON→SQLite migration described here **completed in
+> v3.0.0** — SQLite is the only storage backend and JSON writing was removed. This file is
+> retained for historical context (the phased rollout plan below). For current behavior and
+> legacy-data recovery, see **[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)**.
+
 ## Overview
 
-Claudia Statusline is migrating from JSON to SQLite for improved performance and concurrent access support. This is happening in three phases to ensure zero downtime and no data loss.
+Claudia Statusline migrated from JSON to SQLite for improved performance and concurrent access support. This happened in three phases to ensure zero downtime and no data loss. All three phases are now complete (as of v3.0.0).
 
 ## Migration Phases
 
@@ -12,13 +17,13 @@ Claudia Statusline is migrating from JSON to SQLite for improved performance and
 - All writes go to both storage backends
 - No user action required
 
-### Phase 2: SQLite-First (v2.7.0+) ✅ CURRENT
+### Phase 2: SQLite-First (v2.7.0+) ✅ COMPLETE
 - **SQLite-first reads with JSON backup writes**
 - Automatic migration from JSON on first run
 - JSON maintained as backup/compatibility layer
 - Zero configuration needed - fully automatic
 
-### Phase 3: SQLite Only (v3.0.0) ✅ READY
+### Phase 3: SQLite Only (v3.0.0) ✅ COMPLETE (shipped)
 - JSON backup can now be disabled with config option
 - Use `statusline migrate --finalize` to complete migration
 - SQLite becomes the only storage backend
