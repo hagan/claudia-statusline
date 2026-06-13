@@ -20,22 +20,9 @@ PREFIX=""
 WITH_DEBUG_LOGGING=false
 WITH_STATS=false
 
-# Colors for output (disabled in test mode)
-setup_colors() {
-    if [ "$TEST_MODE" = true ] || [ -n "$NO_COLOR" ]; then
-        RED=''
-        GREEN=''
-        YELLOW=''
-        BLUE=''
-        NC=''
-    else
-        RED='\033[0;31m'
-        GREEN='\033[0;32m'
-        YELLOW='\033[1;33m'
-        BLUE='\033[0;34m'
-        NC='\033[0m' # No Color
-    fi
-}
+# Shared helpers: setup_colors, log, log_verbose, log_success, log_error,
+# log_warning, validate_path, execute (see scripts/lib.sh)
+. "$(dirname "$0")/lib.sh"
 
 # Usage function
 usage() {
@@ -148,86 +135,6 @@ done
 
 # Setup colors based on mode
 setup_colors
-
-# Logging functions
-log() {
-    if [ "$TEST_MODE" = true ]; then
-        echo "[INFO] $1"
-    else
-        echo -e "$1"
-    fi
-}
-
-log_verbose() {
-    if [ "$VERBOSE" = true ]; then
-        if [ "$TEST_MODE" = true ]; then
-            echo "[DEBUG] $1"
-        else
-            echo -e "${BLUE}[DEBUG]${NC} $1"
-        fi
-    fi
-}
-
-log_success() {
-    if [ "$TEST_MODE" = true ]; then
-        echo "[SUCCESS] $1"
-    else
-        echo -e "${GREEN}✓${NC} $1"
-    fi
-}
-
-log_error() {
-    if [ "$TEST_MODE" = true ]; then
-        echo "[ERROR] $1" >&2
-    else
-        echo -e "${RED}Error:${NC} $1" >&2
-    fi
-}
-
-log_warning() {
-    if [ "$TEST_MODE" = true ]; then
-        echo "[WARNING] $1"
-    else
-        echo -e "${YELLOW}Warning:${NC} $1"
-    fi
-}
-
-# Validate directory path for security
-validate_path() {
-    local path="$1"
-    # Resolve to absolute path
-    path=$(realpath "$path" 2>/dev/null) || {
-        log_error "Invalid path: $1"
-        return 1
-    }
-    # Check for suspicious patterns
-    if [[ "$path" =~ \.\. ]] || [[ "$path" =~ ^/proc/ ]] || [[ "$path" =~ ^/sys/ ]]; then
-        log_error "Suspicious path detected: $path"
-        return 1
-    fi
-    return 0
-}
-
-# Execute command (respects dry-run)
-execute() {
-    local cmd="$1"
-    local description="$2"
-
-    if [ "$DRY_RUN" = true ]; then
-        log "[DRY-RUN] Would execute: $cmd"
-        return 0
-    fi
-
-    log_verbose "Executing: $cmd"
-
-    if /bin/bash -c "$cmd"; then
-        [ -n "$description" ] && log_success "$description"
-        return 0
-    else
-        [ -n "$description" ] && log_error "Failed: $description"
-        return 1
-    fi
-}
 
 # Detect the correct Claude config file
 detect_config_file() {
