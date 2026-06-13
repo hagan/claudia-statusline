@@ -4,23 +4,30 @@
 Claudia Statusline is a Rust CLI and embeddable library that renders a richer status line for Claude Code sessions. The binary ingests JSON over stdin, enriches it with git and persistent usage data, and writes a pre-formatted line to stdout. The workspace keeps shared logic under `src/lib.rs` so the CLI and library can share the same building blocks.
 
 ## Workspace Layout
+> v3.0.0 reorganised several single-file modules into directories. See
+> `docs/architecture/project-map.md` for the full per-file module map.
+
 - `src/main.rs` – CLI entry point, Clap command definitions, high level orchestration
 - `src/lib.rs` – public API surface for embedding (`render_statusline`, `render_from_json`)
+- `src/render.rs` – shared stats-update + render flow used by both `main.rs` and `lib.rs`
 - `src/common.rs` – helpers for timestamps, device IDs, and path discovery (XDG locations)
 - `src/config.rs` – configuration loading/merging, defaults, retry settings, theme resolution
 - `src/context_learning.rs` – adaptive context window learning (experimental, opt-in)
-- `src/database.rs` – SQLite backend (schema creation, CRUD helpers, maintenance utilities)
+- `src/database/` – SQLite backend module (schema, session/daily/monthly CRUD, analytics, maintenance, sync, `mod`)
 - `src/display.rs` – formatting helpers, color palette, context bar rendering
 - `src/error.rs` – shared error type built on `thiserror`
-- `src/git.rs` / `src/git_utils.rs` – git status collection with timeout-aware subprocess helpers
+- `src/git.rs` / `src/git_utils.rs` / `src/git_provider.rs` – git status collection (timeout-aware subprocess) and its provider wrapper
+- `src/gsd/` – GSD project-tracking provider (roadmap, todos, state, config, update, `mod`)
+- `src/layout/` – layout engine for presets and custom templates (format, presets, template, variables, `mod`)
 - `src/models.rs` – serde-ready data structures for JSON input and transcripts
+- `src/migrations/` – migration framework for evolving the local schema
+- `src/provider/` – `DataProvider` trait and `ProviderOrchestrator` (parallel data collection)
 - `src/retry.rs` – reusable retry/backoff primitives for transient failures
-- `src/stats.rs` – persistent stats tracking (JSON fallback, SQLite primary store)
+- `src/stats/` – persistent stats tracking module (aggregation, cache, persistence, session, provider, `mod`); SQLite-only since v3.0.0 with one-shot legacy-JSON recovery
 - `src/theme.rs` – theme system with TOML-based configuration and color resolution
 - `src/utils.rs` – path shortening, input sanitisation, transcript parsing, duration helpers
 - `src/version.rs` – build metadata exposed through `--version` and library helpers
 - `src/sync.rs` – cloud sync implementation (compiled when the `turso-sync` feature is enabled)
-- `src/migrations/mod.rs` – migration framework for evolving the local schema
 
 Tests live alongside the binary in `tests/` (`integration_tests.rs`, `sqlite_integration_tests.rs`, `db_maintenance_tests.rs`, `lib_api_tests.rs`, `proptest_tests.rs`). Examples for the sync feature are under `examples/`.
 
@@ -31,16 +38,16 @@ graph TD
     B --> C[models.rs - parse input]
     B --> D[git.rs - collect repo status]
     C --> E{Has cost + session?}
-    E -->|yes| F[stats.rs - update aggregates]
-    F --> G[database.rs - persist to SQLite]
-    E -->|no| H[stats.rs - load cached totals]
+    E -->|yes| F[stats module - update aggregates]
+    F --> G[database module - persist to SQLite]
+    E -->|no| H[stats module - load cached totals]
     G --> I[display.rs]
     H --> I
     D --> I
     I --> J[stdout]
 ```
 
-When compiled with `turso-sync`, the optional sync subcommand pulls data from `stats.rs`/`database.rs`, performs network I/O via `sync.rs`, and merges results back through the same persistence layer.
+When compiled with `turso-sync`, the optional sync subcommand pulls data from the `stats`/`database` modules, performs network I/O via `sync.rs`, and merges results back through the same persistence layer.
 
 ## Key Design Choices
 - **Safe Rust only** – the crate avoids `unsafe` blocks, favouring explicit `Result` flows.
