@@ -3,29 +3,14 @@
 //! Tests the complete workflow of PreCompact/Stop hooks interacting with
 //! the statusline display to provide real-time compaction feedback.
 
+#[path = "test_support.rs"]
+mod test_support;
+
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use tempfile::TempDir;
-
-/// Get the path to the compiled statusline binary
-fn get_test_binary() -> PathBuf {
-    // Try release first, then debug
-    let release_path = PathBuf::from(env!("CARGO_BIN_EXE_statusline"));
-    if release_path.exists() {
-        return release_path;
-    }
-
-    // Fallback to debug build
-    let mut debug_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    debug_path.push("target/debug/statusline");
-    if debug_path.exists() {
-        return debug_path;
-    }
-
-    panic!("Could not find statusline binary");
-}
 
 /// Create a test transcript with token counts
 fn create_test_transcript(dir: &TempDir) -> PathBuf {
@@ -49,7 +34,7 @@ fn create_test_input(session_id: &str, transcript: &Path) -> String {
 #[test]
 fn test_hook_precompact_creates_state_file() {
     let session_id = format!("test-precompact-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // Run precompact hook
     let output = Command::new(&binary)
@@ -83,7 +68,7 @@ fn test_hook_precompact_creates_state_file() {
 #[test]
 fn test_hook_stop_clears_state_file() {
     let session_id = format!("test-stop-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // Create state first
     Command::new(&binary)
@@ -118,7 +103,7 @@ fn test_hook_stop_clears_state_file() {
 #[test]
 fn test_statusline_detects_hook_compaction() {
     let session_id = format!("test-detect-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
     let temp_dir = TempDir::new().unwrap();
     let transcript = create_test_transcript(&temp_dir);
     let input = create_test_input(&session_id, &transcript);
@@ -171,7 +156,7 @@ fn test_statusline_detects_hook_compaction() {
 #[test]
 fn test_statusline_without_hook_shows_percentage() {
     let session_id = format!("test-nohook-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
     let temp_dir = TempDir::new().unwrap();
     let transcript = create_test_transcript(&temp_dir);
     let input = create_test_input(&session_id, &transcript);
@@ -214,7 +199,7 @@ fn test_statusline_without_hook_shows_percentage() {
 #[test]
 fn test_hook_state_transition() {
     let session_id = format!("test-transition-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
     let temp_dir = TempDir::new().unwrap();
     let transcript = create_test_transcript(&temp_dir);
     let input = create_test_input(&session_id, &transcript);
@@ -281,7 +266,7 @@ fn test_hook_state_transition() {
 fn test_multiple_sessions_isolated() {
     let session_a = format!("test-multi-a-{}", std::process::id());
     let session_b = format!("test-multi-b-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // Set hook for session A only
     Command::new(&binary)
@@ -310,7 +295,7 @@ fn test_multiple_sessions_isolated() {
 #[test]
 fn test_hook_trigger_types() {
     let session_id = format!("test-triggers-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
     let cache_dir = dirs::cache_dir().unwrap().join("claudia-statusline");
     let state_file = cache_dir.join(format!("state-{}.json", session_id));
 
@@ -349,7 +334,7 @@ fn test_hook_trigger_types() {
 #[test]
 fn test_hook_idempotency() {
     let session_id = format!("test-idempotent-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // Call precompact multiple times
     for _ in 0..3 {
@@ -386,7 +371,7 @@ fn test_hook_idempotency() {
 #[test]
 fn test_hook_postcompact_clears_state_file() {
     let session_id = format!("test-postcompact-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // Create state first (simulates PreCompact)
     Command::new(&binary)
@@ -428,7 +413,7 @@ fn test_hook_postcompact_clears_state_file() {
 #[test]
 fn test_hook_postcompact_without_precompact() {
     let session_id = format!("test-postcompact-nopre-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // PostCompact without PreCompact should not error (idempotent)
     let output = Command::new(&binary)
@@ -449,7 +434,7 @@ fn test_hook_postcompact_without_precompact() {
 #[test]
 fn test_full_compaction_lifecycle_with_postcompact() {
     let session_id = format!("test-lifecycle-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
     let temp_dir = TempDir::new().unwrap();
     let transcript = create_test_transcript(&temp_dir);
     let input = create_test_input(&session_id, &transcript);
@@ -526,7 +511,7 @@ fn test_full_compaction_lifecycle_with_postcompact() {
 #[test]
 fn test_postcompact_idempotency() {
     let session_id = format!("test-postcompact-idemp-{}", std::process::id());
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // Create state
     Command::new(&binary)
@@ -565,7 +550,7 @@ fn test_postcompact_with_empty_session_id() {
     //
     // Note: Claude Code sends empty session_id via stdin JSON, not CLI args.
     // The CLI validates non-empty session_id, but stdin JSON bypasses this.
-    let binary = get_test_binary();
+    let binary = test_support::test_binary();
 
     // First, create a state file with a real session_id (PreCompact works normally)
     let real_session_id = format!("test-empty-workaround-{}", std::process::id());

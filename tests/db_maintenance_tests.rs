@@ -10,28 +10,6 @@ use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
-// Helper function to get the statusline binary path
-fn get_binary_path() -> PathBuf {
-    // Try release first, then debug
-    let release_path = PathBuf::from("./target/release/statusline");
-    if release_path.exists() {
-        return release_path;
-    }
-
-    let debug_path = PathBuf::from("./target/debug/statusline");
-    if debug_path.exists() {
-        return debug_path;
-    }
-
-    // If neither exists, try to build release
-    Command::new("cargo")
-        .args(["build", "--release", "--quiet"])
-        .output()
-        .expect("Failed to build release binary");
-
-    release_path
-}
-
 fn setup_test_database() -> (TempDir, PathBuf) {
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -43,7 +21,7 @@ fn setup_test_database() -> (TempDir, PathBuf) {
 
     // Initialize the database by running statusline with minimal input
     // Use a session_id and higher cost to ensure database creation
-    let mut child = Command::new(get_binary_path())
+    let mut child = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .stdin(std::process::Stdio::piped())
@@ -141,7 +119,7 @@ fn setup_test_database() -> (TempDir, PathBuf) {
 #[test]
 fn test_db_maintain_command_exists() {
     let _guard = test_support::init();
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .arg("db-maintain")
         .arg("--help")
         .output()
@@ -160,7 +138,7 @@ fn test_db_maintain_basic_execution() {
     let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
@@ -176,7 +154,7 @@ fn test_db_maintain_verbose_output() {
     let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
@@ -202,7 +180,7 @@ fn test_db_maintain_force_vacuum() {
     let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
@@ -219,7 +197,7 @@ fn test_db_maintain_no_prune() {
     let _guard = test_support::init();
     let (temp_dir, _db_path) = setup_test_database();
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
@@ -238,7 +216,7 @@ fn test_db_maintain_missing_database() {
     // Create a temp dir but don't create a database
     let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")
@@ -333,7 +311,7 @@ fn test_db_maintain_pruning() {
     }
 
     // Run maintenance with pruning
-    let output = Command::new(get_binary_path())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .arg("db-maintain")

@@ -40,6 +40,7 @@ static TEMP_BASE: OnceLock<TempDir> = OnceLock::new();
 
 /// Guard that ensures the temp directory stays alive.
 /// The directory is cleaned up when the test process exits.
+#[allow(dead_code)]
 pub struct TestEnvGuard {
     _private: (),
 }
@@ -63,6 +64,7 @@ pub struct TestEnvGuard {
 ///
 /// All variables starting with `STATUSLINE_` or `CLAUDE_` are cleared.
 /// Tests that need specific values should set them after calling `init()`.
+#[allow(dead_code)]
 pub fn init() -> TestEnvGuard {
     // Use OnceLock::get_or_init for thread-safe, single initialization
     TEMP_BASE.get_or_init(|| {
@@ -113,6 +115,18 @@ pub fn init() -> TestEnvGuard {
     });
 
     TestEnvGuard { _private: () }
+}
+
+/// Path to the compiled `statusline` binary under test.
+///
+/// Uses the compile-time `CARGO_BIN_EXE_statusline` macro, which Cargo GUARANTEES to
+/// set for integration tests and which points at the exact binary built for this test
+/// run. This replaces the previous per-file `get_test_binary()` helpers that did a
+/// runtime `env::var` lookup with a hardcoded `./target/debug/statusline` fallback —
+/// a fragile path that could silently point at a stale or missing binary.
+#[allow(dead_code)]
+pub fn test_binary() -> &'static str {
+    env!("CARGO_BIN_EXE_statusline")
 }
 
 /// Get the base temp directory path (for tests that need to create files)

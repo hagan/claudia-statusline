@@ -12,21 +12,6 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use tempfile::TempDir;
 
-/// Get the path to the test-built binary
-fn get_test_binary() -> String {
-    std::env::var("CARGO_BIN_EXE_statusline")
-        .or_else(|_| -> Result<String, std::env::VarError> {
-            if std::path::Path::new("./target/debug/statusline").exists() {
-                Ok("./target/debug/statusline".to_string())
-            } else if std::path::Path::new("./target/release/statusline").exists() {
-                Ok("./target/release/statusline".to_string())
-            } else {
-                Ok("./target/debug/statusline".to_string())
-            }
-        })
-        .unwrap()
-}
-
 /// Create a config file with show_context_tokens setting
 fn create_config(show_context_tokens: bool) -> std::path::PathBuf {
     let path = std::env::temp_dir().join(format!(
@@ -89,7 +74,7 @@ fn test_context_tokens_shown_when_enabled() {
         transcript.to_str().unwrap()
     );
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("STATUSLINE_CONFIG", &config_file)
@@ -145,7 +130,7 @@ fn test_context_tokens_hidden_when_disabled() {
         transcript.to_str().unwrap()
     );
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("STATUSLINE_CONFIG", &config_file)
@@ -216,7 +201,7 @@ fn test_context_tokens_formatting() {
             transcript.to_str().unwrap()
         );
 
-        let cmd_output = Command::new(get_test_binary())
+        let cmd_output = Command::new(test_support::test_binary())
             .env("XDG_DATA_HOME", temp_dir.path())
             .env("XDG_CONFIG_HOME", temp_dir.path())
             .env("STATUSLINE_CONFIG", &config_file)
@@ -265,7 +250,7 @@ fn test_context_tokens_without_transcript() {
     // JSON without transcript - context bar should not appear
     let json = r#"{"workspace":{"current_dir":"/tmp"}}"#;
 
-    let output = Command::new(get_test_binary())
+    let output = Command::new(test_support::test_binary())
         .env("XDG_DATA_HOME", temp_dir.path())
         .env("XDG_CONFIG_HOME", temp_dir.path())
         .env("STATUSLINE_CONFIG", &config_file)
