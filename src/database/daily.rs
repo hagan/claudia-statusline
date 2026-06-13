@@ -61,6 +61,34 @@ impl SqliteDatabase {
         ))
     }
 
+    /// Import legacy daily aggregates from a JSON-to-SQLite migration (#52).
+    ///
+    /// Initial import only (`INSERT OR IGNORE`), mirroring `import_sessions`. Token columns
+    /// are left at their defaults (0) — a legacy `stats.json` carried no per-day token data.
+    /// `session_count` is derived from the number of session IDs the daily entry recorded.
+    pub fn import_daily(
+        &self,
+        daily: &std::collections::HashMap<String, crate::stats::DailyStats>,
+    ) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let tx = conn.transaction()?;
+        for (date, stats) in daily.iter() {
+            tx.execute(
+                "INSERT OR IGNORE INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    date,
+                    stats.total_cost,
+                    stats.lines_added as i64,
+                    stats.lines_removed as i64,
+                    stats.sessions.len() as i64,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Get all daily stats from the database
     pub fn get_all_daily_stats(
         &self,

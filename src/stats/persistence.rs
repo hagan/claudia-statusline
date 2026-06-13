@@ -122,11 +122,16 @@ impl StatsData {
                 "Migrating {} sessions from JSON to SQLite",
                 data.sessions.len()
             );
-            // Perform migration
+            // Perform migration. Back-fill the legacy daily/monthly aggregate maps too
+            // (#52) so historical rollups survive the upgrade — not just per-session rows.
             db.import_sessions(&data.sessions)?;
+            db.import_daily(&data.daily)?;
+            db.import_monthly(&data.monthly)?;
             log::info!(
-                "Successfully migrated {} sessions to SQLite",
-                data.sessions.len()
+                "Successfully migrated {} sessions, {} daily and {} monthly aggregates to SQLite",
+                data.sessions.len(),
+                data.daily.len(),
+                data.monthly.len()
             );
         } else {
             log::debug!("Skipping migration - database already has sessions");
