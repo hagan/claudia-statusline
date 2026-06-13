@@ -59,7 +59,7 @@ pub mod render;
 /// Retry logic with exponential backoff for transient failures
 pub mod retry;
 /// Hook-based state management for real-time event tracking
-pub mod state;
+pub mod session_state;
 pub mod stats;
 /// Cloud synchronization module (requires turso-sync feature)
 #[cfg(feature = "turso-sync")]

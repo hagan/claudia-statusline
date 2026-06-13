@@ -46,7 +46,7 @@ mod models;
 mod provider;
 mod render;
 mod retry;
-mod state;
+mod session_state;
 mod stats;
 #[cfg(feature = "turso-sync")]
 mod sync;
