@@ -11,6 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Rate-limit reset countdown.** The rate-limit segment can now show time until each window resets, e.g. `5h:24% (2h13m) 7d:41% (3d5h)` — opt in with `[display] rate_limit_reset_countdown = true`. New template variables `{rate_limit_5h_reset}` / `{rate_limit_7d_reset}` (e.g. `2h13m`) are always available regardless of the flag. Computed from the payload's `rate_limits.*.resets_at`; a stale/past reset shows no countdown.
 
+### Fixed
+
+- **Context bar pinning at 100% on 1M-context sessions.** When Claude Code's payload provided `context_window_size` + `total_input_tokens` but no pre-calculated `used_percentage` (e.g. right after `/compact`), we discarded the payload and fell back to a transcript estimate that assumes a 200k window — saturating the bar. We now derive the percentage from `tokens / context_window_size` in that case, so the bar tracks the real (possibly 1M) window. The transcript fallback also recognizes Fable/Mythos (1M default window); Opus/Sonnet stay a conservative 200k there since 1M is opt-in per session and the payload is authoritative. A `RUST_LOG=debug` line now reports which source (payload vs transcript) produced the percentage.
+
+### Changed
+
+- **Hooks: use the native `PostCompact` event.** Documentation now wires `statusline hook postcompact` to Claude Code's dedicated `PostCompact` hook (which supplies a real `session_id` on stdin), instead of the `SessionStart[compact]` workaround (kept as a fallback note for older Claude Code). Added a `refreshInterval` recommendation so time-based segments (the reset countdown) and git/rate-limit state stay fresh while the session is idle. No code change — the hook command already reads `session_id` from stdin.
+
 ## [3.1.0] - 2026-06-14
 
 > **Minor release**: adopt the modern Claude Code statusline payload for more accurate, lower-overhead stats — context usage now comes straight from Claude Code (with a transcript fallback), plus Pro/Max rate-limit windows, new model families, and opt-in session-metadata template variables. Fully backward-compatible; no breaking changes.

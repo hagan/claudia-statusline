@@ -225,7 +225,7 @@ See [CONFIGURATION.md](CONFIGURATION.md#adaptive-context-learning-experimental) 
 # PreCompact hook - called when compaction starts
 statusline hook precompact --session-id=<SESSION_ID> --trigger=<auto|manual>
 
-# PostCompact hook - called after compaction completes (via SessionStart[compact])
+# PostCompact hook - called after compaction completes
 statusline hook postcompact --session-id=<SESSION_ID>
 
 # Stop hook - called after each agent response (not for compaction cleanup!)
@@ -246,9 +246,8 @@ statusline hook stop --session-id=<SESSION_ID>
         ]
       }
     ],
-    "SessionStart": [
+    "PostCompact": [
       {
-        "matcher": "compact",
         "hooks": [
           {
             "type": "command",
@@ -261,8 +260,15 @@ statusline hook stop --session-id=<SESSION_ID>
 }
 ```
 
-> **Note**: Claude Code doesn't have a dedicated `PostCompact` hook. Instead, use
-> `SessionStart` with matcher `"compact"` which fires after compaction completes.
+> **Note**: Claude Code now has a dedicated **`PostCompact`** hook event (fires
+> after compaction completes), so wire `postcompact` to it directly. The hook
+> command reads `session_id` from the JSON Claude Code sends on stdin, so the
+> native event supplies a proper session id (avoiding the empty-id edge case of
+> the old `SessionStart[compact]` workaround).
+>
+> **Older Claude Code without `PostCompact`?** Fall back to the previous wiring —
+> a `SessionStart` hook with `"matcher": "compact"` calling the same
+> `statusline hook postcompact` command.
 
 **How it works:**
 - Claude Code sends hook data as JSON via stdin (no wrapper scripts needed!)
@@ -275,7 +281,8 @@ statusline hook stop --session-id=<SESSION_ID>
 **Hook lifecycle:**
 1. **PreCompact** fires → Creates state file → Statusline shows "Compacting..."
 2. Compaction runs...
-3. **SessionStart[compact]** fires → Clears state file → Statusline returns to normal
+3. **PostCompact** fires → Clears state file → Statusline returns to normal
+   *(on older Claude Code, `SessionStart[compact]` plays this role)*
 
 **Benefits:**
 - **~600x faster**: <1ms detection vs 60s+ token analysis
@@ -287,6 +294,28 @@ statusline hook stop --session-id=<SESSION_ID>
 - State files automatically cleaned up by PostCompact hook
 - Stale states (>2 minutes) automatically cleared as fallback
 - No manual maintenance required
+
+### Keeping the statusline fresh while idle (`refreshInterval`)
+
+Claude Code re-runs the statusline on events (each assistant message, after
+`/compact`, permission-mode and vim-mode changes). Time-based segments — the
+**rate-limit reset countdown** (`{rate_limit_5h_reset}` / `rate_limit_reset_countdown`)
+and git status during long idle/subagent waits — can otherwise go stale between
+events. Add a timer in `~/.claude/settings.json` so the line also re-runs on a
+fixed cadence:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "~/.local/bin/statusline",
+    "refreshInterval": 10
+  }
+}
+```
+
+`refreshInterval` is in seconds (minimum `1`). Use it when you display the reset
+countdown or want git/rate-limit state to keep updating while the session is idle.
 
 See README.md for complete hook setup guide.
 

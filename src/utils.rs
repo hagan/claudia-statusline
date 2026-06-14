@@ -238,6 +238,12 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
                         // Future versions might increase, but default to config
                         config.context.window_size
                     }
+                    // Fable / Mythos: 1M is both the default and the maximum window
+                    // (no 200k mode), so 1M is the correct guess here. Note: for
+                    // Opus/Sonnet the 1M window is opt-in per session, so we keep the
+                    // conservative 200k default above and rely on the payload's
+                    // context_window_size (authoritative) to report 1M when active.
+                    "Fable" | "Mythos" => 1_000_000,
                     _ => config.context.window_size,
                 }
             }
@@ -1171,6 +1177,26 @@ mod tests {
         assert!(result.is_some());
         let usage = result.unwrap();
         assert_eq!(usage.percentage, 50.0);
+    }
+
+    #[test]
+    fn test_fable_mythos_default_1m_window() {
+        let cfg = test_config();
+        // Fable/Mythos default (and max) window is 1M, so the fallback guesses 1M.
+        assert_eq!(
+            get_context_window_for_model(Some("claude-fable-5"), &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            get_context_window_for_model(Some("claude-mythos-5"), &cfg),
+            1_000_000
+        );
+        // Opus/Sonnet stay conservative at 200k in the fallback (1M is opt-in per
+        // session; the payload's context_window_size is authoritative when present).
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            200_000
+        );
     }
 
     #[test]

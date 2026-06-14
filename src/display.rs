@@ -41,9 +41,32 @@ pub struct PayloadExtras<'a> {
 fn context_usage_from_payload(
     cw: &ContextWindow,
 ) -> Option<(ContextUsage, Option<u32>, Option<usize>)> {
-    let percentage = cw.used_percentage?;
     let window_size = cw.context_window_size.map(|w| w as usize);
     let current_tokens = cw.total_input_tokens.map(|t| t as u32);
+
+    // Prefer Claude Code's pre-calculated percentage. When it's absent (e.g.
+    // right after `/compact`, before the next API response repopulates it),
+    // derive it from tokens / window_size so we still beat the transcript guess.
+    // Only when neither is available do we return None and fall back.
+    let percentage = match cw.used_percentage {
+        Some(p) => p,
+        None => match (cw.total_input_tokens, cw.context_window_size) {
+            (Some(t), Some(w)) if w > 0 => (t as f64 / w as f64) * 100.0,
+            _ => {
+                log::debug!("context source: payload context_window present but no usable percentage/tokens; falling back to transcript");
+                return None;
+            }
+        },
+    };
+
+    log::debug!(
+        "context source: payload (used_percentage={:?}, window_size={:?}, input_tokens={:?}) -> {:.1}%",
+        cw.used_percentage,
+        cw.context_window_size,
+        cw.total_input_tokens,
+        percentage
+    );
+
     let tokens_remaining = match (window_size, cw.total_input_tokens) {
         (Some(w), Some(used)) => w.saturating_sub(used as usize),
         _ => 0,
@@ -464,6 +487,11 @@ fn format_statusline_string(
         if let Some((context, current_tokens, window_size)) = payload_ctx {
             parts.push(format_context_bar(&context, current_tokens, window_size));
         } else if let Some(transcript) = transcript_path {
+            log::debug!(
+                "context source: transcript fallback (model={:?}, window={})",
+                model_name,
+                crate::utils::get_context_window_for_model(model_name, config::get_config())
+            );
             if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None)
             {
                 let current_tokens = crate::utils::get_token_count_from_transcript(transcript);
@@ -1458,7 +1486,22 @@ mod tests {
         assert_eq!(tokens, Some(15500));
         assert_eq!(window, Some(200000));
 
-        // No used_percentage -> None, so caller falls back to transcript
+        // used_percentage null but tokens + size present -> derive from tokens/size
+        // (e.g. right after /compact). 176000 / 1000000 = 17.6%.
+        let cw_derived = ContextWindow {
+            total_input_tokens: Some(176_000),
+            total_output_tokens: None,
+            context_window_size: Some(1_000_000),
+            used_percentage: None,
+            remaining_percentage: None,
+            current_usage: None,
+        };
+        let (ctx, tokens, window) = context_usage_from_payload(&cw_derived).unwrap();
+        assert!((ctx.percentage - 17.6).abs() < 0.01);
+        assert_eq!(tokens, Some(176_000));
+        assert_eq!(window, Some(1_000_000));
+
+        // Neither percentage nor tokens -> None, so caller falls back to transcript
         let cw_unpopulated = ContextWindow {
             total_input_tokens: None,
             total_output_tokens: None,
