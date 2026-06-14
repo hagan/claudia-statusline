@@ -7,7 +7,8 @@ use crate::config;
 use crate::git::{format_git_info, get_git_status};
 use crate::layout::{LayoutRenderer, VariableBuilder};
 use crate::models::{
-    CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimits, Repo,
+    CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimitWindow, RateLimits,
+    Repo,
 };
 use crate::theme::{get_theme_manager, Theme};
 use crate::utils::{calculate_context_usage, parse_duration, sanitize_for_terminal, shorten_path};
@@ -60,15 +61,54 @@ fn context_usage_from_payload(
     ))
 }
 
-/// Render the rate-limit windows as a compact string, e.g. `5h:24% 7d:41%`.
-/// Returns `None` when no window carries a percentage (absent for API-key usage).
-fn format_rate_limits(rl: &RateLimits) -> Option<String> {
-    let mut parts = Vec::new();
-    if let Some(p) = rl.five_hour.as_ref().and_then(|w| w.used_percentage) {
-        parts.push(format!("5h:{}%", p.round() as i64));
+/// Format seconds-until-reset as a compact countdown: `3d5h`, `2h13m`, `45m`,
+/// or `<1m`. Returns `None` when the reset is at or in the past (stale), so a
+/// stale window simply shows no countdown.
+fn format_reset_countdown(resets_at: i64, now: i64) -> Option<String> {
+    let delta = resets_at - now;
+    if delta <= 0 {
+        return None;
     }
-    if let Some(p) = rl.seven_day.as_ref().and_then(|w| w.used_percentage) {
-        parts.push(format!("7d:{}%", p.round() as i64));
+    let days = delta / 86_400;
+    let hours = (delta % 86_400) / 3_600;
+    let mins = (delta % 3_600) / 60;
+    Some(if days > 0 {
+        format!("{}d{}h", days, hours)
+    } else if hours > 0 {
+        format!("{}h{}m", hours, mins)
+    } else if mins > 0 {
+        format!("{}m", mins)
+    } else {
+        "<1m".to_string()
+    })
+}
+
+/// Render one window piece, e.g. `5h:24%` or `5h:24% (2h13m)` when a countdown
+/// is provided and enabled.
+fn rate_limit_piece(label: &str, pct: f64, countdown: Option<&str>) -> String {
+    match countdown {
+        Some(cd) => format!("{}:{}% ({})", label, pct.round() as i64, cd),
+        None => format!("{}:{}%", label, pct.round() as i64),
+    }
+}
+
+/// Render the rate-limit windows as a compact string, e.g. `5h:24% 7d:41%`
+/// (or `5h:24% (2h13m) 7d:41% (3d5h)` with `show_countdown`). Returns `None`
+/// when no window carries a percentage (absent for API-key usage). `now` is the
+/// current Unix epoch (seconds), passed in for testability.
+fn format_rate_limits(rl: &RateLimits, now: i64, show_countdown: bool) -> Option<String> {
+    let mut parts = Vec::new();
+    for (label, window) in [("5h", rl.five_hour.as_ref()), ("7d", rl.seven_day.as_ref())] {
+        if let Some(w) = window {
+            if let Some(p) = w.used_percentage {
+                let countdown = if show_countdown {
+                    w.resets_at.and_then(|r| format_reset_countdown(r, now))
+                } else {
+                    None
+                };
+                parts.push(rate_limit_piece(label, p, countdown.as_deref()));
+            }
+        }
     }
     if parts.is_empty() {
         None
@@ -574,7 +614,9 @@ fn format_statusline_string(
     //     for API-key usage so it renders nothing unless the payload carries them.
     if display_config.show_rate_limits {
         if let Some(rl) = extras.rate_limits {
-            if let Some(s) = format_rate_limits(rl) {
+            let now = chrono::Utc::now().timestamp();
+            if let Some(s) = format_rate_limits(rl, now, display_config.rate_limit_reset_countdown)
+            {
                 parts.push(format!("{}{}{}", Colors::light_gray(), s, Colors::reset()));
             }
         }
@@ -777,11 +819,35 @@ fn format_statusline_with_layout(
     }
 
     // Rate limits (Pro/Max only; absent otherwise). Exposes {rate_limits},
-    // {rate_limit_5h}, {rate_limit_7d} — opt in by referencing them in a template.
+    // {rate_limit_5h}, {rate_limit_7d}, {rate_limit_5h_reset}, {rate_limit_7d_reset}
+    // — opt in by referencing them in a template. The inline countdown in
+    // {rate_limits}/{rate_limit_5h} is gated by display.rate_limit_reset_countdown;
+    // the *_reset variables are always exposed when the payload carries resets_at.
     if let Some(rl) = extras.rate_limits {
+        let now = chrono::Utc::now().timestamp();
+        let show_cd = full_config.display.rate_limit_reset_countdown;
+        let window_parts =
+            |w: Option<&RateLimitWindow>, label: &str| -> (Option<String>, Option<String>) {
+                match w.and_then(|x| x.used_percentage.map(|p| (p, x.resets_at))) {
+                    Some((pct, resets)) => {
+                        let countdown = resets.and_then(|r| format_reset_countdown(r, now));
+                        let piece = rate_limit_piece(
+                            label,
+                            pct,
+                            if show_cd { countdown.as_deref() } else { None },
+                        );
+                        (Some(piece), countdown)
+                    }
+                    None => (None, None),
+                }
+            };
+        let (five, five_reset) = window_parts(rl.five_hour.as_ref(), "5h");
+        let (seven, seven_reset) = window_parts(rl.seven_day.as_ref(), "7d");
         builder = builder.rate_limits(
-            rl.five_hour.as_ref().and_then(|w| w.used_percentage),
-            rl.seven_day.as_ref().and_then(|w| w.used_percentage),
+            five.as_deref(),
+            five_reset.as_deref(),
+            seven.as_deref(),
+            seven_reset.as_deref(),
             &Colors::light_gray(),
             &reset,
         );
@@ -1278,17 +1344,27 @@ mod tests {
 
     #[test]
     fn test_format_rate_limits() {
+        let now = 1_000_000;
         let rl = RateLimits {
             five_hour: Some(RateLimitWindow {
                 used_percentage: Some(23.5),
-                resets_at: Some(1),
+                resets_at: Some(now + 8000), // 2h13m
             }),
             seven_day: Some(RateLimitWindow {
                 used_percentage: Some(41.2),
-                resets_at: Some(2),
+                resets_at: Some(now + 280_800), // 3d6h
             }),
         };
-        assert_eq!(format_rate_limits(&rl).as_deref(), Some("5h:24% 7d:41%"));
+        // Without countdown (default)
+        assert_eq!(
+            format_rate_limits(&rl, now, false).as_deref(),
+            Some("5h:24% 7d:41%")
+        );
+        // With countdown
+        assert_eq!(
+            format_rate_limits(&rl, now, true).as_deref(),
+            Some("5h:24% (2h13m) 7d:41% (3d6h)")
+        );
 
         // Only one window present
         let rl_one = RateLimits {
@@ -1298,14 +1374,42 @@ mod tests {
             }),
             seven_day: None,
         };
-        assert_eq!(format_rate_limits(&rl_one).as_deref(), Some("5h:10%"));
+        // Countdown requested but resets_at absent -> no countdown appended
+        assert_eq!(
+            format_rate_limits(&rl_one, now, true).as_deref(),
+            Some("5h:10%")
+        );
 
         // No percentages -> None (renders nothing)
         let rl_empty = RateLimits {
             five_hour: None,
             seven_day: None,
         };
-        assert!(format_rate_limits(&rl_empty).is_none());
+        assert!(format_rate_limits(&rl_empty, now, true).is_none());
+    }
+
+    #[test]
+    fn test_format_reset_countdown() {
+        let now = 1_000_000;
+        assert_eq!(
+            format_reset_countdown(now + 8000, now).as_deref(),
+            Some("2h13m")
+        );
+        assert_eq!(
+            format_reset_countdown(now + 280_800, now).as_deref(),
+            Some("3d6h")
+        );
+        assert_eq!(
+            format_reset_countdown(now + 2700, now).as_deref(),
+            Some("45m")
+        );
+        assert_eq!(
+            format_reset_countdown(now + 30, now).as_deref(),
+            Some("<1m")
+        );
+        // At or in the past -> None (stale, no countdown)
+        assert!(format_reset_countdown(now, now).is_none());
+        assert!(format_reset_countdown(now - 100, now).is_none());
     }
 
     #[test]

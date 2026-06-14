@@ -841,31 +841,48 @@ impl VariableBuilder {
         self
     }
 
-    /// Set rate-limit variables ({rate_limits}, {rate_limit_5h}, {rate_limit_7d})
+    /// Set rate-limit variables ({rate_limits}, {rate_limit_5h}, {rate_limit_7d},
+    /// {rate_limit_5h_reset}, {rate_limit_7d_reset}).
     ///
-    /// Sourced from Claude Code's `rate_limits` payload (Pro/Max only). Each
-    /// percentage is rendered like `5h:24%` / `7d:41%`; `{rate_limits}` is the
-    /// space-joined combination. Variables are simply absent when not provided,
-    /// so referencing them in a template is the opt-in.
+    /// Sourced from Claude Code's `rate_limits` payload (Pro/Max only). Callers
+    /// pass each window's already-rendered piece (e.g. `5h:24%`, or `5h:24%
+    /// (2h13m)` when the reset countdown is enabled) plus the bare countdown
+    /// string (e.g. `2h13m`), which is always exposed as its own variable.
+    /// `{rate_limits}` is the space-joined combination of the pieces. Variables
+    /// are absent when not provided, so referencing them in a template is the opt-in.
     pub fn rate_limits(
         mut self,
-        five_hour_pct: Option<f64>,
-        seven_day_pct: Option<f64>,
+        five_hour: Option<&str>,
+        five_hour_reset: Option<&str>,
+        seven_day: Option<&str>,
+        seven_day_reset: Option<&str>,
         color: &str,
         reset: &str,
     ) -> Self {
         let mut combined = Vec::new();
-        if let Some(p) = five_hour_pct {
-            let s = format!("{}5h:{}%{}", color, p.round() as i64, reset);
+        if let Some(piece) = five_hour {
+            let s = format!("{}{}{}", color, piece, reset);
             self.variables
                 .insert("rate_limit_5h".to_string(), s.clone());
             combined.push(s);
         }
-        if let Some(p) = seven_day_pct {
-            let s = format!("{}7d:{}%{}", color, p.round() as i64, reset);
+        if let Some(cd) = five_hour_reset {
+            self.variables.insert(
+                "rate_limit_5h_reset".to_string(),
+                format!("{}{}{}", color, cd, reset),
+            );
+        }
+        if let Some(piece) = seven_day {
+            let s = format!("{}{}{}", color, piece, reset);
             self.variables
                 .insert("rate_limit_7d".to_string(), s.clone());
             combined.push(s);
+        }
+        if let Some(cd) = seven_day_reset {
+            self.variables.insert(
+                "rate_limit_7d_reset".to_string(),
+                format!("{}{}{}", color, cd, reset),
+            );
         }
         if !combined.is_empty() {
             self.variables

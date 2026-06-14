@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Rate-limit reset countdown.** The rate-limit segment can now show time until each window resets, e.g. `5h:24% (2h13m) 7d:41% (3d5h)` — opt in with `[display] rate_limit_reset_countdown = true`. New template variables `{rate_limit_5h_reset}` / `{rate_limit_7d_reset}` (e.g. `2h13m`) are always available regardless of the flag. Computed from the payload's `rate_limits.*.resets_at`; a stale/past reset shows no countdown.
+
 ## [3.1.0] - 2026-06-14
 
 > **Minor release**: adopt the modern Claude Code statusline payload for more accurate, lower-overhead stats — context usage now comes straight from Claude Code (with a transcript fallback), plus Pro/Max rate-limit windows, new model families, and opt-in session-metadata template variables. Fully backward-compatible; no breaking changes.

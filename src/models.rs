@@ -102,7 +102,6 @@ pub struct RateLimitWindow {
     /// Percentage of the window consumed, 0–100.
     pub used_percentage: Option<f64>,
     /// Unix epoch seconds when the window resets.
-    #[allow(dead_code)] // Public API - parsed for library consumers
     pub resets_at: Option<i64>,
 }
 

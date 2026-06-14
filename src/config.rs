@@ -102,6 +102,14 @@ pub struct DisplayConfig {
     /// API-key usage. Opt-in (default false) to keep existing output unchanged.
     #[serde(default)]
     pub show_rate_limits: bool,
+
+    /// Append a reset countdown to each rate-limit window, e.g.
+    /// "5h:24% (2h13m)". Applies to the `show_rate_limits` segment and the
+    /// `{rate_limits}` / `{rate_limit_5h}` template variables; the separate
+    /// `{rate_limit_5h_reset}` / `{rate_limit_7d_reset}` variables are always
+    /// available regardless of this flag. Opt-in (default false).
+    #[serde(default)]
+    pub rate_limit_reset_countdown: bool,
 }
 
 /// Context window configuration
@@ -822,6 +830,8 @@ impl Default for DisplayConfig {
             show_context_tokens: false,
             // Rate limits opt-in (Pro/Max only; default off to keep output unchanged)
             show_rate_limits: false,
+            // Reset countdown opt-in (default off; *_reset template vars always available)
+            rate_limit_reset_countdown: false,
         }
     }
 }
@@ -1180,7 +1190,8 @@ theme = "dark"
 # show_duration = true
 # show_lines_changed = true
 # show_cost = true
-# show_rate_limits = false  # Pro/Max only: "5h:24% 7d:41%" (absent for API keys)
+# show_rate_limits = false           # Pro/Max only: "5h:24% 7d:41%" (absent for API keys)
+# rate_limit_reset_countdown = false # Append reset countdown: "5h:24% (2h13m)"
 
 # Show token counts in context bar (e.g., "179k/1000k")
 # show_context_tokens = false
