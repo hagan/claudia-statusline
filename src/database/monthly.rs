@@ -3,6 +3,33 @@ use crate::common::current_month;
 use rusqlite::{params, Result};
 
 impl SqliteDatabase {
+    /// Import legacy monthly aggregates from a JSON-to-SQLite migration (#52).
+    ///
+    /// Initial import only (`INSERT OR IGNORE`), mirroring `import_sessions`/`import_daily`.
+    /// Token columns default to 0 (legacy `stats.json` carried no monthly token data).
+    pub fn import_monthly(
+        &self,
+        monthly: &std::collections::HashMap<String, crate::stats::MonthlyStats>,
+    ) -> Result<()> {
+        let mut conn = self.get_connection()?;
+        let tx = conn.transaction()?;
+        for (month, stats) in monthly.iter() {
+            tx.execute(
+                "INSERT OR IGNORE INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed, session_count)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    month,
+                    stats.total_cost,
+                    stats.lines_added as i64,
+                    stats.lines_removed as i64,
+                    stats.sessions as i64,
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Check if a session was active in a given month
     /// Returns true if the session exists and was last updated in the specified month (YYYY-MM format)
     /// Uses 'localtime' modifier to ensure timezone consistency with Rust's Local::now()

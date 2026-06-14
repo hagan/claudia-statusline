@@ -944,10 +944,10 @@ fn test_burn_rate_config_min_duration_serde_default() {
 ///       (via `db.get_all_sessions()`), proving data survived rather than just that a
 ///       db file appeared.
 ///
-/// Daily/monthly note: `import_sessions` (database/session.rs:679) imports ONLY the
-/// `sessions` map — it does NOT copy the JSON `daily`/`monthly` maps. This test asserts
-/// what the code ACTUALLY does (session-level survival) and records the daily/monthly
-/// finding in the issue SUMMARY rather than asserting an aspirational behavior.
+/// Daily/monthly: as of #52 the migration also back-fills the legacy `daily`/`monthly`
+/// aggregate maps (via `import_daily`/`import_monthly`) so historical rollups survive the
+/// upgrade. This test asserts both the per-session survival AND the daily/monthly aggregates
+/// are migrated present-and-correct.
 #[test]
 #[serial]
 fn test_update_stats_data_migrates_legacy_json_when_db_missing() {
@@ -1046,24 +1046,42 @@ fn test_update_stats_data_migrates_legacy_json_when_db_missing() {
         "fallback must not return an empty default (that is the BREAK-03 bug)"
     );
 
-    // FINDING (recorded in SUMMARY): import_sessions migrates ONLY the sessions map.
-    // The JSON daily/monthly maps are NOT copied into daily_stats/monthly_stats by the
-    // migration path. Assert the ACTUAL behavior: no daily/monthly rows are produced
-    // purely by importing sessions (a no-op update does not write the current day either,
-    // since the updater added no cost). Session-level survival is the data-integrity
-    // guarantee this test pins.
+    // (#52) The migration now back-fills the legacy daily/monthly aggregate maps too —
+    // historical rollups survive the upgrade, not just per-session rows. Assert they are
+    // PRESENT and CORRECT in SQLite.
     let daily = db.get_all_daily_stats().unwrap();
     let monthly = db.get_all_monthly_stats().unwrap();
-    assert!(
-        !daily.contains_key("2025-01-01") && !daily.contains_key("2025-01-02"),
-        "DOCUMENTED: import_sessions does not migrate the JSON daily map (got: {:?})",
-        daily.keys().collect::<Vec<_>>()
+
+    let d1 = daily
+        .get("2025-01-01")
+        .expect("daily 2025-01-01 must migrate (#52)");
+    assert_eq!(d1.total_cost, 12.50, "daily 2025-01-01 cost must migrate");
+    assert_eq!(
+        d1.lines_added, 100,
+        "daily 2025-01-01 lines_added must migrate"
     );
-    assert!(
-        !monthly.contains_key("2025-01"),
-        "DOCUMENTED: import_sessions does not migrate the JSON monthly map (got: {:?})",
-        monthly.keys().collect::<Vec<_>>()
+    assert_eq!(
+        d1.lines_removed, 40,
+        "daily 2025-01-01 lines_removed must migrate"
     );
+    let d2 = daily
+        .get("2025-01-02")
+        .expect("daily 2025-01-02 must migrate (#52)");
+    assert_eq!(d2.total_cost, 7.25, "daily 2025-01-02 cost must migrate");
+
+    let m = monthly
+        .get("2025-01")
+        .expect("monthly 2025-01 must migrate (#52)");
+    assert_eq!(m.total_cost, 19.75, "monthly 2025-01 cost must migrate");
+    assert_eq!(
+        m.lines_added, 133,
+        "monthly 2025-01 lines_added must migrate"
+    );
+    assert_eq!(
+        m.lines_removed, 51,
+        "monthly 2025-01 lines_removed must migrate"
+    );
+    assert_eq!(m.sessions, 2, "monthly 2025-01 session_count must migrate");
 
     env::remove_var("XDG_DATA_HOME");
     env::remove_var("XDG_CONFIG_HOME");
