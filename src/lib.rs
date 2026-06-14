@@ -70,6 +70,10 @@ pub mod utils;
 pub mod version;
 
 pub use config::Config;
+/// Test-only hook to override color enablement from a separate test crate.
+/// Hidden from docs; not part of the stable public API (issue #34).
+#[doc(hidden)]
+pub use display::__test_set_color_override;
 pub use display::{format_output, format_output_to_string};
 pub use error::{Result, StatuslineError};
 pub use git::get_git_status;
