@@ -256,7 +256,7 @@ jobs:
           ls -la *.tar.gz *.zip *.sha256 || true
 
       - name: Create Release with Assets
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
         with:
