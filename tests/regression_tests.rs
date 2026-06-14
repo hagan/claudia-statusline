@@ -82,11 +82,13 @@ fn test_no_double_separators() {
     // Bug: Disabling components caused " • • " in output
     // Fix: Proper conditional separator logic
 
-    // Clear NO_COLOR for this test
-    std::env::remove_var("NO_COLOR");
+    // Force colors on via the test-only override instead of mutating the process-global
+    // NO_COLOR env var (which races the #[serial] NO_COLOR test in this binary — #34).
+    statusline::__test_set_color_override(Some(true));
 
     // Test with minimal components
     let output = format_output_to_string("/test", Some("Claude"), None, None, 0.0, None);
+    statusline::__test_set_color_override(None);
 
     assert!(
         !output.contains(" • •"),
@@ -102,10 +104,11 @@ fn test_no_double_separators() {
 
 #[test]
 fn test_no_double_separators_with_git_disabled() {
-    std::env::remove_var("NO_COLOR");
+    statusline::__test_set_color_override(Some(true));
 
     // When git info is missing, separator logic should still work
     let output = format_output_to_string("/home/test", Some("Sonnet"), None, None, 5.0, None);
+    statusline::__test_set_color_override(None);
 
     assert!(
         !output.contains(" • •"),
@@ -120,12 +123,13 @@ fn test_no_double_separators_with_git_disabled() {
 
 #[test]
 fn test_git_info_no_leading_space() {
-    std::env::remove_var("NO_COLOR");
+    statusline::__test_set_color_override(Some(true));
 
     // Bug: Git info had leading space causing formatting issues
     // This would require mocking git, so we test indirectly
     // by checking that output doesn't start with space
     let output = format_output_to_string("/test", None, None, None, 0.0, None);
+    statusline::__test_set_color_override(None);
 
     // Output should not start with whitespace
     assert!(
@@ -147,34 +151,24 @@ fn test_git_info_no_leading_space() {
 #[test]
 #[serial]
 fn test_no_color_environment_variable() {
-    // Test that NO_COLOR is properly checked
-    // Note: Due to theme caching, we just verify that Colors::enabled() respects NO_COLOR
-    // Must be #[serial] to prevent race conditions with other tests modifying env vars
+    // Verify Colors::enabled() honors color disabling. Uses the test-only color override
+    // (#34) rather than mutating the process-global NO_COLOR env var, which previously
+    // raced non-serial sibling tests in this binary and caused intermittent failures.
     use statusline::display::Colors;
 
-    // Save original state
-    let original = std::env::var("NO_COLOR").ok();
-
-    // Test with NO_COLOR set
-    std::env::set_var("NO_COLOR", "1");
+    // Force colors OFF -> enabled() must be false.
+    statusline::__test_set_color_override(Some(false));
     assert!(
         !Colors::enabled(),
-        "Colors should be disabled when NO_COLOR=1"
+        "Colors should be disabled when forced off"
     );
 
-    // Test with NO_COLOR unset
-    std::env::remove_var("NO_COLOR");
-    assert!(
-        Colors::enabled(),
-        "Colors should be enabled when NO_COLOR is unset"
-    );
+    // Force colors ON -> enabled() must be true.
+    statusline::__test_set_color_override(Some(true));
+    assert!(Colors::enabled(), "Colors should be enabled when forced on");
 
-    // Restore original state
-    if let Some(value) = original {
-        std::env::set_var("NO_COLOR", value);
-    } else {
-        std::env::remove_var("NO_COLOR");
-    }
+    // Reset the override back to env-driven behavior.
+    statusline::__test_set_color_override(None);
 }
 
 // ============================================================================
@@ -208,10 +202,11 @@ fn test_session_counts_timezone_consistency() {
 
 #[test]
 fn test_empty_model_name() {
-    std::env::remove_var("NO_COLOR");
+    statusline::__test_set_color_override(Some(true));
 
     // Should handle None model gracefully
     let output = format_output_to_string("/test", None, None, None, 0.0, None);
+    statusline::__test_set_color_override(None);
 
     assert!(!output.is_empty(), "Should produce some output");
     assert!(
@@ -222,7 +217,7 @@ fn test_empty_model_name() {
 
 #[test]
 fn test_zero_cost() {
-    std::env::remove_var("NO_COLOR");
+    statusline::__test_set_color_override(Some(true));
 
     use statusline::models::Cost;
 
@@ -234,6 +229,7 @@ fn test_zero_cost() {
     };
 
     let output = format_output_to_string("/test", Some("Claude"), None, Some(&cost), 0.0, None);
+    statusline::__test_set_color_override(None);
 
     // Should handle zero cost without crashing
     assert!(!output.is_empty(), "Should produce output for zero cost");
