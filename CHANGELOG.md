@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-06-14
+
+> **Minor release**: adopt the modern Claude Code statusline payload for more accurate, lower-overhead stats — context usage now comes straight from Claude Code (with a transcript fallback), plus Pro/Max rate-limit windows, new model families, and opt-in session-metadata template variables. Fully backward-compatible; no breaking changes.
+
 ### Added
 
 - **Modern Claude Code statusline payload support.** Consume the richer JSON Claude Code now sends on stdin:
