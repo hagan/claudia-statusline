@@ -798,7 +798,18 @@ fn test_test_mode_flag() {
 }
 
 #[test]
-#[ignore] // Flaky: production database timestamps affected by parallel tests
+// KEEP-SKIPPED (#34): inherently nondeterministic, not fixable by isolation within this
+// test. It records the REAL, out-of-sandbox production stats.db mtime
+// (~/.local/share/claudia-statusline/stats.db) and asserts it is unchanged across two
+// --test-mode runs. Other integration binaries run as SEPARATE PROCESSES concurrently and
+// may legitimately open/write that real prod DB during this test's window, flipping the
+// mtime and failing the assertion through no fault of the code under test. #[serial] only
+// fences other #[serial] tests in the SAME binary, so it cannot prevent a sibling process
+// from touching the shared prod path.
+// TODO(#34, deferred redesign — NOT in scope here): re-author to assert only that the
+// temp-HOME test DB was created and the real prod path was never OPENED, using an isolated
+// HOME the binary cannot escape, instead of observing the shared prod mtime.
+#[ignore = "Observes the real out-of-sandbox prod stats.db mtime, which other concurrent integration *processes* may legitimately modify; not fixable by in-test isolation. See issue #34."]
 fn test_test_mode_uses_isolated_database() {
     let _guard = test_support::init();
     // Test that --test-mode uses a separate database path

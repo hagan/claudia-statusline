@@ -284,19 +284,14 @@ fn test_no_double_separators_regression() {
 
 #[test]
 #[serial_test::serial]
-// Run serially to avoid NO_COLOR env var conflicts
-// Deliberate skip (#34): NO_COLOR is read live by Colors::enabled() (not cached), but it
-// is a process-global env var. #[serial] only excludes other #[serial] tests, so a
-// non-serial test in this binary can clear/set NO_COLOR concurrently and flip the result.
-// A robust re-enable needs non-global color enablement.
-#[ignore = "global NO_COLOR env race under parallel tests — see issue #34"]
+// Re-enabled for #34: forces colors OFF via the test-only color override hook instead of
+// mutating the process-global NO_COLOR env var, so it no longer races other tests.
+// Kept #[serial] as belt-and-suspenders against any other override toggling.
 fn test_with_no_color_env() {
     let _guard = test_support::init();
-    // Save original state
-    let original_no_color = std::env::var("NO_COLOR").ok();
 
-    // Set NO_COLOR to test that it disables colors
-    std::env::set_var("NO_COLOR", "1");
+    // Force colors OFF via the override (no NO_COLOR env mutation, no race).
+    statusline::__test_set_color_override(Some(false));
 
     let output = format_output_to_string(
         "/test/path",
@@ -310,16 +305,13 @@ fn test_with_no_color_env() {
     // Should not contain ANSI escape codes
     assert!(
         !output.contains("\x1b["),
-        "Should not have ANSI codes with NO_COLOR"
+        "Should not have ANSI codes when colors are disabled"
     );
 
     // But should still show content
     assert!(output.contains("/test/path"), "Should show directory");
     assert!(output.contains("S3.5"), "Should show model");
 
-    // Restore original state
-    match original_no_color {
-        Some(val) => std::env::set_var("NO_COLOR", val),
-        None => std::env::remove_var("NO_COLOR"),
-    }
+    // Reset the override back to env-driven behavior.
+    statusline::__test_set_color_override(None);
 }

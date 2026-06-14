@@ -275,16 +275,115 @@ fn test_maintenance_script_help() {
 }
 
 #[test]
-#[ignore] // This test would require a corrupted database to test integrity check failure
 fn test_db_maintain_integrity_check_failure() {
-    let _guard = test_support::init();
-    // This test would need to:
-    // 1. Create a database
-    // 2. Corrupt it somehow
-    // 3. Run maintenance
-    // 4. Verify exit code is 1
+    // Implemented for issue #34: exercise the db-maintain integrity-check FAILURE branch.
     //
-    // Leaving as a placeholder for manual testing
+    // The db-maintain handler runs (in order) wal_checkpoint -> optimize -> prune ->
+    // vacuum -> PRAGMA integrity_check, then `process::exit(1)` iff integrity_check != "ok".
+    // To hit the integrity branch specifically we must:
+    //   1. Leave the 100-byte SQLite header intact so the file still OPENS (whole-file
+    //      garbage would fail at Connection::open, not at integrity_check).
+    //   2. Checkpoint+truncate the WAL so corruption lands in the main db file.
+    //   3. Suppress VACUUM (which would rebuild the file and mask/short-circuit the
+    //      corruption) by recording a recent `last_vacuum` so should_vacuum() == false.
+    //   4. Corrupt the CONTENTS of an interior b-tree page (page 2+, past the first page)
+    //      so checkpoint/optimize/prune still succeed but integrity_check reports damage.
+    use rusqlite::Connection;
+    use std::io::{Read, Seek, SeekFrom, Write};
+
+    let _guard = test_support::init();
+    let (temp_dir, db_path) = setup_test_database();
+
+    // Add enough rows so the DB grows past a single page, giving us interior pages to
+    // corrupt without touching the header/first page.
+    {
+        let conn = Connection::open(&db_path).expect("open db to seed rows");
+        for i in 0..500 {
+            conn.execute(
+                "INSERT OR REPLACE INTO sessions \
+                 (id, start_time, last_updated, cost_usd, input_tokens, output_tokens, \
+                  cache_creation_tokens, cache_read_tokens, model, lines_added, lines_removed) \
+                 VALUES (?1, datetime('now'), datetime('now'), 1.0, 100, 50, 0, 0, 'test-model-name', 10, 5)",
+                [format!("integrity-seed-session-{:04}", i)],
+            )
+            .ok(); // schema may differ slightly; best-effort seeding
+        }
+        // Suppress VACUUM: record a recent last_vacuum so should_vacuum() returns false.
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('last_vacuum', datetime('now'))",
+            [],
+        )
+        .ok();
+        // Checkpoint + truncate the WAL so corruption lands in the main db file, then
+        // drop the connection to release all locks before we tamper with the bytes.
+        let _: String = conn
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+            .unwrap_or_default();
+    }
+
+    // Determine page size so we corrupt an interior page, not the header/first page.
+    let page_size: i64 = {
+        let conn = Connection::open(&db_path).expect("open db to read page_size");
+        conn.query_row("PRAGMA page_size", [], |row| row.get(0))
+            .expect("read page_size")
+    };
+    let file_len = fs::metadata(&db_path).expect("stat db").len();
+    assert!(
+        file_len > (2 * page_size) as u64,
+        "DB should span multiple pages for interior corruption (len={file_len}, page_size={page_size})"
+    );
+
+    // Corrupt a span of bytes starting partway into page 2 (1-indexed), leaving the
+    // 100-byte header and the first page (schema/root) intact so the file still opens.
+    let corrupt_offset = page_size + page_size / 2; // middle of page 2
+    {
+        let mut file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&db_path)
+            .expect("open db file for corruption");
+        file.seek(SeekFrom::Start(corrupt_offset as u64))
+            .expect("seek into interior page");
+        // Read the original bytes, then overwrite with garbage that differs from them.
+        let mut original = vec![0u8; page_size as usize];
+        let n = file.read(&mut original).expect("read interior bytes");
+        let garbage: Vec<u8> = (0..n).map(|i| original[i] ^ 0xFF).collect();
+        file.seek(SeekFrom::Start(corrupt_offset as u64))
+            .expect("seek back to corruption offset");
+        file.write_all(&garbage).expect("write garbage");
+        file.flush().expect("flush corruption");
+    }
+
+    // Sanity: the file must still OPEN (header intact) — otherwise we'd be testing the
+    // wrong branch (open failure rather than integrity_check failure).
+    {
+        let conn = Connection::open(&db_path).expect("corrupted db must still open");
+        // integrity_check should now report a non-"ok" result.
+        let result: String = conn
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .unwrap_or_else(|_| "ok".to_string());
+        assert_ne!(
+            result, "ok",
+            "interior-page corruption should make integrity_check fail (got: {result})"
+        );
+    }
+
+    // Run db-maintain against the corrupted DB; the handler must exit non-zero.
+    let output = Command::new(test_support::test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
+        .arg("db-maintain")
+        .arg("--quiet")
+        .output()
+        .expect("Failed to execute db-maintain");
+
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "db-maintain should exit 1 when integrity_check fails. stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 // Test for data pruning with old records

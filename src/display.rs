@@ -29,13 +29,60 @@ fn get_current_theme() -> Theme {
         })
 }
 
+/// Test-only override for color enablement.
+///
+/// Encoding: `0` = unset (use the `NO_COLOR` env var), `1` = force-enabled,
+/// `2` = force-disabled. Defaults to `0`, so when no test sets it, color
+/// behavior is byte-identical to reading `NO_COLOR` directly (production path).
+///
+/// This exists solely to remove the process-global `NO_COLOR` env race from
+/// color tests (see issue #34); production code never sets it.
+static COLOR_OVERRIDE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Set the test-only color override. `Some(true)` forces colors on,
+/// `Some(false)` forces colors off, `None` resets to env-driven behavior.
+///
+/// Not part of the public API; gated to tests within this crate.
+#[cfg(test)]
+pub(crate) fn set_color_override(state: Option<bool>) {
+    let v = match state {
+        Some(true) => 1u8,
+        Some(false) => 2u8,
+        None => 0u8,
+    };
+    COLOR_OVERRIDE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Cross-crate test hook for the color override (used by integration tests in a
+/// separate crate that cannot reach the `pub(crate)` setter).
+///
+/// `Some(true)` forces colors on, `Some(false)` forces colors off, `None`
+/// resets to env-driven behavior. Hidden from docs and not part of the stable
+/// public API — for test use only (issue #34).
+#[doc(hidden)]
+pub fn __test_set_color_override(state: Option<bool>) {
+    let v = match state {
+        Some(true) => 1u8,
+        Some(false) => 2u8,
+        None => 0u8,
+    };
+    COLOR_OVERRIDE.store(v, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// ANSI color codes for terminal output.
 pub struct Colors;
 
 impl Colors {
-    /// Check if colors are enabled (respects NO_COLOR env var)
+    /// Check if colors are enabled.
+    ///
+    /// Consults the test-only [`COLOR_OVERRIDE`] first; when unset (the default,
+    /// and always in production) falls back to honoring the `NO_COLOR` env var.
     pub fn enabled() -> bool {
-        std::env::var("NO_COLOR").is_err()
+        match COLOR_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed) {
+            1 => true,
+            2 => false,
+            _ => std::env::var("NO_COLOR").is_err(),
+        }
     }
 
     /// Get a color from theme, or empty string if colors are disabled
@@ -1095,6 +1142,47 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
+    fn test_color_override_forces_state_regardless_of_no_color() {
+        // Force-enabled: enabled() is true even when NO_COLOR is set.
+        let prior = std::env::var("NO_COLOR").ok();
+        std::env::set_var("NO_COLOR", "1");
+        set_color_override(Some(true));
+        assert!(
+            Colors::enabled(),
+            "force-on override must win over NO_COLOR"
+        );
+
+        // Force-disabled: enabled() is false even when NO_COLOR is unset.
+        std::env::remove_var("NO_COLOR");
+        set_color_override(Some(false));
+        assert!(
+            !Colors::enabled(),
+            "force-off override must win over absent NO_COLOR"
+        );
+
+        // Reset: behavior falls back to the env var (production path).
+        set_color_override(None);
+        std::env::remove_var("NO_COLOR");
+        assert!(
+            Colors::enabled(),
+            "with override unset and NO_COLOR unset, colors enabled"
+        );
+        std::env::set_var("NO_COLOR", "1");
+        assert!(
+            !Colors::enabled(),
+            "with override unset and NO_COLOR set, colors disabled"
+        );
+
+        // Cleanup.
+        set_color_override(None);
+        match prior {
+            Some(v) => std::env::set_var("NO_COLOR", v),
+            None => std::env::remove_var("NO_COLOR"),
+        }
+    }
+
+    #[test]
     fn test_colors() {
         // Test the color functions (which respect NO_COLOR) not the constants
         if Colors::enabled() {
@@ -1279,39 +1367,41 @@ mod tests {
         assert_eq!(realistic_burn, 3.0); // $3.00/hr is reasonable
     }
 
-    // Helper guard to temporarily clear NO_COLOR for theme tests
-    struct ClearNoColor(Option<String>);
-    impl ClearNoColor {
+    // RAII guard that forces colors ON via the test-only override (#34), removing the
+    // process-global NO_COLOR env race that previously made this test nondeterministic.
+    // On drop it resets the override back to env-driven behavior.
+    struct ForceColors;
+    impl ForceColors {
         fn new() -> Self {
-            let old = std::env::var("NO_COLOR").ok();
-            std::env::remove_var("NO_COLOR");
-            Self(old)
+            set_color_override(Some(true));
+            Self
         }
     }
-    impl Drop for ClearNoColor {
+    impl Drop for ForceColors {
         fn drop(&mut self) {
-            if let Some(val) = &self.0 {
-                std::env::set_var("NO_COLOR", val);
-            }
+            reset_color_override_helper();
         }
+    }
+
+    // Local reset helper so we don't need a second public symbol; forwards to the override.
+    fn reset_color_override_helper() {
+        set_color_override(None);
     }
 
     #[test]
-    // Deliberate skip (#34): depends on NO_COLOR being unset, but NO_COLOR is a
-    // process-global env var read live by Colors::enabled(). CI sets it globally, and
-    // parallel (non-serial) tests in this binary toggle it, so the result is
-    // nondeterministic. A robust re-enable needs non-global color enablement.
-    #[ignore = "global NO_COLOR env race; CI sets NO_COLOR — see issue #34"]
+    #[serial_test::serial]
+    // Re-enabled for #34: forces colors ON via the test-only color override instead of
+    // mutating the process-global NO_COLOR env var, so it no longer races other tests.
+    // Kept #[serial] as belt-and-suspenders against any other override toggling.
     fn test_theme_affects_colors() {
-        // Use RAII guard to ensure clean environment
-        let _guard = ClearNoColor::new();
+        // Force colors on via the override (no env mutation, no NO_COLOR race).
+        let _guard = ForceColors::new();
 
-        // Verify colors are actually enabled after clearing NO_COLOR
-        if !Colors::enabled() {
-            // If colors are still disabled, skip this test
-            eprintln!("Skipping theme test - colors remain disabled despite clearing NO_COLOR");
-            return;
-        }
+        // The override guarantees colors are enabled.
+        assert!(
+            Colors::enabled(),
+            "color override should force colors enabled"
+        );
 
         // Save original theme env var
         let original_theme = std::env::var("STATUSLINE_THEME").ok();

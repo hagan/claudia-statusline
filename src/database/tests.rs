@@ -253,7 +253,16 @@ fn test_session_update_delta_calculation() {
 }
 
 #[test]
-#[ignore = "Flaky test - occasionally fails due to SQLite locking with concurrent connections"]
+// Demoted after the #34 determinism gate (10x runs): re-enabling flaked ~3/10.
+// Root cause is a production concurrency weakness NOT covered by #33: each of the 10
+// threads opens its OWN connection, and `update_session` uses a DEFERRED transaction
+// (`conn.transaction()`), so two readers can both attempt the read->write upgrade and
+// one receives an immediate SQLITE_BUSY ("database is locked") that the busy_timeout
+// handler cannot wait out (waiting would deadlock). Deterministically re-enabling this
+// requires switching the writer to an IMMEDIATE transaction — a production change that
+// is out of scope for #34 (the only sanctioned production change here is the color
+// override). A documented skip beats a flaky CI.
+#[ignore = "Concurrency race: update_session uses a DEFERRED transaction; concurrent read->write upgrades across separate connections hit non-waitable SQLITE_BUSY. Needs IMMEDIATE-transaction writer (production change, out of scope for #34). See issue #34."]
 fn test_concurrent_updates() {
     use std::thread;
 
@@ -462,7 +471,6 @@ fn test_session_start_time_preserved_on_update() {
 }
 
 #[test]
-#[ignore = "Flaky test - database isolation issues with parallel tests"]
 fn test_automatic_database_upgrade() {
     // This test verifies that an old database (v0 schema) is automatically
     // upgraded to the latest schema when SqliteDatabase::new() is called
