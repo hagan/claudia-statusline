@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Burn-rate duration fallback** — `cost.total_duration_ms` is used as a session-duration source after the database and transcript.
 - **Fable and Mythos model recognition** — `claude-fable-5` → `F5`, `claude-mythos-5` → `M5`, with version-aware fallbacks.
 - **`model.id`-based model detection** — prefer the canonical model id (e.g. `claude-opus-4-8` → `O4.8`) over `display_name` (often just `Opus`) for a more specific abbreviation.
+- **Session-metadata template variables** (opt-in, custom layouts): `{effort}` (reasoning effort `low`..`max`), `{cc_version}` (Claude Code version), `{over_200k}` (`200k+` when the last response crossed the fixed 200k threshold), and `{repo}` (`owner/name` from `workspace.repo`). Absent unless the payload carries them.
 
 ## [3.0.1] - 2026-06-14
 

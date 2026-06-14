@@ -6,7 +6,9 @@
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
 use crate::layout::{LayoutRenderer, VariableBuilder};
-use crate::models::{CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimits};
+use crate::models::{
+    CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimits, Repo,
+};
 use crate::theme::{get_theme_manager, Theme};
 use crate::utils::{calculate_context_usage, parse_duration, sanitize_for_terminal, shorten_path};
 
@@ -19,6 +21,14 @@ pub struct PayloadExtras<'a> {
     pub context_window: Option<&'a ContextWindow>,
     /// Claude.ai rate-limit windows from the payload.
     pub rate_limits: Option<&'a RateLimits>,
+    /// Reasoning effort level (`low`..`max`), when the model supports it.
+    pub effort: Option<&'a str>,
+    /// Whether the most recent response exceeded the fixed 200k token threshold.
+    pub exceeds_200k: Option<bool>,
+    /// Claude Code version string.
+    pub version: Option<&'a str>,
+    /// Repository identity parsed by Claude Code from the `origin` remote.
+    pub repo: Option<&'a Repo>,
 }
 
 /// Build a [`ContextUsage`] from Claude Code's payload `context_window`, used in
@@ -777,6 +787,18 @@ fn format_statusline_with_layout(
         );
     }
 
+    // Session metadata (opt-in template variables): {effort}, {cc_version},
+    // {over_200k}, {repo}. Each is absent unless the payload carries it.
+    builder = builder.session_meta(
+        extras.effort,
+        extras.version,
+        extras.exceeds_200k.unwrap_or(false),
+        extras.repo.and_then(|r| r.owner.as_deref()),
+        extras.repo.and_then(|r| r.name.as_deref()),
+        &Colors::gray(),
+        &reset,
+    );
+
     // Token rate (with component config)
     // Uses rolling window if configured, otherwise session average
     // Now respects rate_display config (output_only, input_only, both)
@@ -1284,6 +1306,36 @@ mod tests {
             seven_day: None,
         };
         assert!(format_rate_limits(&rl_empty).is_none());
+    }
+
+    #[test]
+    fn test_session_meta_variables() {
+        let vars = VariableBuilder::new()
+            .session_meta(
+                Some("xhigh"),
+                Some("2.1.90"),
+                true,
+                Some("hagan"),
+                Some("claudia-statusline"),
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(vars.get("effort").map(String::as_str), Some("xhigh"));
+        assert_eq!(vars.get("cc_version").map(String::as_str), Some("v2.1.90"));
+        assert_eq!(vars.get("over_200k").map(String::as_str), Some("200k+"));
+        assert_eq!(
+            vars.get("repo").map(String::as_str),
+            Some("hagan/claudia-statusline")
+        );
+
+        // Absent inputs -> variables omitted (so {var} renders nothing / opt-in)
+        let empty = VariableBuilder::new()
+            .session_meta(None, None, false, None, None, "", "")
+            .build();
+        assert!(!empty.contains_key("effort"));
+        assert!(!empty.contains_key("over_200k"));
+        assert!(!empty.contains_key("repo"));
     }
 
     #[test]

@@ -33,6 +33,20 @@ pub struct StatuslineInput {
     /// Claude.ai (Pro/Max) rate-limit windows. Absent for API-key usage and
     /// before the first API response in a session.
     pub rate_limits: Option<RateLimits>,
+    /// Current reasoning effort level. Absent when the model has no effort knob.
+    pub effort: Option<Effort>,
+    /// Whether the combined token count from the most recent response exceeds a
+    /// fixed 200k threshold (regardless of the actual context window size).
+    pub exceeds_200k_tokens: Option<bool>,
+    /// Claude Code version string (e.g. "2.1.90").
+    pub version: Option<String>,
+}
+
+/// Reasoning effort level (`effort`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Effort {
+    /// One of `low`, `medium`, `high`, `xhigh`, `max`.
+    pub level: Option<String>,
 }
 
 /// Live context-window usage reported directly by Claude Code.
@@ -99,6 +113,21 @@ pub struct RateLimitWindow {
 pub struct Workspace {
     /// Current working directory path
     pub current_dir: Option<String>,
+    /// Repository identity parsed from the `origin` remote. Absent outside a git
+    /// repo or when no `origin` remote is configured.
+    pub repo: Option<Repo>,
+}
+
+/// Repository identity from the `origin` remote (`workspace.repo`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct Repo {
+    /// Host, e.g. "github.com".
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub host: Option<String>,
+    /// Owner/org, e.g. "anthropics".
+    pub owner: Option<String>,
+    /// Repository name, e.g. "claude-code".
+    pub name: Option<String>,
 }
 
 /// Model information from Claude Code.
@@ -526,6 +555,29 @@ mod tests {
         assert_eq!(rl.five_hour.as_ref().unwrap().used_percentage, Some(23.5));
         assert_eq!(rl.five_hour.unwrap().resets_at, Some(1738425600));
         assert_eq!(rl.seven_day.unwrap().used_percentage, Some(41.2));
+    }
+
+    #[test]
+    fn test_parse_p3_session_metadata() {
+        let json = r#"{
+            "workspace": {
+                "current_dir": "/home/user/proj",
+                "repo": {"host": "github.com", "owner": "anthropics", "name": "claude-code"}
+            },
+            "effort": {"level": "xhigh"},
+            "exceeds_200k_tokens": true,
+            "version": "2.1.90"
+        }"#;
+        let input: StatuslineInput = serde_json::from_str(json).unwrap();
+
+        assert_eq!(input.effort.unwrap().level.as_deref(), Some("xhigh"));
+        assert_eq!(input.exceeds_200k_tokens, Some(true));
+        assert_eq!(input.version.as_deref(), Some("2.1.90"));
+
+        let repo = input.workspace.unwrap().repo.unwrap();
+        assert_eq!(repo.owner.as_deref(), Some("anthropics"));
+        assert_eq!(repo.name.as_deref(), Some("claude-code"));
+        assert_eq!(repo.host.as_deref(), Some("github.com"));
     }
 
     #[test]

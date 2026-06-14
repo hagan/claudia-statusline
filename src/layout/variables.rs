@@ -874,6 +874,51 @@ impl VariableBuilder {
         self
     }
 
+    /// Set session-metadata variables from the modern payload:
+    /// `{effort}` (e.g. `xhigh`), `{cc_version}` (e.g. `v2.1.90`), `{over_200k}`
+    /// (`200k+` when the response crossed the fixed 200k threshold), and
+    /// `{repo}` (`owner/name`). Variables are absent when not provided, so
+    /// referencing them in a template is the opt-in.
+    #[allow(clippy::too_many_arguments)]
+    pub fn session_meta(
+        mut self,
+        effort: Option<&str>,
+        version: Option<&str>,
+        over_200k: bool,
+        repo_owner: Option<&str>,
+        repo_name: Option<&str>,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        if let Some(e) = effort.filter(|s| !s.is_empty()) {
+            self.variables
+                .insert("effort".to_string(), format!("{}{}{}", color, e, reset));
+        }
+        if let Some(v) = version.filter(|s| !s.is_empty()) {
+            self.variables.insert(
+                "cc_version".to_string(),
+                format!("{}v{}{}", color, v, reset),
+            );
+        }
+        if over_200k {
+            self.variables
+                .insert("over_200k".to_string(), format!("{}200k+{}", color, reset));
+        }
+        let repo = match (
+            repo_owner.filter(|s| !s.is_empty()),
+            repo_name.filter(|s| !s.is_empty()),
+        ) {
+            (Some(o), Some(n)) => Some(format!("{}/{}", o, n)),
+            (None, Some(n)) => Some(n.to_string()),
+            _ => None,
+        };
+        if let Some(r) = repo {
+            self.variables
+                .insert("repo".to_string(), format!("{}{}{}", color, r, reset));
+        }
+        self
+    }
+
     /// Build the final HashMap
     pub fn build(self) -> HashMap<String, String> {
         self.variables

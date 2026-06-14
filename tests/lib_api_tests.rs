@@ -18,6 +18,7 @@ fn test_render_statusline_basic() {
     let input = StatuslineInput {
         workspace: Some(Workspace {
             current_dir: Some(test_dir),
+            repo: None,
         }),
         model: Some(Model {
             display_name: Some("Claude 3.5 Sonnet".to_string()),
@@ -144,6 +145,7 @@ fn test_render_with_git_repo() {
     let input = StatuslineInput {
         workspace: Some(Workspace {
             current_dir: Some(repo_path.to_string()),
+            repo: None,
         }),
         model: Some(Model {
             display_name: Some("Claude 3.5 Sonnet".to_string()),

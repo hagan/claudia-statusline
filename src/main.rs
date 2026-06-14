@@ -441,6 +441,10 @@ fn main() -> Result<()> {
         display::PayloadExtras {
             context_window: input.context_window.as_ref(),
             rate_limits: input.rate_limits.as_ref(),
+            effort: input.effort.as_ref().and_then(|e| e.level.as_deref()),
+            exceeds_200k: input.exceeds_200k_tokens,
+            version: input.version.as_deref(),
+            repo: input.workspace.as_ref().and_then(|w| w.repo.as_ref()),
         },
     );
 

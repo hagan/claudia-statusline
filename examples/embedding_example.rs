@@ -34,6 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input = StatuslineInput {
         workspace: Some(Workspace {
             current_dir: Some("/home/user/awesome-project".to_string()),
+            repo: None,
         }),
         model: Some(Model {
             display_name: Some("Claude 3 Opus".to_string()),
