@@ -191,7 +191,15 @@ fn test_session_start_time_tracking() {
 
 #[test]
 #[serial]
-#[ignore = "Flaky test - thread synchronization timing issues cause intermittent failures"]
+// Demoted after the #34 determinism gate (10x runs): re-enabling flaked even with the
+// per-thread env mutation removed and XDG set once before spawn. The remaining cause is
+// the same production concurrency weakness as `database::tests::test_concurrent_updates`:
+// 10 threads each drive `update_stats_data` -> `update_session`, whose DEFERRED
+// transaction lets concurrent read->write upgrades hit a non-waitable SQLITE_BUSY, so
+// some sessions are not persisted and the "10 sessions created" assertion fails. A
+// deterministic fix needs an IMMEDIATE-transaction writer (production change, out of
+// scope for #34). A documented skip beats a flaky CI.
+#[ignore = "Concurrency race: update_stats_data -> update_session uses a DEFERRED transaction; concurrent read->write upgrades hit non-waitable SQLITE_BUSY and drop writes. Needs IMMEDIATE-transaction writer (production change, out of scope for #34). See issue #34."]
 fn test_concurrent_update_safety() {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
@@ -199,8 +207,11 @@ fn test_concurrent_update_safety() {
 
     let temp_dir = TempDir::new().unwrap();
     let temp_path = temp_dir.path().to_str().unwrap().to_string();
+    // Set XDG_* ONCE, before spawning threads. Env is process-global, so
+    // mutating it from inside spawned threads is both redundant and a race (#34).
     env::set_var("XDG_DATA_HOME", &temp_path);
-    env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
+    env::set_var("XDG_CONFIG_HOME", &temp_path);
+    crate::config::reset_config();
 
     // Create the directory structure
     let stats_dir = Path::new(&temp_path).join("claudia-statusline");
@@ -216,12 +227,10 @@ fn test_concurrent_update_safety() {
     // Spawn 10 threads that each add $1.00
     for i in 0..10 {
         let completed_clone = completed.clone();
-        let temp_path_clone = temp_path.clone();
         let handle = thread::spawn(move || {
-            // Ensure the thread uses the temp directory
+            // XDG_* is already set process-globally before spawn; do NOT mutate
+            // env from inside the thread (#34).
             use crate::database::SessionUpdate;
-            env::set_var("XDG_DATA_HOME", &temp_path_clone);
-            env::set_var("XDG_CONFIG_HOME", &temp_path_clone);
             let (daily, _) = update_stats_data(|stats| {
                 stats.update_session(
                     &format!("test-thread-{}", i),
@@ -277,6 +286,8 @@ fn test_concurrent_update_safety() {
     }
 
     env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
 }
 
 #[test]
@@ -355,11 +366,11 @@ fn test_get_session_duration() {
 
 #[test]
 #[serial]
-#[ignore = "Flaky test - file system timing issues cause intermittent failures"]
 fn test_file_corruption_recovery() {
     let temp_dir = TempDir::new().unwrap();
     env::set_var("XDG_DATA_HOME", temp_dir.path().to_str().unwrap());
     env::set_var("XDG_CONFIG_HOME", temp_dir.path().to_str().unwrap());
+    crate::config::reset_config();
 
     let stats_path = StatsData::get_stats_file_path();
 
@@ -380,6 +391,8 @@ fn test_file_corruption_recovery() {
     assert_eq!(backup_contents, "not valid json {");
 
     env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
 }
 
 // NOTE (v3.0.0, Plan 06-01): the JSON write path was removed, which deleted the
