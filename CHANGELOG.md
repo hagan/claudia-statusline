@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Modern Claude Code statusline payload support.** Consume the richer JSON Claude Code now sends on stdin:
+  - **Context window from the payload** — prefer Claude Code's pre-calculated `context_window.used_percentage` / `context_window_size` / token totals over our transcript-derived estimate, for an exact context bar. Falls back to the transcript computation when the payload is absent or unpopulated (before the first API call / right after `/compact`).
+  - **Rate-limit windows** — new opt-in segment showing the Claude.ai Pro/Max 5-hour and 7-day windows (e.g. `5h:24% 7d:41%`). Enable in the legacy display via `[display] show_rate_limits = true`; in custom layouts use the new `{rate_limits}`, `{rate_limit_5h}`, `{rate_limit_7d}` template variables. Absent for API-key usage.
+  - **Burn-rate duration fallback** — `cost.total_duration_ms` is used as a session-duration source after the database and transcript.
+- **Fable and Mythos model recognition** — `claude-fable-5` → `F5`, `claude-mythos-5` → `M5`, with version-aware fallbacks.
+- **`model.id`-based model detection** — prefer the canonical model id (e.g. `claude-opus-4-8` → `O4.8`) over `display_name` (often just `Opus`) for a more specific abbreviation.
+
 ## [3.0.1] - 2026-06-14
 
 > **Patch release**: post-3.0.0 hardening — concurrency safety, migration fidelity, and a large internal/test/CI cleanup. No user-facing feature or config changes.
