@@ -23,10 +23,17 @@ impl SqliteDatabase {
     pub fn update_session(&self, session_id: &str, update: SessionUpdate) -> Result<(f64, f64)> {
         let retry_config = RetryConfig::for_db_ops();
 
-        // Wrap the entire transaction in retry logic
+        // Wrap the entire transaction in retry logic.
+        //
+        // IMMEDIATE (not the default DEFERRED): update_session_tx reads then writes, so a
+        // DEFERRED transaction starts as a reader and upgrades to a writer mid-transaction.
+        // Under concurrent writers (multiple processes/connections) two such read->write
+        // upgrades hit an immediate SQLITE_BUSY that busy_timeout cannot wait out, dropping a
+        // write (issue #57). IMMEDIATE takes the write lock at BEGIN so concurrent writers
+        // serialize there and retry_if_retryable absorbs the contention cleanly.
         retry_if_retryable(&retry_config, || {
             let mut conn = self.get_connection()?;
-            let tx = conn.transaction()?;
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
 
             let result = self.update_session_tx(&tx, session_id, update.clone())?;
 

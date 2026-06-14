@@ -253,16 +253,12 @@ fn test_session_update_delta_calculation() {
 }
 
 #[test]
-// Demoted after the #34 determinism gate (10x runs): re-enabling flaked ~3/10.
-// Root cause is a production concurrency weakness NOT covered by #33: each of the 10
-// threads opens its OWN connection, and `update_session` uses a DEFERRED transaction
-// (`conn.transaction()`), so two readers can both attempt the read->write upgrade and
-// one receives an immediate SQLITE_BUSY ("database is locked") that the busy_timeout
-// handler cannot wait out (waiting would deadlock). Deterministically re-enabling this
-// requires switching the writer to an IMMEDIATE transaction — a production change that
-// is out of scope for #34 (the only sanctioned production change here is the color
-// override). A documented skip beats a flaky CI.
-#[ignore = "Concurrency race: update_session uses a DEFERRED transaction; concurrent read->write upgrades across separate connections hit non-waitable SQLITE_BUSY. Needs IMMEDIATE-transaction writer (production change, out of scope for #34). See issue #34."]
+#[serial_test::serial]
+// Re-enabled by #57: update_session now uses an IMMEDIATE transaction, so concurrent
+// read->write upgrades across separate connections serialize at BEGIN and
+// retry_if_retryable absorbs contention instead of dropping writes. Marked #[serial]
+// so this 10-thread DB-stress test doesn't add parallel I/O pressure that destabilizes
+// other tests' isolation (it does not mutate global env itself).
 fn test_concurrent_updates() {
     use std::thread;
 

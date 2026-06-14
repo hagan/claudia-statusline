@@ -22,8 +22,19 @@ fn test_stats_data_default() {
 }
 
 #[test]
+#[serial]
 fn test_stats_data_update_session() {
     use crate::database::SessionUpdate;
+
+    // Isolate: StatsData::update_session writes through to SQLite at the ambient
+    // get_data_dir(), so without a temp XDG this test pollutes the real user DB AND can
+    // drop a stats.db into a concurrently-running test's temp dir (it raced
+    // test_backup_file_permissions). Pin XDG to a temp dir + reset_config; #[serial].
+    let temp_dir = TempDir::new().unwrap();
+    env::set_var("XDG_DATA_HOME", temp_dir.path());
+    env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+    crate::config::reset_config();
+
     let mut stats = StatsData::default();
     let (daily, monthly) = stats.update_session(
         "test-session",
@@ -45,6 +56,10 @@ fn test_stats_data_update_session() {
     assert_eq!(monthly, 10.0);
     assert_eq!(stats.all_time.total_cost, 10.0);
     assert_eq!(stats.all_time.sessions, 1);
+
+    env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
 }
 
 #[test]
@@ -191,15 +206,9 @@ fn test_session_start_time_tracking() {
 
 #[test]
 #[serial]
-// Demoted after the #34 determinism gate (10x runs): re-enabling flaked even with the
-// per-thread env mutation removed and XDG set once before spawn. The remaining cause is
-// the same production concurrency weakness as `database::tests::test_concurrent_updates`:
-// 10 threads each drive `update_stats_data` -> `update_session`, whose DEFERRED
-// transaction lets concurrent read->write upgrades hit a non-waitable SQLITE_BUSY, so
-// some sessions are not persisted and the "10 sessions created" assertion fails. A
-// deterministic fix needs an IMMEDIATE-transaction writer (production change, out of
-// scope for #34). A documented skip beats a flaky CI.
-#[ignore = "Concurrency race: update_stats_data -> update_session uses a DEFERRED transaction; concurrent read->write upgrades hit non-waitable SQLITE_BUSY and drop writes. Needs IMMEDIATE-transaction writer (production change, out of scope for #34). See issue #34."]
+// Re-enabled by #57: update_session now uses an IMMEDIATE transaction, so the 10 threads
+// driving update_stats_data -> update_session serialize their writes at BEGIN (with
+// retry_if_retryable) instead of dropping some via a non-waitable SQLITE_BUSY.
 fn test_concurrent_update_safety() {
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
