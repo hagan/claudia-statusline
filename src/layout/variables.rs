@@ -841,6 +841,39 @@ impl VariableBuilder {
         self
     }
 
+    /// Set rate-limit variables ({rate_limits}, {rate_limit_5h}, {rate_limit_7d})
+    ///
+    /// Sourced from Claude Code's `rate_limits` payload (Pro/Max only). Each
+    /// percentage is rendered like `5h:24%` / `7d:41%`; `{rate_limits}` is the
+    /// space-joined combination. Variables are simply absent when not provided,
+    /// so referencing them in a template is the opt-in.
+    pub fn rate_limits(
+        mut self,
+        five_hour_pct: Option<f64>,
+        seven_day_pct: Option<f64>,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        let mut combined = Vec::new();
+        if let Some(p) = five_hour_pct {
+            let s = format!("{}5h:{}%{}", color, p.round() as i64, reset);
+            self.variables
+                .insert("rate_limit_5h".to_string(), s.clone());
+            combined.push(s);
+        }
+        if let Some(p) = seven_day_pct {
+            let s = format!("{}7d:{}%{}", color, p.round() as i64, reset);
+            self.variables
+                .insert("rate_limit_7d".to_string(), s.clone());
+            combined.push(s);
+        }
+        if !combined.is_empty() {
+            self.variables
+                .insert("rate_limits".to_string(), combined.join(" "));
+        }
+        self
+    }
+
     /// Build the final HashMap
     pub fn build(self) -> HashMap<String, String> {
         self.variables

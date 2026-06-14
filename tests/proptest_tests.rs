@@ -163,6 +163,7 @@ proptest! {
             total_cost_usd: Some(cost),
             total_lines_added: Some(lines_added),
             total_lines_removed: Some(lines_removed),
+            ..Default::default()
         };
 
         // Properties:

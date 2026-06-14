@@ -6,9 +6,66 @@
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
 use crate::layout::{LayoutRenderer, VariableBuilder};
-use crate::models::{ContextUsage, Cost, ModelType};
+use crate::models::{CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimits};
 use crate::theme::{get_theme_manager, Theme};
 use crate::utils::{calculate_context_usage, parse_duration, sanitize_for_terminal, shorten_path};
+
+/// Extra payload fields from modern Claude Code, threaded through the render
+/// pipeline alongside the legacy positional args. Borrowed from `StatuslineInput`
+/// so adding a new payload field never re-churns every render signature.
+#[derive(Clone, Copy, Default)]
+pub struct PayloadExtras<'a> {
+    /// Live context-window usage from the payload (preferred over transcript estimate).
+    pub context_window: Option<&'a ContextWindow>,
+    /// Claude.ai rate-limit windows from the payload.
+    pub rate_limits: Option<&'a RateLimits>,
+}
+
+/// Build a [`ContextUsage`] from Claude Code's payload `context_window`, used in
+/// preference to the transcript-derived estimate. Returns `None` when the
+/// payload does not (yet) carry a usable percentage — before the first API call
+/// or right after `/compact` — so callers fall back to the transcript path.
+///
+/// On success also returns `(current_tokens, window_size)` for the token display.
+fn context_usage_from_payload(
+    cw: &ContextWindow,
+) -> Option<(ContextUsage, Option<u32>, Option<usize>)> {
+    let percentage = cw.used_percentage?;
+    let window_size = cw.context_window_size.map(|w| w as usize);
+    let current_tokens = cw.total_input_tokens.map(|t| t as u32);
+    let tokens_remaining = match (window_size, cw.total_input_tokens) {
+        (Some(w), Some(used)) => w.saturating_sub(used as usize),
+        _ => 0,
+    };
+    let threshold = config::get_config().context.get_effective_threshold();
+    Some((
+        ContextUsage {
+            percentage: percentage.min(100.0),
+            approaching_limit: percentage >= threshold,
+            tokens_remaining,
+            compaction_state: CompactionState::Normal,
+        },
+        current_tokens,
+        window_size,
+    ))
+}
+
+/// Render the rate-limit windows as a compact string, e.g. `5h:24% 7d:41%`.
+/// Returns `None` when no window carries a percentage (absent for API-key usage).
+fn format_rate_limits(rl: &RateLimits) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(p) = rl.five_hour.as_ref().and_then(|w| w.used_percentage) {
+        parts.push(format!("5h:{}%", p.round() as i64));
+    }
+    if let Some(p) = rl.seven_day.as_ref().and_then(|w| w.used_percentage) {
+        parts.push(format!("7d:{}%", p.round() as i64));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
 
 /// Gets the current theme based on configuration.
 ///
@@ -273,6 +330,7 @@ pub fn format_output(
     cost: Option<&Cost>,
     daily_total: f64,
     session_id: Option<&str>,
+    extras: PayloadExtras,
 ) {
     let config = config::get_config();
     format_output_with_config(
@@ -282,11 +340,13 @@ pub fn format_output(
         cost,
         daily_total,
         session_id,
+        extras,
         &config.display,
     )
 }
 
 /// Format output with explicit display configuration (returns String)
+#[allow(clippy::too_many_arguments)]
 fn format_statusline_string(
     current_dir: &str,
     model_name: Option<&str>,
@@ -294,6 +354,7 @@ fn format_statusline_string(
     cost: Option<&Cost>,
     daily_total: f64,
     session_id: Option<&str>,
+    extras: PayloadExtras,
     display_config: &config::DisplayConfig,
 ) -> String {
     log::debug!(
@@ -346,9 +407,13 @@ fn format_statusline_string(
         }
     }
 
-    // 3. Context usage from transcript
+    // 3. Context usage — prefer Claude Code's payload context_window, fall back
+    //    to the transcript-derived estimate when the payload is absent/unpopulated.
     if display_config.show_context {
-        if let Some(transcript) = transcript_path {
+        let payload_ctx = extras.context_window.and_then(context_usage_from_payload);
+        if let Some((context, current_tokens, window_size)) = payload_ctx {
+            parts.push(format_context_bar(&context, current_tokens, window_size));
+        } else if let Some(transcript) = transcript_path {
             if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None)
             {
                 let current_tokens = crate::utils::get_token_count_from_transcript(transcript);
@@ -430,10 +495,12 @@ fn format_statusline_string(
                 let cost_color = get_cost_color(total_cost);
 
                 // Calculate burn rate if we have duration
-                // Use configured burn_rate mode (wall_clock, active_time, or auto_reset)
+                // Use configured burn_rate mode (wall_clock, active_time, or auto_reset),
+                // falling back to the transcript, then to the payload's wall-clock duration.
                 let duration = session_id
                     .and_then(crate::stats::get_session_duration_by_mode)
-                    .or_else(|| transcript_path.and_then(parse_duration));
+                    .or_else(|| transcript_path.and_then(parse_duration))
+                    .or_else(|| cost_data.total_duration_ms.map(|ms| ms / 1000));
 
                 let config = crate::config::get_config();
                 let burn_rate = duration.and_then(|d| {
@@ -493,6 +560,16 @@ fn format_statusline_string(
         }
     }
 
+    // 7b. Rate limits (Pro/Max subscription windows). Opt-in via config; absent
+    //     for API-key usage so it renders nothing unless the payload carries them.
+    if display_config.show_rate_limits {
+        if let Some(rl) = extras.rate_limits {
+            if let Some(s) = format_rate_limits(rl) {
+                parts.push(format!("{}{}{}", Colors::light_gray(), s, Colors::reset()));
+            }
+        }
+    }
+
     // 8. Token rate metrics (opt-in feature)
     // Uses rolling window if configured, otherwise session average
     if let Some(sid) = session_id {
@@ -517,6 +594,7 @@ fn format_statusline_string(
 ///
 /// This function builds all component variables and renders them
 /// using the user's layout configuration (preset or custom format).
+#[allow(clippy::too_many_arguments)]
 fn format_statusline_with_layout(
     current_dir: &str,
     model_name: Option<&str>,
@@ -524,6 +602,7 @@ fn format_statusline_with_layout(
     cost: Option<&Cost>,
     daily_total: f64,
     session_id: Option<&str>,
+    extras: PayloadExtras,
     layout_config: &config::LayoutConfig,
 ) -> String {
     let full_config = config::get_config();
@@ -584,12 +663,26 @@ fn format_statusline_with_layout(
         );
     }
 
-    // Context usage (with component config)
-    if let Some(transcript) = transcript_path {
+    // Context usage — prefer the payload context_window, fall back to transcript.
+    let bar_width = full_config.display.progress_bar_width;
+    if let Some((context, current_tokens, window_size)) =
+        extras.context_window.and_then(context_usage_from_payload)
+    {
+        let raw_bar = format_raw_bar(context.percentage, bar_width);
+        let tokens = match (current_tokens, window_size) {
+            (Some(t), Some(w)) => Some((t as u64, w as u64)),
+            _ => None,
+        };
+        builder = builder.context_with_config(
+            &raw_bar,
+            Some(context.percentage as u32),
+            tokens,
+            &components.context,
+        );
+    } else if let Some(transcript) = transcript_path {
         if let Some(context) = calculate_context_usage(transcript, model_name, session_id, None) {
             let current_tokens = crate::utils::get_token_count_from_transcript(transcript);
             let window_size = crate::utils::get_context_window_for_model(model_name, full_config);
-            let bar_width = full_config.display.progress_bar_width;
             let raw_bar = format_raw_bar(context.percentage, bar_width);
             builder = builder.context_with_config(
                 &raw_bar,
@@ -642,10 +735,11 @@ fn format_statusline_with_layout(
         if let Some(total_cost) = cost_data.total_cost_usd {
             let cost_color = get_cost_color(total_cost);
 
-            // Calculate burn rate
+            // Calculate burn rate (DB mode → transcript → payload wall-clock)
             let duration = session_id
                 .and_then(crate::stats::get_session_duration_by_mode)
-                .or_else(|| transcript_path.and_then(parse_duration));
+                .or_else(|| transcript_path.and_then(parse_duration))
+                .or_else(|| cost_data.total_duration_ms.map(|ms| ms / 1000));
 
             let config = crate::config::get_config();
             let burn_rate = duration.and_then(|d| {
@@ -670,6 +764,17 @@ fn format_statusline_with_layout(
                 &components.cost,
             );
         }
+    }
+
+    // Rate limits (Pro/Max only; absent otherwise). Exposes {rate_limits},
+    // {rate_limit_5h}, {rate_limit_7d} — opt in by referencing them in a template.
+    if let Some(rl) = extras.rate_limits {
+        builder = builder.rate_limits(
+            rl.five_hour.as_ref().and_then(|w| w.used_percentage),
+            rl.seven_day.as_ref().and_then(|w| w.used_percentage),
+            &Colors::light_gray(),
+            &reset,
+        );
     }
 
     // Token rate (with component config)
@@ -728,6 +833,7 @@ pub fn render_with_vars(
 }
 
 /// Format output with explicit display configuration (prints to stdout)
+#[allow(clippy::too_many_arguments)]
 fn format_output_with_config(
     current_dir: &str,
     model_name: Option<&str>,
@@ -735,6 +841,7 @@ fn format_output_with_config(
     cost: Option<&Cost>,
     daily_total: f64,
     session_id: Option<&str>,
+    extras: PayloadExtras,
     display_config: &config::DisplayConfig,
 ) {
     let full_config = config::get_config();
@@ -751,6 +858,7 @@ fn format_output_with_config(
             cost,
             daily_total,
             session_id,
+            extras,
             &full_config.layout,
         )
     } else {
@@ -761,6 +869,7 @@ fn format_output_with_config(
             cost,
             daily_total,
             session_id,
+            extras,
             display_config,
         )
     };
@@ -772,6 +881,7 @@ fn format_output_with_config(
 /// This is the library-friendly version of format_output that returns
 /// the formatted statusline as a String.
 #[allow(dead_code)]
+#[allow(clippy::too_many_arguments)]
 pub fn format_output_to_string(
     current_dir: &str,
     model_name: Option<&str>,
@@ -779,6 +889,7 @@ pub fn format_output_to_string(
     cost: Option<&Cost>,
     daily_total: f64,
     session_id: Option<&str>,
+    extras: PayloadExtras,
 ) -> String {
     let config = config::get_config();
     format_statusline_string(
@@ -788,6 +899,7 @@ pub fn format_output_to_string(
         cost,
         daily_total,
         session_id,
+        extras,
         &config.display,
     )
 }
@@ -1140,6 +1252,67 @@ fn format_token_count_for_display(count: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::{ContextWindow, RateLimitWindow, RateLimits};
+
+    #[test]
+    fn test_format_rate_limits() {
+        let rl = RateLimits {
+            five_hour: Some(RateLimitWindow {
+                used_percentage: Some(23.5),
+                resets_at: Some(1),
+            }),
+            seven_day: Some(RateLimitWindow {
+                used_percentage: Some(41.2),
+                resets_at: Some(2),
+            }),
+        };
+        assert_eq!(format_rate_limits(&rl).as_deref(), Some("5h:24% 7d:41%"));
+
+        // Only one window present
+        let rl_one = RateLimits {
+            five_hour: Some(RateLimitWindow {
+                used_percentage: Some(10.0),
+                resets_at: None,
+            }),
+            seven_day: None,
+        };
+        assert_eq!(format_rate_limits(&rl_one).as_deref(), Some("5h:10%"));
+
+        // No percentages -> None (renders nothing)
+        let rl_empty = RateLimits {
+            five_hour: None,
+            seven_day: None,
+        };
+        assert!(format_rate_limits(&rl_empty).is_none());
+    }
+
+    #[test]
+    fn test_context_usage_from_payload() {
+        // Populated payload yields the payload percentage and tokens
+        let cw = ContextWindow {
+            total_input_tokens: Some(15500),
+            total_output_tokens: Some(1200),
+            context_window_size: Some(200000),
+            used_percentage: Some(8.0),
+            remaining_percentage: Some(92.0),
+            current_usage: None,
+        };
+        let (ctx, tokens, window) = context_usage_from_payload(&cw).unwrap();
+        assert_eq!(ctx.percentage, 8.0);
+        assert_eq!(tokens, Some(15500));
+        assert_eq!(window, Some(200000));
+
+        // No used_percentage -> None, so caller falls back to transcript
+        let cw_unpopulated = ContextWindow {
+            total_input_tokens: None,
+            total_output_tokens: None,
+            context_window_size: Some(200000),
+            used_percentage: None,
+            remaining_percentage: None,
+            current_usage: None,
+        };
+        assert!(context_usage_from_payload(&cw_unpopulated).is_none());
+    }
 
     #[test]
     #[serial_test::serial]
@@ -1346,6 +1519,7 @@ mod tests {
             total_cost_usd: Some(0.50),
             total_lines_added: None,
             total_lines_removed: None,
+            ..Default::default()
         };
 
         // The burn rate calculation happens in format_output

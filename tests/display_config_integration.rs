@@ -10,6 +10,7 @@ mod test_support;
 
 use statusline::config::Config;
 use statusline::display::format_output_to_string;
+use statusline::display::PayloadExtras;
 use statusline::models::Cost;
 use std::io::Write;
 use tempfile::NamedTempFile;
@@ -90,6 +91,7 @@ fn test_baseline_all_components_enabled() {
         None, // No cost
         0.0,  // No daily total
         None, // No session_id
+        PayloadExtras::default(),
     );
 
     assert!(output.contains("/test/path"), "Should show directory");
@@ -109,6 +111,7 @@ fn test_directory_disabled() {
         None,
         0.0,
         None,
+        PayloadExtras::default(),
     );
 
     // With default config, directory should be shown
@@ -125,7 +128,15 @@ fn test_model_display() {
     let _guard = test_support::init();
     std::env::remove_var("NO_COLOR");
 
-    let output = format_output_to_string("/test", Some("Claude 3.5 Sonnet"), None, None, 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        Some("Claude 3.5 Sonnet"),
+        None,
+        None,
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
 
     assert!(output.contains("S3.5"), "Should show model abbreviation");
     assert_clean_separators(&output);
@@ -140,9 +151,18 @@ fn test_lines_changed_display() {
         total_cost_usd: Some(1.50),
         total_lines_added: Some(123),
         total_lines_removed: Some(45),
+        ..Default::default()
     };
 
-    let output = format_output_to_string("/test", Some("Claude"), None, Some(&cost), 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        Some("Claude"),
+        None,
+        Some(&cost),
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
 
     assert!(
         output.contains("+123") || output.contains("123"),
@@ -164,9 +184,18 @@ fn test_cost_display() {
         total_cost_usd: Some(5.75),
         total_lines_added: None,
         total_lines_removed: None,
+        ..Default::default()
     };
 
-    let output = format_output_to_string("/test", Some("Claude"), None, Some(&cost), 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        Some("Claude"),
+        None,
+        Some(&cost),
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
 
     assert!(
         output.contains("$5.75") || output.contains("5.75"),
@@ -188,6 +217,7 @@ fn test_cost_disabled_but_daily_total_present() {
         None,  // No cost
         15.50, // Daily total
         None,
+        PayloadExtras::default(),
     );
 
     // With default config (show_cost = true), daily total should appear
@@ -214,6 +244,7 @@ fn test_duration_display() {
         None,
         0.0,
         None,
+        PayloadExtras::default(),
     );
 
     // Should show "5m" for 5 minutes
@@ -233,6 +264,7 @@ fn test_multiple_components() {
         total_cost_usd: Some(2.50),
         total_lines_added: Some(50),
         total_lines_removed: Some(10),
+        ..Default::default()
     };
 
     let output = format_output_to_string(
@@ -242,6 +274,7 @@ fn test_multiple_components() {
         Some(&cost),
         10.0, // Daily total
         Some("session-123"),
+        PayloadExtras::default(),
     );
 
     // All components should be present
@@ -270,11 +303,13 @@ fn test_no_double_separators_regression() {
     // This is the key regression test - with minimal components,
     // we should not get double separators
     let output = format_output_to_string(
-        "/test", None, // No model
+        "/test",
+        None, // No model
         None, // No transcript
         None, // No cost
         0.0,  // No daily total
         None, // No session
+        PayloadExtras::default(),
     );
 
     // Should just show directory
@@ -300,6 +335,7 @@ fn test_with_no_color_env() {
         None,
         0.0,
         None,
+        PayloadExtras::default(),
     );
 
     // Should not contain ANSI escape codes

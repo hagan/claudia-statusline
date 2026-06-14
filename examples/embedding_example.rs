@@ -43,9 +43,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             total_cost_usd: Some(15.75),
             total_lines_added: Some(500),
             total_lines_removed: Some(80),
+            ..Default::default()
         }),
         session_id: Some("structured-example".to_string()),
         transcript: None,
+        ..Default::default()
     };
 
     // Render with stats update enabled

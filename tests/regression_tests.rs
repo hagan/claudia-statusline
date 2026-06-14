@@ -4,6 +4,7 @@
 
 use serial_test::serial;
 use statusline::display::format_output_to_string;
+use statusline::display::PayloadExtras;
 use statusline::models::ModelType;
 
 // ============================================================================
@@ -87,7 +88,15 @@ fn test_no_double_separators() {
     statusline::__test_set_color_override(Some(true));
 
     // Test with minimal components
-    let output = format_output_to_string("/test", Some("Claude"), None, None, 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        Some("Claude"),
+        None,
+        None,
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
     statusline::__test_set_color_override(None);
 
     assert!(
@@ -107,7 +116,15 @@ fn test_no_double_separators_with_git_disabled() {
     statusline::__test_set_color_override(Some(true));
 
     // When git info is missing, separator logic should still work
-    let output = format_output_to_string("/home/test", Some("Sonnet"), None, None, 5.0, None);
+    let output = format_output_to_string(
+        "/home/test",
+        Some("Sonnet"),
+        None,
+        None,
+        5.0,
+        None,
+        PayloadExtras::default(),
+    );
     statusline::__test_set_color_override(None);
 
     assert!(
@@ -128,7 +145,15 @@ fn test_git_info_no_leading_space() {
     // Bug: Git info had leading space causing formatting issues
     // This would require mocking git, so we test indirectly
     // by checking that output doesn't start with space
-    let output = format_output_to_string("/test", None, None, None, 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        None,
+        None,
+        None,
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
     statusline::__test_set_color_override(None);
 
     // Output should not start with whitespace
@@ -205,7 +230,15 @@ fn test_empty_model_name() {
     statusline::__test_set_color_override(Some(true));
 
     // Should handle None model gracefully
-    let output = format_output_to_string("/test", None, None, None, 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        None,
+        None,
+        None,
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
     statusline::__test_set_color_override(None);
 
     assert!(!output.is_empty(), "Should produce some output");
@@ -226,9 +259,18 @@ fn test_zero_cost() {
         total_cost_usd: Some(0.0),
         total_lines_added: None,
         total_lines_removed: None,
+        ..Default::default()
     };
 
-    let output = format_output_to_string("/test", Some("Claude"), None, Some(&cost), 0.0, None);
+    let output = format_output_to_string(
+        "/test",
+        Some("Claude"),
+        None,
+        Some(&cost),
+        0.0,
+        None,
+        PayloadExtras::default(),
+    );
     statusline::__test_set_color_override(None);
 
     // Should handle zero cost without crashing

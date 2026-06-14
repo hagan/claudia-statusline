@@ -156,6 +156,10 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
         cost,
         daily_total,
         session_id,
+        display::PayloadExtras {
+            context_window: input.context_window.as_ref(),
+            rate_limits: input.rate_limits.as_ref(),
+        },
     );
 
     Ok(output)

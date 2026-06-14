@@ -96,6 +96,12 @@ pub struct DisplayConfig {
 
     /// Show token counts in context bar (e.g., "179k/1000k")
     pub show_context_tokens: bool,
+
+    /// Show Claude.ai (Pro/Max) rate-limit windows, e.g. "5h:24% 7d:41%".
+    /// Sourced from the payload `rate_limits` object; renders nothing for
+    /// API-key usage. Opt-in (default false) to keep existing output unchanged.
+    #[serde(default)]
+    pub show_rate_limits: bool,
 }
 
 /// Context window configuration
@@ -814,6 +820,8 @@ impl Default for DisplayConfig {
             show_cost: true,
             // Token counts opt-in (new feature, default off for minimal statusline)
             show_context_tokens: false,
+            // Rate limits opt-in (Pro/Max only; default off to keep output unchanged)
+            show_rate_limits: false,
         }
     }
 }
@@ -1172,6 +1180,7 @@ theme = "dark"
 # show_duration = true
 # show_lines_changed = true
 # show_cost = true
+# show_rate_limits = false  # Pro/Max only: "5h:24% 7d:41%" (absent for API keys)
 
 # Show token counts in context bar (e.g., "179k/1000k")
 # show_context_tokens = false
