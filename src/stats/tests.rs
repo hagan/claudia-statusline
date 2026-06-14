@@ -387,6 +387,14 @@ fn test_file_corruption_recovery() {
     fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
     fs::write(&stats_path, "not valid json {").unwrap();
 
+    // (#61) Enforce this test's precondition — "no SQLite db present" — immediately before
+    // load(). While this #[serial] test holds the global XDG, a concurrent non-serial test
+    // that touches the global get_data_dir() can create a stats.db in this very temp dir,
+    // which would make load() return SQLite data and skip the corrupt-JSON backup path.
+    if let Ok(p) = StatsData::get_sqlite_path() {
+        let _ = fs::remove_file(&p);
+    }
+
     // Load should handle corruption gracefully
     let stats = StatsData::load();
     assert_eq!(stats.version, "1.0");
@@ -420,12 +428,21 @@ fn test_backup_file_permissions() {
 
     let temp_dir = TempDir::new().unwrap();
     env::set_var("XDG_DATA_HOME", temp_dir.path());
+    env::set_var("XDG_CONFIG_HOME", temp_dir.path());
+    crate::config::reset_config();
 
     let stats_path = get_data_dir().join("stats.json");
 
     // Create corrupted stats file
     fs::create_dir_all(stats_path.parent().unwrap()).unwrap();
     fs::write(&stats_path, "not valid json {").unwrap();
+
+    // (#61) Enforce the "no SQLite db present" precondition right before load(): while this
+    // #[serial] test holds the global XDG, a concurrent non-serial test touching the global
+    // get_data_dir() can drop a stats.db here, making load() skip the corrupt-JSON backup.
+    if let Ok(p) = StatsData::get_sqlite_path() {
+        let _ = fs::remove_file(&p);
+    }
 
     // Load stats (triggers backup creation)
     let _stats = StatsData::load();
@@ -445,6 +462,8 @@ fn test_backup_file_permissions() {
     );
 
     env::remove_var("XDG_DATA_HOME");
+    env::remove_var("XDG_CONFIG_HOME");
+    crate::config::reset_config();
 }
 
 /// BREAK-03 positive recovery test: with NO stats.db present but a valid stats.json
