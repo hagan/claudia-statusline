@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-06-14
+
+> **Patch release**: post-3.0.0 hardening — concurrency safety, migration fidelity, and a large internal/test/CI cleanup. No user-facing feature or config changes.
+
+### Fixed
+
+- **Concurrent first-run SQLite migration race** — multiple statusline processes initializing a fresh database at once could hit `UNIQUE constraint failed: schema_migrations.version`, `duplicate column name`, or `database is locked`. Migrations now run in an IMMEDIATE transaction with `INSERT OR IGNORE`, `busy_timeout` set before the WAL switch, and retry. (#33)
+- **Dropped concurrent stats writes** — `update_session` used a DEFERRED transaction, so concurrent writers across processes could hit a non-waitable `SQLITE_BUSY` and lose an update. It now uses an IMMEDIATE transaction so writers serialize and retry cleanly. (#57)
+- **Legacy `stats.json` daily/monthly aggregates were not migrated** into SQLite on upgrade (only per-session rows were). Migration now back-fills the `daily`/`monthly` aggregate maps too. (#52)
+
+### Changed
+
+- Unified the stats-update + render flow shared by the `statusline` binary and the `render_statusline()` library API into one implementation (removes prior drift). (#32)
+
+### Internal / Tests / CI / Docs
+
+- Made the global config cache resettable for deterministic tests; re-enabled or accurately documented previously-ignored flaky tests. (#34)
+- Decomposed `main.rs` (~1700 → ~450 lines) into a `commands/` module; deduplicated the GSD cached reader; extracted shared `scripts/lib.sh`; renamed `state.rs` → `session_state.rs`. (#39)
+- Consolidated 11 `burn_rate_*` test files into a shared helper + 4 thematic files (no wall-clock sleeps); added unit coverage for the legacy-JSON migration, active-time calculation, and the layout `VariableBuilder`. (#35, #38)
+- Pinned the Rust toolchain via `rust-toolchain.toml` (local/CI parity); de-duplicated CI workflows, added cargo caching, single lint source, and bumped `action-gh-release` to v2. (#51, #36, #58)
+- Refreshed `ARCHITECTURE.md`/`CONTRIBUTING.md` to the v3.0.0 module layout, marked `SQLITE_MIGRATION.md` historical, added `docs/architecture/`; repo hygiene (`.gitignore`, stale Makefile variable). (#40, #37)
+
 ## [3.0.0] - 2026-06-10
 
 > **Major Release**: Conditional template engine, provider extensibility, and a clean SQLite-only data store.

@@ -2001,7 +2001,7 @@ dependencies = [
 
 [[package]]
 name = "statusline"
-version = "3.0.0"
+version = "3.0.1"
 dependencies = [
  "chrono",
  "clap",
