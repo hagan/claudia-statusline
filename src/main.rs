@@ -433,7 +433,7 @@ fn main() -> Result<()> {
     // Format and print output
     format_output(
         &current_dir,
-        input.model.as_ref().and_then(|m| m.display_name.as_deref()),
+        input.model.as_ref().and_then(|m| m.detection_name()),
         input.transcript.as_deref(),
         input.cost.as_ref(),
         daily_total,

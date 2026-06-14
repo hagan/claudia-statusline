@@ -29,7 +29,7 @@ use crate::models::StatuslineInput;
 pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool) -> f64 {
     use crate::{common, config, stats, utils};
 
-    let model_name = input.model.as_ref().and_then(|m| m.display_name.as_deref());
+    let model_name = input.model.as_ref().and_then(|m| m.detection_name());
     let transcript_path = input.transcript.as_deref();
     let session_id = input.session_id.as_deref();
 

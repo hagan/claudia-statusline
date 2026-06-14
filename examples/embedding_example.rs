@@ -37,6 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
         model: Some(Model {
             display_name: Some("Claude 3 Opus".to_string()),
+            id: None,
         }),
         cost: Some(Cost {
             total_cost_usd: Some(15.75),

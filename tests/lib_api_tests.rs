@@ -21,6 +21,7 @@ fn test_render_statusline_basic() {
         }),
         model: Some(Model {
             display_name: Some("Claude 3.5 Sonnet".to_string()),
+            id: None,
         }),
         ..Default::default()
     };
@@ -146,6 +147,7 @@ fn test_render_with_git_repo() {
         }),
         model: Some(Model {
             display_name: Some("Claude 3.5 Sonnet".to_string()),
+            id: None,
         }),
         ..Default::default()
     };

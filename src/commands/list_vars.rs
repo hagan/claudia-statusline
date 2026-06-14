@@ -101,7 +101,7 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
     core_vars.insert("dir_short".into(), basename);
 
     // Model
-    if let Some(name) = input.model.as_ref().and_then(|m| m.display_name.as_deref()) {
+    if let Some(name) = input.model.as_ref().and_then(|m| m.detection_name()) {
         let sanitized = crate::utils::sanitize_for_terminal(name);
         let model_type = crate::models::ModelType::from_name(&sanitized);
         core_vars.insert("model".into(), model_type.abbreviation());
@@ -111,7 +111,7 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
 
     // Context
     if let Some(transcript) = input.transcript.as_deref() {
-        let model_name = input.model.as_ref().and_then(|m| m.display_name.as_deref());
+        let model_name = input.model.as_ref().and_then(|m| m.detection_name());
         if let Some(ctx) = crate::utils::calculate_context_usage(
             transcript,
             model_name,

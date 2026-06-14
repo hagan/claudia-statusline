@@ -117,6 +117,7 @@ pub use version::{short_version, version_string};
 ///     }),
 ///     model: Some(Model {
 ///         display_name: Some("Claude 3.5 Sonnet".to_string()),
+///         id: None,
 ///     }),
 ///     ..Default::default()
 /// };
@@ -133,7 +134,7 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
         .unwrap_or("~");
 
     // Get model name
-    let model_name = input.model.as_ref().and_then(|m| m.display_name.as_deref());
+    let model_name = input.model.as_ref().and_then(|m| m.detection_name());
 
     // Get transcript path
     let transcript_path = input.transcript.as_deref();

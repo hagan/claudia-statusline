@@ -42,6 +42,20 @@ pub struct Workspace {
 pub struct Model {
     /// Display name of the Claude model (e.g., "Claude 3.5 Sonnet")
     pub display_name: Option<String>,
+    /// Canonical model identifier (e.g., "claude-opus-4-8", "claude-fable-5")
+    ///
+    /// Present in modern Claude Code payloads and more reliable for model
+    /// detection than `display_name` (which may be just "Opus" with no version).
+    pub id: Option<String>,
+}
+
+impl Model {
+    /// Returns the best string for model detection, preferring the canonical
+    /// `id` (e.g. "claude-opus-4-8") over `display_name` (e.g. "Opus"). The id
+    /// carries the version, so it yields a more specific abbreviation.
+    pub fn detection_name(&self) -> Option<&str> {
+        self.id.as_deref().or(self.display_name.as_deref())
+    }
 }
 
 /// Cost and metrics information.
@@ -109,6 +123,10 @@ impl ModelType {
             "Sonnet"
         } else if lower.contains("haiku") {
             "Haiku"
+        } else if lower.contains("fable") {
+            "Fable"
+        } else if lower.contains("mythos") {
+            "Mythos"
         } else {
             return ModelType::Unknown;
         };
@@ -174,6 +192,20 @@ impl ModelType {
                             "Haiku".to_string()
                         } else {
                             format!("H{}", version)
+                        }
+                    }
+                    "Fable" => {
+                        if version.is_empty() {
+                            "Fable".to_string()
+                        } else {
+                            format!("F{}", version)
+                        }
+                    }
+                    "Mythos" => {
+                        if version.is_empty() {
+                            "Mythos".to_string()
+                        } else {
+                            format!("M{}", version)
                         }
                     }
                     _ => family.clone(),
@@ -372,6 +404,58 @@ mod tests {
 
         // Test unknown
         assert_eq!(ModelType::from_name("Unknown Model"), ModelType::Unknown);
+    }
+
+    #[test]
+    fn test_fable_and_mythos_detection() {
+        // Fable 5 from canonical id and from display name
+        let fable_id = ModelType::from_name("claude-fable-5");
+        assert!(
+            matches!(&fable_id, ModelType::Model { family, version } if family == "Fable" && version == "5")
+        );
+        assert_eq!(fable_id.abbreviation(), "F5");
+        assert_eq!(fable_id.canonical_name(), "Fable 5");
+        assert_eq!(fable_id.family(), "Fable");
+
+        assert_eq!(ModelType::from_name("Claude Fable 5").abbreviation(), "F5");
+
+        // Mythos 5 (Project Glasswing)
+        let mythos = ModelType::from_name("claude-mythos-5");
+        assert!(
+            matches!(&mythos, ModelType::Model { family, version } if family == "Mythos" && version == "5")
+        );
+        assert_eq!(mythos.abbreviation(), "M5");
+        assert_eq!(mythos.canonical_name(), "Mythos 5");
+
+        // No-version fallbacks
+        assert_eq!(ModelType::from_name("Fable").abbreviation(), "Fable");
+        assert_eq!(ModelType::from_name("Mythos").abbreviation(), "Mythos");
+    }
+
+    #[test]
+    fn test_model_id_field_and_detection_name() {
+        // detection_name prefers id over display_name
+        let model = Model {
+            display_name: Some("Opus".to_string()),
+            id: Some("claude-opus-4-8".to_string()),
+        };
+        assert_eq!(model.detection_name(), Some("claude-opus-4-8"));
+        assert_eq!(
+            ModelType::from_name(model.detection_name().unwrap()).abbreviation(),
+            "O4.8"
+        );
+
+        // Falls back to display_name when id absent
+        let legacy = Model {
+            display_name: Some("Claude 3.5 Sonnet".to_string()),
+            id: None,
+        };
+        assert_eq!(legacy.detection_name(), Some("Claude 3.5 Sonnet"));
+
+        // Parses id from JSON
+        let json = r#"{"display_name": "Opus", "id": "claude-opus-4-8"}"#;
+        let parsed: Model = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.id.as_deref(), Some("claude-opus-4-8"));
     }
 
     #[test]
