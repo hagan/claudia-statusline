@@ -1,0 +1,74 @@
+{
+  "_license": "Pricing data derived from LiteLLM (BerriAI/litellm) model_prices_and_context_window.json, licensed under the MIT License. Copyright (c) 2023 Berri AI. See https://github.com/BerriAI/litellm/blob/main/LICENSE. Only the Claude (Anthropic) subset is vendored here; per-token costs are mapped to a slim schema (input/output/cache_creation/cache_read).",
+  "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
+  "vendored_at": "2026-06-19",
+  "version": "2026-06-19-claude-subset-1",
+  "prices": {
+    "claude-3-5-haiku-20241022": {
+      "cache_creation": 1e-06,
+      "cache_read": 8e-08,
+      "input": 8e-07,
+      "output": 4e-06
+    },
+    "claude-3-5-sonnet-20240620": {
+      "cache_creation": 3.75e-06,
+      "cache_read": 3e-07,
+      "input": 3e-06,
+      "output": 1.5e-05
+    },
+    "claude-3-5-sonnet-20241022": {
+      "cache_creation": 3.75e-06,
+      "cache_read": 3e-07,
+      "input": 3e-06,
+      "output": 1.5e-05
+    },
+    "claude-3-7-sonnet-20250219": {
+      "cache_creation": 3.75e-06,
+      "cache_read": 3e-07,
+      "input": 3e-06,
+      "output": 1.5e-05
+    },
+    "claude-3-haiku-20240307": {
+      "cache_creation": 3e-07,
+      "cache_read": 3e-08,
+      "input": 2.5e-07,
+      "output": 1.25e-06
+    },
+    "claude-3-opus-20240229": {
+      "cache_creation": 1.875e-05,
+      "cache_read": 1.5e-06,
+      "input": 1.5e-05,
+      "output": 7.5e-05
+    },
+    "claude-opus-4-1-20250805": {
+      "cache_creation": 1.875e-05,
+      "cache_read": 1.5e-06,
+      "input": 1.5e-05,
+      "output": 7.5e-05
+    },
+    "claude-opus-4-20250514": {
+      "cache_creation": 1.875e-05,
+      "cache_read": 1.5e-06,
+      "input": 1.5e-05,
+      "output": 7.5e-05
+    },
+    "claude-opus-4-8": {
+      "cache_creation": 1.875e-05,
+      "cache_read": 1.5e-06,
+      "input": 1.5e-05,
+      "output": 7.5e-05
+    },
+    "claude-sonnet-4-20250514": {
+      "cache_creation": 3.75e-06,
+      "cache_read": 3e-07,
+      "input": 3e-06,
+      "output": 1.5e-05
+    },
+    "claude-sonnet-4-5-20250929": {
+      "cache_creation": 3.75e-06,
+      "cache_read": 3e-07,
+      "input": 3e-06,
+      "output": 1.5e-05
+    }
+  }
+}

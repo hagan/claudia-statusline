@@ -54,6 +54,9 @@ pub mod layout;
 /// Database schema migration system
 pub mod migrations;
 pub mod models;
+/// Bundled offline Claude price table (PRICE-01): embedded `claude_prices.json`,
+/// total panic-free accessor, exact-match-only lookup with explicit aliases.
+pub mod pricing;
 /// Data provider system for parallel variable collection
 pub mod provider;
 /// Shared statusline rendering logic (stats-update flow used by the binary and the embedding API)
