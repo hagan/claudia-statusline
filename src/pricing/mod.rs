@@ -78,6 +78,64 @@ pub fn table() -> &'static PriceTable {
     TABLE.get_or_init(|| parse_table(EMBEDDED_PRICES))
 }
 
+/// Outcome of a price lookup.
+///
+/// Two distinct cases (D-13) the caller (Plan 02) renders differently:
+/// - [`PriceLookup::Priced`] — an exact table entry (or alias target) that also
+///   passes [`PriceEntry::is_valid`]. The caller computes a dollar figure.
+/// - [`PriceLookup::Unpriceable`] — a *valid lookup that produced no usable
+///   price*: an unknown/unaliased id, an alias whose target is not a table
+///   entry, or a matched-but-invalid (zero/non-finite) row. The caller renders a
+///   literal `unknown` marker (distinct from "no token data", which Plan 02
+///   handles as var-absence per D-10).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PriceLookup {
+    Priced(&'static PriceEntry),
+    Unpriceable,
+}
+
+/// RED stub lookup — always unpriceable so Task-2 tests fail.
+pub fn lookup(_id: &str, _aliases: &HashMap<String, String>) -> PriceLookup {
+    PriceLookup::Unpriceable
+}
+
+/// RED stub: strict source enum (filled in GREEN).
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PricingSource {
+    Auto,
+    Bundled,
+    Synced,
+}
+
+impl Default for PricingSource {
+    fn default() -> Self {
+        // RED stub: wrong default so the strict-enum test fails.
+        PricingSource::Bundled
+    }
+}
+
+/// RED stub config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PricingConfig {
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub aliases: HashMap<String, String>,
+    pub source: PricingSource,
+}
+
+impl Default for PricingConfig {
+    fn default() -> Self {
+        // RED stub: non-empty aliases so the default test fails.
+        let mut aliases = HashMap::new();
+        aliases.insert("stub".to_string(), "stub".to_string());
+        Self {
+            aliases,
+            source: PricingSource::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +194,121 @@ mod tests {
         let t = table();
         assert!(!t.version.is_empty(), "metadata version must be present");
         assert!(!t.source.is_empty(), "metadata source must be present");
+    }
+
+    // ---- Task 2: lookup + alias + strict enum + config + static-scan guard ----
+
+    fn priced(l: PriceLookup) -> &'static PriceEntry {
+        match l {
+            PriceLookup::Priced(e) => e,
+            PriceLookup::Unpriceable => panic!("expected Priced, got Unpriceable"),
+        }
+    }
+
+    #[test]
+    fn lookup_exact_known_id_returns_priced() {
+        let aliases = HashMap::new();
+        let e = priced(lookup("claude-opus-4-8", &aliases));
+        assert!(e.is_valid());
+    }
+
+    #[test]
+    fn lookup_unknown_id_returns_unpriceable_never_fuzzy() {
+        let aliases = HashMap::new();
+        assert_eq!(
+            lookup("totally-unknown-model", &aliases),
+            PriceLookup::Unpriceable
+        );
+        // A prefix of a real id must NOT fuzzy-match.
+        assert_eq!(lookup("claude-opus", &aliases), PriceLookup::Unpriceable);
+    }
+
+    #[test]
+    fn lookup_alias_resolves_to_target_entry() {
+        let mut aliases = HashMap::new();
+        aliases.insert("my-proxy-opus".to_string(), "claude-opus-4-8".to_string());
+        let e = priced(lookup("my-proxy-opus", &aliases));
+        let direct = priced(lookup("claude-opus-4-8", &HashMap::new()));
+        assert_eq!(e, direct, "alias must resolve to the same opus entry");
+    }
+
+    #[test]
+    fn lookup_alias_to_non_entry_is_unpriceable_no_chain() {
+        let mut aliases = HashMap::new();
+        aliases.insert("x".to_string(), "not-a-real-id".to_string());
+        assert_eq!(lookup("x", &aliases), PriceLookup::Unpriceable);
+    }
+
+    #[test]
+    fn lookup_matched_but_invalid_row_is_unpriceable() {
+        // A zero-rate row in the live table must never be priced as $0.00. We
+        // can't mutate the static table, so assert the invariant via is_valid +
+        // the lookup contract: synthesize an invalid entry and confirm is_valid
+        // rejects it (the lookup layer gates on is_valid).
+        let bad = PriceEntry {
+            input: 0.0,
+            output: 1.0,
+            cache_creation: 1.0,
+            cache_read: 0.0,
+        };
+        assert!(!bad.is_valid(), "zero-rate row must be invalid (LOW-7)");
+    }
+
+    #[test]
+    fn pricing_config_default_is_empty_aliases_and_auto_source() {
+        let cfg = PricingConfig::default();
+        assert!(cfg.aliases.is_empty(), "default aliases must be empty");
+        assert_eq!(
+            cfg.source,
+            PricingSource::Auto,
+            "default source must be Auto (safe default, MEDIUM-6)"
+        );
+    }
+
+    #[test]
+    fn pricing_source_strict_enum_round_trips_and_rejects_typos() {
+        #[derive(Deserialize)]
+        struct Wrap {
+            source: PricingSource,
+        }
+        let bundled: Wrap = toml::from_str(r#"source = "bundled""#).expect("bundled parses");
+        assert_eq!(bundled.source, PricingSource::Bundled);
+        let synced: Wrap = toml::from_str(r#"source = "synced""#).expect("synced parses (Phase 11)");
+        assert_eq!(synced.source, PricingSource::Synced);
+        // A typo MUST fail to deserialize (strict enum, not silent fallthrough).
+        let bad = toml::from_str::<Wrap>(r#"source = "buntled""#);
+        assert!(bad.is_err(), "invalid source value must fail deserialization");
+    }
+
+    #[test]
+    fn toml_without_pricing_table_yields_default() {
+        // Mirror src/config.rs: Config carries #[serde(default)], so an absent
+        // [pricing] section parses to PricingConfig::default().
+        let cfg: PricingConfig = toml::from_str("").expect("empty toml parses");
+        assert!(cfg.aliases.is_empty());
+        assert_eq!(cfg.source, PricingSource::Auto);
+    }
+
+    #[test]
+    fn static_scan_no_network_or_subprocess_tokens() {
+        // Read this module's own source and assert the offline/zero-subprocess
+        // invariant: none of the forbidden tokens appear outside this guard's own
+        // assertion list. The forbidden literals are constructed by concatenation
+        // so they do not self-match.
+        let src = include_str!("mod.rs");
+        let forbidden = [
+            concat!("Comm", "and"),
+            concat!("std::", "net"),
+            concat!("req", "west"),
+            concat!("ur", "eq"),
+            concat!("cu", "rl"),
+            concat!("tok", "io"),
+        ];
+        for tok in forbidden {
+            assert!(
+                !src.contains(tok),
+                "src/pricing must not reference `{tok}` (offline invariant)"
+            );
+        }
     }
 }
