@@ -1,0 +1,93 @@
+name: Vendor Pricing Refresh
+
+# Refreshes the bundled Claude price subset (data/claude_prices.json) from
+# LiteLLM by running scripts/vendor-pricing.sh OUT-OF-BAND and opening a REVIEW PR
+# when the subset changed (PRICE-01 / D-02).
+#
+# INVARIANT — review-PR, NOT build-fetch (threat T-10-09):
+#   * Unreviewed upstream LiteLLM data NEVER reaches a build. build.rs is
+#     metadata-only and performs no fetch; this workflow is the ONLY place that
+#     fetches pricing, and it only opens a PR for a human to review and merge.
+#   * This workflow MUST NOT push to `main` directly, and MUST NOT be referenced
+#     by build.yml / release.yml. The price table is embedded via include_str!
+#     only AFTER a maintainer reviews and merges the refresh PR.
+#   * Prices change ~quarterly, so a MONTHLY schedule is ample; workflow_dispatch
+#     allows an on-demand manual refresh.
+
+on:
+  schedule:
+    # Monthly: 06:00 UTC on the 1st of each month.
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+# Least-privilege scopes (threat T-10-10):
+#   contents: write       -> the PR action pushes the refresh branch
+#   pull-requests: write  -> the PR action opens/updates the review PR
+# No actions/packages/id-token scopes are requested.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  vendor-pricing:
+    name: Refresh Claude price subset
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # jq + curl are preinstalled on ubuntu-latest; ensure they exist and that
+      # python3 (used by the script for canonical serialization) is present.
+      - name: Verify tooling
+        run: |
+          set -euo pipefail
+          command -v curl >/dev/null   || { echo "curl missing"; exit 1; }
+          command -v jq >/dev/null     || { echo "jq missing"; exit 1; }
+          command -v python3 >/dev/null || { echo "python3 missing"; exit 1; }
+
+      - name: Vendor Claude price subset (fetch + map + stamp + self-validate)
+        run: |
+          set -euo pipefail
+          ./scripts/vendor-pricing.sh
+
+      # Portable YAML/trigger sanity is covered by the repo's grep-based checks
+      # (review LOW-8: no PyYAML dependency). Here we just report whether the
+      # vendored file changed; the PR step below acts only on a real change.
+      - name: Report change status
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- data/claude_prices.json; then
+            echo "No change to data/claude_prices.json — no PR will be opened."
+          else
+            echo "data/claude_prices.json changed — a review PR will be opened."
+            git --no-pager diff --stat -- data/claude_prices.json
+          fi
+
+      # Opens a REVIEW PR on a dedicated branch IF (and only if) the vendored file
+      # changed. Pinned to a major-version tag (review suggestion). Never pushes to
+      # main; a maintainer reviews and merges.
+      - name: Open review PR on change
+        uses: peter-evans/create-pull-request@v6
+        with:
+          add-paths: data/claude_prices.json
+          branch: chore/vendor-pricing-refresh
+          delete-branch: true
+          commit-message: "chore(pricing): refresh vendored Claude price subset from LiteLLM"
+          title: "chore(pricing): refresh vendored Claude price subset"
+          body: |
+            Automated refresh of `data/claude_prices.json` from LiteLLM's
+            `model_prices_and_context_window.json` (Claude/Anthropic subset only),
+            produced by `scripts/vendor-pricing.sh`.
+
+            **Review checklist:**
+            - [ ] Price-rate changes match an upstream LiteLLM change (not noise).
+            - [ ] No unexpected ids added/removed (allow-list is intentional).
+            - [ ] `make vendor-pricing-check` passes locally.
+            - [ ] `cargo test --lib pricing::` passes (schema/parse still hold).
+
+            This PR is the human-review gate (D-02): unreviewed upstream data is
+            never embedded into a build. Merging embeds the new table via
+            `include_str!`.
+          labels: |
+            pricing
+            automated
