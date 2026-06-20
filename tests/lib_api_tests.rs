@@ -350,7 +350,10 @@ fn api_age_vars_render_via_library() {
 /// Render `json` through the LIBRARY path with a tempdir HOME and a custom config
 /// TOML, restoring all mutated env afterwards. Returns the rendered string.
 fn render_with_config(config_toml: &str, json: &str) -> String {
-    let _lock = ENV_MUTEX.lock().unwrap();
+    // Recover from a poisoned lock: pre-existing suite tests can panic while
+    // holding ENV_MUTEX, which would otherwise cascade-poison these tests. The
+    // guard only protects env-var ordering, so a poisoned guard is still safe.
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
 
     let home = tempfile::tempdir().unwrap();
     let orig_home = std::env::var_os("HOME");

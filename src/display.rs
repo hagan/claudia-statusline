@@ -923,6 +923,36 @@ fn format_statusline_with_layout(
         .and_then(|name| crate::ant::cache::read_usage_cache(&name));
     builder = builder.api_usage(api_usage_slice.as_ref(), &Colors::light_gray(), &reset);
 
+    // API-equivalent cost-from-tokens (opt-in template variables): {api_equiv_cost},
+    // {api_equiv_cost_labeled}, the four per-token-type vars, and the optional
+    // {api_equiv_cost_by_model}. Wired ONCE here on the SAME shared builder site
+    // reached by BOTH the main.rs and lib.rs render paths — deliberately NOT
+    // duplicated into either entrypoint (Pitfall 6). This path is INDEPENDENT of
+    // the [ant] subsystem (D-11): pricing is the compiled-in bundled table, gated
+    // only on the payload carrying token data + the model resolving to a price.
+    // The per-model breakdown REUSES the already-fetched `api_usage_slice` (no new
+    // read, no spawn, no socket — D-08). With no token data the builder inserts
+    // nothing (D-10), keeping the default render byte-identical (SC2). Resolution
+    // is exact-match + [pricing.aliases] only (no fuzzy — PRICE-05/D-12).
+    let equiv_pricing = model_name.map(|m| crate::pricing::lookup(m, &full_config.pricing.aliases));
+    let equiv_usage = extras
+        .context_window
+        .and_then(|cw| cw.current_usage.as_ref());
+    let equiv_tokens = crate::layout::ApiEquivTokens {
+        input: equiv_usage.and_then(|u| u.input_tokens),
+        output: equiv_usage.and_then(|u| u.output_tokens),
+        cache_creation: equiv_usage.and_then(|u| u.cache_creation_input_tokens),
+        cache_read: equiv_usage.and_then(|u| u.cache_read_input_tokens),
+    };
+    builder = builder.api_equiv_cost(
+        equiv_pricing,
+        equiv_tokens,
+        api_usage_slice.as_ref(),
+        &full_config.pricing.aliases,
+        &Colors::light_gray(),
+        &reset,
+    );
+
     // Per-cache staleness vars (opt-in): {api_usage_age} from the active account's
     // usage slice fetched_at, {api_models_age} from the global models cache
     // fetched_at. Wired ONCE here on the SAME shared builder site reached by BOTH
