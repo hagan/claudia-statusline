@@ -54,6 +54,8 @@ help:
 	@echo "  $(YELLOW)make check-code$(NC)   - Run rustfmt and clippy"
 	@echo "  $(YELLOW)make dev$(NC)          - Build and run with test input"
 	@echo "  $(YELLOW)make bench$(NC)        - Run performance benchmark"
+	@echo "  $(YELLOW)make vendor-pricing$(NC)       - Vendor the Claude price subset from LiteLLM (offline, out-of-band)"
+	@echo "  $(YELLOW)make vendor-pricing-check$(NC) - Verify data/claude_prices.json matches the vendor transform (zero-diff)"
 	@echo "  $(YELLOW)make version$(NC)      - Show version information"
 	@echo "  $(YELLOW)make bump-major$(NC)   - Bump major version (X.0.0)"
 	@echo "  $(YELLOW)make bump-minor$(NC)   - Bump minor version (0.X.0)"
@@ -200,6 +202,23 @@ bench: release
 		echo '{"workspace":{"current_dir":"'$$(pwd)'"},"model":{"display_name":"Claude Sonnet"}}' | $(TARGET_DIR)/release/$(BINARY_NAME) > /dev/null; \
 	done
 	@echo "$(GREEN)✓$(NC) Benchmark completed"
+
+# Vendor the Claude (Anthropic) price subset from LiteLLM (PRICE-01 / D-02).
+# This is an OUT-OF-BAND, manual/CI refresh — NEVER run at build time. build.rs
+# stays metadata-only and never fetches unreviewed upstream data.
+.PHONY: vendor-pricing
+vendor-pricing:
+	@echo "$(BLUE)Vendoring Claude price subset from LiteLLM...$(NC)"
+	@./scripts/vendor-pricing.sh
+	@echo "$(GREEN)✓$(NC) Price table vendored: data/claude_prices.json"
+
+# Verify the checked-in price table matches the vendor script's transform of the
+# current upstream snapshot (zero-diff proof; review HIGH-3). Exits non-zero on drift.
+.PHONY: vendor-pricing-check
+vendor-pricing-check:
+	@echo "$(BLUE)Checking data/claude_prices.json against the vendor transform...$(NC)"
+	@./scripts/vendor-pricing.sh --check
+	@echo "$(GREEN)✓$(NC) Price table verified (zero-diff)"
 
 # Format code
 .PHONY: fmt
