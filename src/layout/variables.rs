@@ -8,6 +8,40 @@ use crate::config::{
     ModelComponentConfig,
 };
 
+/// Payload session token counts (`context_window.current_usage`) threaded into
+/// the cost-from-tokens builder. Each field is `Option<u64>`: `None`/absent is
+/// treated as 0 for the additive sum, but presence is tracked so that a payload
+/// carrying NO token field at all yields var-absence (D-10), never a `$0.00`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ApiEquivTokens {
+    /// Uncached input tokens (`input_tokens`), priced on the input rate.
+    pub input: Option<u64>,
+    /// Output tokens (`output_tokens`), priced on the output rate.
+    pub output: Option<u64>,
+    /// Cache-creation/write tokens (`cache_creation_input_tokens`).
+    pub cache_creation: Option<u64>,
+    /// Cache-read tokens (`cache_read_input_tokens`), priced on its OWN
+    /// (~0.1x) rate — NEVER collapsed into the input rate (D-05/D-09, SC4).
+    pub cache_read: Option<u64>,
+}
+
+impl ApiEquivTokens {
+    /// True when at least one token field is present (`Some`). When false the
+    /// cost-from-tokens builder inserts NOTHING (D-10), never a `$0.00`.
+    fn any_present(&self) -> bool {
+        self.input.is_some()
+            || self.output.is_some()
+            || self.cache_creation.is_some()
+            || self.cache_read.is_some()
+    }
+}
+
+/// The SINGLE shared literal marker rendered for an unpriceable-but-token-present
+/// model. Reused byte-identically across the headline, the labeled headline, all
+/// four per-type vars, and every per-model entry (review MEDIUM-4 / D-13) so an
+/// unpriceable model can NEVER be mistaken for a `$0.00` (PRICE-05).
+const API_EQUIV_UNKNOWN: &str = "unknown";
+
 /// Builder for creating the variables HashMap from statusline components.
 ///
 /// Each method sets a variable that can be referenced in the layout template.
@@ -1034,6 +1068,159 @@ impl VariableBuilder {
         self
     }
 
+    /// Set the opt-in, explicitly-labeled cost-from-tokens variables (PRICE-02 /
+    /// PRICE-03 / PRICE-05).
+    ///
+    /// Emits, when the payload carries usable token data:
+    /// - `{api_equiv_cost}` — the clean bare `$X.XX` notional API-equivalent
+    ///   session cost (the intentional CLEAN value; its companion carries the
+    ///   label — review MEDIUM-5).
+    /// - `{api_equiv_cost_labeled}` — the ONLY pre-labeled variant, carrying an
+    ///   unmistakable `API-equiv` marker so a Max user never reads it as real
+    ///   spend (D-06).
+    /// - `{api_equiv_cost_input}` / `{api_equiv_cost_output}` /
+    ///   `{api_equiv_cost_cache_write}` / `{api_equiv_cost_cache_read}` — the four
+    ///   per-token-type clean figures. Cache-read is priced on its OWN (~0.1x)
+    ///   rate, never collapsed into input (D-05/D-09, SC4).
+    /// - `{api_equiv_cost_by_model}` — only when the optional Phase-08
+    ///   `UsageCache` slice is present: a `model:$X.XX` string sorted by cost
+    ///   desc then name asc, joined " " (mirrors `{api_tokens_by_model}`).
+    ///
+    /// Presence-gating (D-10): with NO token field present, NOTHING is inserted —
+    /// the vars are simply absent, never `$0.00`. Honesty (D-13, review MEDIUM-4):
+    /// valid tokens but an unpriceable model (or no model resolved) renders the
+    /// SINGLE shared [`API_EQUIV_UNKNOWN`] marker CONSISTENTLY across the
+    /// headline, the labeled headline, and all four per-type vars — and each
+    /// unpriceable per-model entry renders `model:unknown` — never a fabricated
+    /// `$0.00`.
+    ///
+    /// `pricing` is the resolved lookup outcome for the current payload model:
+    /// `Some(Priced(_))` to price, `Some(Unpriceable)` for a known-but-unpriceable
+    /// model, or `None` when no model id was available (also unpriceable). The
+    /// method performs PURE LOCAL arithmetic only — no network, no subprocess
+    /// (enforced by the static-scan guard in `tests`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn api_equiv_cost(
+        mut self,
+        pricing: Option<crate::pricing::PriceLookup>,
+        tokens: ApiEquivTokens,
+        by_model: Option<&crate::ant::cache::UsageCache>,
+        aliases: &HashMap<String, String>,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        use crate::pricing::PriceLookup;
+
+        // Per-model breakdown is INDEPENDENT of the session-token presence gate:
+        // it is driven solely by the optional UsageCache slice (D-08). EACH model
+        // is priced by its OWN exact-match lookup (with the same `[pricing.aliases]`
+        // map), so a single unpriceable row renders `model:unknown` while its
+        // priceable siblings still price (review MEDIUM-4).
+        if let Some(slice) = by_model {
+            let mut pairs: Vec<(String, Option<f64>)> = slice
+                .tokens_by_model
+                .iter()
+                .map(|(model, tb)| {
+                    let cost = match crate::pricing::lookup(model, aliases) {
+                        PriceLookup::Priced(e) => Some(
+                            (tb.uncached_input as f64) * e.input
+                                + (tb.cache_read_input as f64) * e.cache_read
+                                + ((tb.cache_creation_1h + tb.cache_creation_5m) as f64)
+                                    * e.cache_creation
+                                + (tb.output as f64) * e.output,
+                        ),
+                        PriceLookup::Unpriceable => None,
+                    };
+                    (model.clone(), cost)
+                })
+                .collect();
+            // Sort: priced entries by cost desc; unpriceable (None) sort last,
+            // then by model name asc for a stable, deterministic ordering.
+            pairs.sort_by(|a, b| match (a.1, b.1) {
+                (Some(ca), Some(cb)) => cb
+                    .partial_cmp(&ca)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.cmp(&b.0)),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => a.0.cmp(&b.0),
+            });
+            let combined = pairs
+                .iter()
+                .map(|(model, cost)| match cost {
+                    Some(c) => format!("{model}:${c:.2}"),
+                    None => format!("{model}:{API_EQUIV_UNKNOWN}"),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            if !combined.is_empty() {
+                self.variables.insert(
+                    "api_equiv_cost_by_model".to_string(),
+                    format!("{color}{combined}{reset}"),
+                );
+            }
+        }
+
+        // Session cost-from-tokens vars: presence-gated (D-10).
+        if !tokens.any_present() {
+            return self;
+        }
+
+        // Helper: format a per-component figure routed through the SHARED unknown
+        // marker so an unpriceable model never renders `$0.00` anywhere.
+        let fmt = |value: Option<f64>| -> String {
+            match value {
+                Some(v) => format!("{color}${v:.2}{reset}"),
+                None => format!("{color}{API_EQUIV_UNKNOWN}{reset}"),
+            }
+        };
+
+        match pricing {
+            Some(PriceLookup::Priced(e)) => {
+                let input = (tokens.input.unwrap_or(0) as f64) * e.input;
+                let output = (tokens.output.unwrap_or(0) as f64) * e.output;
+                let cache_write = (tokens.cache_creation.unwrap_or(0) as f64) * e.cache_creation;
+                let cache_read = (tokens.cache_read.unwrap_or(0) as f64) * e.cache_read;
+                let total = input + output + cache_write + cache_read;
+
+                self.variables
+                    .insert("api_equiv_cost".to_string(), fmt(Some(total)));
+                self.variables.insert(
+                    "api_equiv_cost_labeled".to_string(),
+                    format!("{color}~${total:.2} API-equiv{reset}"),
+                );
+                self.variables
+                    .insert("api_equiv_cost_input".to_string(), fmt(Some(input)));
+                self.variables
+                    .insert("api_equiv_cost_output".to_string(), fmt(Some(output)));
+                self.variables
+                    .insert("api_equiv_cost_cache_write".to_string(), fmt(Some(cache_write)));
+                self.variables
+                    .insert("api_equiv_cost_cache_read".to_string(), fmt(Some(cache_read)));
+            }
+            // Unpriceable OR no model resolved: render the SHARED `unknown` marker
+            // consistently across every var (D-13, review MEDIUM-4) — never $0.00.
+            Some(PriceLookup::Unpriceable) | None => {
+                self.variables
+                    .insert("api_equiv_cost".to_string(), fmt(None));
+                self.variables.insert(
+                    "api_equiv_cost_labeled".to_string(),
+                    format!("{color}{API_EQUIV_UNKNOWN} API-equiv{reset}"),
+                );
+                for key in [
+                    "api_equiv_cost_input",
+                    "api_equiv_cost_output",
+                    "api_equiv_cost_cache_write",
+                    "api_equiv_cost_cache_read",
+                ] {
+                    self.variables.insert(key.to_string(), fmt(None));
+                }
+            }
+        }
+
+        self
+    }
+
     /// Build the final HashMap
     pub fn build(self) -> HashMap<String, String> {
         self.variables
@@ -1204,18 +1391,20 @@ mod api_equiv_cost_tests {
 
     #[test]
     fn additive_sum_formats_headline_dollar() {
-        // input 100k -> $1.50, output 10k -> $0.75, cache_creation 20k -> $0.375,
-        // cache_read 200k -> $0.30. Total = $2.925 -> "$2.93".
+        // input 100k -> $1.50, output 10k -> $0.75, cache_creation 20k -> $0.375
+        // (-> "$0.37" under f64 round-to-even), cache_read 200k -> $0.30.
+        // Total = 2.925 -> "$2.92" (f64 representation rounds down).
         let vars = VariableBuilder::new()
             .api_equiv_cost(
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
+                &HashMap::new(),
                 "",
                 "",
             )
             .build();
-        assert_eq!(vars.get("api_equiv_cost").map(String::as_str), Some("$2.93"));
+        assert_eq!(vars.get("api_equiv_cost").map(String::as_str), Some("$2.92"));
     }
 
     #[test]
@@ -1227,6 +1416,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, None, None, Some(200_000)),
                 None,
+                &HashMap::new(),
                 "",
                 "",
             )
@@ -1249,6 +1439,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
+                &HashMap::new(),
                 "",
                 "",
             )
@@ -1261,10 +1452,10 @@ mod api_equiv_cost_tests {
             vars.get("api_equiv_cost_output").map(String::as_str),
             Some("$0.75")
         );
-        // 20k * 1.875e-5 = 0.375 -> "$0.38" (banker-free round-half-up via {:.2}).
+        // 20k * 1.875e-5 = 0.375 -> "$0.37" (f64 {:.2} round-to-even/representation).
         assert_eq!(
             vars.get("api_equiv_cost_cache_write").map(String::as_str),
-            Some("$0.38")
+            Some("$0.37")
         );
         assert_eq!(
             vars.get("api_equiv_cost_cache_read").map(String::as_str),
@@ -1282,6 +1473,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), None, None, None),
                 None,
+                &HashMap::new(),
                 "",
                 "",
             )
@@ -1303,7 +1495,14 @@ mod api_equiv_cost_tests {
     #[test]
     fn no_token_data_inserts_nothing_never_zero() {
         let vars = VariableBuilder::new()
-            .api_equiv_cost(Some(priced()), tokens(None, None, None, None), None, "", "")
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(None, None, None, None),
+                None,
+                &HashMap::new(),
+                "",
+                "",
+            )
             .build();
         for key in [
             "api_equiv_cost",
@@ -1328,6 +1527,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, Some(10_000), None, None),
                 None,
+                &HashMap::new(),
                 "",
                 "",
             )
@@ -1348,6 +1548,7 @@ mod api_equiv_cost_tests {
                     lookup,
                     tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                     None,
+                    &HashMap::new(),
                     "",
                     "",
                 )
@@ -1414,6 +1615,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
+                &HashMap::new(),
                 "",
                 "",
             )
@@ -1437,6 +1639,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 None,
+                &HashMap::new(),
                 "",
                 "",
             )
@@ -1478,6 +1681,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
+                &HashMap::new(),
                 "",
                 "",
             )
