@@ -1164,3 +1164,340 @@ mod api_usage_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod api_equiv_cost_tests {
+    use super::*;
+    use crate::ant::cache::{TokenBreakdown, UsageCache, USAGE_CACHE_SCHEMA_VERSION};
+    use crate::pricing::{PriceEntry, PriceLookup};
+    use std::collections::HashMap;
+
+    // A stable opus-like entry mirroring the bundled `claude-opus-4-8` rates so the
+    // arithmetic in these tests is deterministic and independent of the live table.
+    fn opus_entry() -> &'static PriceEntry {
+        static E: PriceEntry = PriceEntry {
+            input: 1.5e-05,
+            output: 7.5e-05,
+            cache_creation: 1.875e-05,
+            cache_read: 1.5e-06,
+        };
+        &E
+    }
+
+    fn priced() -> PriceLookup {
+        PriceLookup::Priced(opus_entry())
+    }
+
+    fn tokens(
+        input: Option<u64>,
+        output: Option<u64>,
+        cache_creation: Option<u64>,
+        cache_read: Option<u64>,
+    ) -> ApiEquivTokens {
+        ApiEquivTokens {
+            input,
+            output,
+            cache_creation,
+            cache_read,
+        }
+    }
+
+    #[test]
+    fn additive_sum_formats_headline_dollar() {
+        // input 100k -> $1.50, output 10k -> $0.75, cache_creation 20k -> $0.375,
+        // cache_read 200k -> $0.30. Total = $2.925 -> "$2.93".
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
+                None,
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(vars.get("api_equiv_cost").map(String::as_str), Some("$2.93"));
+    }
+
+    #[test]
+    fn cache_read_priced_on_own_rate_not_input() {
+        // 200k cache_read on cache_read rate (1.5e-6) = $0.30, NOT input rate
+        // (1.5e-5 -> $3.00). SC4: cache-read never collapsed into input.
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(None, None, None, Some(200_000)),
+                None,
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(
+            vars.get("api_equiv_cost_cache_read").map(String::as_str),
+            Some("$0.30")
+        );
+        assert_ne!(
+            vars.get("api_equiv_cost_cache_read").map(String::as_str),
+            Some("$3.00"),
+            "cache-read must NOT be priced at the input rate"
+        );
+    }
+
+    #[test]
+    fn four_per_type_vars_present_only_headline_has_labeled() {
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
+                None,
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(
+            vars.get("api_equiv_cost_input").map(String::as_str),
+            Some("$1.50")
+        );
+        assert_eq!(
+            vars.get("api_equiv_cost_output").map(String::as_str),
+            Some("$0.75")
+        );
+        // 20k * 1.875e-5 = 0.375 -> "$0.38" (banker-free round-half-up via {:.2}).
+        assert_eq!(
+            vars.get("api_equiv_cost_cache_write").map(String::as_str),
+            Some("$0.38")
+        );
+        assert_eq!(
+            vars.get("api_equiv_cost_cache_read").map(String::as_str),
+            Some("$0.30")
+        );
+        // Only the headline gets a labeled companion; per-type vars do not.
+        assert!(vars.contains_key("api_equiv_cost_labeled"));
+        assert!(!vars.contains_key("api_equiv_cost_input_labeled"));
+    }
+
+    #[test]
+    fn labeled_carries_unmistakable_marker() {
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(100_000), None, None, None),
+                None,
+                "",
+                "",
+            )
+            .build();
+        let labeled = vars
+            .get("api_equiv_cost_labeled")
+            .map(String::as_str)
+            .expect("labeled var present");
+        assert!(
+            labeled.contains("API-equiv"),
+            "labeled var must carry an unmistakable API-equivalent marker, got {labeled:?}"
+        );
+        assert!(
+            labeled.contains("$1.50"),
+            "labeled var must carry the dollar figure, got {labeled:?}"
+        );
+    }
+
+    #[test]
+    fn no_token_data_inserts_nothing_never_zero() {
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(Some(priced()), tokens(None, None, None, None), None, "", "")
+            .build();
+        for key in [
+            "api_equiv_cost",
+            "api_equiv_cost_labeled",
+            "api_equiv_cost_input",
+            "api_equiv_cost_output",
+            "api_equiv_cost_cache_write",
+            "api_equiv_cost_cache_read",
+        ] {
+            assert!(
+                !vars.contains_key(key),
+                "no token data must NOT insert `{key}` (D-10, never $0.00)"
+            );
+        }
+    }
+
+    #[test]
+    fn partial_token_data_prices_present_fields() {
+        // Only output present -> headline = output cost only; absent fields = 0.
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(None, Some(10_000), None, None),
+                None,
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(vars.get("api_equiv_cost").map(String::as_str), Some("$0.75"));
+        // Per-type var for output is present and priced.
+        assert_eq!(
+            vars.get("api_equiv_cost_output").map(String::as_str),
+            Some("$0.75")
+        );
+    }
+
+    #[test]
+    fn unpriceable_with_tokens_renders_consistent_unknown_across_all_vars() {
+        for lookup in [Some(PriceLookup::Unpriceable), None] {
+            let vars = VariableBuilder::new()
+                .api_equiv_cost(
+                    lookup,
+                    tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
+                    None,
+                    "",
+                    "",
+                )
+                .build();
+            for key in [
+                "api_equiv_cost",
+                "api_equiv_cost_input",
+                "api_equiv_cost_output",
+                "api_equiv_cost_cache_write",
+                "api_equiv_cost_cache_read",
+            ] {
+                assert_eq!(
+                    vars.get(key).map(String::as_str),
+                    Some("unknown"),
+                    "`{key}` must render the shared `unknown` marker (lookup={lookup:?})"
+                );
+            }
+            // Labeled var carries the marker (with its tag) but no dollar amount.
+            let labeled = vars
+                .get("api_equiv_cost_labeled")
+                .map(String::as_str)
+                .expect("labeled var present for unpriceable");
+            assert!(
+                labeled.contains("unknown") && !labeled.contains('$'),
+                "labeled unpriceable must show the marker, not $, got {labeled:?}"
+            );
+        }
+    }
+
+    fn cache_slice() -> UsageCache {
+        let mut tokens = HashMap::new();
+        // opus priceable: uncached_input 100k -> $1.50.
+        tokens.insert(
+            "claude-opus-4-8".to_string(),
+            TokenBreakdown {
+                uncached_input: 100_000,
+                ..Default::default()
+            },
+        );
+        // a cheaper priceable model so ordering by cost desc is observable.
+        tokens.insert(
+            "claude-3-5-haiku-20241022".to_string(),
+            TokenBreakdown {
+                uncached_input: 1_000,
+                ..Default::default()
+            },
+        );
+        UsageCache {
+            schema_version: USAGE_CACHE_SCHEMA_VERSION,
+            fetched_at: chrono::Utc::now(),
+            account: "work".to_string(),
+            today_usd: 0.0,
+            mtd_usd: 0.0,
+            tz: "UTC".to_string(),
+            tokens_by_model: tokens,
+        }
+    }
+
+    #[test]
+    fn by_model_renders_sorted_combined_string_when_slice_present() {
+        let slice = cache_slice();
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                Some(&slice),
+                "",
+                "",
+            )
+            .build();
+        let by_model = vars
+            .get("api_equiv_cost_by_model")
+            .map(String::as_str)
+            .expect("by_model present when slice present");
+        // opus ($1.50) sorts before the haiku entry (cheaper) by cost desc.
+        assert!(
+            by_model.starts_with("claude-opus-4-8:$1.50"),
+            "by_model must lead with the costliest model, got {by_model:?}"
+        );
+        assert!(by_model.contains(' '), "must be space-joined, got {by_model:?}");
+    }
+
+    #[test]
+    fn by_model_absent_when_no_slice() {
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                None,
+                "",
+                "",
+            )
+            .build();
+        assert!(
+            !vars.contains_key("api_equiv_cost_by_model"),
+            "no slice must NOT insert api_equiv_cost_by_model"
+        );
+    }
+
+    #[test]
+    fn by_model_unpriceable_entry_renders_marker_not_zero() {
+        let mut tokens_map = HashMap::new();
+        tokens_map.insert(
+            "claude-opus-4-8".to_string(),
+            TokenBreakdown {
+                uncached_input: 100_000,
+                ..Default::default()
+            },
+        );
+        tokens_map.insert(
+            "weird-unpriceable-model".to_string(),
+            TokenBreakdown {
+                uncached_input: 100_000,
+                ..Default::default()
+            },
+        );
+        let slice = UsageCache {
+            schema_version: USAGE_CACHE_SCHEMA_VERSION,
+            fetched_at: chrono::Utc::now(),
+            account: "work".to_string(),
+            today_usd: 0.0,
+            mtd_usd: 0.0,
+            tz: "UTC".to_string(),
+            tokens_by_model: tokens_map,
+        };
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                Some(&slice),
+                "",
+                "",
+            )
+            .build();
+        let by_model = vars
+            .get("api_equiv_cost_by_model")
+            .map(String::as_str)
+            .expect("by_model present");
+        assert!(
+            by_model.contains("weird-unpriceable-model:unknown"),
+            "unpriceable model must render `model:unknown`, got {by_model:?}"
+        );
+        assert!(
+            !by_model.contains("weird-unpriceable-model:$0.00"),
+            "unpriceable model must NEVER render $0.00, got {by_model:?}"
+        );
+        // The priceable opus entry still renders its dollar figure.
+        assert!(
+            by_model.contains("claude-opus-4-8:$1.50"),
+            "priceable model still prices, got {by_model:?}"
+        );
+    }
+}
