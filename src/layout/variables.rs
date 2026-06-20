@@ -1125,7 +1125,7 @@ impl VariableBuilder {
                         PriceLookup::Priced(e) => Some(
                             (tb.uncached_input as f64) * e.input
                                 + (tb.cache_read_input as f64) * e.cache_read
-                                + ((tb.cache_creation_1h + tb.cache_creation_5m) as f64)
+                                + (tb.cache_creation_1h.saturating_add(tb.cache_creation_5m) as f64)
                                     * e.cache_creation
                                 + (tb.output as f64) * e.output,
                         ),
