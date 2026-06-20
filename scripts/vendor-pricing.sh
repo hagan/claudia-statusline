@@ -280,6 +280,21 @@ run_write() {
     prices_map="$(build_prices_map "${tmp_upstream}")"
     vendored_at="$(date -u +%Y-%m-%d)"
     version="${vendored_at}-claude-subset-1"
+    # Only stamp a fresh snapshot date/version when the PRICE DATA actually changed.
+    # If re-emitting with the EXISTING checked-in metadata reproduces the file
+    # byte-for-byte, the prices are unchanged — preserve that metadata so the
+    # scheduled Action doesn't open pure date-bump review PRs (review WR-02).
+    if [ -f "${OUTPUT_FILE}" ]; then
+        local existing_at existing_version
+        existing_at="$(jq -r '.vendored_at' "${OUTPUT_FILE}")"
+        existing_version="$(jq -r '.version' "${OUTPUT_FILE}")"
+        emit_canonical "${prices_map}" "${existing_at}" "${existing_version}" >"${tmp_out}"
+        if diff -q "${OUTPUT_FILE}" "${tmp_out}" >/dev/null 2>&1; then
+            vendored_at="${existing_at}"
+            version="${existing_version}"
+            echo "vendor-pricing: prices unchanged — preserving snapshot metadata (${version})"
+        fi
+    fi
     emit_canonical "${prices_map}" "${vendored_at}" "${version}" >"${tmp_out}"
     validate_table "${tmp_out}"
 
