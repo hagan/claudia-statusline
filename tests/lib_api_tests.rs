@@ -343,6 +343,178 @@ fn api_age_vars_render_via_library() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Phase 10-02: api_equiv cost-from-tokens render-path tests
+// ---------------------------------------------------------------------------
+
+/// Render `json` through the LIBRARY path with a tempdir HOME and a custom config
+/// TOML, restoring all mutated env afterwards. Returns the rendered string.
+fn render_with_config(config_toml: &str, json: &str) -> String {
+    let _lock = ENV_MUTEX.lock().unwrap();
+
+    let home = tempfile::tempdir().unwrap();
+    let orig_home = std::env::var_os("HOME");
+    let orig_xdg_cache = std::env::var_os("XDG_CACHE_HOME");
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+
+    let cfg = home.path().join("config.toml");
+    std::fs::write(&cfg, config_toml).unwrap();
+
+    let orig_cfg = std::env::var_os("STATUSLINE_CONFIG");
+    let orig_acct = std::env::var_os("STATUSLINE_ANT_ACCOUNT");
+    std::env::set_var("STATUSLINE_CONFIG", &cfg);
+    // Ensure no stray account leaks an ant usage slice into these tests.
+    std::env::remove_var("STATUSLINE_ANT_ACCOUNT");
+    std::env::set_var("NO_COLOR", "1");
+    statusline::config::reset_config();
+
+    let result = render_from_json(json, false);
+
+    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    };
+    restore("HOME", orig_home);
+    restore("XDG_CACHE_HOME", orig_xdg_cache);
+    restore("STATUSLINE_CONFIG", orig_cfg);
+    restore("STATUSLINE_ANT_ACCOUNT", orig_acct);
+    std::env::remove_var("NO_COLOR");
+    statusline::config::reset_config();
+
+    result.expect("render must succeed")
+}
+
+/// A payload carrying `context_window.current_usage` token counts and a model id.
+/// input 100k -> $1.50, output 10k -> $0.75, cache_creation 20k -> $0.37,
+/// cache_read 200k -> $0.30, total = $2.92 with the bundled `claude-opus-4-8` row.
+fn token_payload(model_id: &str) -> String {
+    format!(
+        r#"{{"workspace":{{"current_dir":"/tmp"}},"model":{{"id":"{model_id}"}},
+        "context_window":{{"current_usage":{{
+            "input_tokens":100000,"output_tokens":10000,
+            "cache_creation_input_tokens":20000,"cache_read_input_tokens":200000}}}}}}"#
+    )
+}
+
+#[test]
+#[serial_test::serial]
+fn api_equiv_cost_renders_dollar_via_library() {
+    let out = render_with_config(
+        "[layout]\nformat = \"{api_equiv_cost}\"\n",
+        &token_payload("claude-opus-4-8"),
+    );
+    assert!(
+        out.contains("$2.92"),
+        "library render of {{api_equiv_cost}} must surface the additive total, got: {out:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn api_equiv_cost_labeled_renders_marker_via_library() {
+    let out = render_with_config(
+        "[layout]\nformat = \"{api_equiv_cost_labeled}\"\n",
+        &token_payload("claude-opus-4-8"),
+    );
+    assert!(
+        out.contains("API-equiv") && out.contains("$2.92"),
+        "{{api_equiv_cost_labeled}} must carry the API-equiv marker + figure, got: {out:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn default_render_is_byte_identical_with_and_without_token_data() {
+    // The DEFAULT layout references no api_equiv_* var. A token-bearing payload
+    // and a token-free payload must render byte-identically (SC2): the new vars
+    // never leak into the default output.
+    let plain = r#"{"workspace":{"current_dir":"/tmp"},"model":{"id":"claude-opus-4-8"}}"#;
+    let with_tokens = token_payload("claude-opus-4-8");
+
+    // No [layout] section -> default layout.
+    let out_plain = render_with_config("", plain);
+    let out_tokens = render_with_config("", &with_tokens);
+
+    assert_eq!(
+        out_plain, out_tokens,
+        "default render must be byte-identical regardless of token data (SC2)"
+    );
+    assert!(
+        !out_tokens.contains("api_equiv") && !out_tokens.contains("API-equiv"),
+        "default render must carry NO api_equiv output, got: {out_tokens:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn unpriceable_model_renders_unknown_marker_via_library() {
+    let out = render_with_config(
+        "[layout]\nformat = \"{api_equiv_cost}\"\n",
+        &token_payload("totally-unknown-model-xyz"),
+    );
+    assert!(
+        out.contains("unknown") && !out.contains('$'),
+        "an unpriceable model must render the literal `unknown` marker (SC5), got: {out:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn pricing_independent_of_ant_disabled() {
+    // With [ant].enabled = false AND {api_equiv_cost} referenced, a known model +
+    // token data still renders the figure: the offline pricing path is INDEPENDENT
+    // of the Admin-key [ant] subsystem (D-11).
+    let out = render_with_config(
+        "[ant]\nenabled = false\n\n[layout]\nformat = \"{api_equiv_cost}\"\n",
+        &token_payload("claude-opus-4-8"),
+    );
+    assert!(
+        out.contains("$2.92"),
+        "pricing must render with [ant] disabled (D-11), got: {out:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn pricing_aliases_resolve_through_render_path() {
+    // A [pricing.aliases] mapping a proxy id -> a known table id, with a payload
+    // whose model IS the proxy id, must render the aliased price through the REAL
+    // render path (not only the Plan 01 lookup unit test).
+    let out = render_with_config(
+        "[pricing.aliases]\n\"my-proxy-opus\" = \"claude-opus-4-8\"\n\n\
+         [layout]\nformat = \"{api_equiv_cost}\"\n",
+        &token_payload("my-proxy-opus"),
+    );
+    assert!(
+        out.contains("$2.92"),
+        "a [pricing.aliases] proxy id must render the aliased price, got: {out:?}"
+    );
+}
+
+#[test]
+fn variables_rs_has_no_network_or_subprocess_tokens() {
+    // Offline static-scan guard over the new render-vars path: the cost-from-tokens
+    // builder must perform pure local arithmetic. Forbidden tokens are built by
+    // concatenation so this assertion cannot self-match.
+    let src = include_str!("../src/layout/variables.rs");
+    let forbidden = [
+        concat!("Comm", "and"),
+        concat!("std::", "net"),
+        concat!("req", "west"),
+        concat!("ur", "eq"),
+        concat!("cu", "rl"),
+        concat!("tok", "io"),
+        concat!("TcpStr", "eam"),
+    ];
+    for tok in forbidden {
+        assert!(
+            !src.contains(tok),
+            "src/layout/variables.rs must not reference `{tok}` (offline invariant)"
+        );
+    }
+}
+
 #[test]
 fn test_render_invalid_json() {
     let json = r#"{ invalid json }"#;
