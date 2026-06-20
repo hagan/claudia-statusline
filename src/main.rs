@@ -44,6 +44,7 @@ mod hook_handler;
 mod layout;
 mod migrations;
 mod models;
+mod pricing;
 #[allow(dead_code)]
 mod provider;
 mod render;

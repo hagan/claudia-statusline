@@ -94,44 +94,102 @@ pub enum PriceLookup {
     Unpriceable,
 }
 
-/// RED stub lookup — always unpriceable so Task-2 tests fail.
-pub fn lookup(_id: &str, _aliases: &HashMap<String, String>) -> PriceLookup {
+/// Exact-match-only price lookup with explicit alias resolution (PRICE-05 / D-12).
+///
+/// Resolution order, EXACTLY (no fuzzy, no normalization, no prefix matching —
+/// mirrors `src/utils.rs` `get_context_window_for_model`'s documented no-fuzzy
+/// contract):
+///
+/// 1. `table.prices.get(id)` — exact canonical id hit.
+/// 2. On miss, `aliases.get(id)` — a user-defined `[pricing.aliases]` entry.
+///    The alias TARGET must itself be an exact table entry: `table.prices.get(
+///    resolved_target)`. There are **no chains** (alias resolution is not re-run
+///    on the target) and no normalization.
+///
+/// After a match, [`PriceEntry::is_valid`] is applied (review LOW-7): a
+/// matched-but-invalid (zero/non-finite) row resolves to
+/// [`PriceLookup::Unpriceable`], never a priced `$0.00`.
+///
+/// A total miss with a syntactically valid id returns [`PriceLookup::Unpriceable`]
+/// — the caller (Plan 02) renders a literal `unknown` for that case (D-13),
+/// distinct from "no token data" (var-absence, D-10).
+//
+// `#[allow(dead_code)]`: the render builder (Plan 02) is the first in-tree caller
+// via `display.rs`; until then the binary crate sees this as unused. The library
+// crate exports it as public API.
+#[allow(dead_code)]
+pub fn lookup(id: &str, aliases: &HashMap<String, String>) -> PriceLookup {
+    let t = table();
+
+    // 1. Exact canonical id.
+    if let Some(entry) = t.prices.get(id) {
+        return gate(entry);
+    }
+
+    // 2. Explicit alias → exact table entry (no chains, no fuzzy).
+    if let Some(target) = aliases.get(id) {
+        if let Some(entry) = t.prices.get(target) {
+            return gate(entry);
+        }
+    }
+
     PriceLookup::Unpriceable
 }
 
-/// RED stub: strict source enum (filled in GREEN).
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PricingSource {
-    Auto,
-    Bundled,
-    Synced,
-}
-
-impl Default for PricingSource {
-    fn default() -> Self {
-        // RED stub: wrong default so the strict-enum test fails.
-        PricingSource::Bundled
+/// Gate a matched entry through [`PriceEntry::is_valid`] (LOW-7).
+#[allow(dead_code)]
+fn gate(entry: &'static PriceEntry) -> PriceLookup {
+    if entry.is_valid() {
+        PriceLookup::Priced(entry)
+    } else {
+        PriceLookup::Unpriceable
     }
 }
 
-/// RED stub config.
+/// Strict pricing-source enum (review MEDIUM-6).
+///
+/// `#[serde(rename_all = "lowercase")]` so the TOML value is `auto` / `bundled`
+/// / `synced`. Because the enum is strict, an unrecognized `source` value (a
+/// typo) FAILS deserialization rather than silently behaving oddly — Phase 12
+/// `config --validate` surfaces a clear error. `Synced` is reserved for Phase 11
+/// (it deserializes now; its consumer arrives later).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PricingSource {
+    /// Safe default: pick the best available source at runtime.
+    #[default]
+    Auto,
+    /// The compiled-in bundled table (this phase).
+    Bundled,
+    /// A synced cache (reserved for Phase 11).
+    Synced,
+}
+
+/// The `[pricing]` config section.
+///
+/// `#[serde(default)]` so an absent/partial section degrades to
+/// [`PricingConfig::default`] — keeping the render byte-identical (D-11).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PricingConfig {
+    /// `[pricing.aliases]`: proxy/unknown model id → canonical table id (D-12).
+    /// The alias target must itself be an exact table entry (see [`lookup`]).
+    /// Empty by default; an empty map round-trips clean (mirrors `model_windows`).
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub aliases: HashMap<String, String>,
+    /// Pricing source selector (strict enum, default [`PricingSource::Auto`]).
     pub source: PricingSource,
 }
 
+// Manual Default is the project idiom for a config section (mirrors `AntConfig`):
+// it makes the safe defaults — empty aliases + `Auto` source — explicit at the
+// definition site.
+#[allow(clippy::derivable_impls)]
 impl Default for PricingConfig {
     fn default() -> Self {
-        // RED stub: non-empty aliases so the default test fails.
-        let mut aliases = HashMap::new();
-        aliases.insert("stub".to_string(), "stub".to_string());
         Self {
-            aliases,
-            source: PricingSource::default(),
+            aliases: HashMap::new(),
+            source: PricingSource::Auto,
         }
     }
 }
@@ -273,11 +331,15 @@ mod tests {
         }
         let bundled: Wrap = toml::from_str(r#"source = "bundled""#).expect("bundled parses");
         assert_eq!(bundled.source, PricingSource::Bundled);
-        let synced: Wrap = toml::from_str(r#"source = "synced""#).expect("synced parses (Phase 11)");
+        let synced: Wrap =
+            toml::from_str(r#"source = "synced""#).expect("synced parses (Phase 11)");
         assert_eq!(synced.source, PricingSource::Synced);
         // A typo MUST fail to deserialize (strict enum, not silent fallthrough).
         let bad = toml::from_str::<Wrap>(r#"source = "buntled""#);
-        assert!(bad.is_err(), "invalid source value must fail deserialization");
+        assert!(
+            bad.is_err(),
+            "invalid source value must fail deserialization"
+        );
     }
 
     #[test]

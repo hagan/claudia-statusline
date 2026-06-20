@@ -54,6 +54,11 @@ pub struct Config {
 
     /// Ant (opt-in Claude API enrichment) configuration (default disabled, D-08)
     pub ant: crate::ant::config::AntConfig,
+
+    /// Pricing configuration: bundled offline Claude price table + exact-match
+    /// lookup aliases (`[pricing]` / `[pricing.aliases]`, PRICE-01/PRICE-05).
+    /// Absent section parses to default → byte-identical render (D-11).
+    pub pricing: crate::pricing::PricingConfig,
 }
 
 /// Display-related configuration
@@ -1592,6 +1597,38 @@ mod tests {
         assert!(
             config.database.json_backup,
             "json_backup must still deserialize from legacy v2.x configs"
+        );
+    }
+
+    #[test]
+    fn test_absent_pricing_section_yields_default() {
+        // An empty config (no [pricing] table) must parse to the default
+        // PricingConfig: empty aliases + source = Auto (D-11, byte-identical
+        // default render). Config carries #[serde(default)], so this holds.
+        let config: Config = toml::from_str("").expect("empty config should parse");
+        assert!(
+            config.pricing.aliases.is_empty(),
+            "absent [pricing] must yield empty aliases"
+        );
+        assert_eq!(
+            config.pricing.source,
+            crate::pricing::PricingSource::Auto,
+            "absent [pricing] must yield Auto source"
+        );
+    }
+
+    #[test]
+    fn test_pricing_aliases_round_trip() {
+        // A [pricing.aliases] table deserializes into the aliases map.
+        let toml = "[pricing.aliases]\n\"my-proxy-opus\" = \"claude-opus-4-8\"\n";
+        let config: Config = toml::from_str(toml).expect("pricing aliases should parse");
+        assert_eq!(
+            config
+                .pricing
+                .aliases
+                .get("my-proxy-opus")
+                .map(String::as_str),
+            Some("claude-opus-4-8")
         );
     }
 
