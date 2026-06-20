@@ -1,11 +1,27 @@
 //! Bundled offline Claude price table (PRICE-01).
 //!
-//! RED PHASE STUB — types compile, accessors are deliberately non-functional so
-//! the Task-1 unit tests fail. The GREEN commit replaces the stubs with the real
-//! `include_str!`-embedded, `OnceLock`-parsed total accessor.
+//! A Claude-family price table (four per-token `f64` costs) is **compiled into
+//! the binary** as JSON text via [`include_str!`] and parsed **once, lazily** on
+//! first access behind a [`std::sync::OnceLock`]. The render path performs **zero
+//! network** and **zero subprocess** work (D-01/D-03; offline invariant).
+//!
+//! # Graceful degradation (review HIGH-1)
+//!
+//! The accessor is **TOTAL**: [`parse_table`] returns an empty [`PriceTable`] on
+//! any `serde_json` error rather than `unwrap()`/`expect()`-panicking. A corrupt
+//! embedded file therefore degrades every lookup to *unpriceable* — it never
+//! panics the render. There is no `unwrap()`/`expect()` anywhere render-reachable
+//! in this module (grep-asserted in the plan `<verify>`).
+//!
+//! # Price-row validity (review LOW-7)
+//!
+//! [`PriceEntry::is_valid`] requires all four rates to be finite and strictly
+//! positive. A matched-but-invalid row (e.g. a zero/missing rate) is treated as
+//! *unpriceable* at lookup time, never priced as `$0.00`.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 /// Per-token costs (USD) for one model. Four additive dimensions, all `f64`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -18,9 +34,12 @@ pub struct PriceEntry {
 }
 
 impl PriceEntry {
-    /// RED stub.
+    /// True only when all four rates are finite and strictly positive (review
+    /// LOW-7). A row that fails this is treated as *unpriceable* at lookup time,
+    /// never priced as `$0.00`.
     pub fn is_valid(&self) -> bool {
-        false
+        let ok = |x: f64| x.is_finite() && x > 0.0;
+        ok(self.input) && ok(self.output) && ok(self.cache_creation) && ok(self.cache_read)
     }
 }
 
@@ -34,23 +53,29 @@ pub struct PriceTable {
     pub prices: HashMap<String, PriceEntry>,
 }
 
-/// RED stub parser — does not actually degrade malformed input.
-fn parse_table(_raw: &str) -> PriceTable {
-    let mut prices = HashMap::new();
-    prices.insert("stub".to_string(), PriceEntry::default());
-    PriceTable {
-        source: String::new(),
-        version: String::new(),
-        vendored_at: String::new(),
-        prices,
-    }
+/// The Claude price table as JSON text, compiled into the binary (D-01/D-03).
+/// Path is relative to this source file.
+const EMBEDDED_PRICES: &str = include_str!("../../data/claude_prices.json");
+
+/// TOTAL parser (review HIGH-1): parse `raw` into a [`PriceTable`], degrading to
+/// an **empty** table (default metadata + empty `prices`) on any `serde_json`
+/// error. Never `unwrap()`/`expect()`/panics — a malformed embedded file makes
+/// every lookup unpriceable, satisfying the graceful-degradation invariant.
+///
+/// Source-agnostic by design (Phase 11 forward seam, D-03/D-11): "bundled" is
+/// not baked into the type, so a synced cache can yield the same [`PriceTable`].
+fn parse_table(raw: &str) -> PriceTable {
+    serde_json::from_str(raw).unwrap_or_default()
 }
 
-/// RED stub accessor — returns an empty table so Task-1 tests fail.
+/// Lazily-parsed, process-global Claude price table.
+///
+/// Parsed exactly once from [`EMBEDDED_PRICES`] on first access via
+/// [`OnceLock`], then returned as a stable `&'static` reference. No
+/// `unwrap()`/`expect()` — the underlying [`parse_table`] is total.
 pub fn table() -> &'static PriceTable {
-    use std::sync::OnceLock;
-    static EMPTY: OnceLock<PriceTable> = OnceLock::new();
-    EMPTY.get_or_init(PriceTable::default)
+    static TABLE: OnceLock<PriceTable> = OnceLock::new();
+    TABLE.get_or_init(|| parse_table(EMBEDDED_PRICES))
 }
 
 #[cfg(test)]
@@ -96,7 +121,10 @@ mod tests {
     fn accessor_returns_same_static_reference() {
         let a = table();
         let b = table();
-        assert!(std::ptr::eq(a, b), "table() must return the same &'static ref");
+        assert!(
+            std::ptr::eq(a, b),
+            "table() must return the same &'static ref"
+        );
     }
 
     #[test]
