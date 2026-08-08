@@ -17,6 +17,39 @@ use std::sync::OnceLock;
 /// Static ANSI regex pattern, initialized once
 static ANSI_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
+/// Delta for a cumulative per-process counter that may have been reset upstream.
+///
+/// Claude Code's payload counters (`total_cost_usd`, lines added/removed) are
+/// cumulative per CLI process. When a session is resumed in a new process the
+/// counters restart from zero while the session id stays the same, so the new
+/// value can be *lower* than the stored one. A raw `new - old` delta would then
+/// drive daily/monthly aggregates negative.
+///
+/// Rules:
+/// - `new >= old`  → normal growth, delta is `new - old`
+/// - `new < old/2` → counter reset; the new counter value is fresh spend
+/// - otherwise     → small downward correction; contributes nothing
+pub fn clamp_reset_delta_f64(new: f64, old: f64) -> f64 {
+    if new >= old {
+        new - old
+    } else if new < old * 0.5 {
+        new
+    } else {
+        0.0
+    }
+}
+
+/// Integer variant of [`clamp_reset_delta_f64`] for line counters.
+pub fn clamp_reset_delta_i64(new: i64, old: i64) -> i64 {
+    if new >= old {
+        new - old
+    } else if new < old / 2 {
+        new
+    } else {
+        0
+    }
+}
+
 /// Sanitizes a string for safe terminal output by removing control characters
 /// and ANSI escape sequences. This prevents malicious strings from manipulating
 /// terminal state or executing unintended commands.
@@ -243,16 +276,26 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
 
                 match family.as_str() {
                     "Sonnet" => {
-                        // Sonnet 3.5+, 4.x+: 200k tokens
-                        if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
+                        // Sonnet 4.6+ and 5+: 1M is the default (and only) window.
+                        // Sonnet 3.5–4.5: 200k.
+                        if version_number >= 5 || (version_number == 4 && minor_version >= 6) {
+                            1_000_000
+                        } else if version_number == 4
+                            || (version_number == 3 && minor_version >= 5)
+                        {
                             200_000
                         } else {
                             160_000
                         }
                     }
                     "Opus" => {
-                        // Opus 3.5+: 200k tokens
-                        if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
+                        // Opus 4.6+ and 5+: 1M is the default (and only) window.
+                        // Opus 3.5–4.5: 200k.
+                        if version_number >= 5 || (version_number == 4 && minor_version >= 6) {
+                            1_000_000
+                        } else if version_number == 4
+                            || (version_number == 3 && minor_version >= 5)
+                        {
                             200_000
                         } else {
                             160_000
@@ -264,10 +307,8 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
                         config.context.window_size
                     }
                     // Fable / Mythos: 1M is both the default and the maximum window
-                    // (no 200k mode), so 1M is the correct guess here. Note: for
-                    // Opus/Sonnet the 1M window is opt-in per session, so we keep the
-                    // conservative 200k default above and rely on the payload's
-                    // context_window_size (authoritative) to report 1M when active.
+                    // (no 200k mode). Same for Opus/Sonnet 4.6+ above; the payload's
+                    // context_window_size (authoritative) still overrides this guess.
                     "Fable" | "Mythos" => 1_000_000,
                     _ => config.context.window_size,
                 }
@@ -1216,10 +1257,25 @@ mod tests {
             get_context_window_for_model(Some("claude-mythos-5"), &cfg),
             1_000_000
         );
-        // Opus/Sonnet stay conservative at 200k in the fallback (1M is opt-in per
-        // session; the payload's context_window_size is authoritative when present).
+        // Opus/Sonnet 4.6+ and 5+ default to the 1M window; 4.5 and older stay 200k.
         assert_eq!(
             get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-5"), &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            get_context_window_for_model(Some("claude-sonnet-4-6"), &cfg),
+            1_000_000
+        );
+        assert_eq!(
+            get_context_window_for_model(Some("Claude Sonnet 4.5"), &cfg),
+            200_000
+        );
+        assert_eq!(
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             200_000
         );
     }
@@ -1449,10 +1505,10 @@ mod tests {
     fn cache_lookup_wins_over_smart_default_when_enabled() {
         let _temp = isolate_cache();
         let cfg = enabled_config();
-        // claude-opus-4-8 smart default is 200k; the cache says 1M.
-        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+        // claude-opus-4-5 smart default is 200k; the cache says 1M.
+        write_models_cache(&cache_with("claude-opus-4-5", 1_000_000)).expect("write");
         assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             1_000_000,
             "enabled cache value must beat the smart default (D-01/D-02)"
         );
@@ -1464,12 +1520,12 @@ mod tests {
         // ENABLED-GATE (review MUST-FIX #1 / T-07-14): the SAME populated cache
         // present on disk must NOT change rendering when `[ant]` is disabled.
         let _temp = isolate_cache();
-        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+        write_models_cache(&cache_with("claude-opus-4-5", 1_000_000)).expect("write");
 
         let disabled = crate::config::Config::default(); // ant.enabled == false (default)
-        let with_cache = get_context_window_for_model(Some("claude-opus-4-8"), &disabled);
+        let with_cache = get_context_window_for_model(Some("claude-opus-4-5"), &disabled);
 
-        // The no-cache result (smart default) for claude-opus-4-8 is 200k.
+        // The no-cache result (smart default) for claude-opus-4-5 is 200k.
         assert_eq!(
             with_cache, 200_000,
             "a populated cache must be ignored when [ant] is disabled/absent"
@@ -1500,11 +1556,11 @@ mod tests {
     fn cached_zero_falls_through_to_smart_default() {
         // D-06 / T-07-05: a cached `0` is unknown; never render 0.
         let _temp = isolate_cache();
-        write_models_cache(&cache_with("claude-opus-4-8", 0)).expect("write");
+        write_models_cache(&cache_with("claude-opus-4-5", 0)).expect("write");
 
         let cfg = enabled_config();
         assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             200_000,
             "a cached 0 must fall through to the smart default, never render 0"
         );
@@ -1519,7 +1575,7 @@ mod tests {
 
         let cfg = enabled_config();
         assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             200_000,
             "an id absent from the cache must fall through to the smart default"
         );
