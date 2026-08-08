@@ -2,6 +2,7 @@ use super::schema::SessionUpdate;
 use super::SqliteDatabase;
 use crate::common::{current_date, current_month, current_timestamp};
 use crate::retry::{retry_if_retryable, RetryConfig};
+use crate::utils::{clamp_reset_delta_f64, clamp_reset_delta_i64};
 use rusqlite::{params, OptionalExtension, Result, Transaction};
 
 // Type alias for session archive data tuple
@@ -281,10 +282,18 @@ impl SqliteDatabase {
             // - This can cause transcript sum < DB stored value (false "decrease")
             // - Negative deltas would incorrectly subtract from daily/monthly totals
             // Solution: clamp token deltas to 0 minimum
+            //
+            // COST/LINES RESET: the payload counters (total_cost_usd, lines
+            // added/removed) are cumulative per CLI process. When a session is
+            // resumed in a new process the counters restart from zero while the
+            // session_id stays the same, so `new < old` here. Subtracting would
+            // drive daily/monthly totals negative. A drop below half the stored
+            // value is treated as such a reset (the new counter value is fresh
+            // spend); a smaller drop is a correction and contributes nothing.
             (
-                cost - old_cost,
-                lines_added as i64 - old_lines_added,
-                lines_removed as i64 - old_lines_removed,
+                clamp_reset_delta_f64(cost, old_cost),
+                clamp_reset_delta_i64(lines_added as i64, old_lines_added),
+                clamp_reset_delta_i64(lines_removed as i64, old_lines_removed),
                 (input_tokens - old_input).max(0),
                 (output_tokens - old_output).max(0),
                 (cache_read_tokens - old_cache_read).max(0),
@@ -320,10 +329,13 @@ impl SqliteDatabase {
                 // Use archived values as baseline - only count incremental delta
                 // This prevents double-counting when cumulative cost continues after reset
                 // Token deltas use full values since they're not archived
+                // Same upstream-counter-reset guard as the live-session branch:
+                // a resumed CLI process can report values below the archived
+                // baseline, which must never subtract from the aggregates.
                 (
-                    cost - archived_cost,
-                    lines_added as i64 - archived_lines_added,
-                    lines_removed as i64 - archived_lines_removed,
+                    clamp_reset_delta_f64(cost, archived_cost),
+                    clamp_reset_delta_i64(lines_added as i64, archived_lines_added),
+                    clamp_reset_delta_i64(lines_removed as i64, archived_lines_removed),
                     input_tokens,
                     output_tokens,
                     cache_read_tokens,
