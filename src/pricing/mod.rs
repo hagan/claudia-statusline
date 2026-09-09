@@ -1190,18 +1190,6 @@ source = "buntled"
 
     #[test]
     #[serial]
-    fn lookup_delegates_to_source_selection_with_the_default_config() {
-        let _tmp = isolate();
-        plant(chrono::Duration::minutes(1));
-        assert_eq!(
-            input_rate(lookup("claude-opus-4-8", &HashMap::new())),
-            SYNCED_OPUS_INPUT,
-            "the 2-arg entry point must route through the default Auto selection"
-        );
-    }
-
-    #[test]
-    #[serial]
     fn lookup_in_shares_one_resolved_source_across_many_ids() {
         let _tmp = isolate();
         plant(chrono::Duration::minutes(1));
@@ -1328,6 +1316,212 @@ source = "buntled"
         assert!(
             select_synced_at(&cfg_for(PricingSource::Auto), now).is_some(),
             "a future-dated cache (clock skew) counts as FRESH, not infinitely stale (D-07)"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Plan 11-04 Task 1: bad price data cannot regress a lookup, and the
+    // compatibility `lookup()` is pure again (WR-04 / WR-06 / IN-03 / RV-M12).
+    // ---------------------------------------------------------------------
+
+    /// Plant a synced cache in which `id` carries `entry` (everything else as in
+    /// [`synced_cache`]), stamped fresh so `auto` selects it.
+    fn plant_row(id: &str, entry: PriceEntry) {
+        let mut c = synced_cache(chrono::Duration::minutes(1));
+        c.prices.insert(id.to_string(), entry);
+        write_price_cache(&c).expect("plant synced cache");
+    }
+
+    /// A rate row that is finite, positive, in-band and correctly ordered.
+    fn sane_row() -> PriceEntry {
+        PriceEntry {
+            input: 3e-06,
+            output: 1.5e-05,
+            cache_creation: 3.75e-06,
+            cache_read: 3e-07,
+            cache_creation_1h: None,
+        }
+    }
+
+    /// WR-04: a synced row that is PRESENT but UNUSABLE must not suppress the
+    /// user's `[pricing.aliases]` entry. A refresh can never turn a previously
+    /// priced aliased model into `unknown`.
+    ///
+    /// FAILURE MODE (pre-fix): `pick` short-circuits with
+    /// `Some(PriceLookup::Unpriceable)` because the id matched in the synced
+    /// source, so `lookup_in` never reaches the alias step.
+    #[test]
+    #[serial]
+    fn an_unusable_synced_row_does_not_suppress_an_alias() {
+        let _tmp = isolate();
+        plant_row(
+            "my-gateway-model",
+            PriceEntry {
+                input: 0.0,
+                output: 0.0,
+                cache_creation: 0.0,
+                cache_read: 0.0,
+                cache_creation_1h: None,
+            },
+        );
+        let synced = select_synced(&cfg_for(PricingSource::Auto));
+        assert!(
+            synced.is_some(),
+            "a fresh cache must be selected under auto"
+        );
+
+        let mut aliases = HashMap::new();
+        aliases.insert(
+            "my-gateway-model".to_string(),
+            "claude-opus-4-8".to_string(),
+        );
+        assert_eq!(
+            input_rate(lookup_in("my-gateway-model", &aliases, synced.as_ref())),
+            SYNCED_OPUS_INPUT,
+            "an unusable synced row must fall THROUGH to alias resolution (WR-04)"
+        );
+
+        // Unchanged: an alias whose target is unusable everywhere still says so.
+        let mut dangling = HashMap::new();
+        dangling.insert("my-gateway-model".to_string(), "not-a-real-id".to_string());
+        assert_eq!(
+            lookup_in("my-gateway-model", &dangling, synced.as_ref()),
+            PriceLookup::Unpriceable,
+            "an alias to a non-entry stays unpriceable (no invention)"
+        );
+    }
+
+    /// WR-06: an upstream `3e-6` -> `3e6` typo must be REFUSED, not rendered.
+    /// The bundled row prices the id through the existing per-id union.
+    #[test]
+    #[serial]
+    fn an_implausibly_large_synced_rate_is_refused_and_the_bundled_row_prices() {
+        let _tmp = isolate();
+        plant_row(
+            "claude-opus-4-8",
+            PriceEntry {
+                input: 3e6,
+                ..sane_row()
+            },
+        );
+        let synced = select_synced(&cfg_for(PricingSource::Auto));
+        assert_eq!(
+            input_rate(lookup_in(
+                "claude-opus-4-8",
+                &HashMap::new(),
+                synced.as_ref()
+            )),
+            bundled_input("claude-opus-4-8"),
+            "an out-of-band synced rate must be refused in favor of the bundled row (WR-06)"
+        );
+    }
+
+    /// WR-06, the other end of the band: a rate so small it cannot be a real
+    /// per-token price is refused the same way.
+    #[test]
+    #[serial]
+    fn an_implausibly_small_rate_is_refused() {
+        let _tmp = isolate();
+        plant_row(
+            "claude-opus-4-8",
+            PriceEntry {
+                input: 1e-12,
+                ..sane_row()
+            },
+        );
+        let synced = select_synced(&cfg_for(PricingSource::Auto));
+        assert_eq!(
+            input_rate(lookup_in(
+                "claude-opus-4-8",
+                &HashMap::new(),
+                synced.as_ref()
+            )),
+            bundled_input("claude-opus-4-8"),
+            "a sub-floor synced rate must be refused in favor of the bundled row (WR-06)"
+        );
+        assert!(
+            !PriceEntry {
+                input: 1e-12,
+                ..sane_row()
+            }
+            .is_valid(),
+            "a 1e-12 rate is below the plausibility floor"
+        );
+    }
+
+    /// IN-03: `cache_read < input` is a SANITY rule the sync transform already
+    /// enforces. It must hold at LOOKUP time too, so a hand-edited or
+    /// foreign-producer cache carrying an inverted row is not priced.
+    #[test]
+    #[serial]
+    fn an_inverted_cache_read_row_is_refused_at_lookup() {
+        let _tmp = isolate();
+        let inverted = PriceEntry {
+            input: 3e-07,
+            cache_read: 3e-06,
+            ..sane_row()
+        };
+        assert!(
+            !inverted.is_valid(),
+            "cache_read >= input must invalidate the row at the SHARED gate (IN-03)"
+        );
+        plant_row("claude-opus-4-8", inverted);
+        let synced = select_synced(&cfg_for(PricingSource::Auto));
+        assert_eq!(
+            input_rate(lookup_in(
+                "claude-opus-4-8",
+                &HashMap::new(),
+                synced.as_ref()
+            )),
+            bundled_input("claude-opus-4-8"),
+            "an inverted synced row must be refused in favor of the bundled row"
+        );
+    }
+
+    /// The plausibility band must not narrow REAL coverage: every row the
+    /// bundled table ships still passes the gate.
+    #[test]
+    fn every_bundled_row_passes_is_valid() {
+        for (id, entry) in &table().prices {
+            assert!(
+                entry.is_valid(),
+                "bundled row `{id}` fails is_valid — the plausibility band or the \
+                 cache_read<input relation rejects real shipped data: {entry:?}"
+            );
+        }
+    }
+
+    /// RV-M12: `pricing::lookup()` is the PRE-Phase-11 compatibility API and must
+    /// stay PURE — zero filesystem reads, bundled table only.
+    ///
+    /// Converted from `lookup_delegates_to_source_selection_with_the_default_config`,
+    /// which pinned the Phase-11 regression that routed the 2-arg entry point
+    /// through a default `Auto` config (and therefore through the cache).
+    ///
+    /// FAILURE MODE (pre-fix): the observed read delta is 1 and the returned
+    /// rate is the SYNCED one.
+    #[test]
+    #[serial]
+    fn lookup_is_pure_and_never_reads_the_cache() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1)); // synced opus rate != bundled opus rate
+        crate::pricing::cache::reset_price_cache_reads();
+        let before = crate::pricing::cache::price_cache_reads();
+        let got = lookup("claude-opus-4-8", &HashMap::new());
+        let delta = crate::pricing::cache::price_cache_reads() - before;
+        assert_eq!(
+            delta, 0,
+            "lookup() must perform ZERO cache reads; observed {delta}"
+        );
+        assert_eq!(
+            input_rate(got),
+            bundled_input("claude-opus-4-8"),
+            "lookup() must answer from the BUNDLED table, not from whatever is on disk"
+        );
+        assert_ne!(
+            bundled_input("claude-opus-4-8"),
+            SYNCED_OPUS_INPUT,
+            "test bug: the planted synced rate must differ from the bundled one"
         );
     }
 }
