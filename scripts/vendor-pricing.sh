@@ -144,10 +144,11 @@ build_prices_map() {
           | select(.value | type == "object")
           | select(.value.litellm_provider == "anthropic")
           | select(
-              (.value.input_cost_per_token          | type == "number") and
-              (.value.output_cost_per_token         | type == "number") and
-              (.value.cache_creation_input_token_cost | type == "number") and
-              (.value.cache_read_input_token_cost   | type == "number"))
+              (.value.input_cost_per_token            | type == "number" and . > 0) and
+              (.value.output_cost_per_token           | type == "number" and . > 0) and
+              (.value.cache_creation_input_token_cost | type == "number" and . > 0) and
+              (.value.cache_read_input_token_cost     | type == "number" and . > 0) and
+              (.value.cache_read_input_token_cost < .value.input_cost_per_token))
           | { key: .key,
               value: (
                 { input:          .value.input_cost_per_token,
@@ -159,6 +160,56 @@ build_prices_map() {
                     else {} end ))} ]
         | from_entries
     ' "${upstream}"
+}
+
+# List `claude-*` anthropic rows that were NOT selected, with the reason. A row
+# silently dropped for incomplete or nonsensical rates is invisible to the
+# coverage delta (which diffs selected-vs-checked-in, so a never-selected id
+# appears in neither) — it would look like the id simply does not exist upstream
+# (10-VERIFICATION-INDEPENDENT.md R2-2).
+report_rejected_rows() {
+    local upstream="$1"
+    local rejected
+
+    rejected="$(jq -r '
+        to_entries[]
+        | select(.key | startswith("claude-"))
+        | select(.value | type == "object")
+        | select(.value.litellm_provider == "anthropic")
+        | . as $e
+        | [ (if ($e.value.input_cost_per_token            | type == "number" and . > 0) then empty else "input" end),
+            (if ($e.value.output_cost_per_token           | type == "number" and . > 0) then empty else "output" end),
+            (if ($e.value.cache_creation_input_token_cost | type == "number" and . > 0) then empty else "cache_creation" end),
+            (if ($e.value.cache_read_input_token_cost     | type == "number" and . > 0) then empty else "cache_read" end),
+            (if (($e.value.cache_read_input_token_cost | type == "number") and
+                 ($e.value.input_cost_per_token       | type == "number") and
+                 ($e.value.cache_read_input_token_cost < $e.value.input_cost_per_token))
+             then empty else "cache_read>=input" end) ] as $bad
+        | select($bad | length > 0)
+        | "\($e.key) (\($bad | join(", ")))"
+    ' "${upstream}")"
+
+    if [ -n "${rejected}" ]; then
+        echo "vendor-pricing: SKIPPED (upstream row unusable — NOT vendored):" >&2
+        echo "${rejected}" | sed 's/^/  ! /' >&2
+    fi
+}
+
+# Report rows carrying no optional 1-hour cache-write rate. Such a row is
+# vendored and prices every other dimension, but the renderer REFUSES its
+# 1-hour cache-write term (renders `unknown`) rather than substituting the
+# 5-minute rate (R2-1). Surfaced so the coverage is a known quantity.
+report_missing_1h_rows() {
+    local prices_map="$1"
+    local missing
+
+    missing="$(printf '%s' "${prices_map}" | jq -r '
+        to_entries[] | select(.value.cache_creation_1h == null) | .key')"
+
+    if [ -n "${missing}" ]; then
+        echo "vendor-pricing: no 1h cache-write rate upstream (1h tokens will render \`unknown\`):" >&2
+        echo "${missing}" | sed 's/^/  ~ /' >&2
+    fi
 }
 
 # Report coverage changes (added/removed model ids) against the checked-in table
@@ -225,7 +276,12 @@ sys.stdout.write(json.dumps(out, indent=2) + "\n")
 PY
 }
 
-# Validate a generated table file against the slim schema (review HIGH-3).
+# Backstop validation of a generated table file against the slim schema (review
+# HIGH-3). The same positivity / cache_read<input conditions now live in the
+# SELECTION predicate, so an unusable upstream row is excluded and reported
+# rather than reaching here and aborting the whole refresh (R2-2). A failure
+# here therefore means the transform itself is broken, not that upstream is
+# messy — so aborting is the right response.
 # Asserts: metadata fields present; every prices.* entry has all four base rates
 # as finite numbers > 0 with cache_read < input, and — when present — a
 # cache_creation_1h that is finite, > 0, and >= the 5-minute cache_creation rate
@@ -281,6 +337,8 @@ run_write() {
     prices_map="$(build_prices_map "${tmp_upstream}")"
     [ "$(printf '%s' "${prices_map}" | jq -r 'length')" -gt 0 ] \
         || die "upstream snapshot yielded zero Claude rows — refusing to write an empty table"
+    report_rejected_rows "${tmp_upstream}"
+    report_missing_1h_rows "${prices_map}"
     report_coverage_delta "${prices_map}"
     vendored_at="$(date -u +%Y-%m-%d)"
     version="${vendored_at}-claude-subset-1"

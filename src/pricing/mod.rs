@@ -61,16 +61,24 @@ impl PriceEntry {
             && self.cache_creation_1h.is_none_or(ok)
     }
 
-    /// The rate to apply to 1-hour cache-creation tokens.
+    /// The rate to apply to 1-hour cache-creation tokens, or `None` when this
+    /// row does not carry one.
     ///
-    /// Falls back to the 5-minute [`PriceEntry::cache_creation`] rate when the
-    /// snapshot carries no 1-hour rate, so a caller can always price 1-hour
-    /// tokens without a presence check. Pricing 1-hour writes at the 5-minute
-    /// rate understates them by ~37% (10-REVIEW-CODEX.md HIGH 2), so callers
-    /// that hold a 1h/5m split MUST use this for the 1-hour portion rather than
-    /// summing the two token counts onto one rate.
-    pub fn cache_creation_1h_rate(&self) -> f64 {
-        self.cache_creation_1h.unwrap_or(self.cache_creation)
+    /// **There is deliberately no fallback to the 5-minute rate.** An earlier
+    /// version fell back, so that a caller could always price 1-hour tokens
+    /// without a presence check. That silently understated them by ~37% for any
+    /// row upstream publishes without an `above_1hr` rate — and because two such
+    /// rows are legacy aliases of models that DO carry one, the same model
+    /// priced differently depending on which id the payload used
+    /// (10-VERIFICATION-INDEPENDENT.md R2-1). It replaced an honest `unknown`
+    /// with a confident wrong number: the exact defect the 1-hour rate was
+    /// introduced to fix.
+    ///
+    /// Callers holding a 1h/5m split MUST treat `None` as *unpriceable for the
+    /// 1-hour portion* and render the shared `unknown` marker, never
+    /// substituting another rate.
+    pub fn cache_creation_1h_rate(&self) -> Option<f64> {
+        self.cache_creation_1h
     }
 }
 
@@ -482,9 +490,9 @@ mod tests {
     }
 
     #[test]
-    fn cache_creation_1h_rate_falls_back_to_five_minute_rate() {
-        // A row with no 1-hour rate prices 1-hour writes on the 5-minute rate
-        // (the pre-existing behavior) rather than dropping them or panicking.
+    fn absent_1h_rate_is_none_never_substituted() {
+        // A row with no 1-hour rate reports None — it must NOT quietly reuse the
+        // 5-minute rate, which understated 1-hour writes by ~37% (R2-1).
         let no_1h = PriceEntry {
             input: 1e-06,
             output: 2e-06,
@@ -492,7 +500,12 @@ mod tests {
             cache_read: 1e-07,
             cache_creation_1h: None,
         };
-        assert_eq!(no_1h.cache_creation_1h_rate(), 1.25e-06);
+        assert_eq!(no_1h.cache_creation_1h_rate(), None);
+        assert_ne!(
+            no_1h.cache_creation_1h_rate(),
+            Some(no_1h.cache_creation),
+            "an absent 1h rate must never resolve to the 5-minute rate"
+        );
         assert!(
             no_1h.is_valid(),
             "an absent 1h rate must not invalidate a row"
@@ -502,7 +515,7 @@ mod tests {
             cache_creation_1h: Some(2e-06),
             ..no_1h
         };
-        assert_eq!(with_1h.cache_creation_1h_rate(), 2e-06);
+        assert_eq!(with_1h.cache_creation_1h_rate(), Some(2e-06));
     }
 
     #[test]
@@ -533,11 +546,44 @@ mod tests {
         // whole embedded table against a transform that re-collapses the two
         // rates (10-REVIEW-CODEX.md HIGH 2).
         for (id, e) in &table().prices {
+            if let Some(r) = e.cache_creation_1h_rate() {
+                assert!(
+                    r >= e.cache_creation,
+                    "{id}: 1h rate {r} must be >= 5m rate {}",
+                    e.cache_creation
+                );
+            }
+        }
+    }
+
+    /// Every dimension the renderer can reach either has a real rate, or is
+    /// refused — never silently priced at a substituted rate.
+    ///
+    /// Phrased over REACHABILITY rather than over the last bug on purpose. Each
+    /// earlier guard was written against the failure just observed and so could
+    /// not see the next one: structural checks could not see wrong prices;
+    /// accuracy checks could not see missing rows; coverage checks could not see
+    /// a missing dimension WITHIN a row (R2-1). A row is only as trustworthy as
+    /// its least-complete dimension.
+    #[test]
+    fn no_row_substitutes_a_rate_for_a_dimension_it_lacks() {
+        for (id, e) in &table().prices {
             assert!(
-                e.cache_creation_1h_rate() >= e.cache_creation,
-                "{id}: 1h rate {} must be >= 5m rate {}",
-                e.cache_creation_1h_rate(),
-                e.cache_creation
+                e.is_valid(),
+                "{id}: row is not valid, so some dimension is unpriceable"
+            );
+            if let Some(r) = e.cache_creation_1h_rate() {
+                assert!(
+                    r.is_finite() && r > 0.0,
+                    "{id}: 1h rate {r} is present but unusable"
+                );
+            }
+            // An absent 1h rate must STAY absent. If this ever resolves to the
+            // 5-minute rate, 1-hour writes are being silently understated.
+            assert_eq!(
+                e.cache_creation_1h_rate().is_none(),
+                e.cache_creation_1h.is_none(),
+                "{id}: absent 1h rate must never be substituted"
             );
         }
     }

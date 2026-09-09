@@ -197,13 +197,21 @@ it in your layout format, and the default statusline is unchanged.
 > cost at public API list prices. On a Claude subscription (Pro/Max) you pay your
 > plan price regardless — the figure is for comparison only, never a statement of
 > charges. Use `{api_equiv_cost_labeled}` where the distinction could matter to a
-> reader. The plain `{cost}` variable remains Claude Code's own reported spend and
-> is unaffected.
+> reader.
+>
+> The separate `{cost}` variable is unaffected by these settings, but note that it
+> is **not necessarily billed money either**: it reports the `cost.total_cost_usd`
+> figure Claude Code puts in the payload, which is itself a usage-based estimate.
+> On a subscription that is also notional. Only API-key usage bills against a
+> dollar figure like these.
 
 **Reading the output:**
 
 - **`unknown`** — the model has no exact entry in the price table (see
-  `[pricing.aliases]` below). Unknown models are never priced at `$0.00`.
+  `[pricing.aliases]` below), or the entry it has cannot price one of the token
+  types present. A few upstream rows publish no separate 1-hour cache-write rate;
+  rather than bill those tokens at the cheaper 5-minute rate, that model reports
+  `unknown` when 1-hour cache-writes are present. Unknown is never `$0.00`.
 - **A trailing `+`** (e.g. `$0.25+`) — the payload reported only some of the four
   cost dimensions, so the figure is a *lower bound*: the real API-equivalent cost
   is at least that much. An absent dimension cannot be distinguished from genuine

@@ -251,7 +251,9 @@ format = "{directory} {git} {model} {api_equiv_cost_labeled}"
 
 **This is not what you are billed.** On a Pro/Max subscription you pay your plan price
 regardless — it shows what the same usage *would* cost at API rates, for comparison only.
-The plain `{cost}` variable is unchanged and still reports Claude Code's own spend.
+The separate `{cost}` variable is unaffected, though it is not billed money either: it
+reports Claude Code's own usage-based estimate, which is likewise notional on a
+subscription.
 
 Also available: `{api_equiv_cost}` (unlabeled), plus per-dimension
 `{api_equiv_cost_input}` / `_output` / `_cache_write` / `_cache_read`, and

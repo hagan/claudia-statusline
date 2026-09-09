@@ -1154,13 +1154,26 @@ impl VariableBuilder {
                         // understates it by ~37% (10-REVIEW-CODEX.md HIGH 2).
                         // Each term is multiplied independently in f64, so there
                         // is no integer sum to overflow.
-                        PriceLookup::Priced(e) => Some(
-                            (tb.uncached_input as f64) * e.input
-                                + (tb.cache_read_input as f64) * e.cache_read
-                                + (tb.cache_creation_5m as f64) * e.cache_creation
-                                + (tb.cache_creation_1h as f64) * e.cache_creation_1h_rate()
-                                + (tb.output as f64) * e.output,
-                        ),
+                        PriceLookup::Priced(e) => {
+                            // A row without a 1-hour rate cannot price 1-hour
+                            // tokens. Refuse the whole figure rather than
+                            // substitute the 5-minute rate (R2-1) — but only
+                            // when 1-hour tokens are actually present, so a row
+                            // still prices the dimensions it CAN.
+                            let h_term = if tb.cache_creation_1h == 0 {
+                                Some(0.0)
+                            } else {
+                                e.cache_creation_1h_rate()
+                                    .map(|r| (tb.cache_creation_1h as f64) * r)
+                            };
+                            h_term.map(|h| {
+                                (tb.uncached_input as f64) * e.input
+                                    + (tb.cache_read_input as f64) * e.cache_read
+                                    + (tb.cache_creation_5m as f64) * e.cache_creation
+                                    + h
+                                    + (tb.output as f64) * e.output
+                            })
+                        }
                         PriceLookup::Unpriceable => None,
                     };
                     // Model ids come from the Admin usage cache (untrusted
@@ -1823,6 +1836,82 @@ mod api_equiv_cost_tests {
         assert!(
             !by_model.contains("$0.62"),
             "1-hour writes must NOT be priced at the 5-minute rate, got {by_model:?}"
+        );
+    }
+
+    #[test]
+    fn model_lacking_a_1h_rate_renders_unknown_not_a_substituted_rate() {
+        // `claude-4-opus-20250514` is a legacy alias whose upstream row carries
+        // no `above_1hr` rate. With 1-hour tokens present it must render
+        // `unknown`, NOT the 5-minute rate — which understated it by 37% and
+        // made the same model price differently by id (R2-1).
+        let mut tokens_by_model = HashMap::new();
+        tokens_by_model.insert(
+            "claude-4-opus-20250514".to_string(),
+            TokenBreakdown {
+                cache_creation_1h: 100_000,
+                ..Default::default()
+            },
+        );
+        let slice = UsageCache {
+            tokens_by_model,
+            ..cache_slice()
+        };
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                Some(&slice),
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        let by_model = vars
+            .get("api_equiv_cost_by_model")
+            .map(String::as_str)
+            .expect("by_model present");
+        assert_eq!(
+            by_model, "claude-4-opus-20250514:unknown",
+            "a row lacking the 1h rate must refuse, got {by_model:?}"
+        );
+        // The 5-minute substitution would have produced $1.87.
+        assert!(
+            !by_model.contains("$1.87"),
+            "must not fall back to the 5-minute rate, got {by_model:?}"
+        );
+    }
+
+    #[test]
+    fn model_lacking_a_1h_rate_still_prices_when_no_1h_tokens() {
+        // The refusal is scoped to the dimension: with zero 1-hour tokens the
+        // same row prices normally on the dimensions it CAN price.
+        let mut tokens_by_model = HashMap::new();
+        tokens_by_model.insert(
+            "claude-4-opus-20250514".to_string(),
+            TokenBreakdown {
+                uncached_input: 100_000,
+                ..Default::default()
+            },
+        );
+        let slice = UsageCache {
+            tokens_by_model,
+            ..cache_slice()
+        };
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                Some(&slice),
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(
+            vars.get("api_equiv_cost_by_model").map(String::as_str),
+            Some("claude-4-opus-20250514:$1.50"),
+            "100k input at $15/MTok prices normally without 1h tokens"
         );
     }
 
