@@ -115,6 +115,13 @@ pub fn content_version(raw: &[u8]) -> String {
     format!("{:016x}", u64::from_be_bytes(head))
 }
 
+/// THE canonical upstream KEY predicate.
+///
+/// Currently: the key is a bare `claude-*` id.
+pub(crate) fn is_selectable_claude_key(id: &str) -> bool {
+    id.starts_with("claude-")
+}
+
 /// PURE transform: upstream LiteLLM JSON bytes -> the slim Claude price map.
 ///
 /// This is a faithful port of `scripts/vendor-pricing.sh::build_prices_map`.
@@ -153,7 +160,7 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
 
     for (id, value) in &root {
         // (1) bare `claude-*` id only.
-        if !id.starts_with("claude-") {
+        if !is_selectable_claude_key(id) {
             continue;
         }
         if !value.is_object() {
@@ -234,20 +241,26 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
 /// data-controlled token reaches the command line (T-11-06), and no credential
 /// exists to leak (T-11-01). Bounded by `--connect-timeout` / `--max-time` /
 /// `--max-filesize`, with a post-hoc size re-check (T-11-03).
+fn curl_args() -> Vec<String> {
+    vec![
+        "--fail".to_string(),
+        "--silent".to_string(),
+        "--show-error".to_string(),
+        "--location".to_string(),
+        "--connect-timeout".to_string(),
+        CONNECT_TIMEOUT_SECS.to_string(),
+        "--max-time".to_string(),
+        MAX_TIME_SECS.to_string(),
+        "--max-filesize".to_string(),
+        MAX_BODY_BYTES.to_string(),
+        "--url".to_string(),
+        LITELLM_RAW_URL.to_string(),
+    ]
+}
+
 fn fetch_raw() -> Result<Vec<u8>> {
     let output = Command::new("curl")
-        .arg("--fail")
-        .arg("--silent")
-        .arg("--show-error")
-        .arg("--location")
-        .arg("--connect-timeout")
-        .arg(CONNECT_TIMEOUT_SECS.to_string())
-        .arg("--max-time")
-        .arg(MAX_TIME_SECS.to_string())
-        .arg("--max-filesize")
-        .arg(MAX_BODY_BYTES.to_string())
-        .arg("--url")
-        .arg(LITELLM_RAW_URL)
+        .args(curl_args())
         .output()
         .map_err(|e| StatuslineError::other(format!("failed to spawn `curl`: {e}")))?;
 
@@ -674,5 +687,106 @@ mod tests {
         let invalid = vec![0xffu8; STDERR_BOUND * 2];
         let out = sanitize_stderr(&invalid);
         assert!(out.chars().count() <= STDERR_BOUND + 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 11-04 Task 3: pinned transport + ONE canonical selection predicate
+    // (WR-05 / IN-01 / RV-H2 / D-02).
+    // -----------------------------------------------------------------------
+
+    /// Assert the argv carries `flag` immediately followed by `value`.
+    fn argv_has_pair(argv: &[String], flag: &str, value: &str) -> bool {
+        argv.windows(2).any(|w| w[0] == flag && w[1] == value)
+    }
+
+    /// WR-05: `--location` under curl's DEFAULT policy will follow a redirect to
+    /// `http://`, `ftp://` or `ftps://`, and will follow up to 50 hops. The
+    /// fetched payload becomes the authoritative price table for every later
+    /// render, so the chain must be pinned to https and bounded.
+    ///
+    /// FAILURE MODE: dropping any one of the three flags fails by name.
+    #[test]
+    fn curl_argv_pins_https_and_bounds_redirects() {
+        let argv = curl_args();
+        assert!(
+            argv_has_pair(&argv, "--proto", "=https"),
+            "the initial request must be pinned to https, got {argv:?}"
+        );
+        assert!(
+            argv_has_pair(&argv, "--proto-redir", "=https"),
+            "every REDIRECT target must be pinned to https, got {argv:?}"
+        );
+        assert!(
+            argv_has_pair(&argv, "--max-redirs", "5"),
+            "the redirect chain must be bounded, got {argv:?}"
+        );
+    }
+
+    #[test]
+    fn the_selection_predicate_excludes_routed_and_provider_prefixed_keys() {
+        assert!(is_selectable_claude_key("claude-opus-4-8"));
+        assert!(
+            !is_selectable_claude_key("claude-3/routed-alias"),
+            "a routed duplicate must not be selected (IN-01)"
+        );
+        assert!(
+            !is_selectable_claude_key("anthropic.claude-sonnet-4-5"),
+            "a provider-prefixed duplicate is not a BARE claude-* key"
+        );
+        assert!(!is_selectable_claude_key("gpt-4o"));
+    }
+
+    /// RV-H2, inverted to match the decision that is actually locked.
+    ///
+    /// D-11 says "apply the same Claude-family filter the vendor script uses" —
+    /// and that filter is a PREDICATE, not a frozen id list. The Phase 10
+    /// remediation of 2026-09-09 deleted the 11-id allow-list precisely because
+    /// it priced only two currently-relevant models. So a genuinely NEW upstream
+    /// Claude model is EXPECTED to be covered the day upstream publishes it.
+    ///
+    /// FAILURE MODE: reintroducing a curated allow-list fails this test by name.
+    #[test]
+    fn a_new_upstream_claude_model_is_selected_by_the_predicate() {
+        assert!(
+            is_selectable_claude_key("claude-future-9-20991231"),
+            "selection is a predicate, never a curated list (D-11)"
+        );
+        let raw = upstream(
+            r#""claude-future-9-20991231": {
+                "litellm_provider": "anthropic",
+                "input_cost_per_token": 3e-06,
+                "output_cost_per_token": 1.5e-05,
+                "cache_creation_input_token_cost": 3.75e-06,
+                "cache_read_input_token_cost": 3e-07
+            }"#,
+        );
+        let out = transform_litellm(raw.as_bytes()).expect("a new claude model is usable");
+        assert!(
+            out.prices.contains_key("claude-future-9-20991231"),
+            "a genuinely new upstream Claude model must be selected, got {:?}",
+            out.prices.keys().collect::<Vec<_>>()
+        );
+    }
+
+    /// D-02: the bash and Rust transforms are ONE transform. This pins the three
+    /// clauses of the key/provider selection in `scripts/vendor-pricing.sh`
+    /// against the Rust predicate above.
+    ///
+    /// FAILURE MODE: editing either transform without the other fails here.
+    #[test]
+    fn the_vendor_script_selection_matches_the_rust_predicate() {
+        const SCRIPT: &str = include_str!("../../scripts/vendor-pricing.sh");
+        for clause in [
+            r#"startswith("claude-")"#,
+            r#"contains("/")"#,
+            r#"litellm_provider == "anthropic""#,
+        ] {
+            assert!(
+                SCRIPT.contains(clause),
+                "D-02 drift: scripts/vendor-pricing.sh no longer contains `{clause}`, so the \
+                 bash and Rust transforms have diverged (see \
+                 src/pricing/fetch.rs::is_selectable_claude_key)"
+            );
+        }
     }
 }

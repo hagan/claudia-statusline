@@ -580,6 +580,30 @@ impl PricingEnv {
     }
 }
 
+/// Recursively search for a file whose name STARTS WITH `prefix` under `root`.
+///
+/// The price-cache writer publishes from `prices.json.tmp.<pid>.<nonce>`
+/// (plan 11-04 / RV-M7), so temp-file hygiene can only be asserted by prefix.
+fn find_prefixed(root: &Path, prefix: &str) -> Option<PathBuf> {
+    let entries = fs::read_dir(root).ok()?;
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            if let Some(found) = find_prefixed(&p, prefix) {
+                return Some(found);
+            }
+        } else if p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with(prefix))
+            .unwrap_or(false)
+        {
+            return Some(p);
+        }
+    }
+    None
+}
+
 /// Recursively search for a file named `name` under `root`.
 fn find_named(root: &Path, name: &str) -> Option<PathBuf> {
     let entries = fs::read_dir(root).ok()?;
@@ -731,10 +755,13 @@ fn sync_pricing_fetch_failure_writes_nothing_and_preserves_cache() {
         "a failed fetch must leave the existing cache byte-identical"
     );
 
-    // And no temp file was left behind by the aborted publish.
+    // And no temp file was left behind by the aborted publish. Temp names carry
+    // a PID + nonce suffix as of plan 11-04, so match by PREFIX — an exact-name
+    // search would silently pass no matter what the writer left behind.
+    let stray = find_prefixed(env.home.path(), "prices.json.tmp");
     assert!(
-        find_named(env.home.path(), "prices.json.tmp").is_none(),
-        "a failed fetch must leave no partial temp cache"
+        stray.is_none(),
+        "a failed fetch must leave no partial temp cache, found {stray:?}"
     );
 }
 
@@ -791,6 +818,46 @@ fn sync_pricing_claude_less_upstream_writes_nothing() {
     assert_eq!(
         after, seeded,
         "an empty upstream must never overwrite a good cache"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// (p5b) EMPTY UPSTREAM OBJECT: `{}` is a FAILURE, never a published cache, and
+//       never a mutation of a pre-existing one (review finding RV-H1).
+//
+// The cross-AI reviewer read plan 11-01's TEXT as describing hardcoded fallback
+// rates for absent allow-listed models — which would make an empty upstream
+// still publish a populated cache. The SHIPPED transform has no such synthesis:
+// every row is built only from upstream values, and `src/pricing/fetch.rs`
+// returns `Err` when zero usable rows survive. This test makes that property
+// permanent at the CLI level for the `{}` payload, as the claude-less payload
+// test above does for unrelated JSON.
+// ---------------------------------------------------------------------------
+#[test]
+#[serial]
+fn sync_pricing_empty_upstream_object_writes_nothing_and_preserves_cache() {
+    let env = PricingEnv::new();
+    let seeded = env.seed_cache(86_400);
+    env.install_curl_serving("{}");
+
+    let (ok, _stdout, stderr) = env.run(false, None, None);
+    assert!(!ok, "an empty upstream object must exit non-zero");
+    assert!(
+        stderr.contains("zero usable"),
+        "stderr must name the zero-usable-rows cause, got: {stderr}"
+    );
+    assert!(!stderr.to_lowercase().contains("panic"), "must not panic");
+
+    let after = fs::read(env.cache_path()).expect("pre-existing cache must survive");
+    assert_eq!(
+        after, seeded,
+        "an empty upstream must leave the existing cache BYTE-IDENTICAL"
+    );
+
+    let stray = find_prefixed(env.home.path(), "prices.json.tmp");
+    assert!(
+        stray.is_none(),
+        "a refused publish must leave no temp file, found {stray:?}"
     );
 }
 
