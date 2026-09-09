@@ -217,6 +217,21 @@ pub(crate) enum AntAction {
         #[arg(long, value_name = "DUR")]
         max_age: Option<String>,
     },
+    /// Refresh the Claude price table from the public upstream snapshot.
+    ///
+    /// The ONE KEYLESS member of `ant`: upstream is a public raw-GitHub URL, so
+    /// this takes no `--account` and reads no credential from anywhere (D-01).
+    /// It is also the one `ant` subcommand independent of `[ant].enabled` —
+    /// pricing is a separate feature that merely shares the cache directory.
+    SyncPricing {
+        /// Run in quiet mode (suppress the summary; errors still print)
+        #[arg(short, long)]
+        quiet: bool,
+        /// Skip the fetch if the price cache is younger than this (e.g. 10m,
+        /// 24h, 2d). Omit to always fetch (manual runs are never throttled).
+        #[arg(long, value_name = "DUR")]
+        max_age: Option<String>,
+    },
     /// Fetch org usage & cost (Admin API) and cache the active account's slice
     SyncUsage {
         /// Run in quiet mode (suppress the summary; errors still print)

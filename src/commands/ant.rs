@@ -19,6 +19,7 @@ use crate::error::{Result, StatuslineError};
 pub(crate) fn handle_ant_command(action: crate::AntAction) -> Result<()> {
     match action {
         crate::AntAction::SyncModels { quiet, max_age } => sync_models(quiet, max_age),
+        crate::AntAction::SyncPricing { quiet, max_age } => sync_pricing(quiet, max_age),
         crate::AntAction::SyncUsage {
             quiet,
             account,
@@ -329,6 +330,74 @@ fn sync_models(quiet: bool, max_age: Option<String>) -> Result<()> {
         println!("Cache: {}", path.display());
         // Credential SOURCE label only — never the key (D-09 / D-17).
         println!("Credential source: {}", outcome.credential_source);
+    }
+
+    Ok(())
+}
+
+/// `ant sync-pricing`: refresh the Claude price table from the public upstream
+/// snapshot and publish the versioned price cache (PRICE-04 / SC1).
+///
+/// The ONE KEYLESS sync: upstream is a public raw-GitHub URL, so this handler
+/// loads no config, reads no credential, and its summary has no
+/// `Credential source:` line — there is no credential to label (D-01). It is
+/// also independent of `[ant].enabled`; pricing is a separate feature that
+/// merely shares the `.../claudia-statusline/ant/` cache directory.
+///
+/// Failure is TOTAL and leaves the floor intact (SC4 / D-04): a spawn, network,
+/// HTTP, oversize, parse, or zero-usable-rows failure returns `Err` BEFORE
+/// anything is written, so any existing cache — and the compiled-in bundled
+/// table behind it — survives untouched and `main` exits non-zero.
+fn sync_pricing(quiet: bool, max_age: Option<String>) -> Result<()> {
+    use crate::pricing::cache::{price_cache_path, read_price_cache, write_price_cache};
+
+    // Self-throttle BEFORE any network/subprocess work (D-10, mirroring
+    // `sync_models`). When `--max-age` is set and the cached `fetched_at` is
+    // younger than the threshold, skip the fetch entirely and exit 0. Omitting
+    // `--max-age` always fetches (manual runs are never throttled). A
+    // future-dated cache yields a negative age, which `to_std()` refuses, so it
+    // maps to ZERO and counts as fresh (Pitfall 1). The total `read_price_cache`
+    // collapses every error to `None`, so a missing/corrupt cache simply falls
+    // through and fetches.
+    if let Some(spec) = max_age {
+        let max = crate::ant::duration::parse_max_age(&spec)?;
+        if let Some(cache) = read_price_cache() {
+            let age = cache.age().to_std().unwrap_or(std::time::Duration::ZERO);
+            if age < max {
+                if !quiet {
+                    println!("Price cache is fresh (within {spec}); skipping fetch.");
+                }
+                return Ok(());
+            }
+        }
+    }
+
+    // The ONLY network/subprocess touchpoint in the pricing feature.
+    let outcome = crate::pricing::fetch::fetch_claude_prices()?;
+
+    // Publish only after the whole payload parsed and produced a non-empty
+    // table (the fetch layer guarantees both).
+    write_price_cache(&outcome.cache)?;
+
+    if !quiet {
+        let count = outcome.cache.prices.len();
+        let path = price_cache_path()?;
+        println!(
+            "Synced {} model price{} from the upstream table.",
+            count,
+            if count == 1 { "" } else { "s" }
+        );
+        // D-03: a dropped row is never invisible.
+        if outcome.skipped > 0 {
+            println!(
+                "Skipped {} unusable upstream row{}.",
+                outcome.skipped,
+                if outcome.skipped == 1 { "" } else { "s" }
+            );
+        }
+        println!("Cache: {}", path.display());
+        println!("Source: {}", outcome.cache.source);
+        println!("Snapshot: {}", outcome.cache.version);
     }
 
     Ok(())
