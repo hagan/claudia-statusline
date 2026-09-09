@@ -177,6 +177,74 @@ separator = " | "
 > **Note:** Token rate variables require `[token_rate] enabled = true` in config.
 > The `{token_rate}` variable respects both `display_mode` and `rate_display` settings.
 
+### API-Equivalent Cost Variables
+
+These variables price the session's token counts against a Claude price table
+compiled into the binary. **They are opt-in** — none appears unless you reference
+it in your layout format, and the default statusline is unchanged.
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `{api_equiv_cost}` | `$0.97` | Notional API-equivalent session cost |
+| `{api_equiv_cost_labeled}` | `~$0.97 API-equiv` | Same figure, explicitly labeled |
+| `{api_equiv_cost_input}` | `$0.50` | Uncached input tokens |
+| `{api_equiv_cost_output}` | `$0.25` | Output tokens |
+| `{api_equiv_cost_cache_write}` | `$0.12` | Cache-creation tokens |
+| `{api_equiv_cost_cache_read}` | `$0.10` | Cache-read tokens (own ~0.1x rate) |
+| `{api_equiv_cost_by_model}` | `claude-opus-4-8:$12.40 claude-haiku-4-5:$0.30` | Per-model costs from the `[ant]` usage cache |
+
+> **This is NOT what you are billed.** It is what the same token usage *would*
+> cost at public API list prices. On a Claude subscription (Pro/Max) you pay your
+> plan price regardless — the figure is for comparison only, never a statement of
+> charges. Use `{api_equiv_cost_labeled}` where the distinction could matter to a
+> reader. The plain `{cost}` variable remains Claude Code's own reported spend and
+> is unaffected.
+
+**Reading the output:**
+
+- **`unknown`** — the model has no exact entry in the price table (see
+  `[pricing.aliases]` below). Unknown models are never priced at `$0.00`.
+- **A trailing `+`** (e.g. `$0.25+`) — the payload reported only some of the four
+  cost dimensions, so the figure is a *lower bound*: the real API-equivalent cost
+  is at least that much. An absent dimension cannot be distinguished from genuine
+  zero usage, so it is disclosed rather than silently treated as zero.
+- **A missing variable** — the payload carried no token counts at all. The
+  variables are omitted entirely rather than rendering `$0.00`.
+- `{api_equiv_cost_by_model}` reflects the **organization-wide month-to-date**
+  usage cache, not this session, so it can legitimately differ in scale from the
+  session headline beside it.
+
+### `[pricing]` Configuration
+
+```toml
+[pricing]
+# Where prices come from. Default: "auto".
+#   "auto"    - best available source at runtime
+#   "bundled" - the price table compiled into the binary
+#   "synced"  - a refreshed cache (not yet implemented; warns and uses bundled)
+source = "auto"
+
+# Map a model id your setup reports to an EXACT id in the price table.
+# Useful behind a proxy or gateway that rewrites model names.
+[pricing.aliases]
+"my-gateway/opus" = "claude-opus-4-8"
+```
+
+Lookup is **exact-match only** — no fuzzy matching, no prefix matching, no
+normalization, and aliases do not chain. An alias whose target is not itself a
+table entry resolves to `unknown`. This is deliberate: a wrong price is worse than
+no price.
+
+The bundled table is vendored from
+[LiteLLM](https://github.com/BerriAI/litellm) (MIT) by
+`scripts/vendor-pricing.sh` and covers every Claude model LiteLLM carries.
+Regenerate it with `make vendor-pricing`, or verify it reproduces byte-for-byte
+with `make vendor-pricing-check`. Rendering never touches the network: the table
+is compiled in.
+
+If a bad value in `[pricing]` fails to parse, only this section falls back to
+defaults — the rest of your configuration is preserved, and a warning is logged.
+
 ### Layout Mode vs Legacy Mode
 
 The statusline supports two display modes:

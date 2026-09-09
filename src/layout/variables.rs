@@ -35,6 +35,22 @@ impl ApiEquivTokens {
             || self.cache_creation.is_some()
             || self.cache_read.is_some()
     }
+
+    /// True when ALL four cost dimensions are present, i.e. the headline total
+    /// covers the complete cost basis.
+    ///
+    /// When false the headline is a LOWER BOUND: an absent field cannot be
+    /// distinguished from a genuine zero, so the real API-equivalent cost is
+    /// greater than or equal to what was summed. The headline discloses that
+    /// with a `+` suffix rather than presenting a partial sum as a total
+    /// (10-VERIFICATION-INDEPENDENT.md — the honesty rule applied to the
+    /// per-type vars had not been applied to the headline they feed).
+    fn all_present(&self) -> bool {
+        self.input.is_some()
+            && self.output.is_some()
+            && self.cache_creation.is_some()
+            && self.cache_read.is_some()
+    }
 }
 
 /// The SINGLE shared literal marker rendered for an unpriceable-but-token-present
@@ -1212,12 +1228,18 @@ impl VariableBuilder {
                     + output.unwrap_or(0.0)
                     + cache_write.unwrap_or(0.0)
                     + cache_read.unwrap_or(0.0);
+                // A partial basis makes the headline a LOWER BOUND, not a total.
+                // `+` reads as "at least this much" and is honest whether the
+                // absent field means "no such usage" or "not reported".
+                let partial = if tokens.all_present() { "" } else { "+" };
 
-                self.variables
-                    .insert("api_equiv_cost".to_string(), fmt(Some(total)));
+                self.variables.insert(
+                    "api_equiv_cost".to_string(),
+                    format!("{color}${total:.2}{partial}{reset}"),
+                );
                 self.variables.insert(
                     "api_equiv_cost_labeled".to_string(),
-                    format!("{color}~${total:.2} API-equiv{reset}"),
+                    format!("{color}~${total:.2}{partial} API-equiv{reset}"),
                 );
                 for (key, value) in [
                     ("api_equiv_cost_input", input),
@@ -1576,7 +1598,8 @@ mod api_equiv_cost_tests {
             .build();
         assert_eq!(
             vars.get("api_equiv_cost").map(String::as_str),
-            Some("$0.25")
+            Some("$0.25+"),
+            "a partial basis must be disclosed as a lower bound, not shown as a total"
         );
         // Per-type var for output is present and priced.
         assert_eq!(
@@ -1593,6 +1616,53 @@ mod api_equiv_cost_tests {
                 "absent token type must NOT insert `{key}` (never $0.00)"
             );
         }
+    }
+
+    #[test]
+    fn complete_basis_headline_carries_no_partial_marker() {
+        // All four dimensions present -> the headline IS the total, no `+`.
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
+                None,
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(
+            vars.get("api_equiv_cost").map(String::as_str),
+            Some("$0.97")
+        );
+        assert_eq!(
+            vars.get("api_equiv_cost_labeled").map(String::as_str),
+            Some("~$0.97 API-equiv")
+        );
+    }
+
+    #[test]
+    fn partial_basis_headline_is_marked_as_a_lower_bound() {
+        // cache_read absent -> the true cost is >= the sum. Both the bare and
+        // labeled headline must say so; neither may present it as a total.
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(100_000), Some(10_000), Some(20_000), None),
+                None,
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(
+            vars.get("api_equiv_cost").map(String::as_str),
+            Some("$0.88+")
+        );
+        assert_eq!(
+            vars.get("api_equiv_cost_labeled").map(String::as_str),
+            Some("~$0.88+ API-equiv")
+        );
     }
 
     #[test]

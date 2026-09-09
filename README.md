@@ -235,6 +235,35 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 </details>
 
 <details>
+<summary><b>API-Equivalent Cost (Optional)</b></summary>
+
+Opt-in template variables that price your session's tokens against public Claude API list
+prices, using a price table compiled into the binary (no network at render):
+
+```toml
+[layout]
+format = "{directory} {git} {model} {api_equiv_cost_labeled}"
+```
+
+```
+~/projects/app  main +2  O4.8  ~$0.97 API-equiv
+```
+
+**This is not what you are billed.** On a Pro/Max subscription you pay your plan price
+regardless — it shows what the same usage *would* cost at API rates, for comparison only.
+The plain `{cost}` variable is unchanged and still reports Claude Code's own spend.
+
+Also available: `{api_equiv_cost}` (unlabeled), plus per-dimension
+`{api_equiv_cost_input}` / `_output` / `_cache_write` / `_cache_read`, and
+`{api_equiv_cost_by_model}`. A model with no exact price-table entry renders `unknown`,
+never `$0.00`; a trailing `+` means the payload reported only part of the cost basis, so
+the figure is a lower bound.
+
+See the [Configuration Guide](docs/CONFIGURATION.md#api-equivalent-cost-variables) for the
+full variable list, the `[pricing]` section, and model aliases.
+</details>
+
+<details>
 <summary><b>ant Enrichment Refresh (Optional)</b></summary>
 
 The optional `ant` enrichment (model metadata + per-account usage/cost, off by default) reads
