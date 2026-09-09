@@ -434,6 +434,56 @@ fn assert_no_forbidden_in(rel: &str, source: &str) {
     }
 }
 
+/// Credential vocabulary that must NEVER appear in the KEYLESS pricing fetch
+/// (T-11-01 / D-01). Assembled from fragments so this guard cannot trip on
+/// itself if the two files are ever merged. The lowercase provider string
+/// `"anthropic"` used by the LiteLLM selection predicate is DATA selection, not
+/// a credential, so the env-var check is deliberately case-SENSITIVE on the
+/// uppercase form.
+fn keyless_forbidden_tokens() -> Vec<String> {
+    vec![
+        format!("{}-{}", "api", "key"),
+        format!("{}_{}", "api", "key"),
+        format!("{}_{}", "ANTHROPIC", "API"),
+        format!("{}-{}-", "sk", "ant"),
+        // No curl stdin-config dance: there is no secret to hide from argv.
+        "--config".to_string(),
+        // Nothing is read from the process environment.
+        "env::var".to_string(),
+        "std::env".to_string(),
+        // Nothing is written to the child's stdin.
+        "Stdio::piped".to_string(),
+    ]
+}
+
+/// `src/pricing/fetch.rs` handles NO credential: the upstream price table is a
+/// public raw-GitHub URL. This is the acceptance check for T-11-01 — the fetch
+/// is keyless BY CONSTRUCTION, not by discipline.
+#[test]
+fn structural_guard_pricing_fetch_is_keyless() {
+    let rel = "src/pricing/fetch.rs";
+    let source = read_src(rel);
+    let forbidden = keyless_forbidden_tokens();
+    for (i, line) in source.lines().enumerate() {
+        let code = code_portion(line);
+        for tok in &forbidden {
+            assert!(
+                !code.contains(tok.as_str()),
+                "keyless guard: credential token `{}` found in {} line {}: {}",
+                tok,
+                rel,
+                i + 1,
+                line.trim()
+            );
+        }
+    }
+    // Positive assertion: the fetch really does target the public URL.
+    assert!(
+        source.contains("raw.githubusercontent.com/BerriAI/litellm"),
+        "the pricing fetch must target the public LiteLLM raw URL"
+    );
+}
+
 #[test]
 fn structural_guard_no_spawn_or_socket_in_render_modules() {
     // Whole-file scan for the pure render modules. `src/pricing/mod.rs` and

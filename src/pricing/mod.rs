@@ -28,6 +28,12 @@ use std::sync::OnceLock;
 /// network or the filesystem beyond one read; see the module docs.
 pub mod cache;
 
+/// Keyless out-of-band fetch + LiteLLM->PriceEntry transform for
+/// `ant sync-pricing` (PRICE-04, Phase 11). This is the ONLY pricing module
+/// that touches the network or spawns a subprocess; it never runs on the
+/// render path.
+pub mod fetch;
+
 /// Per-token costs (USD) for one model. Four required additive dimensions plus
 /// an optional fifth (the 1-hour cache-write rate), all `f64`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
