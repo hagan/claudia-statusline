@@ -30,6 +30,29 @@
 //!    runtime (the fake-exec behavioral test is the spawn proof; a Linux strace
 //!    smoke test is intentionally out of scope as non-cross-platform).
 //!
+//! 4. **ONE RENDER, ONE SNAPSHOT** (Plan 11-03, verification gap 2b / CR-01):
+//!    the headline `{api_equiv_cost}` and the per-model breakdown
+//!    `{api_equiv_cost_by_model}` must price every model from the SAME
+//!    in-memory price snapshot, so a concurrent `ant sync-pricing` swapping
+//!    `prices.json` mid-render cannot make one rendered line disagree with
+//!    itself. Enforced four ways, because each one alone is blind to a
+//!    different failure (the Phase 10 durable lesson):
+//!    - a READ COUNTER over the actual per-render `prices.json` read count
+//!      (`<= 1` when a price var is used, `0` when none is),
+//!    - a SENSITIVITY PROOF that the same instrument reports exactly 2 when two
+//!      resolutions really happen, so the `<= 1` bound is provably non-vacuous,
+//!    - a STRUCTURAL GUARD that fails the moment a second resolution site is
+//!      reintroduced into `src/display.rs` or `src/layout/variables.rs`,
+//!    - a SERIAL-COVERAGE GUARD, because the counter is process-global and a
+//!      future non-`#[serial]` cache-touching test in this binary could read
+//!      between a reset and an assertion.
+//!
+//!    The counter (`statusline::pricing::cache::price_cache_reads`) is
+//!    `#[doc(hidden)]` instrumentation compiled in EVERY profile on purpose:
+//!    integration tests link the library with `cfg(test)` OFF, so a
+//!    `#[cfg(test)]` counter would be invisible exactly here — including on the
+//!    spawned-binary render path.
+//!
 //! Env/PATH/XDG-mutating tests are `#[serial]` (the repo's global test lock,
 //! review MUST-FIX #13).
 
@@ -613,6 +636,56 @@ fn render_lib_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) -
     result.expect("render must never fail (SC1)")
 }
 
+/// Render `payload` through the SPAWNED BINARY (`src/main.rs`) against a
+/// throwaway HOME, mirroring `render_lib_isolated` exactly: same config file,
+/// same env redirection, and `plant` run AFTER the cache root is redirected so
+/// the child resolves the same planted files the parent wrote. Reuses the
+/// `Command`/`Stdio` recipe from `golden_byte_identical_main_rs_path`.
+fn render_main_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) -> String {
+    let _guard = test_support::init();
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let cfg_path = home.path().join("config.toml");
+    std::fs::write(&cfg_path, config_toml).expect("write config");
+
+    let orig_home = std::env::var_os("HOME");
+    let orig_xdg = std::env::var_os("XDG_CACHE_HOME");
+
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+
+    plant();
+
+    let output = Command::new(test_support::test_binary())
+        .env("HOME", home.path())
+        .env("XDG_CACHE_HOME", home.path().join("cache"))
+        .env("STATUSLINE_CONFIG", &cfg_path)
+        .env("STATUSLINE_ANT_ACCOUNT", "work")
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child
+                .stdin
+                .as_mut()
+                .expect("child stdin")
+                .write_all(payload.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    };
+    restore("HOME", orig_home);
+    restore("XDG_CACHE_HOME", orig_xdg);
+
+    assert!(output.status.success(), "spawned render must exit 0");
+    String::from_utf8(output.stdout).expect("render output is UTF-8")
+}
+
 /// Split a `{api_equiv_cost}|{api_equiv_cost_by_model}` render into its two
 /// halves so each caller can be asserted independently.
 fn split_callers(rendered: &str) -> (String, String) {
@@ -687,21 +760,186 @@ fn source_auto_demotes_a_stale_cache_for_both_render_callers() {
     );
 }
 
+/// The one-render-one-snapshot invariant, asserted over the ACTUAL number of
+/// `prices.json` reads (verification gap 2b / CR-01).
+///
+/// The predecessor of this test only compared the two rendered figures, which
+/// agree under BOTH the correct wiring and the broken one whenever the two reads
+/// happen to see the same file — it could observe neither divergence mechanism
+/// and therefore could not fail. This one observes the mechanism directly.
+///
+/// FAILURE MODE: at the pre-fix wiring (`display.rs` calling `lookup_with_source`
+/// while `variables.rs` called `select_synced` of its own) the delta is 2.
 #[test]
 #[serial]
-fn a_fresh_synced_cache_prices_both_render_callers_identically() {
-    // The positive case AND the agreement invariant: one render, two lookups,
-    // one number.
+fn one_render_performs_at_most_one_price_cache_read() {
     let out = render_lib_isolated(&config_with_source("auto"), PRICED_PAYLOAD, || {
         plant_synced_prices(1);
         plant_usage_slice("work");
+        // LAST statement of the plant closure: everything the render does to the
+        // price cache from here on is attributable to exactly one render.
+        statusline::pricing::cache::reset_price_cache_reads();
     });
-    let (headline, breakdown) = split_callers(&out);
-    assert_eq!(headline, SYNCED_FIGURE);
-    assert_eq!(breakdown, format!("claude-opus-4-8:{SYNCED_FIGURE}"));
+    let reads = statusline::pricing::cache::price_cache_reads();
     assert!(
-        breakdown.ends_with(&headline),
-        "headline and breakdown must agree on the price of the same model, got: {out:?}"
+        reads <= 1,
+        "one render must perform AT MOST ONE prices.json read, observed {reads} \
+         (verification gap 2b / CR-01) — rendered: {out:?}"
+    );
+
+    let (headline, breakdown) = split_callers(&out);
+    assert_eq!(headline, SYNCED_FIGURE, "rendered: {out:?}");
+    assert_eq!(
+        breakdown,
+        format!("claude-opus-4-8:{SYNCED_FIGURE}"),
+        "rendered: {out:?}"
+    );
+}
+
+/// SENSITIVITY PROOF for the instrument the test above relies on (RV-M6).
+///
+/// Without this, `reads <= 1` would also hold for a counter that is stubbed,
+/// mis-scoped, or compiled out under `cfg(test)` — it would report 0 forever and
+/// the guard would pass vacuously. Here two resolutions really do occur, so the
+/// counter MUST report exactly 2.
+///
+/// This replaces the previously-planned stash-based negative control (RV-M6): this
+/// repository's `.planning` tree is a shared, symlinked, multi-runtime workspace,
+/// and no test may mutate, stash or revert the live worktree to prove a point.
+#[test]
+#[serial]
+fn the_read_counter_can_observe_two_resolutions() {
+    let _guard = test_support::init();
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let orig_home = std::env::var_os("HOME");
+    let orig_xdg = std::env::var_os("XDG_CACHE_HOME");
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+
+    plant_synced_prices(1);
+    let cfg = statusline::pricing::PricingConfig::default();
+    statusline::pricing::cache::reset_price_cache_reads();
+    let _ = statusline::pricing::select_synced(&cfg);
+    let _ = statusline::pricing::select_synced(&cfg);
+    let reads = statusline::pricing::cache::price_cache_reads();
+
+    match orig_home {
+        Some(v) => std::env::set_var("HOME", v),
+        None => std::env::remove_var("HOME"),
+    }
+    match orig_xdg {
+        Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
+        None => std::env::remove_var("XDG_CACHE_HOME"),
+    }
+
+    assert_eq!(
+        reads, 2,
+        "the read counter must be able to OBSERVE two resolutions — if this \
+         reports 0 the instrument is blind and the `<= 1` guard above is vacuous"
+    );
+}
+
+// The wall-clock staleness-cliff loop test proposed in an earlier revision of
+// plan 11-03 is deliberately NOT ported here (RV-M3). The cliff is decided by
+// `pricing::select_synced_at(cfg, now)`, a pure function of an injected instant,
+// and both sides of it are covered deterministically by the colocated unit tests
+// `auto_keeps_a_cache_one_second_inside_the_window` /
+// `auto_drops_a_cache_one_second_outside_the_window`. Re-adding a timing-based
+// version here would only reintroduce a race.
+
+/// WR-07: a template that uses NO price variable must not touch `prices.json` at
+/// all — users who never opted into pricing pay zero filesystem IO per render.
+#[test]
+#[serial]
+fn a_template_without_price_vars_reads_no_price_cache() {
+    let config = "[ant]\nenabled = true\n\n[pricing]\nsource = \"auto\"\n\n[layout]\nformat = \"{directory}|{model}\"\n";
+    let out = render_lib_isolated(config, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        0,
+        "a price-var-free template must perform ZERO price-cache reads (WR-07) — rendered: {out:?}"
+    );
+}
+
+/// RV-L1: the gate is AST-level, so a literal MENTION of `api_equiv_cost` in the
+/// template text — outside any `{...}` placeholder — is not a use and must not
+/// trigger a read.
+///
+/// FAILURE MODE: a raw-substring gate (`template.contains("api_equiv_cost")`)
+/// makes this delta 1.
+#[test]
+#[serial]
+fn a_literal_mention_of_a_price_var_reads_no_price_cache() {
+    let config = "[ant]\nenabled = true\n\n[pricing]\nsource = \"auto\"\n\n[layout]\nformat = \"{directory} api_equiv_cost here\"\n";
+    let out = render_lib_isolated(config, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        0,
+        "a literal mention outside braces is not a USE and must read nothing (RV-L1) — rendered: {out:?}"
+    );
+    assert!(
+        out.contains("api_equiv_cost"),
+        "the literal text must still render verbatim, got: {out:?}"
+    );
+}
+
+/// WR-10: byte-identity on the LAYOUT render path.
+///
+/// The arm this replaces rendered with `config_toml = ""`, which routes through
+/// `format_statusline_string` — a function that never touches `src/pricing` at
+/// all — so it was VACUOUS as a pricing guard. This uses a `[layout] format` that
+/// really does route through `format_statusline_with_layout` while referencing no
+/// `api_equiv_cost*` variable, so the price-gated code path is genuinely
+/// exercised and still must not move one byte.
+#[test]
+#[serial]
+fn a_fresh_synced_cache_leaves_the_layout_render_byte_identical() {
+    let config = "[ant]\nenabled = true\n\n[pricing]\nsource = \"auto\"\n\n[layout]\nformat = \"{directory}|{model}\"\n";
+    let without = render_lib_isolated(config, PRICED_PAYLOAD, || {});
+    let with = render_lib_isolated(config, PRICED_PAYLOAD, || {
+        plant_synced_prices(0);
+        plant_usage_slice("work");
+    });
+    assert_eq!(
+        with, without,
+        "planting a synced cache must not change one byte of a price-var-free layout render"
+    );
+    assert!(
+        !with.contains('$') && !with.contains("api_equiv"),
+        "a price-var-free layout render must carry no pricing output at all, got: {with:?}"
+    );
+}
+
+/// The CLAUDE.md main-vs-lib mirror rule, applied to synced pricing: the spawned
+/// binary (`src/main.rs`) and `render_from_json` (`src/lib.rs`) duplicate the
+/// stats-update + render wiring, so a change to one that misses the other shows
+/// up here as a byte difference on a synced-priced payload.
+#[test]
+#[serial]
+fn both_render_paths_agree_on_synced_prices() {
+    let plant = || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+    };
+    let via_lib = render_lib_isolated(&config_with_source("auto"), PRICED_PAYLOAD, plant);
+    let via_main = render_main_isolated(&config_with_source("auto"), PRICED_PAYLOAD, plant);
+    assert_eq!(
+        via_main, via_lib,
+        "the spawned binary and the library render path must agree byte-for-byte \
+         on a synced-priced payload"
+    );
+    let (headline, _) = split_callers(&via_main);
+    assert_eq!(
+        headline, SYNCED_FIGURE,
+        "the spawned binary must actually be pricing from the synced cache, got: {via_main:?}"
     );
 }
 
@@ -721,22 +959,12 @@ fn a_fresh_synced_cache_leaves_the_default_render_byte_identical() {
         "a planted synced cache must not change the default render (SC2)"
     );
 
-    // (b) Against a token-bearing, synced-priced payload: identical with and
-    // without the cache, so the comparison cannot be satisfied by the payload
-    // simply having nothing to price.
-    let without = render_lib_isolated("", PRICED_PAYLOAD, || {});
-    let with = render_lib_isolated("", PRICED_PAYLOAD, || {
-        plant_synced_prices(0);
-        plant_usage_slice("work");
-    });
-    assert_eq!(
-        with, without,
-        "planting a synced cache must not change one byte of the default render"
-    );
-    assert!(
-        !with.contains('$') && !with.contains("api_equiv"),
-        "the default render must carry no api_equiv output at all, got: {with:?}"
-    );
+    // Arm (b) — an empty-config render of PRICED_PAYLOAD compared with and
+    // without a planted cache — was REMOVED as vacuous (WR-10): `config_toml =
+    // ""` routes to `format_statusline_string`, which never touches `src/pricing`,
+    // so the comparison could not have detected a pricing regression. Its
+    // intent is served by `a_fresh_synced_cache_leaves_the_layout_render_byte_identical`,
+    // which exercises the LAYOUT path with a price-var-free format.
 }
 
 #[test]
@@ -772,4 +1000,179 @@ fn structural_guard_no_spawn_or_socket_in_render_modules() {
         .expect("src/main.rs must contain the render-path marker `// Read JSON from stdin`");
     let render_branch = &main_src[idx..];
     assert_no_forbidden_in("src/main.rs (render branch)", render_branch);
+}
+
+// ---------------------------------------------------------------------------
+// Group 4b: STRUCTURAL GUARDS for the one-render-one-snapshot invariant
+// ---------------------------------------------------------------------------
+
+/// Assemble the price-resolution vocabulary from fragments so this file's own
+/// guards do not literally contain the tokens they search for — otherwise the
+/// serial-coverage scan below would flag these pure source scans as
+/// cache-touching, and the resolution-site count would count itself. Mirrors the
+/// fragment trick already used by `keyless_forbidden_tokens`.
+fn resolution_tokens() -> (String, String) {
+    (
+        format!("select{}(", "_synced"),
+        format!("lookup_with{}(", "_source"),
+    )
+}
+
+/// Exactly ONE price-source resolution site is reachable from a render, and it
+/// lives in `src/display.rs`.
+///
+/// FAILURE MODE: adding any second resolution site — most plausibly back inside
+/// `api_equiv_cost` in `src/layout/variables.rs`, where it used to live — makes
+/// the count 2 and fails this guard.
+#[test]
+fn structural_guard_single_price_resolution_site() {
+    let (select_tok, one_shot_tok) = resolution_tokens();
+    let mut sites: Vec<String> = Vec::new();
+    let mut one_shots: Vec<String> = Vec::new();
+
+    for rel in ["src/display.rs", "src/layout/variables.rs"] {
+        let source = read_src(rel);
+        for (i, line) in source.lines().enumerate() {
+            // `code_portion` strips `//` comments, so the doc comments that
+            // DESCRIBE the prohibition neither trip this guard nor satisfy it.
+            let code = code_portion(line);
+            if code.contains(select_tok.as_str()) {
+                sites.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+            }
+            if code.contains(one_shot_tok.as_str()) {
+                one_shots.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+            }
+        }
+    }
+
+    assert_eq!(
+        sites.len(),
+        1,
+        "the render path must resolve the price source in EXACTLY ONE place \
+         (verification gap 2b / CR-01): resolving it in a second place means one \
+         render reads prices.json twice and can price the same model from two \
+         different snapshots if a concurrent `ant sync-pricing` lands in between. \
+         Found {} site(s): {:#?}",
+        sites.len(),
+        sites
+    );
+    assert!(
+        sites[0].starts_with("src/display.rs:"),
+        "the single resolution site must be the shared display.rs wiring reached \
+         by BOTH render paths, found: {:?}",
+        sites[0]
+    );
+    assert!(
+        one_shots.is_empty(),
+        "the per-call one-shot lookup must not be used on the render path — it \
+         re-reads the cache per call (CR-01). Found: {one_shots:#?}"
+    );
+}
+
+/// A `#[test]` block, as recovered from this file's own source.
+struct TestBlock {
+    name: String,
+    attrs: String,
+    body: String,
+}
+
+/// Recover every `#[test]` block (attributes, name, body) from `source`.
+///
+/// Relies only on rustfmt's guarantees: item attributes sit on their own lines,
+/// a free function starts at column 0 with `fn `, and its closing brace is a
+/// lone `}` at column 0.
+fn test_blocks(source: &str) -> Vec<TestBlock> {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut blocks = Vec::new();
+    let mut attrs: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[") {
+            attrs.push(trimmed);
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("///") || trimmed.starts_with("//") || trimmed.is_empty() {
+            i += 1;
+            continue;
+        }
+        if line.starts_with("fn ") && attrs.iter().any(|a| a.starts_with("#[test]")) {
+            let name = line
+                .trim_start_matches("fn ")
+                .split('(')
+                .next()
+                .unwrap_or("<unknown>")
+                .to_string();
+            let start = i;
+            let mut end = i;
+            for (j, l) in lines.iter().enumerate().skip(i + 1) {
+                if *l == "}" {
+                    end = j;
+                    break;
+                }
+            }
+            blocks.push(TestBlock {
+                name,
+                attrs: attrs.join("\n"),
+                body: lines[start..=end].join("\n"),
+            });
+            i = end + 1;
+            attrs.clear();
+            continue;
+        }
+        attrs.clear();
+        i += 1;
+    }
+    blocks
+}
+
+/// RV-M4: every `#[test]` in THIS binary that touches the price cache must also
+/// be `#[serial]`.
+///
+/// `#[serial]` only coordinates tests that participate in the same lock, so a
+/// future non-serial cache-touching test in this binary could read `prices.json`
+/// between a `reset_price_cache_reads()` and the assertion that follows it, and
+/// silently break the read-count guards above without ever failing itself.
+///
+/// FAILURE MODE: adding a cache-touching `#[test]` here without `#[serial]` —
+/// the exact way the process-global counter would be polluted — fails this guard
+/// by name.
+#[test]
+fn every_price_cache_touching_test_is_serial() {
+    // Fragment-assembled for the same reason as `resolution_tokens`: this test's
+    // own body must not contain the markers it searches for.
+    let markers = [
+        format!("render_lib{}", "_isolated"),
+        format!("render_main{}", "_isolated"),
+        format!("read_price{}", "_cache"),
+        format!("select{}", "_synced"),
+        format!("price_cache{}", "_reads"),
+    ];
+    let source = read_src("tests/ant_invariant_tests.rs");
+    let blocks = test_blocks(&source);
+    assert!(
+        blocks.len() >= 15,
+        "the self-scan recovered only {} #[test] blocks — the parser is broken, \
+         which would make this guard vacuous",
+        blocks.len()
+    );
+    for block in &blocks {
+        let touches: Vec<&String> = markers
+            .iter()
+            .filter(|m| block.body.contains(m.as_str()))
+            .collect();
+        if touches.is_empty() {
+            continue;
+        }
+        assert!(
+            block.attrs.contains("serial"),
+            "`{}` touches the price cache ({touches:?}) but is not #[serial]: the \
+             read counter is process-global, so an unsynchronized test can read \
+             between a reset and its assertion and silently break the read-count \
+             guards (RV-M4)",
+            block.name
+        );
+    }
 }
