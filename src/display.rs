@@ -702,6 +702,21 @@ fn format_statusline_with_layout(
     let reset = Colors::reset();
     let components = &layout_config.components;
 
+    // Resolve the effective template ONCE per render, then build the ONE
+    // renderer this function will use. `LayoutRenderer`'s `from_config` is
+    // identical to `with_format` apart from where the template string comes
+    // from (empty `format` => the named preset), so computing it here and
+    // calling `with_format` is behavior-preserving while giving us two things:
+    // the preset file is resolved at most once, and the pricing gate below
+    // queries the SAME renderer that will produce the output — it cannot drift
+    // from the template actually rendered.
+    let effective_template = if layout_config.format.is_empty() {
+        crate::layout::get_preset_format(&layout_config.preset).to_string()
+    } else {
+        layout_config.format.clone()
+    };
+    let renderer = LayoutRenderer::with_format(&effective_template, &layout_config.separator);
+
     // Build variables using VariableBuilder with component configs
     let mut builder = VariableBuilder::new();
 
@@ -928,21 +943,42 @@ fn format_statusline_with_layout(
     // {api_equiv_cost_by_model}. Wired ONCE here on the SAME shared builder site
     // reached by BOTH the main.rs and lib.rs render paths — deliberately NOT
     // duplicated into either entrypoint (Pitfall 6). This path is INDEPENDENT of
-    // the [ant] subsystem (D-11): pricing is the compiled-in bundled table, gated
-    // only on the payload carrying token data + the model resolving to a price.
-    // The per-model breakdown REUSES the already-fetched `api_usage_slice` (no new
-    // read, no spawn, no socket — D-08). With no token data the builder inserts
-    // nothing (D-10), keeping the default render byte-identical (SC2). Resolution
-    // is exact-match + [pricing.aliases] only (no fuzzy — PRICE-05/D-12).
+    // the [ant] subsystem (D-11): pricing is the compiled-in bundled table plus
+    // the optional synced cache, gated only on the payload carrying token data +
+    // the model resolving to a price. The per-model breakdown REUSES the
+    // already-fetched `api_usage_slice` (no new read, no spawn, no socket —
+    // D-08). With no token data the builder inserts nothing (D-10), keeping the
+    // default render byte-identical (SC2). Resolution is exact-match +
+    // [pricing.aliases] only (no fuzzy — PRICE-05/D-12).
     //
-    // Phase 11: the price SOURCE is selected from `[pricing]` (bundled / synced /
-    // auto + max_age). The WHOLE `PricingConfig` is threaded to the builder — not
-    // just its aliases — so the per-model breakdown resolves the same source as
-    // this headline and the two can never disagree about one model (Pitfall 6).
+    // ONE RESOLUTION SITE (verification gap 2b / CR-01). The price SOURCE is
+    // selected from `[pricing]` (bundled / synced / auto + max_age) exactly HERE,
+    // before either consumer runs, and the resolved `Option<PriceCache>` VALUE —
+    // not the config that would let a consumer resolve its own — is threaded into
+    // the per-model breakdown. The headline `{api_equiv_cost}` and the breakdown
+    // `{api_equiv_cost_by_model}` therefore price every model from the same
+    // in-memory snapshot BY CONSTRUCTION, not by discipline: a concurrent
+    // `ant sync-pricing` swapping the file mid-render cannot make one rendered
+    // line disagree with itself. This render performs AT MOST ONE `prices.json`
+    // read, enforced by `one_render_performs_at_most_one_price_cache_read` in
+    // `tests/ant_invariant_tests.rs`, and the site count is pinned by
+    // `structural_guard_single_price_resolution_site`.
+    //
+    // ZERO reads when no price variable is used (WR-07). `api_equiv_cost` is a
+    // PREFIX of all seven price variables ({api_equiv_cost}, _labeled, _input,
+    // _output, _cache_write, _cache_read, _by_model), so the prefix query is an
+    // exact superset gate. It is AST-level, so a literal mention of
+    // `api_equiv_cost` outside a `{...}` placeholder is NOT a use (RV-L1), and it
+    // fails OPEN on an unparseable template. Under `source = "bundled"`
+    // `select_synced` additionally returns `None` without reading at all.
     // `select_synced` collapses every cache failure to the bundled table, so this
     // stays total, offline and byte-identical when no cache exists (D-16/SC2).
+    let wants_pricing = renderer.uses_variable_prefix("api_equiv_cost");
+    let price_snapshot = wants_pricing
+        .then(|| crate::pricing::select_synced(&full_config.pricing))
+        .flatten();
     let equiv_pricing = model_name.map(|m| {
-        crate::pricing::lookup_with_source(m, &full_config.pricing.aliases, &full_config.pricing)
+        crate::pricing::lookup_in(m, &full_config.pricing.aliases, price_snapshot.as_ref())
     });
     let equiv_usage = extras
         .context_window
@@ -957,7 +993,8 @@ fn format_statusline_with_layout(
         equiv_pricing,
         equiv_tokens,
         api_usage_slice.as_ref(),
-        &full_config.pricing,
+        &full_config.pricing.aliases,
+        price_snapshot.as_ref(),
         &Colors::light_gray(),
         &reset,
     );
@@ -1034,7 +1071,8 @@ fn format_statusline_with_layout(
 
     // Build variables and render
     let variables = builder.build();
-    let renderer = LayoutRenderer::from_config(layout_config);
+    // `renderer` was built ONCE at the top of this function from the same
+    // effective template the pricing gate queried — do not reconstruct it here.
     renderer.render(&variables)
 }
 

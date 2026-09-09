@@ -1120,11 +1120,19 @@ impl VariableBuilder {
     /// unpriceable per-model entry renders `model:unknown` — never a fabricated
     /// `$0.00`.
     ///
-    /// `pricing_cfg` is the whole `[pricing]` section, not just its aliases: the
-    /// per-model breakdown must resolve the SAME price source (`bundled` /
-    /// `synced` / `auto` + `max_age`) that `display.rs` resolved for the headline,
-    /// or one render would show two different prices for one model (Pitfall 6).
-    /// The source is resolved ONCE here and shared across every row.
+    /// **This method NEVER resolves a price source.** It receives `synced` — the
+    /// already-resolved snapshot `src/display.rs` selected for this render — plus
+    /// the `aliases` map, and prices every row against that one value. That is
+    /// what makes headline/breakdown agreement STRUCTURAL rather than a matter of
+    /// discipline: there is no second source to disagree with (Pitfall 6 /
+    /// verification gap 2b / CR-01).
+    ///
+    /// PROHIBITED: reintroducing a `select_synced` or `lookup_with_source` call
+    /// here re-opens CR-01 — one render would read `prices.json` twice and could
+    /// price the same model from two different snapshots if a concurrent
+    /// `ant sync-pricing` landed in between. It is blocked by
+    /// `structural_guard_single_price_resolution_site` in
+    /// `tests/ant_invariant_tests.rs`.
     ///
     /// `pricing` is the resolved lookup outcome for the current payload model:
     /// `Some(Priced(_))` to price, `Some(Unpriceable)` for a known-but-unpriceable
@@ -1137,7 +1145,8 @@ impl VariableBuilder {
         pricing: Option<crate::pricing::PriceLookup>,
         tokens: ApiEquivTokens,
         by_model: Option<&crate::ant::cache::UsageCache>,
-        pricing_cfg: &crate::pricing::PricingConfig,
+        aliases: &std::collections::HashMap<String, String>,
+        synced: Option<&crate::pricing::cache::PriceCache>,
         color: &str,
         reset: &str,
     ) -> Self {
@@ -1149,21 +1158,18 @@ impl VariableBuilder {
         // map), so a single unpriceable row renders `model:unknown` while its
         // priceable siblings still price (review MEDIUM-4).
         if let Some(slice) = by_model {
-            // Resolve the active price source ONCE for the whole breakdown, then
-            // reuse it for every model. Calling the one-shot
-            // `pricing::lookup_with_source` per model would re-read and re-parse
-            // the synced cache once PER ROW, and — because a concurrent
-            // `ant sync-pricing` swaps the file atomically mid-render — could
-            // price two models in the SAME line from two different snapshots.
-            // One read, one snapshot, and the same source the `display.rs`
-            // headline selected (Pitfall 6).
-            let synced = crate::pricing::select_synced(pricing_cfg);
-            let aliases = &pricing_cfg.aliases;
+            // `synced` is the CALLER's snapshot — the single one `display.rs`
+            // resolved for this render — reused for every row. Resolving a source
+            // here (or calling the one-shot `pricing::lookup_with_source` per
+            // model) would re-read and re-parse the cache and could price two
+            // models in the SAME line from two different snapshots, because a
+            // concurrent `ant sync-pricing` swaps the file atomically mid-render.
+            // One read, one snapshot, one number (Pitfall 6 / CR-01).
             let mut pairs: Vec<(String, Option<f64>)> = slice
                 .tokens_by_model
                 .iter()
                 .map(|(model, tb)| {
-                    let cost = match crate::pricing::lookup_in(model, aliases, synced.as_ref()) {
+                    let cost = match crate::pricing::lookup_in(model, aliases, synced) {
                         // The two cache-creation TTLs are priced on their OWN
                         // rates: a 1-hour write costs ~1.6x a 5-minute one, so
                         // summing the token counts onto the 5-minute rate
@@ -1439,7 +1445,7 @@ mod api_usage_tests {
 mod api_equiv_cost_tests {
     use super::*;
     use crate::ant::cache::{TokenBreakdown, UsageCache, USAGE_CACHE_SCHEMA_VERSION};
-    use crate::pricing::{PriceEntry, PriceLookup, PricingConfig};
+    use crate::pricing::{PriceEntry, PriceLookup};
     use std::collections::HashMap;
 
     // A stable opus-like entry mirroring the bundled `claude-opus-4-8` rates so the
@@ -1486,7 +1492,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1506,7 +1513,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, None, None, Some(200_000)),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1529,7 +1537,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1563,7 +1572,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), None, None, None),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1589,7 +1599,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, None, None, None),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1620,7 +1631,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, Some(10_000), None, None),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1655,7 +1667,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1679,7 +1692,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), None),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1703,7 +1717,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(0), Some(10_000), None, None),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1727,7 +1742,8 @@ mod api_equiv_cost_tests {
                     lookup,
                     tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                     None,
-                    &PricingConfig::default(),
+                    &HashMap::new(),
+                    None,
                     "",
                     "",
                 )
@@ -1794,7 +1810,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1836,7 +1853,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1878,7 +1896,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1919,7 +1938,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1952,7 +1972,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -1974,7 +1995,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 None,
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )
@@ -2016,7 +2038,8 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &PricingConfig::default(),
+                &HashMap::new(),
+                None,
                 "",
                 "",
             )

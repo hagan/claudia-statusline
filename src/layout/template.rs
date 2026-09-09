@@ -347,7 +347,17 @@ pub struct LayoutRenderer {
 }
 
 impl LayoutRenderer {
-    /// Create a new layout renderer from configuration
+    /// Create a new layout renderer from configuration.
+    ///
+    /// `#[allow(dead_code)]`: `src/display.rs` no longer calls this — it computes
+    /// the effective template itself and calls [`Self::with_format`], so the
+    /// preset is resolved ONCE per render and the pricing gate can query the very
+    /// renderer that will produce the output (CR-01). This remains the
+    /// config-driven constructor for library consumers and is exercised by
+    /// `layout::tests::test_from_config_preset` /
+    /// `test_from_config_custom_format`; the two constructions MUST stay
+    /// equivalent (empty `format` => named preset, else the format string).
+    #[allow(dead_code)]
     pub fn from_config(config: &LayoutConfig) -> Self {
         let template = if config.format.is_empty() {
             get_preset_format(&config.preset).to_string()
@@ -485,12 +495,43 @@ impl LayoutRenderer {
         }
     }
 
-    /// STUB (RED gate): AST-level variable-usage query.
+    /// Does the PARSED template use any variable whose name starts with
+    /// `prefix`?
     ///
-    /// Currently a RAW SUBSTRING check, which is the defect RV-L1 describes —
-    /// `uses_variable_prefix_ignores_a_literal_mention` fails against it.
+    /// This is the AST-level counterpart to the string-level
+    /// [`Self::uses_variable`] / [`Self::get_used_variables`], which both re-scan
+    /// the raw template text. It exists because the price-source gate in
+    /// `src/display.rs` must not be tripped by a literal MENTION of
+    /// `api_equiv_cost` sitting outside a `{...}` placeholder (review finding
+    /// RV-L1): a mention is not a use, and reading `prices.json` for one is
+    /// filesystem IO the user never asked for.
+    ///
+    /// `uses_variable` and `get_used_variables` remain string-level and MUST NOT
+    /// be used for that gate.
+    ///
+    /// When the template failed to parse (`self.ast` is `None`) this returns
+    /// `true` — it FAILS OPEN, so a parse failure can never silently disable a
+    /// variable the user templated. Conditional branches are searched too: a
+    /// variable used only inside `{if ..}` still counts as used.
     pub fn uses_variable_prefix(&self, prefix: &str) -> bool {
-        self.template.contains(prefix)
+        fn scan(nodes: &[TemplateNode], prefix: &str) -> bool {
+            nodes.iter().any(|node| match node {
+                TemplateNode::Literal(_) => false,
+                TemplateNode::Variable(name) => name.starts_with(prefix),
+                TemplateNode::Conditional {
+                    if_branch,
+                    else_branch,
+                    ..
+                } => scan(if_branch, prefix) || scan(else_branch, prefix),
+            })
+        }
+
+        match &self.ast {
+            Some(nodes) => scan(nodes, prefix),
+            // Fail OPEN: no AST means we cannot know, and guessing "unused"
+            // would blank a price the user asked for.
+            None => true,
+        }
     }
 
     /// Check if the template uses a specific variable
