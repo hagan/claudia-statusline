@@ -140,7 +140,14 @@ pub fn table() -> &'static PriceTable {
 ///   handles as var-absence per D-10).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PriceLookup {
-    Priced(&'static PriceEntry),
+    /// An exact entry from the ACTIVE union (synced-then-bundled) that also
+    /// passes [`PriceEntry::is_valid`].
+    ///
+    /// The entry is owned BY VALUE, not borrowed: a synced entry comes from a
+    /// [`cache::PriceCache`] that lives only for the duration of one lookup, so
+    /// it cannot be handed out as `&'static`. [`PriceEntry`] is `Copy` and ~40
+    /// bytes, so owning it is free and lets both sources share one variant.
+    Priced(PriceEntry),
     Unpriceable,
 }
 
@@ -169,62 +176,138 @@ pub enum PriceLookup {
 // crate exports it as public API.
 #[allow(dead_code)]
 pub fn lookup(id: &str, aliases: &HashMap<String, String>) -> PriceLookup {
-    let t = table();
-
-    // 1. Exact canonical id.
-    if let Some(entry) = t.prices.get(id) {
-        return gate(entry);
-    }
-
-    // 2. Explicit alias → exact table entry (no chains, no fuzzy).
-    if let Some(target) = aliases.get(id) {
-        if let Some(entry) = t.prices.get(target) {
-            return gate(entry);
-        }
-    }
-
-    PriceLookup::Unpriceable
+    lookup_with_source(id, aliases, &PricingConfig::default())
 }
 
 /// Default freshness window for a synced price cache under
 /// [`PricingSource::Auto`] (D-05).
 pub const DEFAULT_PRICE_MAX_AGE: &str = "30d";
 
-// --- Plan 11-02 (RED): source-selection seam. Stubs only: these compile and
-// delegate to the bundled-only `lookup`, so every synced/union/staleness test
-// below FAILS until the real selection lands in the next commit.
-
-/// Select the synced price map that is active for `cfg` (STUB).
+/// Resolve the SYNCED price map that is active for `cfg`, performing **at most
+/// one** filesystem read and no other IO (D-16: the render path stays offline).
+///
+/// Policy (PRICE-04 SC2):
+///
+/// | `[pricing].source` | behavior |
+/// |--------------------|----------|
+/// | `bundled`          | the cache is never read; always `None` |
+/// | `synced`           | the cache is read and used REGARDLESS of age (D-08) |
+/// | `auto` (default)   | the cache is used only while younger than `max_age` (D-05) |
+///
+/// Every failure mode of the read — missing, unreadable, corrupt, wrong schema
+/// — collapses to `None` inside [`cache::read_price_cache`], which is what makes
+/// the fallback to the always-present bundled table SILENT rather than an error
+/// (T-11-02). Under `auto`, a cache whose `fetched_at` is in the FUTURE (clock
+/// skew) has a negative age; `to_std()` errs on negatives and we clamp to zero,
+/// so such a cache counts as FRESH rather than infinitely stale (D-07).
+///
+/// Callers that resolve MANY ids (the per-model breakdown) should call this
+/// ONCE and thread the result into [`lookup_in`], so the whole render reads the
+/// cache once and prices every model from the SAME snapshot.
 #[allow(dead_code)]
-pub fn select_synced(_cfg: &PricingConfig) -> Option<cache::PriceCache> {
-    None
+pub fn select_synced(cfg: &PricingConfig) -> Option<cache::PriceCache> {
+    match cfg.source {
+        PricingSource::Bundled => None,
+        PricingSource::Synced => cache::read_price_cache(),
+        PricingSource::Auto => {
+            let cached = cache::read_price_cache()?;
+            let window = max_age_window(&cfg.max_age);
+            let age = cached.age().to_std().unwrap_or(std::time::Duration::ZERO);
+            (age < window).then_some(cached)
+        }
+    }
 }
 
-/// Look `id` up in the per-id union of `synced` and the bundled table (STUB).
+/// Parse `[pricing].max_age`, falling back to [`DEFAULT_PRICE_MAX_AGE`].
+///
+/// An unparseable value must NOT silently disable staleness demotion (that
+/// would turn a typo into "trust an arbitrarily old cache forever"), so it
+/// behaves exactly like an absent value. The render never fails on config.
+fn max_age_window(raw: &str) -> std::time::Duration {
+    const DEFAULT_SECS: u64 = 30 * 86_400;
+    crate::ant::duration::parse_max_age(raw).unwrap_or_else(|_| {
+        crate::ant::duration::parse_max_age(DEFAULT_PRICE_MAX_AGE)
+            .unwrap_or(std::time::Duration::from_secs(DEFAULT_SECS))
+    })
+}
+
+/// One resolution STEP over the per-id union of `synced` and the bundled table.
+///
+/// Returns `None` when `id` is present in NEITHER source (so the caller may move
+/// on to alias resolution), and `Some(..)` when at least one source carried the
+/// id.
+///
+/// Union rule (D-06): the synced row WINS when it is usable, and the bundled row
+/// FILLS THE GAP otherwise. A refresh can therefore only ADD or UPDATE prices —
+/// it can never remove coverage the bundle ships, not even by publishing a
+/// zero/non-finite row for an id the bundle prices correctly. When BOTH rows
+/// exist but neither passes [`PriceEntry::is_valid`], the result is
+/// [`PriceLookup::Unpriceable`] — a matched-but-invalid id does not fall through
+/// to alias resolution (preserving the single-source contract).
+fn pick(synced: Option<&cache::PriceCache>, id: &str) -> Option<PriceLookup> {
+    let from_synced = synced.and_then(|c| c.prices.get(id));
+    let from_bundle = table().prices.get(id);
+    if from_synced.is_none() && from_bundle.is_none() {
+        return None;
+    }
+    for candidate in [from_synced, from_bundle].into_iter().flatten() {
+        if let PriceLookup::Priced(entry) = gate(candidate) {
+            return Some(PriceLookup::Priced(entry));
+        }
+    }
+    Some(PriceLookup::Unpriceable)
+}
+
+/// Exact-match-only lookup against an ALREADY-RESOLVED synced map.
+///
+/// This is the hoisted form of [`lookup_with_source`]: pass
+/// `select_synced(cfg).as_ref()` once and reuse it across many ids. Resolution
+/// order is unchanged from the single-source [`lookup`] — exact id first, then a
+/// `[pricing.aliases]` target — with each step widened to the per-id union
+/// (see [`pick`]). There is still **no fuzzy matching, no normalization and no
+/// alias chaining**, in either source (SC3).
 #[allow(dead_code)]
 pub fn lookup_in(
     id: &str,
     aliases: &HashMap<String, String>,
-    _synced: Option<&cache::PriceCache>,
+    synced: Option<&cache::PriceCache>,
 ) -> PriceLookup {
-    lookup(id, aliases)
+    // 1. Exact canonical id, synced-then-bundled.
+    if let Some(hit) = pick(synced, id) {
+        return hit;
+    }
+
+    // 2. Explicit alias -> exact entry in the SAME union (no chains, no fuzzy).
+    if let Some(target) = aliases.get(id) {
+        if let Some(hit) = pick(synced, target) {
+            return hit;
+        }
+    }
+
+    PriceLookup::Unpriceable
 }
 
-/// Source-selected price lookup (STUB).
+/// Source-selected price lookup: resolve the active source per `cfg`, then look
+/// `id` up in the per-id union of that source and the bundled table.
+///
+/// One-shot convenience over [`select_synced`] + [`lookup_in`]; it performs one
+/// cache read PER CALL, so a caller resolving many ids should hoist the two
+/// steps itself.
 #[allow(dead_code)]
 pub fn lookup_with_source(
     id: &str,
     aliases: &HashMap<String, String>,
-    _cfg: &PricingConfig,
+    cfg: &PricingConfig,
 ) -> PriceLookup {
-    lookup(id, aliases)
+    lookup_in(id, aliases, select_synced(cfg).as_ref())
 }
 
 /// Gate a matched entry through [`PriceEntry::is_valid`] (LOW-7).
 #[allow(dead_code)]
-fn gate(entry: &'static PriceEntry) -> PriceLookup {
+fn gate(entry: &PriceEntry) -> PriceLookup {
     if entry.is_valid() {
-        PriceLookup::Priced(entry)
+        // Copy out: a synced entry is borrowed from a short-lived cache.
+        PriceLookup::Priced(*entry)
     } else {
         PriceLookup::Unpriceable
     }
@@ -255,17 +338,11 @@ where
     // aborting the whole document.
     let value = toml::Value::deserialize(deserializer)?;
     match PricingConfig::deserialize(value) {
-        Ok(cfg) => {
-            if cfg.source == PricingSource::Synced {
-                // Accepted by the enum but not yet wired: the synced cache lands
-                // in Phase 11. Say so rather than silently serving bundled
-                // prices under a `synced` label (10-REVIEW-CODEX.md MEDIUM 4).
-                log::warn!(
-                    "[pricing] source = \"synced\" is not implemented yet; using the bundled table"
-                );
-            }
-            Ok(cfg)
-        }
+        // `source = "synced"` is WIRED as of Phase 11 (`select_synced`), so the
+        // "not implemented yet" warning that stood here is gone: emitting it now
+        // would be the very thing it guarded against — telling the user
+        // something untrue about which table priced their session.
+        Ok(cfg) => Ok(cfg),
         Err(e) => {
             // `toml` errors are multi-line (message + source span); flatten so
             // the warning stays one readable line.
@@ -297,11 +374,12 @@ pub enum PricingSource {
     Auto,
     /// The compiled-in bundled table (this phase).
     Bundled,
-    /// A synced cache (reserved for Phase 11).
+    /// The cache published by `statusline ant sync-pricing`.
     ///
-    /// Accepted by the parser but **not yet implemented**: until Phase 11 lands
-    /// the synced cache, selecting it logs a warning and serves the bundled
-    /// table (10-REVIEW-CODEX.md MEDIUM 4).
+    /// An explicit opt-out of staleness demotion: the cache is used regardless
+    /// of its age (D-08). It still UNIONS with the bundled table per id, and a
+    /// missing/corrupt cache still degrades silently to the bundle, so choosing
+    /// `synced` can never leave a model unpriced that `bundled` would price.
     Synced,
 }
 
@@ -488,7 +566,7 @@ mod tests {
 
     // ---- Task 2: lookup + alias + strict enum + config + static-scan guard ----
 
-    fn priced(l: PriceLookup) -> &'static PriceEntry {
+    fn priced(l: PriceLookup) -> PriceEntry {
         match l {
             PriceLookup::Priced(e) => e,
             PriceLookup::Unpriceable => panic!("expected Priced, got Unpriceable"),

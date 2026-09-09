@@ -1443,7 +1443,7 @@ mod api_equiv_cost_tests {
     }
 
     fn priced() -> PriceLookup {
-        PriceLookup::Priced(opus_entry())
+        PriceLookup::Priced(*opus_entry())
     }
 
     fn tokens(
