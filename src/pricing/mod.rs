@@ -186,6 +186,40 @@ pub fn lookup(id: &str, aliases: &HashMap<String, String>) -> PriceLookup {
     PriceLookup::Unpriceable
 }
 
+/// Default freshness window for a synced price cache under
+/// [`PricingSource::Auto`] (D-05).
+pub const DEFAULT_PRICE_MAX_AGE: &str = "30d";
+
+// --- Plan 11-02 (RED): source-selection seam. Stubs only: these compile and
+// delegate to the bundled-only `lookup`, so every synced/union/staleness test
+// below FAILS until the real selection lands in the next commit.
+
+/// Select the synced price map that is active for `cfg` (STUB).
+#[allow(dead_code)]
+pub fn select_synced(_cfg: &PricingConfig) -> Option<cache::PriceCache> {
+    None
+}
+
+/// Look `id` up in the per-id union of `synced` and the bundled table (STUB).
+#[allow(dead_code)]
+pub fn lookup_in(
+    id: &str,
+    aliases: &HashMap<String, String>,
+    _synced: Option<&cache::PriceCache>,
+) -> PriceLookup {
+    lookup(id, aliases)
+}
+
+/// Source-selected price lookup (STUB).
+#[allow(dead_code)]
+pub fn lookup_with_source(
+    id: &str,
+    aliases: &HashMap<String, String>,
+    _cfg: &PricingConfig,
+) -> PriceLookup {
+    lookup(id, aliases)
+}
+
 /// Gate a matched entry through [`PriceEntry::is_valid`] (LOW-7).
 #[allow(dead_code)]
 fn gate(entry: &'static PriceEntry) -> PriceLookup {
@@ -285,6 +319,16 @@ pub struct PricingConfig {
     pub aliases: HashMap<String, String>,
     /// Pricing source selector (strict enum, default [`PricingSource::Auto`]).
     pub source: PricingSource,
+    /// Freshness window for a SYNCED price cache under
+    /// [`PricingSource::Auto`], as a single-unit duration
+    /// (`s`/`m`/`h`/`d` — parsed by [`crate::ant::duration::parse_max_age`]).
+    ///
+    /// A synced cache older than this is DEMOTED to the bundled table (D-05).
+    /// Ignored entirely under [`PricingSource::Bundled`] (no cache is read) and
+    /// under [`PricingSource::Synced`] (the user has explicitly opted out of
+    /// staleness demotion — D-08). An unparseable value behaves exactly like
+    /// the default window rather than disabling demotion.
+    pub max_age: String,
 }
 
 // Manual Default is the project idiom for a config section (mirrors `AntConfig`):
@@ -296,6 +340,7 @@ impl Default for PricingConfig {
         Self {
             aliases: HashMap::new(),
             source: PricingSource::Auto,
+            max_age: DEFAULT_PRICE_MAX_AGE.to_string(),
         }
     }
 }
@@ -666,6 +711,404 @@ source = "buntled"
         let cfg: PricingConfig = toml::from_str("").expect("empty toml parses");
         assert!(cfg.aliases.is_empty());
         assert_eq!(cfg.source, PricingSource::Auto);
+    }
+
+    // ---------------------------------------------------------------------
+    // Plan 11-02: SOURCE SELECTION (D-05/D-06/D-07/D-08) + per-id union
+    // ---------------------------------------------------------------------
+
+    use crate::pricing::cache::{
+        price_cache_path, write_price_cache, PriceCache, PRICE_CACHE_SCHEMA_VERSION,
+    };
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    /// Point the price-cache resolver at a throwaway root. `dirs::cache_dir()`
+    /// honors `XDG_CACHE_HOME` on Linux and `$HOME/Library/Caches` on macOS, so
+    /// BOTH are redirected (mirrors `pricing::cache`'s own test isolation). The
+    /// returned `TempDir` must be held for the whole test.
+    fn isolate() -> TempDir {
+        let tmp = TempDir::new().expect("temp dir");
+        std::env::set_var("HOME", tmp.path());
+        std::env::set_var("XDG_CACHE_HOME", tmp.path().join("cache"));
+        if let Ok(p) = price_cache_path() {
+            let _ = std::fs::remove_file(&p);
+        }
+        tmp
+    }
+
+    /// The synced `claude-opus-4-8` input rate is deliberately DOUBLE the
+    /// bundled one, so "which source answered?" is observable from the returned
+    /// rate alone — no mocking required.
+    const SYNCED_OPUS_INPUT: f64 = 1e-05;
+    /// A synced-ONLY id: absent from the bundled table, so it can only resolve
+    /// when the synced source is active.
+    const SYNCED_ONLY_ID: &str = "claude-brand-new-9";
+    const SYNCED_ONLY_INPUT: f64 = 3e-06;
+
+    /// Build a synced cache whose `fetched_at` is `age` in the past. A NEGATIVE
+    /// `age` puts `fetched_at` in the FUTURE (clock skew, D-07).
+    fn synced_cache(age: chrono::Duration) -> PriceCache {
+        let mut prices = HashMap::new();
+        prices.insert(
+            "claude-opus-4-8".to_string(),
+            PriceEntry {
+                input: SYNCED_OPUS_INPUT,
+                output: 5e-05,
+                cache_creation: 1.25e-05,
+                cache_read: 1e-06,
+                cache_creation_1h: Some(2e-05),
+            },
+        );
+        prices.insert(
+            SYNCED_ONLY_ID.to_string(),
+            PriceEntry {
+                input: SYNCED_ONLY_INPUT,
+                output: 1.5e-05,
+                cache_creation: 3.75e-06,
+                cache_read: 3e-07,
+                cache_creation_1h: None,
+            },
+        );
+        PriceCache {
+            schema_version: PRICE_CACHE_SCHEMA_VERSION,
+            fetched_at: chrono::Utc::now() - age,
+            source: "https://example.invalid/prices.json".to_string(),
+            version: "feedfacecafebeef".to_string(),
+            prices,
+        }
+    }
+
+    fn plant(age: chrono::Duration) {
+        write_price_cache(&synced_cache(age)).expect("plant synced cache");
+    }
+
+    fn cfg_for(source: PricingSource) -> PricingConfig {
+        PricingConfig {
+            source,
+            ..PricingConfig::default()
+        }
+    }
+
+    /// Extract the input rate a lookup resolved to. Written against the FIELD
+    /// (not the variant payload's type) so it compiles whether `Priced` borrows
+    /// or owns its entry.
+    fn input_rate(l: PriceLookup) -> f64 {
+        match l {
+            PriceLookup::Priced(e) => e.input,
+            PriceLookup::Unpriceable => panic!("expected Priced, got Unpriceable"),
+        }
+    }
+
+    fn bundled_input(id: &str) -> f64 {
+        table()
+            .prices
+            .get(id)
+            .unwrap_or_else(|| panic!("bundled table must carry {id}"))
+            .input
+    }
+
+    #[test]
+    fn pricing_config_default_max_age_is_the_documented_window() {
+        assert_eq!(
+            PricingConfig::default().max_age,
+            "30d",
+            "an absent [pricing] section must keep the documented 30d window"
+        );
+        // The absent-config surface must stay otherwise unchanged (Pitfall 3).
+        let cfg: PricingConfig = toml::from_str("").expect("empty toml parses");
+        assert_eq!(cfg.max_age, "30d");
+        assert_eq!(cfg.source, PricingSource::Auto);
+        assert!(cfg.aliases.is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn source_bundled_ignores_even_a_fresh_synced_cache() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        let cfg = cfg_for(PricingSource::Bundled);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            bundled_input("claude-opus-4-8"),
+            "source=bundled must serve the bundled rate"
+        );
+        assert_eq!(
+            lookup_with_source(SYNCED_ONLY_ID, &HashMap::new(), &cfg),
+            PriceLookup::Unpriceable,
+            "source=bundled must not see synced-only ids"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_synced_prefers_the_synced_rate_and_adds_synced_only_ids() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        let cfg = cfg_for(PricingSource::Synced);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            SYNCED_OPUS_INPUT,
+            "a synced row must win over the bundled row for the same id"
+        );
+        assert_eq!(
+            input_rate(lookup_with_source(SYNCED_ONLY_ID, &HashMap::new(), &cfg)),
+            SYNCED_ONLY_INPUT,
+            "a synced-only id must price (a refresh ADDS coverage)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_synced_ignores_staleness_d08() {
+        let _tmp = isolate();
+        plant(chrono::Duration::days(365));
+        let cfg = cfg_for(PricingSource::Synced);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            SYNCED_OPUS_INPUT,
+            "source=synced is an explicit opt-out of staleness demotion (D-08)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_synced_with_a_missing_cache_degrades_to_the_bundle() {
+        let _tmp = isolate(); // nothing planted
+        let cfg = cfg_for(PricingSource::Synced);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            bundled_input("claude-opus-4-8"),
+            "a missing cache must degrade silently, never blank the render"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_synced_with_a_corrupt_cache_degrades_to_the_bundle() {
+        let _tmp = isolate();
+        crate::ant::cache::ensure_cache_dir().expect("mkdir");
+        let path = price_cache_path().expect("path");
+        std::fs::write(&path, "{ not json at all ]").expect("write garbage");
+        let cfg = cfg_for(PricingSource::Synced);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            bundled_input("claude-opus-4-8"),
+            "a corrupt cache must degrade silently (T-11-02)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_auto_prefers_a_fresh_synced_cache() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        let cfg = cfg_for(PricingSource::Auto);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            SYNCED_OPUS_INPUT
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_auto_demotes_a_stale_synced_cache_to_the_bundle() {
+        let _tmp = isolate();
+        plant(chrono::Duration::days(31)); // past the 30d default window
+        let cfg = cfg_for(PricingSource::Auto);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            bundled_input("claude-opus-4-8"),
+            "auto must demote a stale cache (D-05)"
+        );
+        assert_eq!(
+            lookup_with_source(SYNCED_ONLY_ID, &HashMap::new(), &cfg),
+            PriceLookup::Unpriceable,
+            "a demoted cache contributes NO ids at all"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn source_auto_treats_a_future_dated_cache_as_fresh_d07() {
+        let _tmp = isolate();
+        // fetched_at 10 years in the FUTURE (clock skew): negative age.
+        plant(chrono::Duration::days(-3650));
+        let cfg = cfg_for(PricingSource::Auto);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            SYNCED_OPUS_INPUT,
+            "a negative age clamps to zero and counts as fresh (D-07)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn per_id_union_the_bundle_fills_every_gap_a_refresh_leaves() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        let cfg = cfg_for(PricingSource::Auto);
+        // A bundle-only id the two-row synced cache omits must STILL price.
+        assert_eq!(
+            input_rate(lookup_with_source("claude-sonnet-5", &HashMap::new(), &cfg)),
+            bundled_input("claude-sonnet-5"),
+            "a bundle-only id must survive a synced cache (D-06)"
+        );
+        // Coverage can only GROW: every bundled id still resolves.
+        for id in table().prices.keys() {
+            assert_ne!(
+                lookup_with_source(id, &HashMap::new(), &cfg),
+                PriceLookup::Unpriceable,
+                "the synced cache dropped bundled coverage for {id}"
+            );
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn an_unusable_synced_row_falls_back_to_the_bundle_not_to_unknown() {
+        let _tmp = isolate();
+        let mut c = synced_cache(chrono::Duration::minutes(1));
+        c.prices.insert(
+            "claude-opus-4-8".to_string(),
+            PriceEntry {
+                input: 0.0,
+                output: 0.0,
+                cache_creation: 0.0,
+                cache_read: 0.0,
+                cache_creation_1h: None,
+            },
+        );
+        write_price_cache(&c).expect("plant");
+        let cfg = cfg_for(PricingSource::Auto);
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            bundled_input("claude-opus-4-8"),
+            "an unusable synced row must not drop coverage the bundle ships (D-06)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn exact_match_only_holds_under_every_source_no_fuzzy() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        for source in [
+            PricingSource::Auto,
+            PricingSource::Bundled,
+            PricingSource::Synced,
+        ] {
+            let cfg = cfg_for(source);
+            for id in [
+                "totally-unknown-model",
+                "claude-opus",              // prefix of a bundled id
+                "claude-brand-new",         // prefix of the synced-only id
+                "claude-brand-new-9-turbo", // extension of the synced-only id
+                "CLAUDE-BRAND-NEW-9",       // case variant
+            ] {
+                assert_eq!(
+                    lookup_with_source(id, &HashMap::new(), &cfg),
+                    PriceLookup::Unpriceable,
+                    "`{id}` must not fuzzy-match under {source:?} (SC3)"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn aliases_resolve_only_to_an_exact_entry_in_the_active_union() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        let mut aliases = HashMap::new();
+        aliases.insert("my-proxy".to_string(), SYNCED_ONLY_ID.to_string());
+        assert_eq!(
+            input_rate(lookup_with_source(
+                "my-proxy",
+                &aliases,
+                &cfg_for(PricingSource::Auto)
+            )),
+            SYNCED_ONLY_INPUT,
+            "an alias must be able to target a synced-only id"
+        );
+        assert_eq!(
+            lookup_with_source("my-proxy", &aliases, &cfg_for(PricingSource::Bundled)),
+            PriceLookup::Unpriceable,
+            "the same alias target does not exist in the bundle-only union"
+        );
+        // No chains, no invention: an alias to nothing stays unpriceable.
+        let mut dangling = HashMap::new();
+        dangling.insert("x".to_string(), "not-a-real-id".to_string());
+        assert_eq!(
+            lookup_with_source("x", &dangling, &cfg_for(PricingSource::Auto)),
+            PriceLookup::Unpriceable
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_unparseable_max_age_behaves_like_the_default_window() {
+        let _tmp = isolate();
+        plant(chrono::Duration::days(31));
+        let cfg = PricingConfig {
+            source: PricingSource::Auto,
+            max_age: "banana".to_string(),
+            ..PricingConfig::default()
+        };
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            bundled_input("claude-opus-4-8"),
+            "a bad max_age must not silently DISABLE staleness demotion"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_configured_max_age_widens_the_freshness_window() {
+        let _tmp = isolate();
+        plant(chrono::Duration::days(31));
+        let cfg = PricingConfig {
+            source: PricingSource::Auto,
+            max_age: "90d".to_string(),
+            ..PricingConfig::default()
+        };
+        assert_eq!(
+            input_rate(lookup_with_source("claude-opus-4-8", &HashMap::new(), &cfg)),
+            SYNCED_OPUS_INPUT
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn lookup_delegates_to_source_selection_with_the_default_config() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        assert_eq!(
+            input_rate(lookup("claude-opus-4-8", &HashMap::new())),
+            SYNCED_OPUS_INPUT,
+            "the 2-arg entry point must route through the default Auto selection"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn lookup_in_shares_one_resolved_source_across_many_ids() {
+        let _tmp = isolate();
+        plant(chrono::Duration::minutes(1));
+        let synced = select_synced(&cfg_for(PricingSource::Auto));
+        assert!(
+            synced.is_some(),
+            "a fresh cache must be selected under auto"
+        );
+        // The hoisted form (used by the per-model breakdown) must agree with the
+        // one-shot form (used by the headline) for BOTH a synced and a bundled id.
+        for id in ["claude-opus-4-8", "claude-sonnet-5", SYNCED_ONLY_ID] {
+            assert_eq!(
+                lookup_in(id, &HashMap::new(), synced.as_ref()),
+                lookup_with_source(id, &HashMap::new(), &cfg_for(PricingSource::Auto)),
+                "headline and breakdown must price `{id}` identically (Pitfall 6)"
+            );
+        }
     }
 
     #[test]
