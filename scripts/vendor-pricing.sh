@@ -42,12 +42,16 @@
 #     documented, deterministic rate from FALLBACK_RATES so the vendored table
 #     stays stable and complete. Upstream drift is surfaced via the scheduled
 #     Action's review PR (a diff), never silently dropped.
-#   * claude-opus-4-8 reconciliation. This is the canonical short id the binary's
-#     Model layer emits/documents (required by a Plan 01 test). It is keyed to the
-#     LiteLLM-verified Opus-4 family rates (identical to claude-opus-4-20250514),
-#     per the Plan 01 HIGH-3 decision — a verified rate applied to the codebase's
-#     own canonical id, NOT an invented value. It is deliberately NOT sourced from
-#     upstream's own (differing) `claude-opus-4-8` row.
+#   * NO cross-model reconciliation. Every allow-listed id is sourced from its
+#     OWN upstream row. The Plan 01 HIGH-3 decision keyed `claude-opus-4-8` to the
+#     Opus-4 family rates (claude-opus-4-20250514) on the assumption that the short
+#     id was a family alias. It is not: Opus 4.8 is a distinct, cheaper model
+#     ($5/$25 per MTok vs Opus 4.0's $15/$75), so that mapping overstated its cost
+#     by exactly 3x on every dimension. Sourcing an id's rates from a DIFFERENT
+#     model's row is a hidden cross-model alias users cannot see or override, and
+#     it violates the exact-match-only contract (PRICE-05). Reverted 2026-09-09
+#     after external review; verified against upstream LiteLLM and Anthropic's
+#     published list price.
 #   * Canonical serialization via Python. The Plan 01 table was emitted by
 #     Python json.dumps (lowercase-e shortest floats, fixed top-level key order,
 #     2-space indent, trailing newline). jq's number printer differs, which would
@@ -86,15 +90,6 @@ ALLOWLIST=(
 # macOS ships bash 3.2. To stay portable across local dev and CI runners we use
 # `case`-based lookup functions instead of associative arrays.
 
-# claude-opus-4-8 is reconciled to this canonical id's rates (Plan 01 HIGH-3).
-# Echo the upstream key whose rates supply $1, or $1 itself if not reconciled.
-reconcile_from() {
-    case "$1" in
-        claude-opus-4-8) echo "claude-opus-4-20250514" ;;
-        *) echo "$1" ;;
-    esac
-}
-
 # Deterministic fallback rates for ids that may be absent from a given upstream
 # snapshot (codeburn-style hardcoded Claude fallbacks). Values are the
 # LiteLLM-verified per-token rates from the Plan 01 snapshot. Echo
@@ -109,6 +104,7 @@ fallback_rates() {
         claude-3-opus-20240229)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06" ;;
         claude-opus-4-1-20250805)   echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06" ;;
         claude-opus-4-20250514)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06" ;;
+        claude-opus-4-8)            echo "5e-06 2.5e-05 6.25e-06 5e-07" ;;
         claude-sonnet-4-20250514)   echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
         claude-sonnet-4-5-20250929) echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
         *) echo "" ;;
@@ -165,8 +161,8 @@ build_prices_map() {
     local id src rates input output cc cr
 
     for id in "${ALLOWLIST[@]}"; do
-        # Resolve which upstream key supplies this id's rates (reconciliation).
-        src="$(reconcile_from "$id")"
+        # Each id is sourced from its OWN upstream row — never another model's.
+        src="$id"
 
         # Try upstream first; require all four rates present and numeric.
         rates="$(jq -r --arg k "$src" '

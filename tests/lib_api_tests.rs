@@ -389,8 +389,8 @@ fn render_with_config(config_toml: &str, json: &str) -> String {
 }
 
 /// A payload carrying `context_window.current_usage` token counts and a model id.
-/// input 100k -> $1.50, output 10k -> $0.75, cache_creation 20k -> $0.37,
-/// cache_read 200k -> $0.30, total = $2.92 with the bundled `claude-opus-4-8` row.
+/// input 100k -> $0.50, output 10k -> $0.25, cache_creation 20k -> $0.12,
+/// cache_read 200k -> $0.10, total = $0.97 with the bundled `claude-opus-4-8` row.
 fn token_payload(model_id: &str) -> String {
     format!(
         r#"{{"workspace":{{"current_dir":"/tmp"}},"model":{{"id":"{model_id}"}},
@@ -408,7 +408,7 @@ fn api_equiv_cost_renders_dollar_via_library() {
         &token_payload("claude-opus-4-8"),
     );
     assert!(
-        out.contains("$2.92"),
+        out.contains("$0.97"),
         "library render of {{api_equiv_cost}} must surface the additive total, got: {out:?}"
     );
 }
@@ -421,7 +421,7 @@ fn api_equiv_cost_labeled_renders_marker_via_library() {
         &token_payload("claude-opus-4-8"),
     );
     assert!(
-        out.contains("API-equiv") && out.contains("$2.92"),
+        out.contains("API-equiv") && out.contains("$0.97"),
         "{{api_equiv_cost_labeled}} must carry the API-equiv marker + figure, got: {out:?}"
     );
 }
@@ -473,7 +473,7 @@ fn pricing_independent_of_ant_disabled() {
         &token_payload("claude-opus-4-8"),
     );
     assert!(
-        out.contains("$2.92"),
+        out.contains("$0.97"),
         "pricing must render with [ant] disabled (D-11), got: {out:?}"
     );
 }
@@ -490,7 +490,7 @@ fn pricing_aliases_resolve_through_render_path() {
         &token_payload("my-proxy-opus"),
     );
     assert!(
-        out.contains("$2.92"),
+        out.contains("$0.97"),
         "a [pricing.aliases] proxy id must render the aliased price, got: {out:?}"
     );
 }

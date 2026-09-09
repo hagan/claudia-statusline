@@ -243,6 +243,45 @@ mod tests {
         );
     }
 
+    /// Pins the bundled `claude-opus-4-8` row to Anthropic's published list price.
+    ///
+    /// Regression guard for the Phase 10 mispricing found in external review
+    /// (10-REVIEW-CODEX.md, CRITICAL 1): `scripts/vendor-pricing.sh` sourced this
+    /// id's rates from `claude-opus-4-20250514` on the assumption that the short id
+    /// was an Opus-4 family alias, which overstated every dimension by exactly 3x.
+    /// Because the unit-test oracle hand-copied the same wrong rates, the whole
+    /// suite passed while the shipped table was wrong. This test breaks that loop by
+    /// asserting the EMBEDDED table against externally published values rather than
+    /// against another in-repo constant.
+    #[test]
+    fn bundled_opus_4_8_matches_published_rates() {
+        let e = table()
+            .prices
+            .get("claude-opus-4-8")
+            .expect("bundled table must carry claude-opus-4-8");
+        // Anthropic list price: $5.00 / $25.00 per MTok, 5m cache write at 1.25x
+        // input, cache read at 0.1x input. Cross-checked against LiteLLM upstream.
+        assert_eq!(e.input, 5e-06, "Opus 4.8 input rate is $5.00/MTok");
+        assert_eq!(e.output, 2.5e-05, "Opus 4.8 output rate is $25.00/MTok");
+        assert_eq!(
+            e.cache_creation, 6.25e-06,
+            "Opus 4.8 5m cache-write rate is $6.25/MTok"
+        );
+        assert_eq!(
+            e.cache_read, 5e-07,
+            "Opus 4.8 cache-read rate is $0.50/MTok"
+        );
+        // Opus 4.8 is a DISTINCT, cheaper model than Opus 4.0 — never re-key it.
+        let opus_4 = table()
+            .prices
+            .get("claude-opus-4-20250514")
+            .expect("bundled table must carry claude-opus-4-20250514");
+        assert_ne!(
+            e.input, opus_4.input,
+            "claude-opus-4-8 must NOT be sourced from the Opus 4.0 row"
+        );
+    }
+
     #[test]
     fn embedded_json_carries_mit_attribution_and_metadata() {
         assert!(

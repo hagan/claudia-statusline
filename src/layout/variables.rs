@@ -1125,7 +1125,8 @@ impl VariableBuilder {
                         PriceLookup::Priced(e) => Some(
                             (tb.uncached_input as f64) * e.input
                                 + (tb.cache_read_input as f64) * e.cache_read
-                                + (tb.cache_creation_1h.saturating_add(tb.cache_creation_5m) as f64)
+                                + (tb.cache_creation_1h.saturating_add(tb.cache_creation_5m)
+                                    as f64)
                                     * e.cache_creation
                                 + (tb.output as f64) * e.output,
                         ),
@@ -1193,10 +1194,14 @@ impl VariableBuilder {
                     .insert("api_equiv_cost_input".to_string(), fmt(Some(input)));
                 self.variables
                     .insert("api_equiv_cost_output".to_string(), fmt(Some(output)));
-                self.variables
-                    .insert("api_equiv_cost_cache_write".to_string(), fmt(Some(cache_write)));
-                self.variables
-                    .insert("api_equiv_cost_cache_read".to_string(), fmt(Some(cache_read)));
+                self.variables.insert(
+                    "api_equiv_cost_cache_write".to_string(),
+                    fmt(Some(cache_write)),
+                );
+                self.variables.insert(
+                    "api_equiv_cost_cache_read".to_string(),
+                    fmt(Some(cache_read)),
+                );
             }
             // Unpriceable OR no model resolved: render the SHARED `unknown` marker
             // consistently across every var (D-13, review MEDIUM-4) — never $0.00.
@@ -1361,12 +1366,15 @@ mod api_equiv_cost_tests {
 
     // A stable opus-like entry mirroring the bundled `claude-opus-4-8` rates so the
     // arithmetic in these tests is deterministic and independent of the live table.
+    // These are Opus 4.8's real published rates ($5/$25 per MTok). They are pinned
+    // against the embedded table by `pricing::bundled_opus_4_8_matches_published_rates`
+    // so this oracle can never drift back into agreeing with a mispriced table.
     fn opus_entry() -> &'static PriceEntry {
         static E: PriceEntry = PriceEntry {
-            input: 1.5e-05,
-            output: 7.5e-05,
-            cache_creation: 1.875e-05,
-            cache_read: 1.5e-06,
+            input: 5e-06,
+            output: 2.5e-05,
+            cache_creation: 6.25e-06,
+            cache_read: 5e-07,
         };
         &E
     }
@@ -1391,9 +1399,9 @@ mod api_equiv_cost_tests {
 
     #[test]
     fn additive_sum_formats_headline_dollar() {
-        // input 100k -> $1.50, output 10k -> $0.75, cache_creation 20k -> $0.375
-        // (-> "$0.37" under f64 round-to-even), cache_read 200k -> $0.30.
-        // Total = 2.925 -> "$2.92" (f64 representation rounds down).
+        // input 100k -> $0.50, output 10k -> $0.25, cache_creation 20k -> $0.125
+        // (-> "$0.12" under f64 round-to-even), cache_read 200k -> $0.10.
+        // Total = 0.975 -> "$0.97" (f64 representation rounds down).
         let vars = VariableBuilder::new()
             .api_equiv_cost(
                 Some(priced()),
@@ -1404,13 +1412,16 @@ mod api_equiv_cost_tests {
                 "",
             )
             .build();
-        assert_eq!(vars.get("api_equiv_cost").map(String::as_str), Some("$2.92"));
+        assert_eq!(
+            vars.get("api_equiv_cost").map(String::as_str),
+            Some("$0.97")
+        );
     }
 
     #[test]
     fn cache_read_priced_on_own_rate_not_input() {
-        // 200k cache_read on cache_read rate (1.5e-6) = $0.30, NOT input rate
-        // (1.5e-5 -> $3.00). SC4: cache-read never collapsed into input.
+        // 200k cache_read on cache_read rate (5e-7) = $0.10, NOT input rate
+        // (5e-6 -> $1.00). SC4: cache-read never collapsed into input.
         let vars = VariableBuilder::new()
             .api_equiv_cost(
                 Some(priced()),
@@ -1423,11 +1434,11 @@ mod api_equiv_cost_tests {
             .build();
         assert_eq!(
             vars.get("api_equiv_cost_cache_read").map(String::as_str),
-            Some("$0.30")
+            Some("$0.10")
         );
         assert_ne!(
             vars.get("api_equiv_cost_cache_read").map(String::as_str),
-            Some("$3.00"),
+            Some("$1.00"),
             "cache-read must NOT be priced at the input rate"
         );
     }
@@ -1446,20 +1457,20 @@ mod api_equiv_cost_tests {
             .build();
         assert_eq!(
             vars.get("api_equiv_cost_input").map(String::as_str),
-            Some("$1.50")
+            Some("$0.50")
         );
         assert_eq!(
             vars.get("api_equiv_cost_output").map(String::as_str),
-            Some("$0.75")
+            Some("$0.25")
         );
-        // 20k * 1.875e-5 = 0.375 -> "$0.37" (f64 {:.2} round-to-even/representation).
+        // 20k * 6.25e-6 = 0.125 -> "$0.12" (f64 {:.2} round-to-even/representation).
         assert_eq!(
             vars.get("api_equiv_cost_cache_write").map(String::as_str),
-            Some("$0.37")
+            Some("$0.12")
         );
         assert_eq!(
             vars.get("api_equiv_cost_cache_read").map(String::as_str),
-            Some("$0.30")
+            Some("$0.10")
         );
         // Only the headline gets a labeled companion; per-type vars do not.
         assert!(vars.contains_key("api_equiv_cost_labeled"));
@@ -1487,7 +1498,7 @@ mod api_equiv_cost_tests {
             "labeled var must carry an unmistakable API-equivalent marker, got {labeled:?}"
         );
         assert!(
-            labeled.contains("$1.50"),
+            labeled.contains("$0.50"),
             "labeled var must carry the dollar figure, got {labeled:?}"
         );
     }
@@ -1532,11 +1543,14 @@ mod api_equiv_cost_tests {
                 "",
             )
             .build();
-        assert_eq!(vars.get("api_equiv_cost").map(String::as_str), Some("$0.75"));
+        assert_eq!(
+            vars.get("api_equiv_cost").map(String::as_str),
+            Some("$0.25")
+        );
         // Per-type var for output is present and priced.
         assert_eq!(
             vars.get("api_equiv_cost_output").map(String::as_str),
-            Some("$0.75")
+            Some("$0.25")
         );
     }
 
@@ -1629,7 +1643,10 @@ mod api_equiv_cost_tests {
             by_model.starts_with("claude-opus-4-8:$1.50"),
             "by_model must lead with the costliest model, got {by_model:?}"
         );
-        assert!(by_model.contains(' '), "must be space-joined, got {by_model:?}");
+        assert!(
+            by_model.contains(' '),
+            "must be space-joined, got {by_model:?}"
+        );
     }
 
     #[test]

@@ -1,8 +1,8 @@
 {
   "_license": "Pricing data derived from LiteLLM (BerriAI/litellm) model_prices_and_context_window.json, licensed under the MIT License. Copyright (c) 2023 Berri AI. See https://github.com/BerriAI/litellm/blob/main/LICENSE. Only the Claude (Anthropic) subset is vendored here; per-token costs are mapped to a slim schema (input/output/cache_creation/cache_read).",
   "source": "https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json",
-  "vendored_at": "2026-06-19",
-  "version": "2026-06-19-claude-subset-1",
+  "vendored_at": "2026-09-09",
+  "version": "2026-09-09-claude-subset-1",
   "prices": {
     "claude-3-5-haiku-20241022": {
       "cache_creation": 1e-06,
@@ -53,10 +53,10 @@
       "output": 7.5e-05
     },
     "claude-opus-4-8": {
-      "cache_creation": 1.875e-05,
-      "cache_read": 1.5e-06,
-      "input": 1.5e-05,
-      "output": 7.5e-05
+      "cache_creation": 6.25e-06,
+      "cache_read": 5e-07,
+      "input": 5e-06,
+      "output": 2.5e-05
     },
     "claude-sonnet-4-20250514": {
       "cache_creation": 3.75e-06,
