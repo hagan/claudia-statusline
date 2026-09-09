@@ -2220,3 +2220,44 @@ fn test_template_sanitizes_provider_values() {
         out2
     );
 }
+
+// ---------------------------------------------------------------------------
+// Plan 11-03 Task 2: AST-level variable-usage query (RV-L1)
+// ---------------------------------------------------------------------------
+//
+// These live here rather than in a `mod tests` inside `template.rs` because
+// `src/layout/tests.rs` IS this module's colocated test module (`src/layout/
+// mod.rs` declares it under `#[cfg(test)]`); `template.rs` has no test module of
+// its own.
+
+#[test]
+fn uses_variable_prefix_matches_a_templated_variable() {
+    let renderer = LayoutRenderer::with_format("{directory}|{api_equiv_cost_by_model}", "");
+    assert!(
+        renderer.uses_variable_prefix("api_equiv_cost"),
+        "a templated {{api_equiv_cost_by_model}} must match the `api_equiv_cost` prefix"
+    );
+}
+
+#[test]
+fn uses_variable_prefix_ignores_a_literal_mention() {
+    // The literal text appears, but NOT as a `{...}` placeholder: it is a
+    // mention, not a use. A raw-substring gate would wrongly report `true` here
+    // and make the render read `prices.json` for nothing (RV-L1).
+    let renderer = LayoutRenderer::with_format("{directory} api_equiv_cost is a variable", "");
+    assert!(
+        !renderer.uses_variable_prefix("api_equiv_cost"),
+        "a literal mention outside braces must NOT count as a use"
+    );
+}
+
+#[test]
+fn uses_variable_prefix_fails_open_on_an_unparseable_template() {
+    // `{if git}` with no `{endif}` fails to parse, so there is no AST to query.
+    let renderer = LayoutRenderer::with_format("{if git}{directory}", "");
+    assert!(
+        renderer.uses_variable_prefix("api_equiv_cost"),
+        "an unparseable template must FAIL OPEN: a parse failure may never \
+         silently blank a price the user templated"
+    );
+}

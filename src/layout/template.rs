@@ -485,6 +485,14 @@ impl LayoutRenderer {
         }
     }
 
+    /// STUB (RED gate): AST-level variable-usage query.
+    ///
+    /// Currently a RAW SUBSTRING check, which is the defect RV-L1 describes —
+    /// `uses_variable_prefix_ignores_a_literal_mention` fails against it.
+    pub fn uses_variable_prefix(&self, prefix: &str) -> bool {
+        self.template.contains(prefix)
+    }
+
     /// Check if the template uses a specific variable
     #[allow(dead_code)]
     pub fn uses_variable(&self, name: &str) -> bool {
