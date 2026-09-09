@@ -56,7 +56,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Current on-disk schema version for the price cache.
 ///
@@ -197,11 +197,16 @@ pub fn write_price_cache(cache: &PriceCache) -> Result<()> {
 
     let json = serde_json::to_string_pretty(cache)?;
 
-    let temp_path = path.with_extension("json.tmp");
+    let temp_path = temp_path_for(&path);
     fs::write(&temp_path, json)?;
     fs::rename(&temp_path, &path)?;
 
     Ok(())
+}
+
+/// The temp path [`write_price_cache`] publishes `prices.json` from.
+fn temp_path_for(path: &Path) -> PathBuf {
+    path.with_extension("json.tmp")
 }
 
 /// Read and validate the price cache, returning `None` on ANY failure.
@@ -532,6 +537,167 @@ mod tests {
         assert!(
             read_price_cache().is_none(),
             "a cache carrying more than MAX_PRICE_CACHE_ENTRIES rows must be rejected (RV-M2)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 11-04 Task 2: the publish path must survive genuinely overlapping
+    // writers and a crash (WR-01 / WR-02 / RV-H3 / RV-M7 / RV-M8).
+    // -----------------------------------------------------------------------
+
+    /// Every entry in the cache directory, as file-name strings.
+    fn cache_dir_entries() -> Vec<String> {
+        let path = price_cache_path().expect("path");
+        let dir = path.parent().expect("has parent");
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("cache dir readable")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    #[serial]
+    fn a_successful_write_leaves_no_temp_file() {
+        let _tmp = isolate();
+        write_price_cache(&sample_cache()).expect("write succeeds");
+        assert_eq!(
+            cache_dir_entries(),
+            vec!["prices.json".to_string()],
+            "a successful publish must leave exactly one file behind"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_failed_write_removes_its_temp_file() {
+        let _tmp = isolate();
+        crate::ant::cache::ensure_cache_dir().expect("mkdir");
+        let path = price_cache_path().expect("path");
+        // A DIRECTORY at the rename target makes `rename` fail after the temp
+        // file has already been written — the exact window that used to leak.
+        std::fs::create_dir_all(&path).expect("plant a directory at the target");
+
+        assert!(
+            write_price_cache(&sample_cache()).is_err(),
+            "renaming onto a directory must fail"
+        );
+        let stray: Vec<String> = cache_dir_entries()
+            .into_iter()
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "a failed publish must not leave a temp file behind, found {stray:?}"
+        );
+    }
+
+    #[test]
+    fn temp_names_are_unique_within_one_process() {
+        let path = PathBuf::from("/nonexistent/claudia-statusline/ant/prices.json");
+        let a = temp_path_for(&path);
+        let b = temp_path_for(&path);
+        assert_ne!(
+            a, b,
+            "two temp names produced back to back in the SAME process must differ; \
+             a PID-only name makes them equal (RV-M7)"
+        );
+    }
+
+    /// RV-H3: genuinely overlapping writers, not a proxy for them.
+    ///
+    /// FAILURE MODE (pre-fix): with a fixed temp name, two overlapping writers
+    /// share one `O_CREAT|O_TRUNC` handle and interleave their `write_all`
+    /// calls. The published file then either fails to parse
+    /// (`read_price_cache()` is `None`) or matches none of the N inputs — and
+    /// the loser's `rename` can fail outright because its temp file was already
+    /// renamed away.
+    #[test]
+    #[serial]
+    fn overlapping_writers_publish_exactly_one_complete_cache() {
+        const THREADS: usize = 6;
+        const ITERATIONS: usize = 40;
+        /// Enough rows that a serialized cache spans many write chunks, so an
+        /// interleaved publish is observable rather than a coin flip.
+        const ROWS: usize = 200;
+
+        let _tmp = isolate();
+        crate::ant::cache::ensure_cache_dir().expect("mkdir");
+
+        // Each thread owns a DISTINCT, individually identifiable payload: its
+        // `version` is its own index and its row ids are namespaced by it.
+        let payloads: Vec<PriceCache> = (0..THREADS)
+            .map(|t| {
+                let mut prices = HashMap::new();
+                for r in 0..ROWS {
+                    prices.insert(
+                        format!("claude-thread-{t}-row-{r:04}"),
+                        PriceEntry {
+                            input: 3e-06,
+                            output: 1.5e-05,
+                            cache_creation: 3.75e-06,
+                            cache_read: 3e-07,
+                            cache_creation_1h: None,
+                        },
+                    );
+                }
+                PriceCache {
+                    schema_version: PRICE_CACHE_SCHEMA_VERSION,
+                    fetched_at: Utc::now(),
+                    source: "https://example.invalid/model_prices.json".to_string(),
+                    version: t.to_string(),
+                    prices,
+                }
+            })
+            .collect();
+
+        let shared = std::sync::Arc::new(payloads);
+        let mut handles = Vec::new();
+        for t in 0..THREADS {
+            let payloads = std::sync::Arc::clone(&shared);
+            handles.push(std::thread::spawn(move || {
+                let mut failures = Vec::new();
+                for _ in 0..ITERATIONS {
+                    if let Err(e) = write_price_cache(&payloads[t]) {
+                        failures.push(e.to_string());
+                    }
+                }
+                failures
+            }));
+        }
+        let failures: Vec<String> = handles
+            .into_iter()
+            .flat_map(|h| h.join().expect("writer thread must not panic"))
+            .collect();
+        assert!(
+            failures.is_empty(),
+            "no writer may fail merely because another was publishing concurrently: {failures:?}"
+        );
+
+        let published = read_price_cache()
+            .expect("the published cache must parse — a torn publish yields None");
+        let idx: usize = published.version.parse().unwrap_or_else(|_| {
+            panic!(
+                "published version `{}` is not a thread index — the \
+                 file is a blend of two writers",
+                published.version
+            )
+        });
+        assert!(idx < THREADS, "version {idx} is not one of the N writers");
+        assert_eq!(
+            published.prices, shared[idx].prices,
+            "the published cache must be EXACTLY one writer's complete input"
+        );
+
+        let stray: Vec<String> = cache_dir_entries()
+            .into_iter()
+            .filter(|n| n.contains(".tmp"))
+            .collect();
+        assert!(
+            stray.is_empty(),
+            "no temp file may survive a concurrent publish storm, found {stray:?}"
         );
     }
 }
