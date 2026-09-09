@@ -21,3 +21,9 @@
 **/claudia-statusline/ant/
 **/claudia-statusline/ant/**
 **/claudia-statusline/ant/models.json
+
+# In-tree ant PRICE cache written by `ant sync-pricing` (PRICE-04, Phase 11).
+# Same in-tree hygiene scope as above. The synced price table carries no
+# credential field and the fetch that produces it is keyless by construction
+# (D-01), so this is tidiness rather than secret protection.
+**/claudia-statusline/ant/prices.json

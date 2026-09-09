@@ -436,8 +436,19 @@ fn assert_no_forbidden_in(rel: &str, source: &str) {
 
 #[test]
 fn structural_guard_no_spawn_or_socket_in_render_modules() {
-    // Whole-file scan for the pure render modules.
-    for rel in ["src/utils.rs", "src/display.rs", "src/lib.rs"] {
+    // Whole-file scan for the pure render modules. `src/pricing/mod.rs` and
+    // `src/pricing/cache.rs` are render-REACHABLE price sources (the bundled
+    // table and the Phase 11 synced cache), so they carry the same offline
+    // contract; the out-of-band `src/pricing/fetch.rs` is deliberately EXCLUDED
+    // (it is the one place price data may be fetched, and it never runs on the
+    // render path).
+    for rel in [
+        "src/utils.rs",
+        "src/display.rs",
+        "src/lib.rs",
+        "src/pricing/mod.rs",
+        "src/pricing/cache.rs",
+    ] {
         let source = read_src(rel);
         assert_no_forbidden_in(rel, &source);
     }

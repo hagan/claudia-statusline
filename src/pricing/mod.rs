@@ -23,6 +23,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
+/// Versioned atomic cache for the optional out-of-band `ant sync-pricing`
+/// refresh (PRICE-04, Phase 11). The reader is total and never touches the
+/// network or the filesystem beyond one read; see the module docs.
+pub mod cache;
+
 /// Per-token costs (USD) for one model. Four required additive dimensions plus
 /// an optional fifth (the 1-hour cache-write rate), all `f64`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
