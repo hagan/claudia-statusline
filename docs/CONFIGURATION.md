@@ -237,10 +237,19 @@ understated on that component.
 ```toml
 [pricing]
 # Where prices come from. Default: "auto".
-#   "auto"    - best available source at runtime
-#   "bundled" - the price table compiled into the binary
-#   "synced"  - a refreshed cache (not yet implemented; warns and uses bundled)
+#   "auto"    - use the cache written by `statusline ant sync-pricing` while it
+#               is fresher than max_age; otherwise the bundled table
+#   "bundled" - only the price table compiled into the binary; the cache is
+#               never even read
+#   "synced"  - the synced cache regardless of its age (you are opting out of
+#               staleness demotion)
 source = "auto"
+
+# How long a synced cache stays fresh under source = "auto".
+# Single-unit duration: s / m / h / d. Default: "30d".
+# Ignored under "bundled" and "synced". An unparseable value behaves like the
+# default rather than disabling demotion.
+max_age = "30d"
 
 # Map a model id your setup reports to an EXACT id in the price table.
 # Useful behind a proxy or gateway that rewrites model names.
@@ -251,7 +260,19 @@ source = "auto"
 Lookup is **exact-match only** — no fuzzy matching, no prefix matching, no
 normalization, and aliases do not chain. An alias whose target is not itself a
 table entry resolves to `unknown`. This is deliberate: a wrong price is worse than
-no price.
+no price. This holds identically for both sources.
+
+**A synced cache can only ever add or update prices.** Lookups run against the
+per-id union of the two sources: a synced row wins for the ids it covers, and the
+bundled table fills every gap it leaves — including when a synced row is
+unusable (zero or non-finite rates). A refresh therefore cannot make a model that
+used to price render `unknown`. A missing, corrupt or wrong-schema cache is
+silently ignored and the bundled table is used, so rendering never fails and
+never blanks because of the cache.
+
+Refresh the cache with `statusline ant sync-pricing` — an explicit, out-of-band,
+keyless command. **Rendering itself never touches the network** regardless of
+`source`: it only reads the cache file that command wrote.
 
 The bundled table is vendored from
 [LiteLLM](https://github.com/BerriAI/litellm) (MIT) by

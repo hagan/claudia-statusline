@@ -934,7 +934,16 @@ fn format_statusline_with_layout(
     // read, no spawn, no socket — D-08). With no token data the builder inserts
     // nothing (D-10), keeping the default render byte-identical (SC2). Resolution
     // is exact-match + [pricing.aliases] only (no fuzzy — PRICE-05/D-12).
-    let equiv_pricing = model_name.map(|m| crate::pricing::lookup(m, &full_config.pricing.aliases));
+    //
+    // Phase 11: the price SOURCE is selected from `[pricing]` (bundled / synced /
+    // auto + max_age). The WHOLE `PricingConfig` is threaded to the builder — not
+    // just its aliases — so the per-model breakdown resolves the same source as
+    // this headline and the two can never disagree about one model (Pitfall 6).
+    // `select_synced` collapses every cache failure to the bundled table, so this
+    // stays total, offline and byte-identical when no cache exists (D-16/SC2).
+    let equiv_pricing = model_name.map(|m| {
+        crate::pricing::lookup_with_source(m, &full_config.pricing.aliases, &full_config.pricing)
+    });
     let equiv_usage = extras
         .context_window
         .and_then(|cw| cw.current_usage.as_ref());
@@ -948,7 +957,7 @@ fn format_statusline_with_layout(
         equiv_pricing,
         equiv_tokens,
         api_usage_slice.as_ref(),
-        &full_config.pricing.aliases,
+        &full_config.pricing,
         &Colors::light_gray(),
         &reset,
     );

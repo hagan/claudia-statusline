@@ -1120,6 +1120,12 @@ impl VariableBuilder {
     /// unpriceable per-model entry renders `model:unknown` — never a fabricated
     /// `$0.00`.
     ///
+    /// `pricing_cfg` is the whole `[pricing]` section, not just its aliases: the
+    /// per-model breakdown must resolve the SAME price source (`bundled` /
+    /// `synced` / `auto` + `max_age`) that `display.rs` resolved for the headline,
+    /// or one render would show two different prices for one model (Pitfall 6).
+    /// The source is resolved ONCE here and shared across every row.
+    ///
     /// `pricing` is the resolved lookup outcome for the current payload model:
     /// `Some(Priced(_))` to price, `Some(Unpriceable)` for a known-but-unpriceable
     /// model, or `None` when no model id was available (also unpriceable). The
@@ -1131,7 +1137,7 @@ impl VariableBuilder {
         pricing: Option<crate::pricing::PriceLookup>,
         tokens: ApiEquivTokens,
         by_model: Option<&crate::ant::cache::UsageCache>,
-        aliases: &HashMap<String, String>,
+        pricing_cfg: &crate::pricing::PricingConfig,
         color: &str,
         reset: &str,
     ) -> Self {
@@ -1143,11 +1149,21 @@ impl VariableBuilder {
         // map), so a single unpriceable row renders `model:unknown` while its
         // priceable siblings still price (review MEDIUM-4).
         if let Some(slice) = by_model {
+            // Resolve the active price source ONCE for the whole breakdown, then
+            // reuse it for every model. Calling the one-shot
+            // `pricing::lookup_with_source` per model would re-read and re-parse
+            // the synced cache once PER ROW, and — because a concurrent
+            // `ant sync-pricing` swaps the file atomically mid-render — could
+            // price two models in the SAME line from two different snapshots.
+            // One read, one snapshot, and the same source the `display.rs`
+            // headline selected (Pitfall 6).
+            let synced = crate::pricing::select_synced(pricing_cfg);
+            let aliases = &pricing_cfg.aliases;
             let mut pairs: Vec<(String, Option<f64>)> = slice
                 .tokens_by_model
                 .iter()
                 .map(|(model, tb)| {
-                    let cost = match crate::pricing::lookup(model, aliases) {
+                    let cost = match crate::pricing::lookup_in(model, aliases, synced.as_ref()) {
                         // The two cache-creation TTLs are priced on their OWN
                         // rates: a 1-hour write costs ~1.6x a 5-minute one, so
                         // summing the token counts onto the 5-minute rate
@@ -1423,7 +1439,7 @@ mod api_usage_tests {
 mod api_equiv_cost_tests {
     use super::*;
     use crate::ant::cache::{TokenBreakdown, UsageCache, USAGE_CACHE_SCHEMA_VERSION};
-    use crate::pricing::{PriceEntry, PriceLookup};
+    use crate::pricing::{PriceEntry, PriceLookup, PricingConfig};
     use std::collections::HashMap;
 
     // A stable opus-like entry mirroring the bundled `claude-opus-4-8` rates so the
@@ -1470,7 +1486,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1490,7 +1506,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, None, None, Some(200_000)),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1513,7 +1529,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1547,7 +1563,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), None, None, None),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1573,7 +1589,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, None, None, None),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1604,7 +1620,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(None, Some(10_000), None, None),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1639,7 +1655,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1663,7 +1679,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(100_000), Some(10_000), Some(20_000), None),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1687,7 +1703,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(0), Some(10_000), None, None),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1711,7 +1727,7 @@ mod api_equiv_cost_tests {
                     lookup,
                     tokens(Some(100_000), Some(10_000), Some(20_000), Some(200_000)),
                     None,
-                    &HashMap::new(),
+                    &PricingConfig::default(),
                     "",
                     "",
                 )
@@ -1778,7 +1794,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1820,7 +1836,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1862,7 +1878,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1903,7 +1919,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1936,7 +1952,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -1958,7 +1974,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 None,
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
@@ -2000,7 +2016,7 @@ mod api_equiv_cost_tests {
                 Some(priced()),
                 tokens(Some(1), None, None, None),
                 Some(&slice),
-                &HashMap::new(),
+                &PricingConfig::default(),
                 "",
                 "",
             )
