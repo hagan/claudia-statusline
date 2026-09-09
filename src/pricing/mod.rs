@@ -340,6 +340,48 @@ mod tests {
     /// suite passed while the shipped table was wrong. This test breaks that loop by
     /// asserting the EMBEDDED table against externally published values rather than
     /// against another in-repo constant.
+    /// The table must price the models users are actually running.
+    ///
+    /// Regression guard for 10-VERIFICATION-INDEPENDENT.md N-1 (blocker): the
+    /// original frozen 11-id allow-list priced exactly TWO currently-relevant
+    /// models. Opus 5, Sonnet 5, Haiku 4.5, Opus 4.7/4.6/4.5, Sonnet 4.6 and the
+    /// Fable/Mythos families all rendered `unknown` — the bundled table failed
+    /// its own purpose as the default offline pricing source while every
+    /// structural check passed. The verification asked "are the rows we have
+    /// correct?" and never "are these the rows we need?".
+    ///
+    /// If this test fails because upstream retired an id, that is the alarm
+    /// working: decide deliberately whether to drop the id here, rather than
+    /// discovering the coverage hole from a user rendering `unknown`.
+    #[test]
+    fn bundled_table_prices_the_current_model_lineup() {
+        let t = table();
+        for id in [
+            "claude-opus-5",
+            "claude-opus-4-8",
+            "claude-opus-4-7",
+            "claude-sonnet-5",
+            "claude-sonnet-4-6",
+            "claude-haiku-4-5",
+            "claude-fable-5-1",
+        ] {
+            let e = t.prices.get(id).unwrap_or_else(|| {
+                panic!("current model `{id}` is not priced in the bundled table")
+            });
+            assert!(
+                e.is_valid(),
+                "current model `{id}` is present but its row is unpriceable"
+            );
+        }
+        // Coverage floor: the curated 11-id list was the defect. A table that
+        // shrinks back toward it is a regression, not a tidy-up.
+        assert!(
+            t.prices.len() >= 25,
+            "bundled table has only {} rows — upstream Claude coverage regressed",
+            t.prices.len()
+        );
+    }
+
     #[test]
     fn bundled_opus_4_8_matches_published_rates() {
         let e = table()

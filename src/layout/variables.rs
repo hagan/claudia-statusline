@@ -1670,7 +1670,7 @@ mod api_equiv_cost_tests {
         );
         // a cheaper priceable model so ordering by cost desc is observable.
         tokens.insert(
-            "claude-3-5-haiku-20241022".to_string(),
+            "claude-haiku-4-5".to_string(),
             TokenBreakdown {
                 uncached_input: 1_000,
                 ..Default::default()

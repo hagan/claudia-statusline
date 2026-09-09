@@ -32,16 +32,30 @@
 #   scripts/vendor-pricing.sh --help     # show this usage
 #
 # DESIGN NOTES (review HIGH-3 data-correctness):
-#   * Allow-list, not "all anthropic claude- entries". LiteLLM's `main` carries a
-#     drifting set (renamed/removed dated ids, speculative future ids like
-#     `claude-fable-5`). Blindly vendoring the live universe would (a) admit
-#     speculative ids and (b) make zero-diff impossible across upstream churn.
-#     We pin the canonical Claude id set established by Plan 01.
-#   * Hardcoded fallback rates (the codeburn pattern). If an allow-listed id is
-#     missing from the fetched upstream snapshot, the script falls back to a
-#     documented, deterministic rate from FALLBACK_RATES so the vendored table
-#     stays stable and complete. Upstream drift is surfaced via the scheduled
-#     Action's review PR (a diff), never silently dropped.
+#   * Vendor EVERY Claude model upstream carries; drop the ones it deletes.
+#     Selection is `litellm_provider == "anthropic"` AND a bare `claude-*` key
+#     AND all four required rates present and numeric. No curated allow-list.
+#
+#     The previous frozen allow-list (11 ids, pinned at Plan 01) was a defect,
+#     not a safety feature: it priced only TWO currently-relevant models while
+#     Opus 5, Sonnet 5, Haiku 4.5, Opus 4.7/4.6/4.5, Sonnet 4.6 and the Fable /
+#     Mythos families — all real, published, upstream-priced, and recognized by
+#     this binary's own model detection — rendered `unknown`. It also classified
+#     `claude-fable-5` as a "speculative id" to reject when it is a shipped
+#     model. Independent verification 2026-09-09 (10-VERIFICATION-INDEPENDENT.md
+#     N-1) graded that a blocker: the phase verified the rows it HAD and never
+#     asked whether they were the rows it NEEDED.
+#
+#     Provider-scoping to `anthropic` keeps Bedrock/Vertex duplicates
+#     (`claude-sonnet-4-5-20250929-v1:0`, `anthropic.claude-*`, `vertex_ai/...`)
+#     out — the statusline payload emits first-party ids.
+#   * NO hardcoded fallback rates. Every row is sourced from its own upstream row
+#     or it is not vendored at all. The former FALLBACK_RATES table meant 3 of 11
+#     rows were in-repo constants while the JSON declared a single upstream
+#     `source`, so the file could not demonstrate its own provenance and
+#     `--check` was tautological for those rows (N-2/N-3). A model upstream
+#     deletes now leaves the table, and the run REPORTS added/removed ids so the
+#     scheduled Action's review PR shows coverage changes explicitly.
 #   * NO cross-model reconciliation. Every allow-listed id is sourced from its
 #     OWN upstream row. The Plan 01 HIGH-3 decision keyed `claude-opus-4-8` to the
 #     Opus-4 family rates (claude-opus-4-20250514) on the assumption that the short
@@ -70,49 +84,9 @@ OUTPUT_FILE="${REPO_ROOT}/data/claude_prices.json"
 SOURCE_URL="https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json"
 LICENSE_STR="Pricing data derived from LiteLLM (BerriAI/litellm) model_prices_and_context_window.json, licensed under the MIT License. Copyright (c) 2023 Berri AI. See https://github.com/BerriAI/litellm/blob/main/LICENSE. Only the Claude (Anthropic) subset is vendored here; per-token costs are mapped to a slim schema (input/output/cache_creation/cache_read)."
 
-# Canonical Claude allow-list (the id set Plan 01 vendored). Keep CLAUDE-ONLY and
-# explicit — adding/removing an id is a deliberate, reviewable change.
-ALLOWLIST=(
-    "claude-3-5-haiku-20241022"
-    "claude-3-5-sonnet-20240620"
-    "claude-3-5-sonnet-20241022"
-    "claude-3-7-sonnet-20250219"
-    "claude-3-haiku-20240307"
-    "claude-3-opus-20240229"
-    "claude-opus-4-1-20250805"
-    "claude-opus-4-20250514"
-    "claude-opus-4-8"
-    "claude-sonnet-4-20250514"
-    "claude-sonnet-4-5-20250929"
-)
-
-# NOTE on portability: associative arrays (`declare -A`) require bash >= 4, but
-# macOS ships bash 3.2. To stay portable across local dev and CI runners we use
-# `case`-based lookup functions instead of associative arrays.
-
-# Deterministic fallback rates for ids that may be absent from a given upstream
-# snapshot (codeburn-style hardcoded Claude fallbacks). Values are the
-# LiteLLM-verified per-token rates from the Plan 01 snapshot. Echo
-# "input output cache_creation cache_read cache_creation_1h" for $1, or empty if
-# no fallback. The 5th value is the 1-HOUR cache-write rate: it is 2x the input
-# rate for every Claude row upstream publishes one for, so the fallback rows
-# follow that same rule rather than inventing a value.
-fallback_rates() {
-    case "$1" in
-        claude-3-5-haiku-20241022)  echo "8e-07 4e-06 1e-06 8e-08 1.6e-06" ;;
-        claude-3-5-sonnet-20240620) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
-        claude-3-5-sonnet-20241022) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
-        claude-3-7-sonnet-20250219) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
-        claude-3-haiku-20240307)    echo "2.5e-07 1.25e-06 3e-07 3e-08 5e-07" ;;
-        claude-3-opus-20240229)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06 3e-05" ;;
-        claude-opus-4-1-20250805)   echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06 3e-05" ;;
-        claude-opus-4-20250514)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06 3e-05" ;;
-        claude-opus-4-8)            echo "5e-06 2.5e-05 6.25e-06 5e-07 1e-05" ;;
-        claude-sonnet-4-20250514)   echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
-        claude-sonnet-4-5-20250929) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
-        *) echo "" ;;
-    esac
-}
+# Selection predicate for a vendored row (see DESIGN NOTES): a bare `claude-*`
+# key whose `litellm_provider` is `anthropic` and whose four required per-token
+# rates are all present and numeric. Applied inside jq in build_prices_map.
 
 # --- Usage -----------------------------------------------------------------
 
@@ -156,73 +130,75 @@ fetch_upstream() {
 }
 
 # Build a compact JSON prices map (as a single line) from an upstream snapshot.
-# For each allow-listed id: source rates from upstream (after reconciliation),
-# else fall back to FALLBACK_RATES. Emits {"<id>": {input,output,cache_creation,cache_read}, ...}.
+# Selects EVERY anthropic-provider bare `claude-*` row with all four required
+# rates, mapping each to the slim schema. `cache_creation_1h` is carried only
+# when upstream publishes `cache_creation_input_token_cost_above_1hr` for that
+# row; the binary falls back to the 5-minute rate when it is absent.
+# Emits {"<id>": {input,output,cache_creation,cache_read[,cache_creation_1h]}, ...}.
 build_prices_map() {
     local upstream="$1"
-    local entries=()
-    local id src rates input output cc cr cc1h
 
-    for id in "${ALLOWLIST[@]}"; do
-        # Each id is sourced from its OWN upstream row — never another model's.
-        src="$id"
+    jq -c '
+        [ to_entries[]
+          | select(.key | startswith("claude-"))
+          | select(.value | type == "object")
+          | select(.value.litellm_provider == "anthropic")
+          | select(
+              (.value.input_cost_per_token          | type == "number") and
+              (.value.output_cost_per_token         | type == "number") and
+              (.value.cache_creation_input_token_cost | type == "number") and
+              (.value.cache_read_input_token_cost   | type == "number"))
+          | { key: .key,
+              value: (
+                { input:          .value.input_cost_per_token,
+                  output:         .value.output_cost_per_token,
+                  cache_creation: .value.cache_creation_input_token_cost,
+                  cache_read:     .value.cache_read_input_token_cost }
+                + ( if (.value.cache_creation_input_token_cost_above_1hr | type == "number")
+                    then { cache_creation_1h: .value.cache_creation_input_token_cost_above_1hr }
+                    else {} end ))} ]
+        | from_entries
+    ' "${upstream}"
+}
 
-        # Try upstream first; require all four base rates present and numeric.
-        # The 1-hour cache-write rate is OPTIONAL: emitted as "-" when upstream
-        # carries none, in which case the field is omitted from the row and the
-        # binary falls back to the 5-minute rate.
-        rates="$(jq -r --arg k "$src" '
-            .[$k] // empty
-            | [ .input_cost_per_token,
-                .output_cost_per_token,
-                .cache_creation_input_token_cost,
-                .cache_read_input_token_cost ] as $base
-            | (.cache_creation_input_token_cost_above_1hr
-               | if (. != null and (type=="number")) then tostring else "-" end) as $h
-            | if ($base | map(. != null and (type=="number")) | all) then
-                  "\($base[0]) \($base[1]) \($base[2]) \($base[3]) \($h)"
-              else empty end
-        ' "${upstream}")"
+# Report coverage changes (added/removed model ids) against the checked-in table
+# so the scheduled Action's review PR shows what a refresh actually changed.
+# A model upstream deletes LEAVES the table; that must be visible, never silent.
+report_coverage_delta() {
+    local prices_map="$1"
+    local added removed count
 
-        if [ -z "${rates}" ]; then
-            # Upstream missing or incomplete → deterministic fallback.
-            rates="$(fallback_rates "$id")"
-            [ -n "${rates}" ] || die "no upstream entry and no fallback rate for '${id}'"
-            echo "vendor-pricing: note: '${id}' not in upstream snapshot — using vendored fallback rate" >&2
-        fi
+    count="$(printf '%s' "${prices_map}" | jq -r 'length')"
 
-        read -r input output cc cr cc1h <<<"${rates}"
-        [ -n "${cc1h}" ] || cc1h="-"
+    if [ ! -f "${OUTPUT_FILE}" ]; then
+        echo "vendor-pricing: ${count} Claude ids (no existing table to diff)" >&2
+        return 0
+    fi
 
-        if [ "${cc1h}" = "-" ]; then
-            entries+=("$(jq -cn \
-                --arg id "$id" \
-                --argjson input "$input" \
-                --argjson output "$output" \
-                --argjson cc "$cc" \
-                --argjson cr "$cr" \
-                '{($id): {input: $input, output: $output, cache_creation: $cc, cache_read: $cr}}')")
-        else
-            entries+=("$(jq -cn \
-                --arg id "$id" \
-                --argjson input "$input" \
-                --argjson output "$output" \
-                --argjson cc "$cc" \
-                --argjson cr "$cr" \
-                --argjson cc1h "$cc1h" \
-                '{($id): {input: $input, output: $output, cache_creation: $cc, cache_read: $cr, cache_creation_1h: $cc1h}}')")
-        fi
-    done
+    added="$(printf '%s' "${prices_map}" | jq -r --slurpfile old "${OUTPUT_FILE}" '
+        (keys) - ($old[0].prices | keys) | .[]')"
+    removed="$(printf '%s' "${prices_map}" | jq -r --slurpfile old "${OUTPUT_FILE}" '
+        ($old[0].prices | keys) - (keys) | .[]')"
 
-    printf '%s\n' "${entries[@]}" | jq -cs 'add'
+    echo "vendor-pricing: ${count} Claude ids selected from upstream" >&2
+    if [ -n "${added}" ]; then
+        echo "vendor-pricing: ADDED (new upstream coverage):" >&2
+        echo "${added}" | sed 's/^/  + /' >&2
+    fi
+    if [ -n "${removed}" ]; then
+        echo "vendor-pricing: REMOVED (no longer carried upstream):" >&2
+        echo "${removed}" | sed 's/^/  - /' >&2
+    fi
+    if [ -z "${added}" ] && [ -z "${removed}" ]; then
+        echo "vendor-pricing: coverage unchanged" >&2
+    fi
 }
 
 # Emit the final canonical claude_prices.json to stdout, byte-compatible with the
 # Plan 01 serializer (Python json.dumps: lowercase-e shortest floats, 2-space
 # indent, FIXED top-level key order, sorted price ids + sorted inner keys,
 # trailing newline). Rows carry the optional cache_creation_1h key only when
-# upstream (or the fallback table) supplies one. Args: <prices_map_json>
-# <vendored_at> <version>.
+# upstream supplies one. Args: <prices_map_json> <vendored_at> <version>.
 emit_canonical() {
     local prices_map="$1" vendored_at="$2" version="$3"
     PRICES_MAP="${prices_map}" \
@@ -303,6 +279,9 @@ run_write() {
 
     fetch_upstream "${tmp_upstream}"
     prices_map="$(build_prices_map "${tmp_upstream}")"
+    [ "$(printf '%s' "${prices_map}" | jq -r 'length')" -gt 0 ] \
+        || die "upstream snapshot yielded zero Claude rows — refusing to write an empty table"
+    report_coverage_delta "${prices_map}"
     vendored_at="$(date -u +%Y-%m-%d)"
     version="${vendored_at}-claude-subset-1"
     # Only stamp a fresh snapshot date/version when the PRICE DATA actually changed.
