@@ -13,11 +13,16 @@
 //! panics the render. There is no `unwrap()`/`expect()` anywhere render-reachable
 //! in this module (grep-asserted in the plan `<verify>`).
 //!
-//! # Price-row validity (review LOW-7)
+//! # Price-row validity (review LOW-7, WR-06, IN-03)
 //!
-//! [`PriceEntry::is_valid`] requires all four rates to be finite and strictly
-//! positive. A matched-but-invalid row (e.g. a zero/missing rate) is treated as
-//! *unpriceable* at lookup time, never priced as `$0.00`.
+//! [`PriceEntry::is_valid`] requires all four rates to be finite, strictly
+//! positive, inside the plausibility band [`MIN_RATE`]`..=`[`MAX_RATE`], and
+//! ordered so that `cache_read < input`. The SAME gate is applied to the
+//! bundled table and to a synced cache, so no source can price a row the other
+//! would refuse. A matched-but-invalid row (a zero/missing rate, an implausible
+//! rate, an inverted cache-read rate) is treated as *unpriceable* at lookup
+//! time — never priced as `$0.00`, and never allowed to suppress a
+//! `[pricing.aliases]` entry (see [`pick`]).
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,18 +63,49 @@ pub struct PriceEntry {
     pub cache_creation_1h: Option<f64>,
 }
 
+/// Lower bound of the plausible per-token USD rate band (WR-06).
+///
+/// Real per-token Claude rates live in roughly `1e-8..1e-4` (the bundled table
+/// spans `3e-8` to `7.5e-5`), so a value outside `MIN_RATE..=MAX_RATE` is not
+/// credible for ANY model — it is a data defect, not a price.
+///
+/// The band exists because a synced row WINS the per-id union: without it, an
+/// upstream `3e-6` -> `3e6` typo would render a confidently wrong number rather
+/// than an honest one. On a 100k-token session that single transposed exponent
+/// turns a three-cent input charge into a twelve-figure one. The bundled table
+/// is protected by human review at vendoring time; the synced table has no
+/// equivalent gate, so the band is its substitute.
+const MIN_RATE: f64 = 1e-9;
+
+/// Upper bound of the plausible per-token USD rate band — see [`MIN_RATE`].
+const MAX_RATE: f64 = 1e-2;
+
 impl PriceEntry {
-    /// True only when all four required rates are finite and strictly positive
-    /// (review LOW-7), and the optional 1-hour rate — when present — is too. A
-    /// row that fails this is treated as *unpriceable* at lookup time, never
-    /// priced as `$0.00`.
+    /// True only when the row is USABLE, which is three conditions, applied
+    /// IDENTICALLY to the bundled table and to a synced cache:
+    ///
+    /// 1. every required rate is finite and strictly positive (review LOW-7),
+    ///    and the optional 1-hour rate — when present — is too;
+    /// 2. every such rate falls inside the plausibility band
+    ///    [`MIN_RATE`]`..=`[`MAX_RATE`], so an out-of-band datum is refused
+    ///    rather than rendered as a confident wrong number (WR-06);
+    /// 3. `cache_read < input` — a cache read is never dearer than a fresh
+    ///    read. The sync transform already enforces this at sync time; applying
+    ///    it at the shared LOOKUP gate means a hand-edited cache, or one written
+    ///    by a different schema-1 producer, cannot smuggle an inverted row past
+    ///    it (IN-03).
+    ///
+    /// A row that fails this is treated as *unpriceable* at lookup time — never
+    /// priced as `$0.00`, and (since plan 11-04) never allowed to suppress a
+    /// `[pricing.aliases]` entry either (see [`pick`]).
     pub fn is_valid(&self) -> bool {
-        let ok = |x: f64| x.is_finite() && x > 0.0;
+        let ok = |x: f64| x.is_finite() && (MIN_RATE..=MAX_RATE).contains(&x);
         ok(self.input)
             && ok(self.output)
             && ok(self.cache_creation)
             && ok(self.cache_read)
             && self.cache_creation_1h.is_none_or(ok)
+            && self.cache_read < self.input
     }
 
     /// The rate to apply to 1-hour cache-creation tokens, or `None` when this
@@ -175,8 +211,21 @@ pub enum PriceLookup {
 // via `display.rs`; until then the binary crate sees this as unused. The library
 // crate exports it as public API.
 #[allow(dead_code)]
+///
+/// # This function is PURE (RV-M12)
+///
+/// It performs **no filesystem read** and consults only the compiled-in bundled
+/// table. That is the pre-Phase-11 contract of this signature, and it is
+/// restored deliberately: Phase 11 briefly routed it through a default
+/// [`PricingConfig`] (whose `source` is [`PricingSource::Auto`]), which silently
+/// gave a pure library call local-cache-dependent behavior and filesystem IO.
+///
+/// Config-aware callers use [`select_synced`] + [`lookup_in`] — the render path
+/// resolves the source exactly once, in `src/display.rs` — or the one-shot
+/// [`lookup_with_source`]. After plan 11-03 the render no longer needs the
+/// 2-arg form to be cache-aware, so nothing depends on the regression.
 pub fn lookup(id: &str, aliases: &HashMap<String, String>) -> PriceLookup {
-    lookup_with_source(id, aliases, &PricingConfig::default())
+    lookup_in(id, aliases, None)
 }
 
 /// Default freshness window for a synced price cache under
@@ -265,29 +314,34 @@ fn max_age_window(raw: &str) -> std::time::Duration {
 
 /// One resolution STEP over the per-id union of `synced` and the bundled table.
 ///
-/// Returns `None` when `id` is present in NEITHER source (so the caller may move
-/// on to alias resolution), and `Some(..)` when at least one source carried the
-/// id.
+/// This answers exactly one question — **is there a USABLE row for this id?** —
+/// and nothing else. `Some(Priced(..))` on the first candidate that passes
+/// [`PriceEntry::is_valid`], `None` otherwise.
 ///
 /// Union rule (D-06): the synced row WINS when it is usable, and the bundled row
 /// FILLS THE GAP otherwise. A refresh can therefore only ADD or UPDATE prices —
 /// it can never remove coverage the bundle ships, not even by publishing a
-/// zero/non-finite row for an id the bundle prices correctly. When BOTH rows
-/// exist but neither passes [`PriceEntry::is_valid`], the result is
-/// [`PriceLookup::Unpriceable`] — a matched-but-invalid id does not fall through
-/// to alias resolution (preserving the single-source contract).
+/// zero / non-finite / out-of-band row for an id the bundle prices correctly.
+///
+/// A present-but-UNUSABLE row is indistinguishable from an absent one for
+/// resolution purposes, so it returns `None` and the caller proceeds to alias
+/// resolution. That is what makes `docs/CONFIGURATION.md`'s "a refresh cannot
+/// make a model that used to price render `unknown`" true for the ALIAS path
+/// too: before plan 11-04 this short-circuited with
+/// `Some(PriceLookup::Unpriceable)` whenever the id matched in either source,
+/// so a single junk synced row for a gateway model id silently disabled the
+/// user's `[pricing.aliases]` entry for it (WR-04).
 fn pick(synced: Option<&cache::PriceCache>, id: &str) -> Option<PriceLookup> {
-    let from_synced = synced.and_then(|c| c.prices.get(id));
-    let from_bundle = table().prices.get(id);
-    if from_synced.is_none() && from_bundle.is_none() {
-        return None;
-    }
-    for candidate in [from_synced, from_bundle].into_iter().flatten() {
-        if let PriceLookup::Priced(entry) = gate(candidate) {
-            return Some(PriceLookup::Priced(entry));
-        }
-    }
-    Some(PriceLookup::Unpriceable)
+    [
+        synced.and_then(|c| c.prices.get(id)),
+        table().prices.get(id),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(|candidate| match gate(candidate) {
+        PriceLookup::Priced(entry) => Some(PriceLookup::Priced(entry)),
+        PriceLookup::Unpriceable => None,
+    })
 }
 
 /// Exact-match-only lookup against an ALREADY-RESOLVED synced map.
@@ -298,6 +352,11 @@ fn pick(synced: Option<&cache::PriceCache>, id: &str) -> Option<PriceLookup> {
 /// `[pricing.aliases]` target — with each step widened to the per-id union
 /// (see [`pick`]). There is still **no fuzzy matching, no normalization and no
 /// alias chaining**, in either source (SC3).
+///
+/// Since plan 11-04, an id that is PRESENT in a source but whose row is not
+/// usable reaches the alias step exactly as an absent id does; only an id with
+/// no usable row AND no usable alias target returns
+/// [`PriceLookup::Unpriceable`] (WR-04).
 #[allow(dead_code)]
 pub fn lookup_in(
     id: &str,
@@ -325,6 +384,12 @@ pub fn lookup_in(
 /// One-shot convenience over [`select_synced`] + [`lookup_in`]; it performs one
 /// cache read PER CALL, so a caller resolving many ids should hoist the two
 /// steps itself.
+///
+/// **MUST NOT be used on the render path.** The render resolves the price source
+/// exactly once, in `src/display.rs`, and threads the resolved snapshot into
+/// [`lookup_in`] so the headline and the per-model breakdown price from the SAME
+/// snapshot with one filesystem read (CR-01). This entry point exists for
+/// one-shot callers (tests, tooling) where a second read costs nothing.
 #[allow(dead_code)]
 pub fn lookup_with_source(
     id: &str,
