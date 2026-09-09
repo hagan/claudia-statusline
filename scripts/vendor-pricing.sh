@@ -140,7 +140,11 @@ build_prices_map() {
 
     jq -c '
         [ to_entries[]
+          # Mirrors src/pricing/fetch.rs::is_selectable_claude_key (D-02);
+          # the drift guard the_vendor_script_selection_matches_the_rust_predicate
+          # fails if either side changes without the other.
           | select(.key | startswith("claude-"))
+          | select(.key | contains("/") | not)
           | select(.value | type == "object")
           | select(.value.litellm_provider == "anthropic")
           | select(
@@ -173,7 +177,10 @@ report_rejected_rows() {
 
     rejected="$(jq -r '
         to_entries[]
+        # Same selection as build_prices_map, mirroring
+        # src/pricing/fetch.rs::is_selectable_claude_key (D-02).
         | select(.key | startswith("claude-"))
+        | select(.key | contains("/") | not)
         | select(.value | type == "object")
         | select(.value.litellm_provider == "anthropic")
         | . as $e

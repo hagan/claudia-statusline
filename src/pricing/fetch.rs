@@ -56,11 +56,25 @@ pub const LITELLM_RAW_URL: &str =
 const CONNECT_TIMEOUT_SECS: u32 = 10;
 /// curl total operation timeout (seconds).
 const MAX_TIME_SECS: u32 = 30;
-/// Hard cap on the accepted body size (8 MiB). Passed to curl as
-/// `--max-filesize` AND re-checked on the captured stdout, because
-/// `--max-filesize` only aborts early when the server sends a `Content-Length`
-/// (T-11-03 defense-in-depth).
+/// Hard cap on the accepted body size (8 MiB).
+///
+/// Passed to the fetch tool as `--max-filesize` AND re-checked on the captured
+/// stdout (T-11-03 defense-in-depth; see [`fetch_raw`] for exactly what each
+/// half does).
+///
+/// **Operational note (IN-06).** The observed upstream payload is ~2.3 MB /
+/// ~3853 model entries as of the pinned snapshot (2026-09-09; see
+/// `tests/fixtures/litellm_snapshot.provenance.md`), and it grows as upstream
+/// adds providers — so the current headroom is roughly 3.5x, not 100x. When
+/// upstream crosses this cap, `ant sync-pricing` starts failing with an error
+/// naming this constant. The fix is a two-line change: raise `MAX_BODY_BYTES`
+/// in `src/pricing/fetch.rs`, then re-capture and re-pin
+/// `tests/fixtures/litellm_snapshot.json` per its provenance file.
 const MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Maximum number of redirects the fetch will follow (WR-05). curl's default is
+/// 50; a public raw-file URL needs at most a couple.
+const MAX_REDIRECTS: u32 = 5;
 /// Maximum number of bytes of child stderr echoed in an error message.
 const STDERR_BOUND: usize = 512;
 
@@ -115,11 +129,30 @@ pub fn content_version(raw: &[u8]) -> String {
     format!("{:016x}", u64::from_be_bytes(head))
 }
 
-/// THE canonical upstream KEY predicate.
+/// THE canonical upstream KEY predicate (D-02 / D-11).
 ///
-/// Currently: the key is a bare `claude-*` id.
+/// A key is selectable when it is a **bare** `claude-*` id: it starts with
+/// `claude-` and contains no `/`. The `/` exclusion drops router aliases such as
+/// `claude-3/some-gateway-alias`, which duplicate a first-party row under a
+/// third party's routing namespace; the `claude-` prefix requirement already
+/// drops `anthropic.claude-*` and `vertex_ai/claude-*`.
+///
+/// This is a PREDICATE, never a curated id list. D-11 locks the scope as "the
+/// same Claude-family filter the vendor script uses", and that script filters by
+/// shape; the Phase 10 remediation of 2026-09-09 deleted the frozen 11-id
+/// allow-list precisely because it priced only two currently-relevant models. A
+/// genuinely new upstream Claude model is therefore expected to be covered the
+/// day upstream publishes it.
+///
+/// `scripts/vendor-pricing.sh` mirrors this rule in jq, and the colocated
+/// `the_vendor_script_selection_matches_the_rust_predicate` guard fails if
+/// either side drifts.
+///
+/// The provider check (`litellm_provider == "anthropic"`) deliberately stays in
+/// [`transform_litellm`]: it inspects the VALUE, not the key, so it is not part
+/// of a key predicate.
 pub(crate) fn is_selectable_claude_key(id: &str) -> bool {
-    id.starts_with("claude-")
+    id.starts_with("claude-") && !id.contains('/')
 }
 
 /// PURE transform: upstream LiteLLM JSON bytes -> the slim Claude price map.
@@ -128,8 +161,9 @@ pub(crate) fn is_selectable_claude_key(id: &str) -> bool {
 /// See that script's DESIGN NOTES for the rationale; the short version is that
 /// selection is a **predicate**, never a curated id list:
 ///
-/// 1. the key is a BARE `claude-*` id (excludes `anthropic.claude-*`,
-///    `vertex_ai/claude-*`, and other routed duplicates), and
+/// 1. the key passes [`is_selectable_claude_key`] — a BARE `claude-*` id, which
+///    excludes `anthropic.claude-*`, `vertex_ai/claude-*` and every other routed
+///    duplicate carrying a `/`, and
 /// 2. `litellm_provider == "anthropic"` (excludes the Bedrock row whose key
 ///    happens to start with `claude-`), and
 /// 3. all four base rates are present, finite and `> 0`, and
@@ -159,7 +193,8 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
     let mut skipped = 0usize;
 
     for (id, value) in &root {
-        // (1) bare `claude-*` id only.
+        // (1) bare `claude-*` id only — one canonical predicate, shared with
+        //     scripts/vendor-pricing.sh and pinned by a drift guard.
         if !is_selectable_claude_key(id) {
             continue;
         }
@@ -240,12 +275,29 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
 /// argv is a fixed set of constants plus [`LITELLM_RAW_URL`] — no user- or
 /// data-controlled token reaches the command line (T-11-06), and no credential
 /// exists to leak (T-11-01). Bounded by `--connect-timeout` / `--max-time` /
-/// `--max-filesize`, with a post-hoc size re-check (T-11-03).
+/// `--max-filesize` / `--max-redirs`, pinned to https for the initial request
+/// and every redirect (WR-05), with a post-hoc size re-check (T-11-03) whose
+/// exact guarantee is described at that check.
+/// The fixed argv for the keyless fetch, extracted so the transport pins are
+/// unit-testable without spawning anything.
 fn curl_args() -> Vec<String> {
     vec![
         "--fail".to_string(),
         "--silent".to_string(),
         "--show-error".to_string(),
+        // WR-05 (defense-in-depth). `--location` under curl's DEFAULT policy
+        // permits `http`, `ftp` and `ftps` redirect targets and allows up to 50
+        // hops. The fetched payload becomes the authoritative price table for
+        // every subsequent render, so the chain is pinned to https for the
+        // INITIAL request (`--proto`) AND for every REDIRECT (`--proto-redir`),
+        // and bounded (`--max-redirs`). A `302` to a plaintext target is now
+        // refused rather than followed in cleartext.
+        "--proto".to_string(),
+        "=https".to_string(),
+        "--proto-redir".to_string(),
+        "=https".to_string(),
+        "--max-redirs".to_string(),
+        MAX_REDIRECTS.to_string(),
         "--location".to_string(),
         "--connect-timeout".to_string(),
         CONNECT_TIMEOUT_SECS.to_string(),
@@ -276,18 +328,31 @@ fn fetch_raw() -> Result<Vec<u8>> {
             }
             22 => format!("HTTP error fetching the price table (curl exit 22): {stderr}"),
             63 => format!(
-                "upstream price table exceeds the {MAX_BODY_BYTES}-byte limit (curl exit 63): {stderr}"
+                "upstream price table exceeds the {MAX_BODY_BYTES}-byte limit \
+                 (MAX_BODY_BYTES in src/pricing/fetch.rs) (curl exit 63): {stderr}"
             ),
             _ => format!("curl failed (exit {code}): {stderr}"),
         };
         return Err(StatuslineError::other(msg));
     }
 
-    // Defense-in-depth: --max-filesize only aborts early when the server sends
-    // a Content-Length. Re-check what we actually captured (T-11-03).
+    // RV-M9 — what this check IS, and what it is NOT.
+    //
+    // `Command::output()` buffers the child's ENTIRE stdout before this code
+    // runs, so `--max-filesize` is the PRIMARY memory bound: it is what aborts
+    // the transfer early, and only when the server sends a `Content-Length`.
+    // This Rust re-check is VALIDATION of what was already captured — it catches
+    // the chunked / no-`Content-Length` case, where the tool cannot abort early
+    // — and is explicitly NOT a guarantee of memory containment. Streaming
+    // through a capped reader was considered and judged disproportionate: this
+    // is a manually invoked, out-of-band command against a fixed HTTPS URL, so
+    // the residual exposure is a transient allocation in a short-lived process,
+    // and the rewrite would add a child-reap/kill path with no render-path
+    // benefit.
     if output.stdout.len() as u64 > MAX_BODY_BYTES {
         return Err(StatuslineError::other(format!(
-            "upstream price table is {} bytes, over the {MAX_BODY_BYTES}-byte limit",
+            "upstream price table is {} bytes, over the {MAX_BODY_BYTES}-byte limit \
+             (MAX_BODY_BYTES in src/pricing/fetch.rs)",
             output.stdout.len()
         )));
     }
