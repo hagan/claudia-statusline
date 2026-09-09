@@ -203,19 +203,34 @@ pub const DEFAULT_PRICE_MAX_AGE: &str = "30d";
 ///
 /// Callers that resolve MANY ids (the per-model breakdown) should call this
 /// ONCE and thread the result into [`lookup_in`], so the whole render reads the
-/// cache once and prices every model from the SAME snapshot.
+/// cache once and prices every model from the SAME snapshot. On the render path
+/// that hoisting is done exactly once, in `src/display.rs` (CR-01).
+///
+/// The freshness decision itself is a PURE function of an injected `now` — this
+/// function only supplies the wall clock and delegates to [`select_synced_at`] —
+/// so the staleness cliff is tested deterministically on both sides rather than
+/// by racing the clock (RV-M3).
 #[allow(dead_code)]
 pub fn select_synced(cfg: &PricingConfig) -> Option<cache::PriceCache> {
     select_synced_at(cfg, chrono::Utc::now())
 }
 
-/// STUB (RED gate): the time-injected form of [`select_synced`]. `now` is
-/// accepted but IGNORED — the freshness decision still races the wall clock, so
-/// the deterministic cliff tests below fail for the right reason.
-#[allow(dead_code)]
+/// [`select_synced`] with the clock injected: decide freshness relative to `now`
+/// instead of to `Utc::now()`.
+///
+/// This carries the whole policy; [`select_synced`] is a one-line delegation.
+/// Semantics are identical to the table above: `Bundled` never reads the cache;
+/// `Synced` reads it and ignores its age (D-08); `Auto` reads it and keeps it
+/// only while `now - fetched_at` is strictly inside `max_age`. A NEGATIVE age
+/// (a future-dated `fetched_at` — clock skew) clamps to zero and therefore
+/// counts as FRESH (D-07).
+///
+/// Being pure in `now` is the point: the one-second-inside / one-second-outside
+/// pair of tests below cannot flake, and neither depends on how long the test
+/// binary takes to run (RV-M3).
 pub(crate) fn select_synced_at(
     cfg: &PricingConfig,
-    _now: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
 ) -> Option<cache::PriceCache> {
     match cfg.source {
         PricingSource::Bundled => None,
@@ -223,7 +238,13 @@ pub(crate) fn select_synced_at(
         PricingSource::Auto => {
             let cached = cache::read_price_cache()?;
             let window = max_age_window(&cfg.max_age);
-            let age = cached.age().to_std().unwrap_or(std::time::Duration::ZERO);
+            // `signed_duration_since` saturates where `-` panics (pathological
+            // year-9999/year-0001 stamps); `to_std()` errs on a negative delta,
+            // which we map to ZERO == fresh (D-07).
+            let age = now
+                .signed_duration_since(cached.fetched_at)
+                .to_std()
+                .unwrap_or(std::time::Duration::ZERO);
             (age < window).then_some(cached)
         }
     }

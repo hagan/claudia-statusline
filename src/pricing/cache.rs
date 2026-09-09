@@ -17,10 +17,16 @@
 //!   shared [`crate::ant::cache::ensure_cache_dir`] (both caches live in the
 //!   same `.../claudia-statusline/ant/` directory, so there is exactly one
 //!   directory-creating function for it).
-//! - **The read path is total.** [`read_price_cache`] collapses every error —
-//!   missing, unreadable, corrupt, or schema-version mismatch — to `None`. It
-//!   never panics, never spawns a process, never opens a socket, and never
-//!   creates a directory. There is no `unwrap()`/`expect()` in it.
+//! - **The read path is total AND strictly bounded.** [`read_price_cache`]
+//!   collapses every error — missing, unreadable, corrupt, schema-version
+//!   mismatch, larger than [`MAX_PRICE_CACHE_BYTES`], or carrying more than
+//!   [`MAX_PRICE_CACHE_ENTRIES`] rows — to `None`. It never panics, never spawns
+//!   a process, never opens a socket, and never creates a directory. There is no
+//!   `unwrap()`/`expect()` in it. The property delivered is: **for any byte
+//!   sequence on disk, the reader terminates having allocated at most
+//!   `MAX_PRICE_CACHE_BYTES + 1` bytes and parsed at most that many, and the
+//!   render degrades to the bundled table rather than to a failed render**
+//!   (WR-03 / RV-M1 / RV-M2).
 //! - **No secrets on disk.** [`PriceCache`] carries no credential field, and the
 //!   fetch that produces it is keyless by construction (D-01) — there is no
 //!   credential anywhere in this feature to leak.
@@ -60,32 +66,60 @@ use std::path::PathBuf;
 /// misinterpreted.
 pub const PRICE_CACHE_SCHEMA_VERSION: u32 = 1;
 
-/// Hard upper bound on the number of bytes [`read_price_cache`] will accept
-/// from `prices.json`.
+/// Hard upper bound on the byte size of a `prices.json` [`read_price_cache`]
+/// will accept, and on the number of price rows it will accept.
 ///
-/// STUB (RED gate): declared here so the bounded-reader tests compile; the
-/// reader does not enforce it yet.
+/// The shipped synced table is 28 rows / a few KB, so 1 MiB is roughly 150x
+/// headroom. The cap is deliberately sized for **latency**, not merely for
+/// allocation: a legitimately 4 MiB `prices.json` would never OOM, but parsing
+/// it on every render blows the "a few milliseconds" render budget just as
+/// effectively (RV-M2). `MAX_PRICE_CACHE_ENTRIES` bounds the other half of that
+/// work — the per-row parse and the `HashMap` build — which a byte cap alone
+/// only bounds indirectly.
+///
+/// The in-repo analog is [`crate::ant::audit`]'s `MAX_SCAN_BYTES`, with one
+/// deliberate difference: the audit scanner is happy with a PREFIX, whereas this
+/// reader must be STRICT. Reading exactly the cap from an oversized file can
+/// yield a complete, valid `PriceCache` document followed by padding, which
+/// parses fine and would let an arbitrarily large file through the "bound"
+/// (RV-M1). So an over-cap or over-count file is REJECTED outright — and a
+/// rejection degrades the render to the always-present bundled table, never to a
+/// failed render (WR-03).
 const MAX_PRICE_CACHE_BYTES: u64 = 1024 * 1024;
 
-/// Hard upper bound on the number of price rows [`read_price_cache`] will
-/// accept.
+/// Hard upper bound on the number of price rows [`read_price_cache`] accepts.
 ///
-/// STUB (RED gate): declared here so the entry-cap test compiles; the reader
-/// does not enforce it yet.
+/// See [`MAX_PRICE_CACHE_BYTES`] for why both caps exist.
 const MAX_PRICE_CACHE_ENTRIES: usize = 4096;
 
-/// Process-global count of [`read_price_cache`] ATTEMPTS.
-///
-/// STUB (RED gate): never incremented yet.
+/// Process-global count of [`read_price_cache`] ATTEMPTS (see
+/// [`price_cache_reads`]).
 static PRICE_CACHE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Observability instrumentation — NOT a supported API.
+/// Number of [`read_price_cache`] attempts this process has made.
+///
+/// **Observability instrumentation, NOT a supported API** — hence
+/// `#[doc(hidden)]` (RV-M5). It exists so the one-render-one-snapshot invariant
+/// (verification gap 2b / CR-01) can be asserted over the ACTUAL read count in
+/// `tests/ant_invariant_tests.rs`, rather than over a proxy.
+///
+/// It is compiled into every profile ON PURPOSE: integration tests under
+/// `tests/` link the library with `cfg(test)` OFF, so a `#[cfg(test)]` counter
+/// would be invisible exactly where the invariant must be observed — including
+/// in the SPAWNED-binary render path. The cost is one relaxed atomic increment
+/// per cache read (once per render at most). Callers other than the invariant
+/// suite must not depend on these two functions; they may change or disappear.
 #[doc(hidden)]
 pub fn price_cache_reads() -> u64 {
     PRICE_CACHE_READS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Observability instrumentation — NOT a supported API.
+/// Zero the [`price_cache_reads`] counter.
+///
+/// **Observability instrumentation, NOT a supported API** (RV-M5) — see
+/// [`price_cache_reads`]. Because the counter is process-global, every test that
+/// resets it must be `#[serial]`; `every_price_cache_touching_test_is_serial` in
+/// `tests/ant_invariant_tests.rs` enforces that mechanically (RV-M4).
 #[doc(hidden)]
 pub fn reset_price_cache_reads() {
     PRICE_CACHE_READS.store(0, std::sync::atomic::Ordering::Relaxed);
@@ -172,19 +206,53 @@ pub fn write_price_cache(cache: &PriceCache) -> Result<()> {
 
 /// Read and validate the price cache, returning `None` on ANY failure.
 ///
-/// This is the render-side reader and is therefore total and side-effect-free:
-/// it resolves the path with the NON-creating [`price_cache_path`], and
-/// collapses a missing file, an unreadable file, a corrupt/garbage file, and a
-/// `schema_version` mismatch all to `None`. It never panics (no `unwrap()` /
-/// `expect()`), never spawns a process, never opens a socket, and never creates
-/// a directory (D-16).
+/// This is the render-side reader and is therefore total, side-effect-free and
+/// STRICTLY BOUNDED: it resolves the path with the NON-creating
+/// [`price_cache_path`], and collapses a missing file, an unreadable file, a
+/// corrupt/garbage file, a `schema_version` mismatch, an over-[`MAX_PRICE_CACHE_BYTES`]
+/// file and an over-[`MAX_PRICE_CACHE_ENTRIES`] table all to `None`. It never
+/// panics (no `unwrap()` / `expect()`), never spawns a process, never opens a
+/// socket, and never creates a directory (D-16).
+///
+/// Every ATTEMPT — including one that returns `None` — increments
+/// [`price_cache_reads`], which is what makes "one render performs at most one
+/// price-cache read" (CR-01) mechanically observable.
 pub fn read_price_cache() -> Option<PriceCache> {
+    use std::io::Read;
+
+    // Count the ATTEMPT first, before the path resolve, so the counter reflects
+    // reads that were tried regardless of outcome (missing/corrupt/oversized all
+    // still count). Relaxed is sufficient: the counter is read only after the
+    // render it measures has completed, on the same thread.
+    PRICE_CACHE_READS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
     let path = price_cache_path().ok()?;
-    let content = fs::read_to_string(&path).ok()?;
+    let file = std::fs::File::open(&path).ok()?;
+
+    // Read at most cap + 1 bytes, then REJECT above the cap — do NOT parse a
+    // truncated prefix. Reading exactly `cap` bytes of an oversized file can
+    // yield a complete, valid `PriceCache` object followed only by whitespace or
+    // by a second document; that parses cleanly and would let an arbitrarily
+    // large file through the supposed bound. The extra byte is precisely what
+    // distinguishes "fits" from "does not fit" (RV-M1).
+    let mut content = String::new();
+    file.take(MAX_PRICE_CACHE_BYTES + 1)
+        .read_to_string(&mut content)
+        .ok()?;
+    if content.len() as u64 > MAX_PRICE_CACHE_BYTES {
+        return None;
+    }
+
     let cache: PriceCache = serde_json::from_str(&content).ok()?;
     // A versioned cache that accepts every version defeats versioning: reject
     // anything that is not exactly the current schema (treat as absent).
     if cache.schema_version != PRICE_CACHE_SCHEMA_VERSION {
+        return None;
+    }
+    // Bound the LOOKUP work too, not just the read: a pathological table well
+    // under the byte cap can still carry far more rows than any real Claude
+    // price table (RV-M2).
+    if cache.prices.len() > MAX_PRICE_CACHE_ENTRIES {
         return None;
     }
     Some(cache)
