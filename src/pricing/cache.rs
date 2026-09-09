@@ -30,9 +30,21 @@
 //! - **No secrets on disk.** [`PriceCache`] carries no credential field, and the
 //!   fetch that produces it is keyless by construction (D-01) — there is no
 //!   credential anywhere in this feature to leak.
-//! - **Atomic, versioned writes.** [`write_price_cache`] writes to a temp file
-//!   then `rename`s it into place (same-FS atomic swap), and stamps the payload
-//!   with `schema_version` + `fetched_at` + provenance (`source` / `version`).
+//! - **Atomic, versioned writes — exactly three properties.**
+//!   [`write_price_cache`] publishes `prices.json` from a temp sibling whose
+//!   name carries the writer's PID *and* a process-monotonic nonce, created with
+//!   `create_new` so it never truncates or follows anything already at that
+//!   path. The properties actually delivered are:
+//!   1. a reader never observes a partially written file — the `rename` is a
+//!      same-filesystem atomic swap, so a concurrent render sees either the old
+//!      or the new whole file;
+//!   2. the payload bytes are on stable storage BEFORE the rename makes them
+//!      visible (`sync_all` on the temp file);
+//!   3. the directory entry is flushed on a BEST-EFFORT basis after the rename.
+//!
+//!   A crash may therefore lose the publication entirely, but it cannot corrupt
+//!   or truncate it. The payload is stamped with `schema_version` +
+//!   `fetched_at` + provenance (`source` / `version`).
 //!
 //! # Provenance stamping (D-12)
 //!
@@ -181,14 +193,52 @@ pub fn price_cache_path() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Atomically write the price cache to disk.
+/// Process-monotonic component of every temp file name (see [`temp_path_for`]).
+static TEMP_NONCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Number of fresh temp names [`write_price_cache`] will try before giving up.
+const TEMP_NAME_ATTEMPTS: usize = 8;
+
+/// A UNIQUE temp path to publish `path` from: `<path>.tmp.<pid>.<nonce>`.
+///
+/// `rename` makes the SWAP atomic against READERS, but it serializes nothing
+/// between two WRITERS. This project's own docs recommend running `ant sync-*`
+/// from a SessionStart hook AND from cron, so two overlapping `sync-pricing`
+/// processes are an expected configuration, not a pathological one. Sharing one
+/// `O_CREAT|O_TRUNC` temp file between them lets their writes interleave; the
+/// published file then parses as garbage and costs the user a good cache
+/// (WR-01).
+///
+/// The PID alone is NOT unique enough: two writers inside one process (threads,
+/// or a future batch mode) collide immediately, and PID reuse collides with a
+/// stale temp left behind by a crashed run. Hence the process-monotonic nonce
+/// (RV-M7).
+fn temp_path_for(path: &Path) -> PathBuf {
+    let nonce = TEMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    path.with_extension(format!("json.tmp.{}.{}", std::process::id(), nonce))
+}
+
+/// Atomically publish the price cache to disk.
 ///
 /// Creates the cache directory via the shared
 /// [`crate::ant::cache::ensure_cache_dir`] (0o700 on Unix, writer-only),
-/// serializes `cache` as pretty JSON, writes it to a `*.json.tmp` sibling, then
-/// `rename`s it into place — a same-filesystem atomic swap, so a concurrent
-/// reader sees either the old or the new whole file, never a torn one (T-11-05).
+/// serializes `cache` as pretty JSON, writes it to a UNIQUE
+/// [`temp_path_for`] sibling opened with `create_new`, `sync_all`s that file,
+/// then `rename`s it into place.
+///
+/// Properties delivered (and only these — see the module docs):
+/// 1. a reader never observes a partially written file (atomic same-FS swap);
+/// 2. the payload bytes are durable BEFORE they become visible (WR-02);
+/// 3. the containing directory entry is flushed best-effort after the rename
+///    (RV-M8) — some filesystems and platforms reject a directory fsync, so its
+///    failure is deliberately ignored.
+///
+/// A crash may lose the publication entirely; it cannot corrupt or truncate it.
+/// Every failure path removes the temp file, so an aborted publish never leaves
+/// a stray sibling behind.
 pub fn write_price_cache(cache: &PriceCache) -> Result<()> {
+    use std::io::Write;
+
     // Create the directory (writer-only) before computing the file path. Both
     // ant caches share `.../claudia-statusline/ant/`, so this REUSES the models
     // cache's creator rather than duplicating the 0o700 DirBuilder logic.
@@ -197,16 +247,64 @@ pub fn write_price_cache(cache: &PriceCache) -> Result<()> {
 
     let json = serde_json::to_string_pretty(cache)?;
 
-    let temp_path = temp_path_for(&path);
-    fs::write(&temp_path, json)?;
-    fs::rename(&temp_path, &path)?;
+    // `create_new(true)` — NOT `File::create`, which truncates an existing file
+    // and follows a symlink planted at that path (RV-M7). An `AlreadyExists`
+    // here means either a stale temp from a crashed run or a hostile
+    // pre-created path; retrying with a FRESH nonce is the correct response to
+    // both, since neither is a name we are entitled to overwrite.
+    let mut last_err: Option<std::io::Error> = None;
+    for _ in 0..TEMP_NAME_ATTEMPTS {
+        let temp_path = temp_path_for(&path);
+        let opened = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path);
+        let file = match opened {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                last_err = Some(e);
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
 
-    Ok(())
-}
+        // Scoped so the handle is closed before the rename.
+        let written = (|| -> std::io::Result<()> {
+            let mut file = file;
+            file.write_all(json.as_bytes())?;
+            // Durable BEFORE visible: the rename must not publish bytes the
+            // filesystem has not committed (WR-02).
+            file.sync_all()
+        })();
 
-/// The temp path [`write_price_cache`] publishes `prices.json` from.
-fn temp_path_for(path: &Path) -> PathBuf {
-    path.with_extension("json.tmp")
+        let result = written.and_then(|()| fs::rename(&temp_path, &path));
+        return match result {
+            Ok(()) => {
+                // Best-effort: flush the DIRECTORY entry so the rename itself is
+                // more likely to survive a crash. Ignored on failure (RV-M8).
+                if let Some(dir) = path.parent() {
+                    if let Ok(handle) = std::fs::File::open(dir) {
+                        let _ = handle.sync_all();
+                    }
+                }
+                Ok(())
+            }
+            Err(e) => {
+                // Never leave a stray temp file behind on ANY failure path.
+                let _ = fs::remove_file(&temp_path);
+                Err(e.into())
+            }
+        };
+    }
+
+    Err(last_err
+        .unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "no unique price-cache temp name available",
+            )
+        })
+        .into())
 }
 
 /// Read and validate the price cache, returning `None` on ANY failure.
