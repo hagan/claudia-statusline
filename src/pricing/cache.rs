@@ -60,6 +60,37 @@ use std::path::PathBuf;
 /// misinterpreted.
 pub const PRICE_CACHE_SCHEMA_VERSION: u32 = 1;
 
+/// Hard upper bound on the number of bytes [`read_price_cache`] will accept
+/// from `prices.json`.
+///
+/// STUB (RED gate): declared here so the bounded-reader tests compile; the
+/// reader does not enforce it yet.
+const MAX_PRICE_CACHE_BYTES: u64 = 1024 * 1024;
+
+/// Hard upper bound on the number of price rows [`read_price_cache`] will
+/// accept.
+///
+/// STUB (RED gate): declared here so the entry-cap test compiles; the reader
+/// does not enforce it yet.
+const MAX_PRICE_CACHE_ENTRIES: usize = 4096;
+
+/// Process-global count of [`read_price_cache`] ATTEMPTS.
+///
+/// STUB (RED gate): never incremented yet.
+static PRICE_CACHE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Observability instrumentation — NOT a supported API.
+#[doc(hidden)]
+pub fn price_cache_reads() -> u64 {
+    PRICE_CACHE_READS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Observability instrumentation — NOT a supported API.
+#[doc(hidden)]
+pub fn reset_price_cache_reads() {
+    PRICE_CACHE_READS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The versioned price cache as serialized to `prices.json`.
 ///
 /// Carries a `schema_version` (validated on read), a `fetched_at` timestamp
@@ -323,5 +354,116 @@ mod tests {
             .expect("parse")
             .with_timezone(&Utc);
         let _ = cache.age();
+    }
+
+    // -----------------------------------------------------------------------
+    // Plan 11-03 Task 1: strict bounded reader + read-attempt counter
+    // -----------------------------------------------------------------------
+
+    /// Write `json` to the cache path verbatim (no re-serialization), creating
+    /// the cache directory first.
+    fn plant_raw(json: &str) {
+        crate::ant::cache::ensure_cache_dir().expect("mkdir");
+        let path = price_cache_path().expect("path");
+        std::fs::write(&path, json).expect("plant raw cache");
+    }
+
+    /// Serialize `cache` compactly and pad the file with TRAILING SPACES until it
+    /// is exactly `target_len` bytes.
+    ///
+    /// Trailing whitespace keeps the first bytes a COMPLETE, valid JSON document,
+    /// which is precisely the RV-M1 case a `take(cap)`-then-parse reader accepts:
+    /// it truncates the padding away and parses the prefix happily, letting an
+    /// arbitrarily large file through the supposed bound.
+    fn plant_padded_to(cache: &PriceCache, target_len: usize) {
+        let mut json = serde_json::to_string(cache).expect("serialize");
+        assert!(
+            json.len() <= target_len,
+            "test bug: serialized cache ({} bytes) already exceeds the pad target ({})",
+            json.len(),
+            target_len
+        );
+        while json.len() < target_len {
+            json.push(' ');
+        }
+        assert_eq!(
+            json.len(),
+            target_len,
+            "padding must hit the target exactly"
+        );
+        plant_raw(&json);
+    }
+
+    #[test]
+    #[serial]
+    fn read_price_cache_counts_every_attempt() {
+        let _tmp = isolate();
+        reset_price_cache_reads();
+        assert_eq!(price_cache_reads(), 0, "reset must zero the counter");
+        // No file present: the read still ATTEMPTED, so it still counts.
+        for _ in 0..3 {
+            assert!(read_price_cache().is_none());
+        }
+        assert_eq!(
+            price_cache_reads(),
+            3,
+            "every read attempt must be counted, including ones returning None"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn an_oversize_cache_is_rejected_even_when_its_prefix_is_valid_json() {
+        let _tmp = isolate();
+        plant_padded_to(&sample_cache(), (MAX_PRICE_CACHE_BYTES + 1) as usize);
+        assert!(
+            read_price_cache().is_none(),
+            "a file one byte over the cap must be REJECTED outright, not \
+             truncated-and-parsed (RV-M1)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_cache_at_exactly_the_byte_cap_still_parses() {
+        let _tmp = isolate();
+        plant_padded_to(&sample_cache(), MAX_PRICE_CACHE_BYTES as usize);
+        assert!(
+            read_price_cache().is_some(),
+            "the byte cap is INCLUSIVE: a file of exactly MAX_PRICE_CACHE_BYTES must parse"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn a_cache_with_too_many_entries_is_rejected() {
+        let _tmp = isolate();
+        let mut cache = sample_cache();
+        cache.prices.clear();
+        for i in 0..=MAX_PRICE_CACHE_ENTRIES {
+            cache.prices.insert(
+                format!("claude-synthetic-{i:05}"),
+                PriceEntry {
+                    input: 1e-06,
+                    output: 5e-06,
+                    cache_creation: 1.25e-06,
+                    cache_read: 1e-07,
+                    cache_creation_1h: None,
+                },
+            );
+        }
+        assert_eq!(cache.prices.len(), MAX_PRICE_CACHE_ENTRIES + 1);
+        let json = serde_json::to_string(&cache).expect("serialize");
+        assert!(
+            json.len() as u64 <= MAX_PRICE_CACHE_BYTES,
+            "test bug: the over-COUNT fixture must stay under the BYTE cap so this \
+             test proves the entry cap and not the byte cap (got {} bytes)",
+            json.len()
+        );
+        plant_raw(&json);
+        assert!(
+            read_price_cache().is_none(),
+            "a cache carrying more than MAX_PRICE_CACHE_ENTRIES rows must be rejected (RV-M2)"
+        );
     }
 }

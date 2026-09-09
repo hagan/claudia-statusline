@@ -206,6 +206,17 @@ pub const DEFAULT_PRICE_MAX_AGE: &str = "30d";
 /// cache once and prices every model from the SAME snapshot.
 #[allow(dead_code)]
 pub fn select_synced(cfg: &PricingConfig) -> Option<cache::PriceCache> {
+    select_synced_at(cfg, chrono::Utc::now())
+}
+
+/// STUB (RED gate): the time-injected form of [`select_synced`]. `now` is
+/// accepted but IGNORED — the freshness decision still races the wall clock, so
+/// the deterministic cliff tests below fail for the right reason.
+#[allow(dead_code)]
+pub(crate) fn select_synced_at(
+    cfg: &PricingConfig,
+    _now: chrono::DateTime<chrono::Utc>,
+) -> Option<cache::PriceCache> {
     match cfg.source {
         PricingSource::Bundled => None,
         PricingSource::Synced => cache::read_price_cache(),
@@ -1210,5 +1221,92 @@ source = "buntled"
                 "src/pricing must not reference `{tok}` (offline invariant)"
             );
         }
+    }
+
+    // ---------------------------------------------------------------------
+    // Plan 11-03 Task 1: the staleness cliff is a PURE function of `now`
+    // ---------------------------------------------------------------------
+
+    /// A reference `now` deliberately FAR from the wall clock, so a decision
+    /// that secretly consults `Utc::now()` is distinguishable from one that
+    /// honors the injected instant (RV-M3).
+    fn reference_now() -> chrono::DateTime<chrono::Utc> {
+        chrono::Utc::now() - chrono::Duration::days(365)
+    }
+
+    /// The `auto` window for the default `max_age` ("30d").
+    fn default_window() -> chrono::Duration {
+        chrono::Duration::days(30)
+    }
+
+    /// Plant a synced cache stamped with an EXPLICIT `fetched_at`.
+    fn plant_at(fetched_at: chrono::DateTime<chrono::Utc>) {
+        let mut c = synced_cache(chrono::Duration::zero());
+        c.fetched_at = fetched_at;
+        write_price_cache(&c).expect("plant synced cache");
+    }
+
+    #[test]
+    #[serial]
+    fn auto_keeps_a_cache_one_second_inside_the_window() {
+        let _tmp = isolate();
+        let now = reference_now();
+        plant_at(now - (default_window() - chrono::Duration::seconds(1)));
+        assert!(
+            select_synced_at(&cfg_for(PricingSource::Auto), now).is_some(),
+            "a cache one second INSIDE the window must be kept"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn auto_drops_a_cache_one_second_outside_the_window() {
+        let _tmp = isolate();
+        let now = reference_now();
+        plant_at(now - (default_window() + chrono::Duration::seconds(1)));
+        assert!(
+            select_synced_at(&cfg_for(PricingSource::Auto), now).is_none(),
+            "a cache one second OUTSIDE the window must be demoted"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn synced_keeps_a_cache_far_outside_the_window() {
+        let _tmp = isolate();
+        let now = reference_now();
+        plant_at(now - chrono::Duration::days(3650));
+        assert!(
+            select_synced_at(&cfg_for(PricingSource::Synced), now).is_some(),
+            "source=synced waives staleness demotion entirely (D-08)"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn bundled_never_reads_the_cache() {
+        let _tmp = isolate();
+        let now = reference_now();
+        plant_at(now);
+        crate::pricing::cache::reset_price_cache_reads();
+        let before = crate::pricing::cache::price_cache_reads();
+        assert!(select_synced_at(&cfg_for(PricingSource::Bundled), now).is_none());
+        assert_eq!(
+            crate::pricing::cache::price_cache_reads() - before,
+            0,
+            "source=bundled must not touch the filesystem at all"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn auto_treats_a_future_dated_cache_as_fresh() {
+        let _tmp = isolate();
+        let now = reference_now();
+        plant_at(now + chrono::Duration::days(10));
+        assert!(
+            select_synced_at(&cfg_for(PricingSource::Auto), now).is_some(),
+            "a future-dated cache (clock skew) counts as FRESH, not infinitely stale (D-07)"
+        );
     }
 }
