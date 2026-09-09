@@ -484,6 +484,261 @@ fn structural_guard_pricing_fetch_is_keyless() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Group 4: PRICING SOURCE SELECTION REACHES BOTH RENDER CALLERS (Plan 11-02)
+// ---------------------------------------------------------------------------
+//
+// Pitfall 6: `{api_equiv_cost}` (the headline, wired in `src/display.rs`) and
+// `{api_equiv_cost_by_model}` (the per-model breakdown, computed in
+// `src/layout/variables.rs`) are TWO independent price lookups. If only one of
+// them honors `[pricing].source`, the same render shows two different prices for
+// the same model. These tests drive BOTH vars in a single render and assert they
+// agree, using a synced cache whose rates are exactly 10x the bundled ones so
+// "which source answered?" is readable straight off the rendered dollars.
+
+/// A payload carrying a known model id plus the four `current_usage` counts.
+/// Against the BUNDLED `claude-opus-4-8` row this totals `$0.97`; against the
+/// planted synced row (10x) it totals `$9.75`.
+const PRICED_PAYLOAD: &str = r#"{"workspace":{"current_dir":"/tmp"},"model":{"id":"claude-opus-4-8"},"context_window":{"current_usage":{"input_tokens":100000,"output_tokens":10000,"cache_creation_input_tokens":20000,"cache_read_input_tokens":200000}}}"#;
+
+/// Rendered figure when the BUNDLED table prices the payload above.
+const BUNDLED_FIGURE: &str = "$0.97";
+/// Rendered figure when the planted SYNCED cache (10x) prices it.
+const SYNCED_FIGURE: &str = "$9.75";
+
+/// A layout that drives BOTH price lookups in one render, separated by `|`.
+const BOTH_CALLERS_LAYOUT: &str = "{api_equiv_cost}|{api_equiv_cost_by_model}";
+
+/// Write a synced price cache `days_old` days in the past (negative = future).
+/// Its `claude-opus-4-8` row is 10x the bundled row and it deliberately carries
+/// NO other id, so the per-id union (D-06) is exercised at the same time.
+fn plant_synced_prices(days_old: i64) {
+    let dir = dirs::cache_dir()
+        .expect("cache dir")
+        .join("claudia-statusline")
+        .join("ant");
+    std::fs::create_dir_all(&dir).expect("create ant cache dir");
+    let fetched_at = (chrono::Utc::now() - chrono::Duration::days(days_old)).to_rfc3339();
+    let schema = statusline::pricing::cache::PRICE_CACHE_SCHEMA_VERSION;
+    let json = format!(
+        r#"{{
+  "schema_version": {schema},
+  "fetched_at": "{fetched_at}",
+  "source": "https://example.invalid/model_prices.json",
+  "version": "feedfacecafebeef",
+  "prices": {{
+    "claude-opus-4-8": {{
+      "input": 5e-5,
+      "output": 2.5e-4,
+      "cache_creation": 6.25e-5,
+      "cache_read": 5e-6,
+      "cache_creation_1h": 1e-4
+    }}
+  }}
+}}"#
+    );
+    std::fs::write(dir.join("prices.json"), json).expect("plant prices.json");
+}
+
+/// Write an `[ant]` usage slice for `account` whose single model's token split
+/// matches `PRICED_PAYLOAD`, so the breakdown and the headline must produce the
+/// SAME dollar figure from the SAME source.
+fn plant_usage_slice(account: &str) {
+    let dir = dirs::cache_dir()
+        .expect("cache dir")
+        .join("claudia-statusline")
+        .join("ant")
+        .join("usage");
+    std::fs::create_dir_all(&dir).expect("create usage cache dir");
+    let schema = statusline::ant::cache::USAGE_CACHE_SCHEMA_VERSION;
+    let now = chrono::Utc::now().to_rfc3339();
+    let json = format!(
+        r#"{{
+  "schema_version": {schema},
+  "fetched_at": "{now}",
+  "account": "{account}",
+  "today_usd": 0.0,
+  "mtd_usd": 0.0,
+  "tz": "UTC",
+  "tokens_by_model": {{
+    "claude-opus-4-8": {{
+      "uncached_input": 100000,
+      "cache_read_input": 200000,
+      "cache_creation_1h": 0,
+      "cache_creation_5m": 20000,
+      "output": 10000
+    }}
+  }}
+}}"#
+    );
+    std::fs::write(dir.join(format!("{account}.json")), json).expect("plant usage slice");
+}
+
+/// Render `payload` through the LIBRARY path against a throwaway HOME, running
+/// `plant` AFTER the cache root is redirected so anything it writes lands in the
+/// isolated tree. Restores every mutated env var before returning.
+fn render_lib_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) -> String {
+    let _guard = test_support::init();
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let cfg_path = home.path().join("config.toml");
+    std::fs::write(&cfg_path, config_toml).expect("write config");
+
+    let orig_home = std::env::var_os("HOME");
+    let orig_xdg = std::env::var_os("XDG_CACHE_HOME");
+    let orig_cfg = std::env::var_os("STATUSLINE_CONFIG");
+    let orig_acct = std::env::var_os("STATUSLINE_ANT_ACCOUNT");
+
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+    std::env::set_var("STATUSLINE_CONFIG", &cfg_path);
+    std::env::set_var("STATUSLINE_ANT_ACCOUNT", "work");
+    std::env::set_var("NO_COLOR", "1");
+    statusline::config::reset_config();
+
+    plant();
+
+    let result = statusline::render_from_json(payload, false);
+
+    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
+        Some(v) => std::env::set_var(key, v),
+        None => std::env::remove_var(key),
+    };
+    restore("HOME", orig_home);
+    restore("XDG_CACHE_HOME", orig_xdg);
+    restore("STATUSLINE_CONFIG", orig_cfg);
+    restore("STATUSLINE_ANT_ACCOUNT", orig_acct);
+    std::env::remove_var("NO_COLOR");
+    statusline::config::reset_config();
+
+    result.expect("render must never fail (SC1)")
+}
+
+/// Split a `{api_equiv_cost}|{api_equiv_cost_by_model}` render into its two
+/// halves so each caller can be asserted independently.
+fn split_callers(rendered: &str) -> (String, String) {
+    let (headline, breakdown) = rendered
+        .split_once('|')
+        .unwrap_or_else(|| panic!("layout must render both halves, got: {rendered:?}"));
+    (headline.trim().to_string(), breakdown.trim().to_string())
+}
+
+fn config_with_source(source: &str) -> String {
+    format!(
+        "[ant]\nenabled = true\n\n[pricing]\nsource = \"{source}\"\n\n[layout]\nformat = \"{BOTH_CALLERS_LAYOUT}\"\n"
+    )
+}
+
+#[test]
+#[serial]
+fn source_bundled_is_honored_by_both_render_callers() {
+    // A FRESH synced cache is present, but the user pinned `bundled`. Neither
+    // caller may read it — including the per-model breakdown, which is the one
+    // most likely to be forgotten (Pitfall 6).
+    let out = render_lib_isolated(&config_with_source("bundled"), PRICED_PAYLOAD, || {
+        plant_synced_prices(0);
+        plant_usage_slice("work");
+    });
+    let (headline, breakdown) = split_callers(&out);
+    assert_eq!(
+        headline, BUNDLED_FIGURE,
+        "source=bundled: the headline must ignore the synced cache, got: {out:?}"
+    );
+    assert_eq!(
+        breakdown,
+        format!("claude-opus-4-8:{BUNDLED_FIGURE}"),
+        "source=bundled: the per-model breakdown must ignore the synced cache too, got: {out:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn source_synced_reaches_both_render_callers_even_when_stale() {
+    // An explicitly `synced` source waives staleness demotion (D-08). Both
+    // callers must serve the year-old cache.
+    let out = render_lib_isolated(&config_with_source("synced"), PRICED_PAYLOAD, || {
+        plant_synced_prices(365);
+        plant_usage_slice("work");
+    });
+    let (headline, breakdown) = split_callers(&out);
+    assert_eq!(
+        headline, SYNCED_FIGURE,
+        "source=synced: the headline must use the synced rates, got: {out:?}"
+    );
+    assert_eq!(
+        breakdown,
+        format!("claude-opus-4-8:{SYNCED_FIGURE}"),
+        "source=synced: the breakdown must use the synced rates too, got: {out:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn source_auto_demotes_a_stale_cache_for_both_render_callers() {
+    let out = render_lib_isolated(&config_with_source("auto"), PRICED_PAYLOAD, || {
+        plant_synced_prices(400); // well past the 30d default window
+        plant_usage_slice("work");
+    });
+    let (headline, breakdown) = split_callers(&out);
+    assert_eq!(headline, BUNDLED_FIGURE, "auto must demote a stale cache");
+    assert_eq!(
+        breakdown,
+        format!("claude-opus-4-8:{BUNDLED_FIGURE}"),
+        "auto must demote the stale cache for the breakdown too, got: {out:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn a_fresh_synced_cache_prices_both_render_callers_identically() {
+    // The positive case AND the agreement invariant: one render, two lookups,
+    // one number.
+    let out = render_lib_isolated(&config_with_source("auto"), PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+    });
+    let (headline, breakdown) = split_callers(&out);
+    assert_eq!(headline, SYNCED_FIGURE);
+    assert_eq!(breakdown, format!("claude-opus-4-8:{SYNCED_FIGURE}"));
+    assert!(
+        breakdown.ends_with(&headline),
+        "headline and breakdown must agree on the price of the same model, got: {out:?}"
+    );
+}
+
+#[test]
+#[serial]
+fn a_fresh_synced_cache_leaves_the_default_render_byte_identical() {
+    // SC2, the hard invariant: the default layout references no `api_equiv_*`
+    // var, so even a fresh synced cache + a usage slice cannot change one byte.
+    // (a) Against the pinned v3.1.0 golden payload: still byte-for-byte.
+    let golden = render_lib_isolated("", FIXED_PAYLOAD, || {
+        plant_synced_prices(0);
+        plant_usage_slice("work");
+    });
+    assert_eq!(
+        golden.as_bytes(),
+        read_fixture().as_slice(),
+        "a planted synced cache must not change the default render (SC2)"
+    );
+
+    // (b) Against a token-bearing, synced-priced payload: identical with and
+    // without the cache, so the comparison cannot be satisfied by the payload
+    // simply having nothing to price.
+    let without = render_lib_isolated("", PRICED_PAYLOAD, || {});
+    let with = render_lib_isolated("", PRICED_PAYLOAD, || {
+        plant_synced_prices(0);
+        plant_usage_slice("work");
+    });
+    assert_eq!(
+        with, without,
+        "planting a synced cache must not change one byte of the default render"
+    );
+    assert!(
+        !with.contains('$') && !with.contains("api_equiv"),
+        "the default render must carry no api_equiv output at all, got: {with:?}"
+    );
+}
+
 #[test]
 fn structural_guard_no_spawn_or_socket_in_render_modules() {
     // Whole-file scan for the pure render modules. `src/pricing/mod.rs` and
@@ -498,6 +753,9 @@ fn structural_guard_no_spawn_or_socket_in_render_modules() {
         "src/lib.rs",
         "src/pricing/mod.rs",
         "src/pricing/cache.rs",
+        // The per-model breakdown performs its own price lookups, so it carries
+        // the same offline contract as the headline in `src/display.rs`.
+        "src/layout/variables.rs",
     ] {
         let source = read_src(rel);
         assert_no_forbidden_in(rel, &source);
