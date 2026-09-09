@@ -93,20 +93,23 @@ ALLOWLIST=(
 # Deterministic fallback rates for ids that may be absent from a given upstream
 # snapshot (codeburn-style hardcoded Claude fallbacks). Values are the
 # LiteLLM-verified per-token rates from the Plan 01 snapshot. Echo
-# "input output cache_creation cache_read" for $1, or empty if no fallback.
+# "input output cache_creation cache_read cache_creation_1h" for $1, or empty if
+# no fallback. The 5th value is the 1-HOUR cache-write rate: it is 2x the input
+# rate for every Claude row upstream publishes one for, so the fallback rows
+# follow that same rule rather than inventing a value.
 fallback_rates() {
     case "$1" in
-        claude-3-5-haiku-20241022)  echo "8e-07 4e-06 1e-06 8e-08" ;;
-        claude-3-5-sonnet-20240620) echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
-        claude-3-5-sonnet-20241022) echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
-        claude-3-7-sonnet-20250219) echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
-        claude-3-haiku-20240307)    echo "2.5e-07 1.25e-06 3e-07 3e-08" ;;
-        claude-3-opus-20240229)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06" ;;
-        claude-opus-4-1-20250805)   echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06" ;;
-        claude-opus-4-20250514)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06" ;;
-        claude-opus-4-8)            echo "5e-06 2.5e-05 6.25e-06 5e-07" ;;
-        claude-sonnet-4-20250514)   echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
-        claude-sonnet-4-5-20250929) echo "3e-06 1.5e-05 3.75e-06 3e-07" ;;
+        claude-3-5-haiku-20241022)  echo "8e-07 4e-06 1e-06 8e-08 1.6e-06" ;;
+        claude-3-5-sonnet-20240620) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
+        claude-3-5-sonnet-20241022) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
+        claude-3-7-sonnet-20250219) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
+        claude-3-haiku-20240307)    echo "2.5e-07 1.25e-06 3e-07 3e-08 5e-07" ;;
+        claude-3-opus-20240229)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06 3e-05" ;;
+        claude-opus-4-1-20250805)   echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06 3e-05" ;;
+        claude-opus-4-20250514)     echo "1.5e-05 7.5e-05 1.875e-05 1.5e-06 3e-05" ;;
+        claude-opus-4-8)            echo "5e-06 2.5e-05 6.25e-06 5e-07 1e-05" ;;
+        claude-sonnet-4-20250514)   echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
+        claude-sonnet-4-5-20250929) echo "3e-06 1.5e-05 3.75e-06 3e-07 6e-06" ;;
         *) echo "" ;;
     esac
 }
@@ -158,21 +161,26 @@ fetch_upstream() {
 build_prices_map() {
     local upstream="$1"
     local entries=()
-    local id src rates input output cc cr
+    local id src rates input output cc cr cc1h
 
     for id in "${ALLOWLIST[@]}"; do
         # Each id is sourced from its OWN upstream row — never another model's.
         src="$id"
 
-        # Try upstream first; require all four rates present and numeric.
+        # Try upstream first; require all four base rates present and numeric.
+        # The 1-hour cache-write rate is OPTIONAL: emitted as "-" when upstream
+        # carries none, in which case the field is omitted from the row and the
+        # binary falls back to the 5-minute rate.
         rates="$(jq -r --arg k "$src" '
             .[$k] // empty
             | [ .input_cost_per_token,
                 .output_cost_per_token,
                 .cache_creation_input_token_cost,
-                .cache_read_input_token_cost ]
-            | if (map(. != null and (type=="number")) | all) then
-                  "\(.[0]) \(.[1]) \(.[2]) \(.[3])"
+                .cache_read_input_token_cost ] as $base
+            | (.cache_creation_input_token_cost_above_1hr
+               | if (. != null and (type=="number")) then tostring else "-" end) as $h
+            | if ($base | map(. != null and (type=="number")) | all) then
+                  "\($base[0]) \($base[1]) \($base[2]) \($base[3]) \($h)"
               else empty end
         ' "${upstream}")"
 
@@ -183,15 +191,27 @@ build_prices_map() {
             echo "vendor-pricing: note: '${id}' not in upstream snapshot — using vendored fallback rate" >&2
         fi
 
-        read -r input output cc cr <<<"${rates}"
+        read -r input output cc cr cc1h <<<"${rates}"
+        [ -n "${cc1h}" ] || cc1h="-"
 
-        entries+=("$(jq -cn \
-            --arg id "$id" \
-            --argjson input "$input" \
-            --argjson output "$output" \
-            --argjson cc "$cc" \
-            --argjson cr "$cr" \
-            '{($id): {input: $input, output: $output, cache_creation: $cc, cache_read: $cr}}')")
+        if [ "${cc1h}" = "-" ]; then
+            entries+=("$(jq -cn \
+                --arg id "$id" \
+                --argjson input "$input" \
+                --argjson output "$output" \
+                --argjson cc "$cc" \
+                --argjson cr "$cr" \
+                '{($id): {input: $input, output: $output, cache_creation: $cc, cache_read: $cr}}')")
+        else
+            entries+=("$(jq -cn \
+                --arg id "$id" \
+                --argjson input "$input" \
+                --argjson output "$output" \
+                --argjson cc "$cc" \
+                --argjson cr "$cr" \
+                --argjson cc1h "$cc1h" \
+                '{($id): {input: $input, output: $output, cache_creation: $cc, cache_read: $cr, cache_creation_1h: $cc1h}}')")
+        fi
     done
 
     printf '%s\n' "${entries[@]}" | jq -cs 'add'
@@ -200,7 +220,9 @@ build_prices_map() {
 # Emit the final canonical claude_prices.json to stdout, byte-compatible with the
 # Plan 01 serializer (Python json.dumps: lowercase-e shortest floats, 2-space
 # indent, FIXED top-level key order, sorted price ids + sorted inner keys,
-# trailing newline). Args: <prices_map_json> <vendored_at> <version>.
+# trailing newline). Rows carry the optional cache_creation_1h key only when
+# upstream (or the fallback table) supplies one. Args: <prices_map_json>
+# <vendored_at> <version>.
 emit_canonical() {
     local prices_map="$1" vendored_at="$2" version="$3"
     PRICES_MAP="${prices_map}" \
@@ -212,7 +234,8 @@ emit_canonical() {
 import json, os, sys
 
 prices = json.loads(os.environ["PRICES_MAP"])
-# Sorted ids; each entry with sorted inner keys (cache_creation/cache_read/input/output).
+# Sorted ids; each entry with sorted inner keys
+# (cache_creation/cache_creation_1h?/cache_read/input/output).
 prices_sorted = {k: dict(sorted(prices[k].items())) for k in sorted(prices)}
 
 out = {
@@ -227,9 +250,11 @@ PY
 }
 
 # Validate a generated table file against the slim schema (review HIGH-3).
-# Asserts: metadata fields present; every prices.* entry has all four rates as
-# finite numbers > 0 with cache_read < input. Exits non-zero with a message on
-# the first malformed entry.
+# Asserts: metadata fields present; every prices.* entry has all four base rates
+# as finite numbers > 0 with cache_read < input, and — when present — a
+# cache_creation_1h that is finite, > 0, and >= the 5-minute cache_creation rate
+# (a 1-hour write is never cheaper than a 5-minute one). Exits non-zero with a
+# message on the first malformed entry.
 validate_table() {
     local file="$1"
 
@@ -251,7 +276,11 @@ validate_table() {
              (.value.output         | type=="number" and isinfinite==false and isnan==false and . > 0) and
              (.value.cache_creation | type=="number" and isinfinite==false and isnan==false and . > 0) and
              (.value.cache_read     | type=="number" and isinfinite==false and isnan==false and . > 0) and
-             (.value.cache_read < .value.input)) | not)
+             (.value.cache_read < .value.input) and
+             (if (.value | has("cache_creation_1h")) then
+                  (.value.cache_creation_1h | type=="number" and isinfinite==false and isnan==false and . > 0)
+                  and (.value.cache_creation_1h >= .value.cache_creation)
+              else true end)) | not)
         | .key
     ' "${file}")"
 

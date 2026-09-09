@@ -7,6 +7,7 @@ use crate::config::{
     ContextComponentConfig, CostComponentConfig, DirectoryComponentConfig, GitComponentConfig,
     ModelComponentConfig,
 };
+use crate::utils::sanitize_for_terminal;
 
 /// Payload session token counts (`context_window.current_usage`) threaded into
 /// the cost-from-tokens builder. Each field is `Option<u64>`: `None`/absent is
@@ -1012,7 +1013,16 @@ impl VariableBuilder {
             if !pairs.is_empty() {
                 let combined = pairs
                     .iter()
-                    .map(|(model, total)| format!("{}:{}", model, format_token_count(*total)))
+                    .map(|(model, total)| {
+                        // Model ids come from the Admin usage cache (untrusted
+                        // external input) — sanitize before they reach the
+                        // terminal (10-REVIEW-CODEX.md MEDIUM 1).
+                        format!(
+                            "{}:{}",
+                            sanitize_for_terminal(model),
+                            format_token_count(*total)
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(" ");
                 self.variables.insert(
@@ -1122,17 +1132,25 @@ impl VariableBuilder {
                 .iter()
                 .map(|(model, tb)| {
                     let cost = match crate::pricing::lookup(model, aliases) {
+                        // The two cache-creation TTLs are priced on their OWN
+                        // rates: a 1-hour write costs ~1.6x a 5-minute one, so
+                        // summing the token counts onto the 5-minute rate
+                        // understates it by ~37% (10-REVIEW-CODEX.md HIGH 2).
+                        // Each term is multiplied independently in f64, so there
+                        // is no integer sum to overflow.
                         PriceLookup::Priced(e) => Some(
                             (tb.uncached_input as f64) * e.input
                                 + (tb.cache_read_input as f64) * e.cache_read
-                                + (tb.cache_creation_1h.saturating_add(tb.cache_creation_5m)
-                                    as f64)
-                                    * e.cache_creation
+                                + (tb.cache_creation_5m as f64) * e.cache_creation
+                                + (tb.cache_creation_1h as f64) * e.cache_creation_1h_rate()
                                 + (tb.output as f64) * e.output,
                         ),
                         PriceLookup::Unpriceable => None,
                     };
-                    (model.clone(), cost)
+                    // Model ids come from the Admin usage cache (untrusted
+                    // external input) — sanitize before they reach the terminal
+                    // (10-REVIEW-CODEX.md MEDIUM 1).
+                    (sanitize_for_terminal(model), cost)
                 })
                 .collect();
             // Sort: priced entries by cost desc; unpriceable (None) sort last,
@@ -1178,11 +1196,22 @@ impl VariableBuilder {
 
         match pricing {
             Some(PriceLookup::Priced(e)) => {
-                let input = (tokens.input.unwrap_or(0) as f64) * e.input;
-                let output = (tokens.output.unwrap_or(0) as f64) * e.output;
-                let cache_write = (tokens.cache_creation.unwrap_or(0) as f64) * e.cache_creation;
-                let cache_read = (tokens.cache_read.unwrap_or(0) as f64) * e.cache_read;
-                let total = input + output + cache_write + cache_read;
+                // Each component is priced only when its OWN token count is
+                // present. An absent count must NOT render as `$0.00` — that is
+                // indistinguishable from genuine zero usage (10-REVIEW-CODEX.md
+                // HIGH 4). The headline totals whatever IS present.
+                let input = tokens.input.map(|t| (t as f64) * e.input);
+                let output = tokens.output.map(|t| (t as f64) * e.output);
+                // The session payload reports one undifferentiated
+                // `cache_creation_input_tokens` with no 1h/5m split, so it is
+                // priced on the 5-minute rate. Only the per-model Admin-cache
+                // path (above) holds the split and can price the 1-hour rate.
+                let cache_write = tokens.cache_creation.map(|t| (t as f64) * e.cache_creation);
+                let cache_read = tokens.cache_read.map(|t| (t as f64) * e.cache_read);
+                let total = input.unwrap_or(0.0)
+                    + output.unwrap_or(0.0)
+                    + cache_write.unwrap_or(0.0)
+                    + cache_read.unwrap_or(0.0);
 
                 self.variables
                     .insert("api_equiv_cost".to_string(), fmt(Some(total)));
@@ -1190,18 +1219,16 @@ impl VariableBuilder {
                     "api_equiv_cost_labeled".to_string(),
                     format!("{color}~${total:.2} API-equiv{reset}"),
                 );
-                self.variables
-                    .insert("api_equiv_cost_input".to_string(), fmt(Some(input)));
-                self.variables
-                    .insert("api_equiv_cost_output".to_string(), fmt(Some(output)));
-                self.variables.insert(
-                    "api_equiv_cost_cache_write".to_string(),
-                    fmt(Some(cache_write)),
-                );
-                self.variables.insert(
-                    "api_equiv_cost_cache_read".to_string(),
-                    fmt(Some(cache_read)),
-                );
+                for (key, value) in [
+                    ("api_equiv_cost_input", input),
+                    ("api_equiv_cost_output", output),
+                    ("api_equiv_cost_cache_write", cache_write),
+                    ("api_equiv_cost_cache_read", cache_read),
+                ] {
+                    if let Some(v) = value {
+                        self.variables.insert(key.to_string(), fmt(Some(v)));
+                    }
+                }
             }
             // Unpriceable OR no model resolved: render the SHARED `unknown` marker
             // consistently across every var (D-13, review MEDIUM-4) — never $0.00.
@@ -1375,6 +1402,7 @@ mod api_equiv_cost_tests {
             output: 2.5e-05,
             cache_creation: 6.25e-06,
             cache_read: 5e-07,
+            cache_creation_1h: Some(1e-05),
         };
         &E
     }
@@ -1531,8 +1559,11 @@ mod api_equiv_cost_tests {
     }
 
     #[test]
-    fn partial_token_data_prices_present_fields() {
-        // Only output present -> headline = output cost only; absent fields = 0.
+    fn partial_token_data_prices_present_fields_and_omits_absent_ones() {
+        // Only output present -> headline = output cost only, and the three
+        // ABSENT components render nothing at all. Previously they rendered
+        // `$0.00`, which is indistinguishable from genuine zero usage
+        // (10-REVIEW-CODEX.md HIGH 4).
         let vars = VariableBuilder::new()
             .api_equiv_cost(
                 Some(priced()),
@@ -1551,6 +1582,41 @@ mod api_equiv_cost_tests {
         assert_eq!(
             vars.get("api_equiv_cost_output").map(String::as_str),
             Some("$0.25")
+        );
+        for key in [
+            "api_equiv_cost_input",
+            "api_equiv_cost_cache_write",
+            "api_equiv_cost_cache_read",
+        ] {
+            assert!(
+                !vars.contains_key(key),
+                "absent token type must NOT insert `{key}` (never $0.00)"
+            );
+        }
+    }
+
+    #[test]
+    fn zero_token_count_is_distinguishable_from_an_absent_one() {
+        // An explicit 0 IS real data and must still price (as $0.00); only an
+        // ABSENT count is omitted. This is the distinction HIGH 4 destroyed.
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(0), Some(10_000), None, None),
+                None,
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        assert_eq!(
+            vars.get("api_equiv_cost_input").map(String::as_str),
+            Some("$0.00"),
+            "an explicitly-reported 0 must render, not vanish"
+        );
+        assert!(
+            !vars.contains_key("api_equiv_cost_cache_read"),
+            "an absent count must still be omitted"
         );
     }
 
@@ -1638,14 +1704,91 @@ mod api_equiv_cost_tests {
             .get("api_equiv_cost_by_model")
             .map(String::as_str)
             .expect("by_model present when slice present");
-        // opus ($1.50) sorts before the haiku entry (cheaper) by cost desc.
+        // opus ($0.50) sorts before the haiku entry (cheaper) by cost desc.
         assert!(
-            by_model.starts_with("claude-opus-4-8:$1.50"),
+            by_model.starts_with("claude-opus-4-8:$0.50"),
             "by_model must lead with the costliest model, got {by_model:?}"
         );
         assert!(
             by_model.contains(' '),
             "must be space-joined, got {by_model:?}"
+        );
+    }
+
+    #[test]
+    fn by_model_prices_one_hour_cache_writes_on_their_own_rate() {
+        // 100k 1-hour cache-creation tokens on claude-opus-4-8. The bundled 1h
+        // rate is $10/MTok -> $1.00. Pricing them on the 5-minute rate
+        // ($6.25/MTok -> $0.62) understates by ~37% (10-REVIEW-CODEX.md HIGH 2).
+        let mut tokens_by_model = HashMap::new();
+        tokens_by_model.insert(
+            "claude-opus-4-8".to_string(),
+            TokenBreakdown {
+                cache_creation_1h: 100_000,
+                ..Default::default()
+            },
+        );
+        let slice = UsageCache {
+            tokens_by_model,
+            ..cache_slice()
+        };
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                Some(&slice),
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        let by_model = vars
+            .get("api_equiv_cost_by_model")
+            .map(String::as_str)
+            .expect("by_model present");
+        assert_eq!(
+            by_model, "claude-opus-4-8:$1.00",
+            "1-hour cache writes must use the 1-hour rate, got {by_model:?}"
+        );
+        assert!(
+            !by_model.contains("$0.62"),
+            "1-hour writes must NOT be priced at the 5-minute rate, got {by_model:?}"
+        );
+    }
+
+    #[test]
+    fn by_model_sanitizes_untrusted_model_ids() {
+        // Model ids come from the Admin usage cache. A control sequence in one
+        // must not reach the terminal (10-REVIEW-CODEX.md MEDIUM 1).
+        let mut tokens_by_model = HashMap::new();
+        tokens_by_model.insert(
+            "evil\u{1b}[31m\u{7}model".to_string(),
+            TokenBreakdown {
+                uncached_input: 1_000,
+                ..Default::default()
+            },
+        );
+        let slice = UsageCache {
+            tokens_by_model,
+            ..cache_slice()
+        };
+        let vars = VariableBuilder::new()
+            .api_equiv_cost(
+                Some(priced()),
+                tokens(Some(1), None, None, None),
+                Some(&slice),
+                &HashMap::new(),
+                "",
+                "",
+            )
+            .build();
+        let by_model = vars
+            .get("api_equiv_cost_by_model")
+            .map(String::as_str)
+            .expect("by_model present");
+        assert!(
+            !by_model.contains('\u{1b}') && !by_model.contains('\u{7}'),
+            "untrusted model id must be sanitized, got {by_model:?}"
         );
     }
 
@@ -1717,7 +1860,7 @@ mod api_equiv_cost_tests {
         );
         // The priceable opus entry still renders its dollar figure.
         assert!(
-            by_model.contains("claude-opus-4-8:$1.50"),
+            by_model.contains("claude-opus-4-8:$0.50"),
             "priceable model still prices, got {by_model:?}"
         );
     }

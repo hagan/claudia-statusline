@@ -58,6 +58,7 @@ pub struct Config {
     /// Pricing configuration: bundled offline Claude price table + exact-match
     /// lookup aliases (`[pricing]` / `[pricing.aliases]`, PRICE-01/PRICE-05).
     /// Absent section parses to default → byte-identical render (D-11).
+    #[serde(default, deserialize_with = "crate::pricing::deserialize_lenient")]
     pub pricing: crate::pricing::PricingConfig,
 }
 

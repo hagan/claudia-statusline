@@ -23,23 +23,54 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
-/// Per-token costs (USD) for one model. Four additive dimensions, all `f64`.
+/// Per-token costs (USD) for one model. Four required additive dimensions plus
+/// an optional fifth (the 1-hour cache-write rate), all `f64`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct PriceEntry {
     pub input: f64,
     pub output: f64,
+    /// Cache-write rate for the 5-minute TTL (upstream
+    /// `cache_creation_input_token_cost`). Also the fallback for 1-hour writes
+    /// when [`PriceEntry::cache_creation_1h`] is absent.
     pub cache_creation: f64,
     pub cache_read: f64,
+    /// Cache-write rate for the 1-hour TTL (upstream
+    /// `cache_creation_input_token_cost_above_1hr`), ~2x the input rate across
+    /// the whole Claude family — roughly **1.6x** the 5-minute rate.
+    ///
+    /// `None` when the snapshot carries no 1-hour rate for this row, in which
+    /// case [`PriceEntry::cache_creation_1h_rate`] falls back to the 5-minute
+    /// rate (the pre-existing behavior). Optional so that a row from an older
+    /// snapshot — or a Phase 11 synced cache — still deserializes and prices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_1h: Option<f64>,
 }
 
 impl PriceEntry {
-    /// True only when all four rates are finite and strictly positive (review
-    /// LOW-7). A row that fails this is treated as *unpriceable* at lookup time,
-    /// never priced as `$0.00`.
+    /// True only when all four required rates are finite and strictly positive
+    /// (review LOW-7), and the optional 1-hour rate — when present — is too. A
+    /// row that fails this is treated as *unpriceable* at lookup time, never
+    /// priced as `$0.00`.
     pub fn is_valid(&self) -> bool {
         let ok = |x: f64| x.is_finite() && x > 0.0;
-        ok(self.input) && ok(self.output) && ok(self.cache_creation) && ok(self.cache_read)
+        ok(self.input)
+            && ok(self.output)
+            && ok(self.cache_creation)
+            && ok(self.cache_read)
+            && self.cache_creation_1h.is_none_or(ok)
+    }
+
+    /// The rate to apply to 1-hour cache-creation tokens.
+    ///
+    /// Falls back to the 5-minute [`PriceEntry::cache_creation`] rate when the
+    /// snapshot carries no 1-hour rate, so a caller can always price 1-hour
+    /// tokens without a presence check. Pricing 1-hour writes at the 5-minute
+    /// rate understates them by ~37% (10-REVIEW-CODEX.md HIGH 2), so callers
+    /// that hold a 1h/5m split MUST use this for the 1-hour portion rather than
+    /// summing the two token counts onto one rate.
+    pub fn cache_creation_1h_rate(&self) -> f64 {
+        self.cache_creation_1h.unwrap_or(self.cache_creation)
     }
 }
 
@@ -146,6 +177,58 @@ fn gate(entry: &'static PriceEntry) -> PriceLookup {
     }
 }
 
+/// Lenient deserializer for the `[pricing]` config table.
+///
+/// The [`PricingConfig`] surface is intentionally STRICT — an unrecognized
+/// `source` value is a hard deserialization error so that `config --validate`
+/// (Phase 12) can report it precisely. But [`crate::config::Config`] is loaded
+/// with `unwrap_or_default()`: a strict error anywhere in the document discards
+/// the **entire** config, so one typo in `[pricing]` would silently reset a
+/// user's whole layout — a render change from merely *having* a bad pricing key,
+/// which breaks the byte-identical-when-disabled invariant
+/// (10-REVIEW-CODEX.md MEDIUM 4).
+///
+/// This confines the blast radius: a malformed `[pricing]` table falls back to
+/// [`PricingConfig::default`] and the rest of the config still loads. The strict
+/// path stays available to `config --validate`, which re-parses the table
+/// directly and surfaces the error there — where it is actionable and cannot
+/// break a render.
+pub fn deserialize_lenient<'de, D>(deserializer: D) -> std::result::Result<PricingConfig, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Config is TOML-only (`Config::load_from_file`), so buffering through
+    // `toml::Value` is sufficient to retry the conversion without the error
+    // aborting the whole document.
+    let value = toml::Value::deserialize(deserializer)?;
+    match PricingConfig::deserialize(value) {
+        Ok(cfg) => {
+            if cfg.source == PricingSource::Synced {
+                // Accepted by the enum but not yet wired: the synced cache lands
+                // in Phase 11. Say so rather than silently serving bundled
+                // prices under a `synced` label (10-REVIEW-CODEX.md MEDIUM 4).
+                log::warn!(
+                    "[pricing] source = \"synced\" is not implemented yet; using the bundled table"
+                );
+            }
+            Ok(cfg)
+        }
+        Err(e) => {
+            // `toml` errors are multi-line (message + source span); flatten so
+            // the warning stays one readable line.
+            let detail = e
+                .to_string()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            log::warn!(
+                "Invalid [pricing] config: {detail}. Using pricing defaults (rest of config kept)."
+            );
+            Ok(PricingConfig::default())
+        }
+    }
+}
+
 /// Strict pricing-source enum (review MEDIUM-6).
 ///
 /// `#[serde(rename_all = "lowercase")]` so the TOML value is `auto` / `bundled`
@@ -162,6 +245,10 @@ pub enum PricingSource {
     /// The compiled-in bundled table (this phase).
     Bundled,
     /// A synced cache (reserved for Phase 11).
+    ///
+    /// Accepted by the parser but **not yet implemented**: until Phase 11 lands
+    /// the synced cache, selecting it logs a warning and serves the bundled
+    /// table (10-REVIEW-CODEX.md MEDIUM 4).
     Synced,
 }
 
@@ -347,8 +434,100 @@ mod tests {
             output: 1.0,
             cache_creation: 1.0,
             cache_read: 0.0,
+            cache_creation_1h: None,
         };
         assert!(!bad.is_valid(), "zero-rate row must be invalid (LOW-7)");
+    }
+
+    #[test]
+    fn cache_creation_1h_rate_falls_back_to_five_minute_rate() {
+        // A row with no 1-hour rate prices 1-hour writes on the 5-minute rate
+        // (the pre-existing behavior) rather than dropping them or panicking.
+        let no_1h = PriceEntry {
+            input: 1e-06,
+            output: 2e-06,
+            cache_creation: 1.25e-06,
+            cache_read: 1e-07,
+            cache_creation_1h: None,
+        };
+        assert_eq!(no_1h.cache_creation_1h_rate(), 1.25e-06);
+        assert!(
+            no_1h.is_valid(),
+            "an absent 1h rate must not invalidate a row"
+        );
+
+        let with_1h = PriceEntry {
+            cache_creation_1h: Some(2e-06),
+            ..no_1h
+        };
+        assert_eq!(with_1h.cache_creation_1h_rate(), 2e-06);
+    }
+
+    #[test]
+    fn present_but_invalid_1h_rate_makes_the_row_unpriceable() {
+        // A present-but-garbage 1h rate must not price as $0.00 or NaN.
+        let base = PriceEntry {
+            input: 1e-06,
+            output: 2e-06,
+            cache_creation: 1.25e-06,
+            cache_read: 1e-07,
+            cache_creation_1h: None,
+        };
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let e = PriceEntry {
+                cache_creation_1h: Some(bad),
+                ..base
+            };
+            assert!(
+                !e.is_valid(),
+                "a present 1h rate of {bad} must invalidate the row"
+            );
+        }
+    }
+
+    #[test]
+    fn every_bundled_row_prices_one_hour_writes_above_five_minute_writes() {
+        // A 1-hour cache write is never cheaper than a 5-minute one. Guards the
+        // whole embedded table against a transform that re-collapses the two
+        // rates (10-REVIEW-CODEX.md HIGH 2).
+        for (id, e) in &table().prices {
+            assert!(
+                e.cache_creation_1h_rate() >= e.cache_creation,
+                "{id}: 1h rate {} must be >= 5m rate {}",
+                e.cache_creation_1h_rate(),
+                e.cache_creation
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_pricing_table_defaults_only_pricing_not_the_whole_config() {
+        // A typo'd `source` must NOT discard the user's entire config
+        // (10-REVIEW-CODEX.md MEDIUM 4). The strict enum still rejects the
+        // value; the lenient field deserializer confines the damage.
+        let toml = r#"
+[layout]
+format = "{directory} {git_branch}"
+
+[pricing]
+source = "buntled"
+"#;
+        let cfg: crate::config::Config =
+            toml::from_str(toml).expect("a bad [pricing] value must not fail the whole document");
+        assert_eq!(
+            cfg.layout.format, "{directory} {git_branch}",
+            "the rest of the config must survive a malformed [pricing] table"
+        );
+        assert_eq!(
+            cfg.pricing.source,
+            PricingSource::Auto,
+            "the malformed [pricing] table must fall back to defaults"
+        );
+        // The strict surface is unchanged — `config --validate` can still report it.
+        assert!(
+            toml::from_str::<PricingConfig>("source = \"buntled\"\n").is_err(),
+            "PricingConfig itself must stay strict for config --validate"
+        );
     }
 
     #[test]
