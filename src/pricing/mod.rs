@@ -47,18 +47,30 @@ pub struct PriceEntry {
     pub input: f64,
     pub output: f64,
     /// Cache-write rate for the 5-minute TTL (upstream
-    /// `cache_creation_input_token_cost`). Also the fallback for 1-hour writes
-    /// when [`PriceEntry::cache_creation_1h`] is absent.
+    /// `cache_creation_input_token_cost`). It prices 5-minute writes ONLY and is
+    /// **never** substituted for an absent 1-hour rate; see
+    /// [`PriceEntry::cache_creation_1h_rate`]'s prohibition (R2-1).
+    ///
+    /// It does bound the 1-hour dimension: [`pick`]'s same-id backfill refuses
+    /// a bundled donor rate cheaper than this one, because a 1-hour write is
+    /// never cheaper than a 5-minute one.
     pub cache_creation: f64,
     pub cache_read: f64,
     /// Cache-write rate for the 1-hour TTL (upstream
     /// `cache_creation_input_token_cost_above_1hr`), ~2x the input rate across
     /// the whole Claude family — roughly **1.6x** the 5-minute rate.
     ///
-    /// `None` when the snapshot carries no 1-hour rate for this row, in which
-    /// case [`PriceEntry::cache_creation_1h_rate`] falls back to the 5-minute
-    /// rate (the pre-existing behavior). Optional so that a row from an older
-    /// snapshot — or a Phase 11 synced cache — still deserializes and prices.
+    /// `None` means the 1-hour dimension is simply ABSENT on this row. There is
+    /// no substitution: [`PriceEntry::cache_creation_1h_rate`] returns `None`
+    /// and a caller holding 1-hour tokens renders the shared `unknown` marker
+    /// (R2-1). The ONLY way an absent rate is recovered is [`pick`]'s
+    /// same-id backfill from the bundled row.
+    ///
+    /// Optional so that a row from an older snapshot — or a Phase 11 synced
+    /// cache — still deserializes and prices. This is the ONE optional price
+    /// dimension; `tests/ant_invariant_tests.rs`'s
+    /// `price_entry_has_exactly_one_optional_dimension` fails if a second is
+    /// added without extending the backfill.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_creation_1h: Option<f64>,
 }
@@ -318,10 +330,36 @@ fn max_age_window(raw: &str) -> std::time::Duration {
 /// and nothing else. `Some(Priced(..))` on the first candidate that passes
 /// [`PriceEntry::is_valid`], `None` otherwise.
 ///
-/// Union rule (D-06): the synced row WINS when it is usable, and the bundled row
-/// FILLS THE GAP otherwise. A refresh can therefore only ADD or UPDATE prices —
-/// it can never remove coverage the bundle ships, not even by publishing a
-/// zero / non-finite / out-of-band row for an id the bundle prices correctly.
+/// # Union rule (D-06), refined to be per-DIMENSION
+///
+/// The synced row WINS the ROW when it is usable, and the bundled row FILLS THE
+/// GAP otherwise. But the win is not unconditional across every field: the ONE
+/// optional dimension, [`PriceEntry::cache_creation_1h`], is merged per-id from
+/// the bundled row whenever the winning row omits it (see [`backfill_1h`]).
+///
+/// Without that merge the union was per-ROW, and [`PriceEntry::is_valid`]
+/// deliberately treats an absent 1-hour rate as fine — so a synced row with four
+/// good base rates and no 1-hour rate DISPLACED a bundled row that had one.
+/// Downstream, `src/layout/variables.rs` refuses the whole figure when 1-hour
+/// tokens are present and no rate is, so a routine refresh could turn
+/// `claude-opus-4-8:$12.34` into `claude-opus-4-8:unknown` — losing coverage the
+/// bundle ships (11-REVIEW.md CR-02; 11-VERIFICATION.md truth 5).
+///
+/// The donor is `table().prices.get(id)` for the **SAME** `id` already resolved
+/// by the caller. There is no fuzzy matching, no normalization, no alias
+/// guessing and no cross-model borrowing (SC3), and the donor never comes from
+/// the untrusted synced cache. It must additionally pass the same plausibility
+/// band [`MIN_RATE`]`..=`[`MAX_RATE`] that [`PriceEntry::is_valid`] applies AND
+/// be coherent with the winning row's own 5-minute rate. When it is not, the
+/// 1-hour dimension stays absent and that model's breakdown renders `unknown` —
+/// deliberately, per [`PriceEntry::cache_creation_1h_rate`]'s prohibition on
+/// substituting a knowingly-understated rate (R2-1). That single narrow refusal
+/// is the only residual path by which a refresh can still produce `unknown`.
+///
+/// A refresh can therefore ADD or UPDATE prices, but it cannot remove coverage
+/// the bundle ships — not by publishing a zero / non-finite / out-of-band row
+/// for an id the bundle prices correctly, and no longer by publishing a row that
+/// merely omits the optional 1-hour rate.
 ///
 /// A present-but-UNUSABLE row is indistinguishable from an absent one for
 /// resolution purposes, so it returns `None` and the caller proceeds to alias
@@ -332,16 +370,47 @@ fn max_age_window(raw: &str) -> std::time::Duration {
 /// so a single junk synced row for a gateway model id silently disabled the
 /// user's `[pricing.aliases]` entry for it (WR-04).
 fn pick(synced: Option<&cache::PriceCache>, id: &str) -> Option<PriceLookup> {
-    [
-        synced.and_then(|c| c.prices.get(id)),
-        table().prices.get(id),
-    ]
-    .into_iter()
-    .flatten()
-    .find_map(|candidate| match gate(candidate) {
-        PriceLookup::Priced(entry) => Some(PriceLookup::Priced(entry)),
-        PriceLookup::Unpriceable => None,
-    })
+    // Bound ONCE: the bundled row is both the second candidate and the backfill
+    // donor, and both uses must name the same row for the same id.
+    let bundled = table().prices.get(id);
+    [synced.and_then(|c| c.prices.get(id)), bundled]
+        .into_iter()
+        .flatten()
+        .find_map(|candidate| match gate(candidate) {
+            PriceLookup::Priced(mut entry) => {
+                backfill_1h(&mut entry, bundled);
+                Some(PriceLookup::Priced(entry))
+            }
+            PriceLookup::Unpriceable => None,
+        })
+}
+
+/// Merge the ONE optional price dimension into `entry` from the SAME id's
+/// bundled row (`donor`), per [`pick`]'s per-dimension union rule (CR-02).
+///
+/// No-op when `entry` already carries a 1-hour rate (the merge fills a gap, it
+/// never overwrites) and when `entry` IS the donor (a bundled-only lookup).
+///
+/// The donor is admitted only when all three hold:
+///
+/// 1. it is finite,
+/// 2. it falls inside the shared plausibility band
+///    [`MIN_RATE`]`..=`[`MAX_RATE`] — the same constants
+///    [`PriceEntry::is_valid`] uses, referenced rather than retyped so a future
+///    band change moves both sites together, and
+/// 3. it is `>= entry.cache_creation` — a 1-hour cache write is never cheaper
+///    than a 5-minute one. If upstream both dropped the 1-hour key AND raised
+///    the 5-minute rate above the bundled 1-hour rate, splicing the older,
+///    cheaper rate in would render a figure known to UNDERSTATE the 1-hour term.
+///    Refusing yields an honest `unknown` instead
+///    ([`PriceEntry::cache_creation_1h_rate`], R2-1).
+fn backfill_1h(entry: &mut PriceEntry, donor: Option<&PriceEntry>) {
+    if entry.cache_creation_1h.is_some() {
+        return;
+    }
+    entry.cache_creation_1h = donor.and_then(|d| d.cache_creation_1h).filter(|r| {
+        r.is_finite() && (MIN_RATE..=MAX_RATE).contains(r) && *r >= entry.cache_creation
+    });
 }
 
 /// Exact-match-only lookup against an ALREADY-RESOLVED synced map.
@@ -1747,6 +1816,51 @@ source = "buntled"
             e.cache_creation_1h, None,
             "an incoherent donor must be REFUSED: rendering `unknown` beats \
              rendering a knowingly-understated 1-hour term (R2-1)"
+        );
+    }
+
+    /// The donor must clear the same plausibility band [`PriceEntry::is_valid`]
+    /// applies. Exercised against [`backfill_1h`] directly, because every row
+    /// the bundled table ships passes the band by construction
+    /// (`every_bundled_row_passes_is_valid`) — so an out-of-band donor is
+    /// unreachable through `lookup_in` without corrupting the compiled-in table.
+    #[test]
+    fn backfill_refuses_an_out_of_band_donor() {
+        let winner = PriceEntry {
+            input: UPLIFT_INPUT,
+            output: UPLIFT_OUTPUT,
+            cache_creation: UPLIFT_CACHE_CREATION,
+            cache_read: UPLIFT_CACHE_READ,
+            cache_creation_1h: None,
+        };
+        // Above MAX_RATE, below MIN_RATE, non-finite, and NaN — each must be
+        // refused even though all four are >= the winner's 5-minute rate (or
+        // vacuously so), so the band alone is what rejects them.
+        for bad in [MAX_RATE * 10.0, MIN_RATE / 10.0, f64::INFINITY, f64::NAN] {
+            let donor = PriceEntry {
+                cache_creation_1h: Some(bad),
+                ..winner
+            };
+            let mut got = winner;
+            backfill_1h(&mut got, Some(&donor));
+            assert_eq!(
+                got.cache_creation_1h, None,
+                "donor rate {bad} is outside {MIN_RATE}..={MAX_RATE} (or not \
+                 finite) and must be refused, not spliced into a rendered figure"
+            );
+        }
+        // Sensitivity: an IN-band donor at the same call site IS admitted, so
+        // the loop above cannot pass because `backfill_1h` is inert.
+        let good = PriceEntry {
+            cache_creation_1h: Some(UPLIFT_CACHE_CREATION * 1.6),
+            ..winner
+        };
+        let mut got = winner;
+        backfill_1h(&mut got, Some(&good));
+        assert_eq!(
+            got.cache_creation_1h,
+            Some(UPLIFT_CACHE_CREATION * 1.6),
+            "test bug: an in-band, coherent donor must still be admitted"
         );
     }
 
