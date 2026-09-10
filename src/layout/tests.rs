@@ -2261,3 +2261,70 @@ fn uses_variable_prefix_fails_open_on_an_unparseable_template() {
          silently blank a price the user templated"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Plan 11-06 Task 1: the gate must be a SUPERSET of what `render()` substitutes
+// ---------------------------------------------------------------------------
+//
+// Two complementary halves, both exercised here:
+//
+//   * `uses_variable_prefix` (AST) — must now also look INSIDE a conditional's
+//     `{if ...}` CONDITION, which the previous `{ if_branch, else_branch, .. }`
+//     destructure silently discarded (review CR-01, second instance).
+//   * `uses_variable` (raw text) — must match exactly the braced placeholders
+//     `LayoutRenderer::render`'s `.replace("{name}", ..)` can substitute, and
+//     nothing else. This is the half that keeps the zero-read guarantee intact
+//     while closing the escaped-brace hole.
+
+#[test]
+fn uses_variable_prefix_counts_a_variable_used_only_in_a_condition() {
+    // The variable never appears as a `{...}` placeholder in a branch — only as
+    // the conditional's condition. The method's own doc comment promises this
+    // counts as a use; before 11-06 the `Conditional` arm dropped `condition`.
+    let renderer = LayoutRenderer::with_format("{if api_equiv_cost}x{endif}", "");
+    assert!(
+        renderer.uses_variable_prefix("api_equiv_cost"),
+        "a variable referenced only in an {{if ..}} CONDITION must count as used"
+    );
+}
+
+#[test]
+fn uses_variable_prefix_counts_a_negated_condition() {
+    // Same, through `Condition::Negated` — all four `Condition` variants carry a
+    // variable name and all four must be scanned.
+    let renderer = LayoutRenderer::with_format("{if !api_equiv_cost}x{endif}", "");
+    assert!(
+        renderer.uses_variable_prefix("api_equiv_cost"),
+        "a NEGATED condition still references the variable and must count as used"
+    );
+}
+
+#[test]
+fn uses_variable_matches_only_a_braced_placeholder() {
+    // `uses_variable` is the raw-text half of the superset gate in
+    // `src/display.rs`. It must answer exactly the question `render()` asks —
+    // "does the raw template contain the substring `{name}`?" — so that:
+    //
+    //  * `"{{api_equiv_cost}"` matches (the parser eats the leading `{{` as an
+    //    escaped literal so the AST has NO Variable node, yet `render()` still
+    //    substitutes `{api_equiv_cost}` starting at byte 1 — review CR-01), and
+    //  * a bare literal mention with no braces does NOT match, which is why
+    //    ORing this half in cannot weaken the RV-L1 / WR-07 zero-read guarantee.
+    let escaped = LayoutRenderer::with_format("{{api_equiv_cost}", "");
+    assert!(
+        escaped.uses_variable("api_equiv_cost"),
+        "the raw text contains `{{api_equiv_cost}}`, which render() WILL substitute"
+    );
+    assert!(
+        !escaped.uses_variable_prefix("api_equiv_cost"),
+        "the AST half genuinely sees no Variable node here — the superset comes \
+         from display.rs ORing the two halves, not from weakening this one"
+    );
+
+    let mention = LayoutRenderer::with_format("{directory} api_equiv_cost is a variable", "");
+    assert!(
+        !mention.uses_variable("api_equiv_cost"),
+        "a bare mention has no braces, so render() can substitute nothing and \
+         the raw half must stay OFF (zero-read guarantee preserved)"
+    );
+}
