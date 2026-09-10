@@ -79,9 +79,10 @@ pub const PRICE_CACHE_SCHEMA_VERSION: u32 = 1;
 /// headroom. The cap is deliberately sized for **latency**, not merely for
 /// allocation: a legitimately 4 MiB `prices.json` would never OOM, but parsing
 /// it on every render blows the "a few milliseconds" render budget just as
-/// effectively (RV-M2). `MAX_PRICE_CACHE_ENTRIES` bounds the other half of that
-/// work — the per-row parse and the `HashMap` build — which a byte cap alone
-/// only bounds indirectly.
+/// effectively (RV-M2). The byte cap is the ONLY pre-parse bound, and it is the
+/// one that bounds parse work: `MAX_PRICE_CACHE_ENTRIES` is checked AFTER
+/// `serde_json::from_str` and therefore bounds the rows that are RETAINED and the
+/// post-parse lookup work done over them, not the parse itself (WR-08, round 2).
 ///
 /// The in-repo analog is [`crate::ant::audit`]'s `MAX_SCAN_BYTES`, with one
 /// deliberate difference: the audit scanner is happy with a PREFIX, whereas this
@@ -93,9 +94,12 @@ pub const PRICE_CACHE_SCHEMA_VERSION: u32 = 1;
 /// failed render (WR-03).
 const MAX_PRICE_CACHE_BYTES: u64 = 1024 * 1024;
 
-/// Hard upper bound on the number of price rows [`read_price_cache`] accepts.
+/// Hard upper bound on the number of price rows [`read_price_cache`] RETAINS.
 ///
-/// See [`MAX_PRICE_CACHE_BYTES`] for why both caps exist.
+/// Enforced POST-parse (see the check in [`read_price_cache`]): a file whose row
+/// count exceeds this is discarded after deserialization, so this cap bounds the
+/// retained table and the lookup work over it — the parse itself is bounded by
+/// [`MAX_PRICE_CACHE_BYTES`] alone. See it for why both caps exist.
 const MAX_PRICE_CACHE_ENTRIES: usize = 4096;
 
 /// Process-global count of [`read_price_cache`] ATTEMPTS (see

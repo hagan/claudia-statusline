@@ -211,7 +211,10 @@ it in your layout format, and the default statusline is unchanged.
   `[pricing.aliases]` below), or the entry it has cannot price one of the token
   types present. A few upstream rows publish no separate 1-hour cache-write rate;
   rather than bill those tokens at the cheaper 5-minute rate, that model reports
-  `unknown` when 1-hour cache-writes are present. Unknown is never `$0.00`.
+  `unknown` when 1-hour cache-writes are present. Unknown is never `$0.00`. (When
+  it is a *synced* row that lacks that rate, the same id's bundled 1-hour rate is
+  spliced in where doing so is safe — see the per-id union under `[pricing]`
+  below.)
 - **A trailing `+`** (e.g. `$0.25+`) — the payload reported only some of the four
   cost dimensions, so the figure is a *lower bound*: the real API-equivalent cost
   is at least that much. An absent dimension cannot be distinguished from genuine
@@ -276,10 +279,26 @@ per-id union of the two sources: a synced row wins for the ids it covers, and th
 bundled table fills every gap it leaves — including when a synced row is present
 but unusable. An unusable synced row also falls **through** to `[pricing.aliases]`
 rather than suppressing it, so an aliased model that used to price cannot be
-turned into `unknown` by a refresh. A refresh therefore cannot make a model that
-used to price render `unknown`. A missing, corrupt or wrong-schema cache is
-silently ignored and the bundled table is used, so rendering never fails and
-never blanks because of the cache.
+turned into `unknown` by a refresh.
+
+The union resolves the one **optional** rate per dimension, not merely per row.
+When a winning synced row omits the optional 1-hour cache-write rate
+(`cache_creation_1h`), that single dimension is backfilled from the **same model
+id's** bundled row — never from another id, and never from the cache itself. The
+backfill is admitted only when the bundled 1-hour rate is finite, is inside the
+plausibility band (`1e-9`–`1e-2`), and is not cheaper than the winning synced
+row's own 5-minute `cache_creation` rate.
+
+A refresh therefore cannot make a model that used to price render `unknown` — with
+one deliberate exception. If a refresh both drops the 1-hour rate **and** raises
+that row's 5-minute rate above the bundled 1-hour rate, the bundled rate is
+refused rather than substituted, and that model renders `unknown` for sessions
+that used 1-hour cache-creation tokens. Substituting a rate known to understate
+the charge would replace an honest `unknown` with a confident wrong number, which
+is the one thing the pricing path never does.
+
+A missing, corrupt or wrong-schema cache is silently ignored and the bundled table
+is used, so rendering never fails and never blanks because of the cache.
 
 **What makes a synced row unusable.** A row is used only if all four of its rates
 (`input`, `output`, `cache_creation`, `cache_read`) are finite and inside the
@@ -305,10 +324,27 @@ hash of the raw upstream payload) and its `prices` table. The
 `statusline ant sync-pricing` command prints the same `Cache:` / `Source:` /
 `Snapshot:` values in its success summary unless you pass `--quiet`.
 
+**Known limitation: a stale synced row can outrank a *corrected* bundled row.**
+Under `source = "auto"`, freshness is measured against the clock only — the
+cache's `fetched_at` against `max_age` — and never against the bundled table's own
+`vendored_at`. So after an upgrade that ships a **corrected** bundled rate, a
+synced snapshot captured before that correction keeps winning the union for that
+id for up to `max_age` (30 days by default). This is not hypothetical for this
+project: the `claude-opus-4-8` row was once overstated by 3x and corrected in the
+bundled table. Two remedies work today: delete `prices.json` (the next
+`ant sync-pricing` re-fetches it), or set `source = "bundled"` until you re-sync.
+This limitation is **not** fixed today; it is tracked for Phase 12, alongside the
+`config --validate` work over the same `[pricing]` surface.
+
 **The render side is bounded, and degrades rather than fails.** A `prices.json`
-larger than 1 MiB, or carrying more than 4096 rows, is rejected before it is
-parsed and the render uses the bundled table. So is a file with an unexpected
-`schema_version`, or one that is not valid JSON.
+larger than 1 MiB is rejected **before it is parsed**: the reader reads at most one
+byte past the cap and refuses the whole file rather than parsing a prefix, so the
+parse work is bounded to 1 MiB. A cache that clears the byte cap but then turns out
+to carry more than 4096 rows is discarded **after** parsing, before any lookup runs
+against it — the row cap bounds the rows that are retained and the lookup work
+done over them, not the parse itself. A file with an unexpected `schema_version`,
+or one that is not valid JSON, is discarded the same way. In every one of these
+cases the render silently falls back to the bundled table.
 
 Refresh the cache with `statusline ant sync-pricing` — an explicit, out-of-band,
 keyless command that reads no Anthropic credential. **Rendering itself never

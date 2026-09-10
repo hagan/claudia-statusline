@@ -422,8 +422,12 @@ and load with `launchctl load ~/Library/LaunchAgents/com.claudia.statusline.sync
   <key>RunAtLoad</key><false/>
   <!-- If the standard key is env-based, supply it here (the models key is headless-safe): -->
   <!-- <key>EnvironmentVariables</key><dict><key>ANTHROPIC_API_KEY</key><string>...</string></dict> -->
-  <key>StandardOutPath</key><string>/tmp/statusline-sync-models.log</string>
-  <key>StandardErrorPath</key><string>/tmp/statusline-sync-models.err</string>
+  <!-- Logs go under the user's OWN log directory, never /tmp: /tmp is
+       world-writable, so a predictable name there can be pre-created as a
+       symlink by any local user and silently redirect this job's output.
+       Create the directory first if it does not exist: mkdir -p ~/Library/Logs -->
+  <key>StandardOutPath</key><string>/Users/USERNAME/Library/Logs/statusline-sync-models.log</string>
+  <key>StandardErrorPath</key><string>/Users/USERNAME/Library/Logs/statusline-sync-models.err</string>
 </dict>
 </plist>
 ```
@@ -452,8 +456,12 @@ keep running even if the models job is failing. Save as
   <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
   <key>RunAtLoad</key><false/>
   <!-- No EnvironmentVariables block: sync-pricing reads no credential. -->
-  <key>StandardOutPath</key><string>/tmp/statusline-sync-pricing.log</string>
-  <key>StandardErrorPath</key><string>/tmp/statusline-sync-pricing.err</string>
+  <!-- Logs go under the user's OWN log directory, never /tmp: /tmp is
+       world-writable, so a predictable name there can be pre-created as a
+       symlink by any local user and silently redirect this job's output.
+       Create the directory first if it does not exist: mkdir -p ~/Library/Logs -->
+  <key>StandardOutPath</key><string>/Users/USERNAME/Library/Logs/statusline-sync-pricing.log</string>
+  <key>StandardErrorPath</key><string>/Users/USERNAME/Library/Logs/statusline-sync-pricing.err</string>
 </dict>
 </plist>
 ```

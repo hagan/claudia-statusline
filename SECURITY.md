@@ -113,27 +113,41 @@ below).
 
 ### Least-privilege key mapping
 
-Two distinct credentials map to two distinct command surfaces, and the separation is
-enforced **structurally** by which command resolves which credential:
+Three `ant` subcommands open outbound network connections. Only two of them resolve a
+credential at all, and those two resolve **different** credentials against **different** API
+surfaces; the third is keyless. The separation is enforced **structurally** by which command
+resolves which credential:
 
 | Command            | Credential          | API surface used        |
 | ------------------ | ------------------- | ----------------------- |
 | `ant sync-models`  | standard API key    | Models API only         |
 | `ant sync-usage`   | per-account Admin key (`admin_key_command`) | Usage & Cost (Admin) API only |
+| `ant sync-pricing` | none (keyless)      | public LiteLLM snapshot on raw.githubusercontent.com |
 
 The standard key is used **only** for the Models API; the Admin key is used **only** for the
 Usage & Cost API. `sync-models` never resolves an Admin key, and `sync-usage` never uses the
 standard key. There is no code path that grants the standard key Admin scope or vice versa, so
 a misconfiguration cannot escalate a key beyond the single API it was provisioned for.
 
+`ant sync-pricing` is the one **non-Anthropic** egress in the feature: it fetches a public
+LiteLLM price snapshot from `raw.githubusercontent.com`, resolves no credential on any code
+path, and sends no request header or query parameter derived from your configuration or
+session data. The fetch is pinned to `https` for the initial request **and** for every
+redirect, with a bounded redirect count (`--proto =https`, `--proto-redir =https`,
+`--max-redirs 5` in `src/pricing/fetch.rs`), so a redirect cannot downgrade the chain to
+cleartext. Rendering never performs this fetch — only the explicit, out-of-band
+`ant sync-pricing` command does.
+
 ### Key-handling invariants
 
 - **Never logged.** Keys are not written to stdout, stderr, the debug log, or any diagnostic
   output. `ant doctor` reports credential **source labels** only and never resolves a key in
   passive mode.
-- **Never cached.** The cache structs (`ModelsCache`, `UsageCache` in `src/ant/cache.rs`)
-  carry **no key/secret field** — only model metadata and numeric spend/token totals. A key
-  cannot be serialized to disk because there is nowhere on the schema to put it.
+- **Never cached.** The cache structs (`ModelsCache` and `UsageCache` in `src/ant/cache.rs`,
+  and `PriceCache` in `src/pricing/cache.rs`) carry **no key/secret field** — only model
+  metadata, numeric spend/token totals and per-token price rates. A key cannot be serialized
+  to disk because there is nowhere on any of these schemas to put it, and `PriceCache` is
+  written by a command that never resolves a key in the first place.
 - **Materialized only for the single API call.** A key is resolved via the credential-command
   seam (the `admin_key_command` argv for usage; the standard-key env/auth chain for models)
   and handed to `curl` via a leak-free STDIN config (never on argv, never on disk), existing
