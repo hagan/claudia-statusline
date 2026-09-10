@@ -30,11 +30,6 @@
 //! whole no-drift / skip-counting / empty-input contract is testable OFFLINE
 //! against a pinned fixture. No test in this crate performs a live fetch.
 
-// The public surface (`fetch_claude_prices`, `FetchOutcome`) is consumed by the
-// thin `commands::ant::sync_pricing` handler; some helpers are exercised only by
-// the colocated tests. Mirrors `src/ant/fetch.rs` and `src/pricing/cache.rs`.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -198,7 +193,12 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
         if !is_selectable_claude_key(id) {
             continue;
         }
+        // A `claude-*` key we could not use is a CANDIDATE, not a
+        // non-candidate: the module doc above promises a dropped model is never
+        // invisible, so a non-object value is COUNTED, exactly like the
+        // wrong-typed-cost-fields arm just below (WR-06).
         if !value.is_object() {
+            skipped += 1;
             continue;
         }
         let entry: LiteLLMEntry = match serde_json::from_value(value.clone()) {
@@ -591,6 +591,27 @@ mod tests {
         let out = transform_litellm(raw.as_bytes()).expect("one good row remains");
         assert_eq!(out.prices.len(), 1);
         assert_eq!(out.skipped, 2, "a $0.00 rate is never priced as free");
+    }
+
+    #[test]
+    fn a_non_object_claude_row_is_counted_as_skipped() {
+        // WR-06: a `claude-*` key whose value is not a JSON object passed the
+        // selection predicate and was then dropped with NO accounting at all,
+        // breaking the module doc's "a silently-dropped model is never
+        // invisible" promise for a whole class of malformed upstream row.
+        let raw = upstream(&format!(
+            r#"{GOOD_ROW},
+            "claude-a-string": "not-an-object",
+            "claude-a-number": 42"#
+        ));
+        let out = transform_litellm(raw.as_bytes()).expect("one good row remains");
+        assert_eq!(out.prices.len(), 1, "only the object row is usable");
+        assert!(out.prices.contains_key("claude-good"));
+        assert_eq!(
+            out.skipped, 2,
+            "both non-object `claude-*` candidates must be COUNTED, not dropped \
+             silently — the CLI summary is the only place a dropped model surfaces"
+        );
     }
 
     #[test]

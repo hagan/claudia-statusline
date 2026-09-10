@@ -218,11 +218,6 @@ pub enum PriceLookup {
 /// A total miss with a syntactically valid id returns [`PriceLookup::Unpriceable`]
 /// — the caller (Plan 02) renders a literal `unknown` for that case (D-13),
 /// distinct from "no token data" (var-absence, D-10).
-//
-// `#[allow(dead_code)]`: the render builder (Plan 02) is the first in-tree caller
-// via `display.rs`; until then the binary crate sees this as unused. The library
-// crate exports it as public API.
-#[allow(dead_code)]
 ///
 /// # This function is PURE (RV-M12)
 ///
@@ -236,6 +231,10 @@ pub enum PriceLookup {
 /// resolves the source exactly once, in `src/display.rs` — or the one-shot
 /// [`lookup_with_source`]. After plan 11-03 the render no longer needs the
 /// 2-arg form to be cache-aware, so nothing depends on the regression.
+// Genuinely uncalled by the BINARY: the render path uses `select_synced` +
+// `lookup_in`, so this pure bundled-only form survives as LIBRARY public API
+// (and is exercised by the colocated tests).
+#[allow(dead_code)]
 pub fn lookup(id: &str, aliases: &HashMap<String, String>) -> PriceLookup {
     lookup_in(id, aliases, None)
 }
@@ -271,7 +270,6 @@ pub const DEFAULT_PRICE_MAX_AGE: &str = "30d";
 /// function only supplies the wall clock and delegates to [`select_synced_at`] —
 /// so the staleness cliff is tested deterministically on both sides rather than
 /// by racing the clock (RV-M3).
-#[allow(dead_code)]
 pub fn select_synced(cfg: &PricingConfig) -> Option<cache::PriceCache> {
     select_synced_at(cfg, chrono::Utc::now())
 }
@@ -426,7 +424,6 @@ fn backfill_1h(entry: &mut PriceEntry, donor: Option<&PriceEntry>) {
 /// usable reaches the alias step exactly as an absent id does; only an id with
 /// no usable row AND no usable alias target returns
 /// [`PriceLookup::Unpriceable`] (WR-04).
-#[allow(dead_code)]
 pub fn lookup_in(
     id: &str,
     aliases: &HashMap<String, String>,
@@ -459,6 +456,10 @@ pub fn lookup_in(
 /// [`lookup_in`] so the headline and the per-model breakdown price from the SAME
 /// snapshot with one filesystem read (CR-01). This entry point exists for
 /// one-shot callers (tests, tooling) where a second read costs nothing.
+// Genuinely uncalled by the BINARY: the render path is FORBIDDEN from using
+// this per-call one-shot (CR-01, enforced by
+// `structural_guard_single_price_resolution_site`). It exists for library /
+// tooling one-shot callers and is exercised by the colocated tests.
 #[allow(dead_code)]
 pub fn lookup_with_source(
     id: &str,
@@ -469,7 +470,6 @@ pub fn lookup_with_source(
 }
 
 /// Gate a matched entry through [`PriceEntry::is_valid`] (LOW-7).
-#[allow(dead_code)]
 fn gate(entry: &PriceEntry) -> PriceLookup {
     if entry.is_valid() {
         // Copy out: a synced entry is borrowed from a short-lived cache.

@@ -56,12 +56,6 @@
 //! `source`/`version` metadata the bundled [`crate::pricing::PriceTable`]
 //! carries.
 
-// Forward-declared public API: the render-side price source selection (Plan 02)
-// is the in-binary consumer of the reader. Until that lands, the binary crate
-// sees some of these items as unused; the cache contract is exercised by the
-// colocated unit tests. Mirrors `src/ant/cache.rs`.
-#![allow(dead_code)]
-
 use crate::error::Result;
 use crate::pricing::PriceEntry;
 use chrono::{DateTime, Utc};
@@ -121,6 +115,9 @@ static PRICE_CACHE_READS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 /// in the SPAWNED-binary render path. The cost is one relaxed atomic increment
 /// per cache read (once per render at most). Callers other than the invariant
 /// suite must not depend on these two functions; they may change or disappear.
+// Genuinely uncalled by the BINARY: this is `#[doc(hidden)]` observability
+// read only from `tests/ant_invariant_tests.rs`, which links the library.
+#[allow(dead_code)]
 #[doc(hidden)]
 pub fn price_cache_reads() -> u64 {
     PRICE_CACHE_READS.load(std::sync::atomic::Ordering::Relaxed)
@@ -132,6 +129,9 @@ pub fn price_cache_reads() -> u64 {
 /// [`price_cache_reads`]. Because the counter is process-global, every test that
 /// resets it must be `#[serial]`; `every_price_cache_touching_test_is_serial` in
 /// `tests/ant_invariant_tests.rs` enforces that mechanically (RV-M4).
+// Genuinely uncalled by the BINARY: paired with `price_cache_reads`, called
+// only from the integration suite.
+#[allow(dead_code)]
 #[doc(hidden)]
 pub fn reset_price_cache_reads() {
     PRICE_CACHE_READS.store(0, std::sync::atomic::Ordering::Relaxed);

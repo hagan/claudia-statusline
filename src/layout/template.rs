@@ -342,6 +342,8 @@ pub struct LayoutRenderer {
     /// Pre-parsed AST for template rendering (None if parse failed)
     ast: Option<Vec<TemplateNode>>,
     /// Parse error message, if AST parsing failed
+    // Genuinely never READ: retained as parse diagnostics captured at
+    // construction for future surfacing; nothing consumes it today.
     #[allow(dead_code)]
     parse_error: Option<String>,
 }
@@ -373,14 +375,12 @@ impl LayoutRenderer {
     ///
     /// Loads user template override from config directory first;
     /// falls back to the compiled-in default template.
-    #[allow(dead_code)]
     pub fn default_template(separator: &str) -> Self {
         let template = load_user_template().unwrap_or_else(|| DEFAULT_TEMPLATE.to_string());
         Self::new_with_ast(template, separator.to_string())
     }
 
     /// Create a renderer with a specific format string
-    #[allow(dead_code)]
     pub fn with_format(format: &str, separator: &str) -> Self {
         Self::new_with_ast(format.to_string(), separator.to_string())
     }
@@ -466,7 +466,6 @@ impl LayoutRenderer {
     /// AST evaluator concatenates variable values directly into the output
     /// string, so any ANSI escape sequences or control characters in raw
     /// provider values would otherwise reach the terminal verbatim.
-    #[allow(dead_code)]
     pub fn render_template(
         &self,
         variables: &HashMap<String, String>,
@@ -575,6 +574,8 @@ impl LayoutRenderer {
     }
 
     /// Get list of variables used in the template
+    // Genuinely uncalled by the BINARY: library/tooling introspection helper,
+    // exercised only by the colocated tests.
     #[allow(dead_code)]
     pub fn get_used_variables(&self) -> Vec<String> {
         let mut variables = Vec::new();
