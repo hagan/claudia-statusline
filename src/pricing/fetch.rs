@@ -24,6 +24,15 @@
 //! from argv. `tests/ant_invariant_tests.rs` scans this file for credential
 //! vocabulary and fails if any appears.
 //!
+//! What makes argv AUTHORITATIVE for both of the claims above — keyless, and
+//! pinned to https for the initial request and every redirect — is `-q` as the
+//! first argv entry (WR-01, round 3). curl otherwise reads
+//! `$CURL_HOME/.curlrc`, else `$XDG_CONFIG_HOME/curlrc`, else `$HOME/.curlrc`
+//! before argv, so a config file this process never opens could add `insecure`
+//! (transport encryption without authentication) or a `header`/`netrc`
+//! credential aimed at the non-Anthropic host `raw.githubusercontent.com` —
+//! neither visible to the source-text keyless guard.
+//!
 //! # Fetch / transform split
 //!
 //! [`fetch_raw`] (network) is separated from [`transform_litellm`] (pure) so the
@@ -282,6 +291,18 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
 /// unit-testable without spawning anything.
 fn curl_args() -> Vec<String> {
     vec![
+        // WR-01 (round 3). MUST be the FIRST argv entry: curl reads
+        // `$CURL_HOME/.curlrc`, else `$XDG_CONFIG_HOME/curlrc`, else
+        // `$HOME/.curlrc` BEFORE it processes argv, and honours `-q` only in
+        // first position. Without it a config line such as `insecure` defeats
+        // the https pin's AUTHENTICATION (leaving encryption without identity),
+        // and a `header = "Authorization: ..."` or `netrc` line attaches a
+        // credential to a request aimed at the NON-Anthropic host
+        // raw.githubusercontent.com. `structural_guard_pricing_fetch_is_keyless`
+        // cannot observe either, because it scans this file's source text — an
+        // out-of-band config file is invisible to it. `-q` is what makes argv
+        // authoritative for both the transport pin and the keyless property.
+        "-q".to_string(),
         "--fail".to_string(),
         "--silent".to_string(),
         "--show-error".to_string(),
@@ -785,6 +806,64 @@ mod tests {
         argv.windows(2).any(|w| w[0] == flag && w[1] == value)
     }
 
+    /// The body of ONE function in `scripts/vendor-pricing.sh`: the text between
+    /// the line `{fn_name}() {` and the next line that is exactly `}` at column
+    /// 0 (every function in that script closes that way).
+    ///
+    /// Why this exists: a whole-file `SCRIPT.contains(clause)` cannot see a
+    /// divergence that lives in one function but not another. `validate_table`
+    /// has carried the plausibility band since R2-WR-02, which is exactly why a
+    /// whole-file scan could not see that `build_prices_map`'s SELECTION lacked
+    /// it (WR-02, round 3) — and comments naming a flag would likewise satisfy a
+    /// whole-file scan while the invocation itself stayed unpinned (CR-01).
+    ///
+    /// It `panic!`s by name when either marker is missing rather than falling
+    /// back to the whole file, mirroring the loud-failing block parser R2-WR-05
+    /// introduced: a guard that silently degrades to a whole-file scan is worse
+    /// than no guard, because it still reports green.
+    fn script_function_body<'a>(script: &'a str, fn_name: &str) -> &'a str {
+        let header = format!("{fn_name}() {{");
+        let mut start: Option<usize> = None;
+        let mut offset = 0usize;
+        for line in script.split_inclusive('\n') {
+            match start {
+                None => {
+                    if line.trim_end() == header {
+                        start = Some(offset + line.len());
+                    }
+                }
+                Some(begin) => {
+                    // A `}` at column 0 closes the function.
+                    if line.trim_end() == "}" {
+                        return &script[begin..offset];
+                    }
+                }
+            }
+            offset += line.len();
+        }
+        match start {
+            None => panic!(
+                "script_function_body: no line `{header}` in scripts/vendor-pricing.sh — the \
+                 function was renamed or removed. Refusing to fall back to a whole-file scan, \
+                 which would silently degrade this guard into one that passes on a COMMENT \
+                 while the invocation it guards is unpinned."
+            ),
+            Some(_) => panic!(
+                "script_function_body: found `{header}` but no closing `}}` at column 0 in \
+                 scripts/vendor-pricing.sh — the script's formatting convention changed. \
+                 Refusing to fall back to a whole-file scan."
+            ),
+        }
+    }
+
+    /// `script_function_body` must fail LOUDLY, not degrade to a whole-file scan.
+    #[test]
+    #[should_panic(expected = "no line `definitely_not_a_function() {`")]
+    fn script_function_body_panics_on_a_missing_function() {
+        const SCRIPT: &str = include_str!("../../scripts/vendor-pricing.sh");
+        let _ = script_function_body(SCRIPT, "definitely_not_a_function");
+    }
+
     /// WR-05: `--location` under curl's DEFAULT policy will follow a redirect to
     /// `http://`, `ftp://` or `ftps://`, and will follow up to 50 hops. The
     /// fetched payload becomes the authoritative price table for every later
@@ -794,6 +873,14 @@ mod tests {
     #[test]
     fn curl_argv_pins_https_and_bounds_redirects() {
         let argv = curl_args();
+        assert_eq!(
+            argv.first().map(String::as_str),
+            Some("-q"),
+            "-q must be the FIRST argv entry or curl still reads ~/.curlrc \
+             (and $CURL_HOME/.curlrc / $XDG_CONFIG_HOME/curlrc) BEFORE argv, where an \
+             `insecure` line defeats the https pin's authentication and a `header`/`netrc` \
+             line attaches a credential to a non-Anthropic host (WR-01), got {argv:?}"
+        );
         assert!(
             argv_has_pair(&argv, "--proto", "=https"),
             "the initial request must be pinned to https, got {argv:?}"
@@ -901,6 +988,39 @@ mod tests {
                  bash and Rust transforms have diverged (see \
                  src/pricing/fetch.rs::is_selectable_claude_key and the 1h filter in \
                  transform_litellm)"
+            );
+        }
+
+        // (4) the TRANSPORT pin (CR-01/WR-01, round 3), asserted inside the
+        // `fetch_upstream` body ONLY. Scoping is load-bearing: the rationale
+        // comment above that invocation names every one of these flags, so a
+        // whole-file `SCRIPT.contains(..)` would pass vacuously on the COMMENT
+        // while the curl invocation itself was unpinned — the exact vacuity this
+        // guard exists to rule out.
+        let fetch_body = script_function_body(SCRIPT, "fetch_upstream");
+        assert!(
+            fetch_body.len() < SCRIPT.len() && fetch_body.len() > 100,
+            "non-vacuity: the extracted fetch_upstream body must be a strict, non-trivial \
+             subset of the script (got {} bytes of {})",
+            fetch_body.len(),
+            SCRIPT.len()
+        );
+        for clause in [
+            "-q",
+            "--proto '=https'",
+            "--proto-redir '=https'",
+            "--max-redirs 5",
+            "--max-filesize",
+        ] {
+            assert!(
+                fetch_body.contains(clause),
+                "transport pin missing from scripts/vendor-pricing.sh::fetch_upstream: \
+                 `{clause}`. This fetch produces the COMPILED-IN table \
+                 (data/claude_prices.json, include_str!'d at src/pricing/mod.rs) and must be \
+                 pinned at least as tightly as curl_args() in this file (D-02: one transport, \
+                 two callers). Asserted inside the FUNCTION BODY, not the whole file, because \
+                 the comment above the invocation names these same flags and would satisfy a \
+                 whole-file scan while the invocation was unpinned."
             );
         }
 

@@ -132,9 +132,38 @@ require_tools() {
 
 # Fetch upstream LiteLLM JSON to the given path. The ONLY network access in this
 # tooling; it happens out-of-band, never at build (D-02).
+#
+# TRANSPORT PIN (CR-01/WR-01, round 3) — three distinct properties of the
+# invocation below. Deliberately written HERE, above the function, and not
+# inside its body: the drift guard
+# `the_vendor_script_selection_matches_the_rust_predicate` asserts each flag
+# INSIDE the fetch_upstream body, so a comment repeating those tokens in the
+# body would let the guard pass on prose while the invocation was unpinned.
+#
+#  1. `-q` must be the FIRST argument or curl still reads its default config
+#     ($CURL_HOME/.curlrc, else $XDG_CONFIG_HOME/curlrc, else ~/.curlrc) BEFORE
+#     it processes argv — an `insecure` line would then defeat certificate
+#     verification, and a `header = "Authorization: ..."` or `netrc` line would
+#     attach a credential to a request aimed at the non-Anthropic host
+#     raw.githubusercontent.com. A -q in any later position is ignored.
+#  2. `--proto '=https'` / `--proto-redir '=https'` refuse a redirect that
+#     downgrades to http:// / ftp:// / ftps://. curl's DEFAULT -L policy permits
+#     all three and follows up to 50 hops; `--max-redirs 5` bounds the chain.
+#  3. This script's output is data/claude_prices.json — the table include_str!'d
+#     into every released binary, the always-present pricing floor, and the
+#     backfill_1h donor of record — so it must be pinned at least as tightly as
+#     src/pricing/fetch.rs::curl_args() (D-02: one transport, two callers).
+#     `--connect-timeout` and `--max-filesize` mirror CONNECT_TIMEOUT_SECS /
+#     MAX_BODY_BYTES there.
+#
+# run_check's "zero data diff" proof calls THIS function, so the pin covers the
+# --check path too, not just the write path.
 fetch_upstream() {
     local dest="$1"
-    curl -fsSL --max-time 60 "${SOURCE_URL}" -o "${dest}" \
+    curl -q -fsSL \
+        --proto '=https' --proto-redir '=https' --max-redirs 5 \
+        --connect-timeout 10 --max-time 60 --max-filesize 8388608 \
+        "${SOURCE_URL}" -o "${dest}" \
         || die "failed to fetch upstream pricing JSON from ${SOURCE_URL}"
     jq -e 'type == "object"' "${dest}" >/dev/null 2>&1 \
         || die "fetched upstream is not a JSON object"
