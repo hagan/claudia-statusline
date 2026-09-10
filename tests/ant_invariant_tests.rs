@@ -597,6 +597,97 @@ fn plant_usage_slice(account: &str) {
     std::fs::write(dir.join(format!("{account}.json")), json).expect("plant usage slice");
 }
 
+/// Write a synced price cache `days_old` days old whose `claude-opus-4-8` row is
+/// a MODEST uplift over the bundled row (+10% on every dimension) and carries NO
+/// `cache_creation_1h` key at all — the exact shape of 11-VERIFICATION.md gap #2.
+///
+/// The uplift must stay modest on `cache_creation`: `pricing::pick`'s per-id
+/// backfill refuses a bundled donor rate cheaper than the winning row's own
+/// 5-minute rate (a 1-hour write is never cheaper than a 5-minute one), so the
+/// 10x row written by `plant_synced_prices` would legitimately still refuse —
+/// its `cache_creation` (6.25e-5) exceeds the bundled 1-hour donor (1e-5). That
+/// deliberate refusal is pinned by
+/// `src/pricing/mod.rs::backfill_refuses_a_donor_below_the_winning_rows_5m_rate`.
+///
+/// A separate helper rather than a parameterization of `plant_synced_prices`, so
+/// the tests pinned to the existing 10x row and its `$9.75` figure are undisturbed.
+fn plant_synced_prices_without_1h(days_old: i64) {
+    let dir = dirs::cache_dir()
+        .expect("cache dir")
+        .join("claudia-statusline")
+        .join("ant");
+    std::fs::create_dir_all(&dir).expect("create ant cache dir");
+    let fetched_at = (chrono::Utc::now() - chrono::Duration::days(days_old)).to_rfc3339();
+    let schema = statusline::pricing::cache::PRICE_CACHE_SCHEMA_VERSION;
+    let json = format!(
+        r#"{{
+  "schema_version": {schema},
+  "fetched_at": "{fetched_at}",
+  "source": "https://example.invalid/model_prices.json",
+  "version": "feedfacecafebeef",
+  "prices": {{
+    "claude-opus-4-8": {{
+      "input": {UPLIFT_INPUT:e},
+      "output": {UPLIFT_OUTPUT:e},
+      "cache_creation": {UPLIFT_CACHE_CREATION:e},
+      "cache_read": {UPLIFT_CACHE_READ:e}
+    }}
+  }}
+}}"#
+    );
+    std::fs::write(dir.join("prices.json"), json).expect("plant prices.json");
+}
+
+/// The four base rates written by `plant_synced_prices_without_1h`, +10% over
+/// the bundled `claude-opus-4-8` row. Named so the expected-figure arithmetic
+/// below cannot drift from the planted data.
+const UPLIFT_INPUT: f64 = 5.5e-6;
+const UPLIFT_OUTPUT: f64 = 2.75e-5;
+const UPLIFT_CACHE_CREATION: f64 = 6.875e-6;
+const UPLIFT_CACHE_READ: f64 = 5.5e-7;
+
+/// Token counts in the usage slice planted by `plant_usage_slice_with_1h`.
+const SLICE_UNCACHED_INPUT: u64 = 100_000;
+const SLICE_CACHE_READ_INPUT: u64 = 200_000;
+const SLICE_CACHE_CREATION_1H: u64 = 20_000;
+const SLICE_CACHE_CREATION_5M: u64 = 20_000;
+const SLICE_OUTPUT: u64 = 10_000;
+
+/// Like `plant_usage_slice`, except the model's split carries NON-ZERO 1-hour
+/// cache-creation tokens. `cache_creation_5m` stays non-zero too, so the test
+/// proves the two TTLs are priced on their OWN rates rather than collapsed onto
+/// one.
+fn plant_usage_slice_with_1h(account: &str) {
+    let dir = dirs::cache_dir()
+        .expect("cache dir")
+        .join("claudia-statusline")
+        .join("ant")
+        .join("usage");
+    std::fs::create_dir_all(&dir).expect("create usage cache dir");
+    let schema = statusline::ant::cache::USAGE_CACHE_SCHEMA_VERSION;
+    let now = chrono::Utc::now().to_rfc3339();
+    let json = format!(
+        r#"{{
+  "schema_version": {schema},
+  "fetched_at": "{now}",
+  "account": "{account}",
+  "today_usd": 0.0,
+  "mtd_usd": 0.0,
+  "tz": "UTC",
+  "tokens_by_model": {{
+    "claude-opus-4-8": {{
+      "uncached_input": {SLICE_UNCACHED_INPUT},
+      "cache_read_input": {SLICE_CACHE_READ_INPUT},
+      "cache_creation_1h": {SLICE_CACHE_CREATION_1H},
+      "cache_creation_5m": {SLICE_CACHE_CREATION_5M},
+      "output": {SLICE_OUTPUT}
+    }}
+  }}
+}}"#
+    );
+    std::fs::write(dir.join(format!("{account}.json")), json).expect("plant usage slice");
+}
+
 /// Render `payload` through the LIBRARY path against a throwaway HOME, running
 /// `plant` AFTER the cache root is redirected so anything it writes lands in the
 /// isolated tree. Restores every mutated env var before returning.
@@ -1335,5 +1426,176 @@ fn the_price_gate_name_list_covers_every_builder_price_variable() {
          can insert but the list omits re-opens CR-01 for that variable — a \
          template using it would render a figure the configured [pricing].source \
          never authorized. Missing: {missing:?}\nScanned builder names: {names:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Group 6: A REFRESH CANNOT REMOVE A DIMENSION THE BUNDLE PRICES (Plan 11-07)
+// ---------------------------------------------------------------------------
+//
+// 11-REVIEW.md CR-02 / 11-VERIFICATION.md truth 5: `pricing::pick` used to
+// resolve the synced/bundled union per ROW, and `PriceEntry::is_valid`
+// deliberately treats the optional `cache_creation_1h` as absent-is-fine. So a
+// synced row with four good base rates and NO 1-hour rate displaced a bundled
+// row that had one, and `src/layout/variables.rs` then collapsed the ENTIRE
+// model row's dollar figure to the shared `unknown` marker for any session
+// carrying 1-hour cache-creation tokens: `claude-opus-4-8:$1.27` became
+// `claude-opus-4-8:unknown` after a routine refresh.
+
+/// The shared unpriceable marker, copied from `src/layout/variables.rs`
+/// (`API_EQUIV_UNKNOWN`). It is private there, so this is a literal — the
+/// module's own `unpriceable_with_tokens_renders_consistent_unknown_across_all_vars`
+/// pins the production side.
+const UNKNOWN_MARKER: &str = "unknown";
+
+const BY_MODEL_ONLY_CONFIG: &str =
+    "[ant]\nenabled = true\n\n[pricing]\nsource = \"synced\"\n\n[layout]\nformat = \"{api_equiv_cost_by_model}\"\n";
+
+/// The bundled `claude-opus-4-8` 1-hour rate — read from the compiled-in table
+/// through `pricing::lookup`, which is PURE and bundled-only (RV-M12), so it
+/// adds nothing to the price-cache read counter.
+fn bundled_opus_1h_rate() -> f64 {
+    match statusline::pricing::lookup("claude-opus-4-8", &std::collections::HashMap::new()) {
+        statusline::pricing::PriceLookup::Priced(e) => e
+            .cache_creation_1h_rate()
+            .expect("the bundled claude-opus-4-8 row must carry a 1-hour rate"),
+        statusline::pricing::PriceLookup::Unpriceable => {
+            panic!("the bundled claude-opus-4-8 row must be priceable")
+        }
+    }
+}
+
+/// Total the breakdown must render, using the SAME term structure as
+/// `src/layout/variables.rs`: the four base rates come from the planted SYNCED
+/// row, and `h_rate` prices the 1-hour cache-creation tokens.
+fn expected_by_model_total(h_rate: f64) -> f64 {
+    (SLICE_UNCACHED_INPUT as f64) * UPLIFT_INPUT
+        + (SLICE_CACHE_READ_INPUT as f64) * UPLIFT_CACHE_READ
+        + (SLICE_CACHE_CREATION_5M as f64) * UPLIFT_CACHE_CREATION
+        + (SLICE_CACHE_CREATION_1H as f64) * h_rate
+        + (SLICE_OUTPUT as f64) * UPLIFT_OUTPUT
+}
+
+/// Format a per-model figure exactly as `src/layout/variables.rs` does
+/// (`format!("{model}:${c:.2}")`).
+fn expected_by_model_render(total: f64) -> String {
+    format!("claude-opus-4-8:${total:.2}")
+}
+
+/// 11-VERIFICATION.md gap #2, end to end: a synced row that omits the optional
+/// 1-hour rate must NOT cost the model its whole dollar figure.
+///
+/// FAILURE MODE (pre-Task-1, per-ROW union): the breakdown renders
+/// `claude-opus-4-8:unknown`.
+#[test]
+#[serial]
+fn a_synced_row_without_1h_still_prices_from_the_bundled_1h_rate() {
+    let out = render_lib_isolated(BY_MODEL_ONLY_CONFIG, PRICED_PAYLOAD, || {
+        plant_synced_prices_without_1h(1);
+        plant_usage_slice_with_1h("work");
+        // LAST statement of the plant closure, so every subsequent read is
+        // attributable to exactly one render.
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    let reads = statusline::pricing::cache::price_cache_reads();
+
+    assert!(
+        out.contains("claude-opus-4-8"),
+        "the per-model breakdown must name the model — rendered: {out:?}"
+    );
+    assert!(
+        !out.contains(UNKNOWN_MARKER),
+        "a refresh that merely OMITS the optional 1-hour rate must not turn a \
+         priced model into `{UNKNOWN_MARKER}`: the per-id union backfills that \
+         one dimension from the SAME id's bundled row (11-REVIEW.md CR-02, \
+         11-VERIFICATION.md truth 5) — rendered: {out:?}"
+    );
+
+    let expected = expected_by_model_render(expected_by_model_total(bundled_opus_1h_rate()));
+    assert!(
+        out.contains(&expected),
+        "the breakdown must price from the SYNCED base rates plus the BUNDLED \
+         1-hour rate, expected to contain {expected:?} — rendered: {out:?}"
+    );
+    assert_eq!(
+        reads, 1,
+        "the backfill must not cost an extra prices.json read (CR-01): the \
+         donor is the compiled-in bundled table — rendered: {out:?}"
+    );
+}
+
+/// The figure must come from the BUNDLED 1-hour rate, not from substituting the
+/// synced 5-minute rate — the R2-1 fallback that must never return.
+///
+/// Both candidates are computed in-test and asserted DISTINCT first, so this
+/// cannot pass vacuously if a future table change makes them coincide.
+#[test]
+#[serial]
+fn the_priced_figure_uses_the_bundled_1h_rate_not_the_5m_rate() {
+    let with_bundled_1h = expected_by_model_render(expected_by_model_total(bundled_opus_1h_rate()));
+    let with_5m_substitute =
+        expected_by_model_render(expected_by_model_total(UPLIFT_CACHE_CREATION));
+    assert_ne!(
+        with_bundled_1h, with_5m_substitute,
+        "test bug: the two candidate figures must differ for this test to bite"
+    );
+
+    let out = render_lib_isolated(BY_MODEL_ONLY_CONFIG, PRICED_PAYLOAD, || {
+        plant_synced_prices_without_1h(1);
+        plant_usage_slice_with_1h("work");
+    });
+
+    assert!(
+        out.contains(&with_bundled_1h),
+        "expected the bundled-1h figure {with_bundled_1h:?} — rendered: {out:?}"
+    );
+    assert!(
+        !out.contains(&with_5m_substitute),
+        "the 5-minute rate must NEVER be substituted for an absent 1-hour rate: \
+         it understates the 1-hour term by ~37% and replaces an honest \
+         `{UNKNOWN_MARKER}` with a confident wrong number (R2-1). Found the \
+         substitute figure {with_5m_substitute:?} — rendered: {out:?}"
+    );
+}
+
+/// DRIFT GUARD: `cache_creation_1h` is the ONLY optional price dimension, and
+/// `pricing::pick`'s per-dimension backfill handles exactly that one field.
+///
+/// FAILURE MODE: adding a second `Option<..>` field to `PriceEntry` without
+/// extending the backfill — the new dimension would silently revert to the
+/// per-ROW union this plan exists to remove.
+#[test]
+fn price_entry_has_exactly_one_optional_dimension() {
+    let source = read_src("src/pricing/mod.rs");
+    let start = source
+        .find("pub struct PriceEntry")
+        .expect("src/pricing/mod.rs must declare `pub struct PriceEntry`");
+    let rest = &source[start..];
+    let end = rest
+        .find("\n}")
+        .expect("the PriceEntry struct block must have a closing brace at column 0");
+    let block = &rest[..end];
+
+    let optional: Vec<&str> = block
+        .lines()
+        .filter(|line| code_portion(line).contains("Option<"))
+        .collect();
+
+    assert_eq!(
+        optional.len(),
+        1,
+        "`PriceEntry` must declare EXACTLY ONE optional price dimension; found \
+         {}: {optional:?}\nBefore adding another, extend `pricing::pick`'s \
+         per-dimension backfill (`backfill_1h`) to cover it and revisit plan \
+         11-07's reasoning — otherwise a synced row that merely OMITS the new \
+         dimension will again displace a bundled row that has it, and the model \
+         will render `{UNKNOWN_MARKER}` after a routine refresh (CR-02).",
+        optional.len()
+    );
+    assert!(
+        optional[0].contains("cache_creation_1h"),
+        "the single optional dimension must still be `cache_creation_1h`; found \
+         {:?} — if it was renamed, update `backfill_1h` and this guard together",
+        optional[0]
     );
 }
