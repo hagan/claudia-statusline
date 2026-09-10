@@ -320,7 +320,7 @@ recipes below are raw commands you add yourself.
 
 ### The credential-reality split
 
-Two caches are refreshed by two different mechanisms, because they use two different keys:
+Three caches are refreshed by different mechanisms, because they need different credentials:
 
 - **Usage** (`ant sync-usage`) is refreshed by a **SessionStart hook**, because the
   per-account **Admin key** lives in your interactive, env-swapped shell — exactly where the
@@ -328,12 +328,25 @@ Two caches are refreshed by two different mechanisms, because they use two diffe
 - **Models** (`ant sync-models`) is refreshed by **cron / launchd**, because it uses the
   **standard key**, which is global and headless-safe. Usage is deliberately **NOT** wired
   into cron/launchd (the Admin key is not available in a headless environment).
+- **Prices** (`ant sync-pricing`) is **keyless**. Its upstream is a public LiteLLM snapshot on
+  `raw.githubusercontent.com`, so the command reads no Anthropic credential of any kind — it is
+  the only `ant sync-*` command with no credential constraint, and therefore safe in **all
+  three** mechanisms: SessionStart hook, cron and launchd. It is also independent of
+  `[ant] enabled`; pricing is a separate feature that merely shares the cache directory.
+  **If you never schedule it, `[pricing] source = "auto"` has no cache to prefer and every
+  render falls back to the price table compiled into the binary.**
+
+**The refresh commands are independent — never chain them.** Write each one as its own,
+individually detached invocation: `&`-separated commands in a raw shell hook, one object per
+command in the native `async` array, a separate crontab line per command, a separate launchd job
+per command. Never join them with `&&`. A missing Admin key failing `sync-usage`, or a failing
+`sync-models`, must not be able to prevent the keyless price refresh from running.
 
 `--max-age` makes each command self-throttling: it skips the network fetch if the cache is
-younger than the given window. A manual `ant sync-models` / `ant sync-usage` **without**
-`--max-age` always fetches.
+younger than the given window. A manual `ant sync-models` / `ant sync-usage` / `ant sync-pricing`
+**without** `--max-age` always fetches.
 
-### SessionStart hook (refreshes usage; runs at every session start)
+### SessionStart hook (refreshes usage and prices; runs at every session start)
 
 Add to `~/.claude/settings.json`. **Always** pass `--quiet` AND redirect stdio
 (`>/dev/null 2>&1`) AND detach (`&`): SessionStart **stdout becomes Claude's context**, so an
@@ -349,7 +362,7 @@ start instant.
         "hooks": [
           {
             "type": "command",
-            "command": "statusline ant sync-usage --quiet --max-age 10m >/dev/null 2>&1 & statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1 &"
+            "command": "statusline ant sync-usage --quiet --max-age 10m >/dev/null 2>&1 & statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1 & statusline ant sync-pricing --quiet --max-age 7d >/dev/null 2>&1 &"
           }
         ]
       }
@@ -368,7 +381,8 @@ Cleaner alternative — Claude Code supports a native `async: true` field for ba
     "SessionStart": [
       { "hooks": [
         { "type": "command", "async": true, "command": "statusline ant sync-usage --quiet --max-age 10m" },
-        { "type": "command", "async": true, "command": "statusline ant sync-models --quiet --max-age 24h" }
+        { "type": "command", "async": true, "command": "statusline ant sync-models --quiet --max-age 24h" },
+        { "type": "command", "async": true, "command": "statusline ant sync-pricing --quiet --max-age 7d" }
       ]}
     ]
   }
@@ -376,7 +390,13 @@ Cleaner alternative — Claude Code supports a native `async: true` field for ba
 ```
 
 Usage is refreshed on a tight 10m window (cost figures move during a session); models on 24h
-(metadata changes rarely).
+(metadata changes rarely); prices on 7d.
+
+**Why `7d` for prices.** The render side treats a synced price cache as fresh for
+`[pricing] max_age`, which defaults to `30d`, so a 7d refresh window keeps the cache comfortably
+inside that freshness window even if a run or two is missed. `--max-age` also makes repeated hook
+firings free: when the cache on disk is younger than 7d, `ant sync-pricing` skips the fetch
+entirely, touches no network, and exits 0.
 
 ### launchd plist (macOS — refreshes models daily)
 
@@ -408,13 +428,47 @@ and load with `launchctl load ~/Library/LaunchAgents/com.claudia.statusline.sync
 </plist>
 ```
 
-### cron line (Linux — refreshes models daily)
+### launchd plist (macOS — refreshes prices weekly)
 
-Absolute path again (cron has a minimal `PATH`):
+A **separate** job, not extra arguments on the models job: the price refresh is keyless and must
+keep running even if the models job is failing. Save as
+`~/Library/LaunchAgents/com.claudia.statusline.sync-pricing.plist` and load with
+`launchctl load ~/Library/LaunchAgents/com.claudia.statusline.sync-pricing.plist`.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.claudia.statusline.sync-pricing</string>
+  <key>ProgramArguments</key>
+  <array>
+    <!-- ABSOLUTE path: launchd has a minimal PATH. -->
+    <string>/Users/USERNAME/.local/bin/statusline</string>
+    <string>ant</string><string>sync-pricing</string>
+    <string>--quiet</string><string>--max-age</string><string>7d</string>
+  </array>
+  <!-- Mondays at 09:05 local (Weekday 1). -->
+  <key>StartCalendarInterval</key><dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+  <key>RunAtLoad</key><false/>
+  <!-- No EnvironmentVariables block: sync-pricing reads no credential. -->
+  <key>StandardOutPath</key><string>/tmp/statusline-sync-pricing.log</string>
+  <key>StandardErrorPath</key><string>/tmp/statusline-sync-pricing.err</string>
+</dict>
+</plist>
+```
+
+### cron lines (Linux — refreshes models daily, prices weekly)
+
+Absolute path again (cron has a minimal `PATH`). Two **separate** lines, so a failing models
+refresh cannot stop the keyless price refresh:
 
 ```cron
 # crontab -e — daily models refresh at 09:00.
 0 9 * * * /home/USERNAME/.local/bin/statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1
+
+# crontab -e — weekly price refresh, Mondays at 09:05. No API key needed.
+5 9 * * 1 /home/USERNAME/.local/bin/statusline ant sync-pricing --quiet --max-age 7d >/dev/null 2>&1
 ```
 
 ## Verification

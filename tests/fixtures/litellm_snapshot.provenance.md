@@ -34,6 +34,44 @@ The trim deliberately retains the **non-selectable** `claude`-bearing keys as de
 At capture time the snapshot carried 29 bare `claude-*` keys, 28 of which pass the full
 predicate — exactly the 28 rows in `data/claude_prices.json`.
 
+## Fetch-size headroom (`MAX_BODY_BYTES`)
+
+`ant sync-pricing` bounds the upstream payload it will accept with
+`MAX_BODY_BYTES` in `src/pricing/fetch.rs`, enforced twice: passed to `curl` as
+`--max-filesize` (which aborts the transfer early when the server sends a `Content-Length`) and
+re-checked in Rust after capture (which catches the chunked / no-`Content-Length` case).
+
+| Property | Value |
+|----------|-------|
+| `MAX_BODY_BYTES` | `8 * 1024 * 1024` = 8 MiB |
+| Observed full upstream payload (2026-09-09) | ~2.3 MB / 3853 model entries |
+| Headroom at capture time | ~3.5x — **not** an order of magnitude |
+| Trimmed in-repo fixture | 347 keys, ~294 KB (see above) |
+
+The observed size is the FULL upstream payload, not the trimmed fixture: the cap applies to what
+`curl` downloads, and upstream grows every time a new provider is added. Headroom is therefore
+shrinking over time, and this cap will eventually be reached.
+
+**When it is reached**, `ant sync-pricing` fails with a non-zero exit and an error naming the
+constant and its file (`curl` exit 63 on the early-abort path, or the post-capture re-check
+otherwise). The existing cache and the compiled-in bundled table are left untouched, so rendering
+is unaffected — the refresh simply stops working.
+
+**Raising the cap:**
+
+1. Edit `MAX_BODY_BYTES` in `src/pricing/fetch.rs` (one constant; it feeds both `--max-filesize`
+   and the post-capture re-check).
+2. Re-capture and re-pin `tests/fixtures/litellm_snapshot.json` with the procedure below.
+3. Update the observed-size row in the table above with the new measurement.
+4. Re-run `cargo test --lib pricing::` and `make test`.
+
+Measure the current upstream size before choosing a new value:
+
+```bash
+curl -fsSL -o /dev/null -w '%{size_download}\n' \
+  https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
+```
+
 ## Refreshing this fixture
 
 Re-capture with the same trim, then re-run `cargo test --lib pricing::fetch`:

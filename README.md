@@ -274,17 +274,25 @@ wrapper script; you add the wiring yourself. The credential-reality split: a **S
 hook** refreshes **usage** (the per-account Admin key lives in your interactive shell), while
 **cron/launchd** refreshes **models** (the standard key is headless-safe).
 
+`ant sync-pricing` is the **keyless** one — its upstream is a public LiteLLM snapshot, so it needs
+no Anthropic credential and is safe anywhere (hook, cron or launchd); without it, `[pricing]
+source = "auto"` never has a cache to prefer and always uses the bundled price table. Keep the
+commands **independent** — separately detached, never `&&`-chained — so a failing credentialed
+sync cannot stop the price refresh.
+
 SessionStart hook in `~/.claude/settings.json` (always `--quiet` + redirect + detach so
 nothing leaks into Claude's context and session start stays instant):
 
 ```jsonc
-"command": "statusline ant sync-usage --quiet --max-age 10m >/dev/null 2>&1 & statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1 &"
+"command": "statusline ant sync-usage --quiet --max-age 10m >/dev/null 2>&1 & statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1 & statusline ant sync-pricing --quiet --max-age 7d >/dev/null 2>&1 &"
 ```
 
-Models daily via cron (absolute path — cron has a minimal PATH):
+Models daily and prices weekly via cron — separate lines (absolute path — cron has a minimal
+PATH):
 
 ```cron
 0 9 * * * /home/USERNAME/.local/bin/statusline ant sync-models --quiet --max-age 24h >/dev/null 2>&1
+5 9 * * 1 /home/USERNAME/.local/bin/statusline ant sync-pricing --quiet --max-age 7d >/dev/null 2>&1
 ```
 
 See [INSTALLATION.md](docs/INSTALLATION.md#ant-enrichment-refresh-optional) for the full

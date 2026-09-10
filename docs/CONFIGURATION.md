@@ -262,17 +262,61 @@ normalization, and aliases do not chain. An alias whose target is not itself a
 table entry resolves to `unknown`. This is deliberate: a wrong price is worse than
 no price. This holds identically for both sources.
 
+**How the source is chosen.** Under `source = "auto"` a synced cache younger
+than `max_age` is selected and anything older is ignored in favor of the bundled
+table; under `"synced"` the cache is selected regardless of its age; under
+`"bundled"` the cache is never read at all. Selection is **per id**, though: even
+when the synced cache is selected, an individual model may still be priced from
+the bundled row, because the two tables are consulted as a union that gap-fills
+(see below). Selecting a source therefore decides which table gets *first refusal*
+per model id — not that every model in the line came from it.
+
 **A synced cache can only ever add or update prices.** Lookups run against the
 per-id union of the two sources: a synced row wins for the ids it covers, and the
-bundled table fills every gap it leaves — including when a synced row is
-unusable (zero or non-finite rates). A refresh therefore cannot make a model that
+bundled table fills every gap it leaves — including when a synced row is present
+but unusable. An unusable synced row also falls **through** to `[pricing.aliases]`
+rather than suppressing it, so an aliased model that used to price cannot be
+turned into `unknown` by a refresh. A refresh therefore cannot make a model that
 used to price render `unknown`. A missing, corrupt or wrong-schema cache is
 silently ignored and the bundled table is used, so rendering never fails and
 never blanks because of the cache.
 
+**What makes a synced row unusable.** A row is used only if all four of its rates
+(`input`, `output`, `cache_creation`, `cache_read`) are finite and inside the
+plausibility band `1e-9`–`1e-2` USD per token, **and** its `cache_read` rate is
+strictly below its `input` rate. Anything else is refused and the bundled row
+prices that id. The band exists so an upstream typo — a `3e-6` rate published as
+`3e6` — cannot win the union and render a wildly wrong cost; the bundled table's
+own rates span roughly `3e-8` to `7.5e-5`, so the band leaves ample headroom on
+both sides. The same gate is applied identically to bundled and synced rows, so a
+hand-edited or foreign-producer cache gets no special trust.
+
+**Where the cache lives.**
+
+| Platform | Path |
+|----------|------|
+| Linux | `${XDG_CACHE_HOME:-~/.cache}/claudia-statusline/ant/prices.json` |
+| macOS | `~/Library/Caches/claudia-statusline/ant/prices.json` |
+
+Deleting that file restores bundled-only behavior immediately — nothing else
+needs changing. To inspect the cache, read the file: it records `fetched_at`
+(RFC3339 UTC), `source` (the upstream URL that was fetched), `version` (a content
+hash of the raw upstream payload) and its `prices` table. The
+`statusline ant sync-pricing` command prints the same `Cache:` / `Source:` /
+`Snapshot:` values in its success summary unless you pass `--quiet`.
+
+**The render side is bounded, and degrades rather than fails.** A `prices.json`
+larger than 1 MiB, or carrying more than 4096 rows, is rejected before it is
+parsed and the render uses the bundled table. So is a file with an unexpected
+`schema_version`, or one that is not valid JSON.
+
 Refresh the cache with `statusline ant sync-pricing` — an explicit, out-of-band,
-keyless command. **Rendering itself never touches the network** regardless of
-`source`: it only reads the cache file that command wrote.
+keyless command that reads no Anthropic credential. **Rendering itself never
+touches the network** regardless of `source`: it only reads the cache file that
+command wrote. Nothing refreshes the cache automatically — see
+[INSTALLATION.md](INSTALLATION.md#ant-enrichment-refresh-optional) for the
+SessionStart hook, cron and launchd recipes. Until you schedule one of them,
+`source = "auto"` has no cache to prefer and every render uses the bundled table.
 
 The bundled table is vendored from
 [LiteLLM](https://github.com/BerriAI/litellm) (MIT) by
