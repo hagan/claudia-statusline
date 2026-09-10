@@ -41,8 +41,10 @@
 //!      (`<= 1` when a price var is used, `0` when none is),
 //!    - a SENSITIVITY PROOF that the same instrument reports exactly 2 when two
 //!      resolutions really happen, so the `<= 1` bound is provably non-vacuous,
-//!    - a STRUCTURAL GUARD that fails the moment a second resolution site is
-//!      reintroduced into `src/display.rs` or `src/layout/variables.rs`,
+//!    - a STRUCTURAL GUARD that recursively walks EVERY `.rs` file under `src/`
+//!      (allow-listing only the definition site, `src/pricing/mod.rs`) and fails
+//!      the moment a second resolution site appears anywhere — including
+//!      `src/lib.rs`, `src/main.rs`, `src/hook_handler.rs` and `src/provider/`,
 //!    - a SERIAL-COVERAGE GUARD, because the counter is process-global and a
 //!      future non-`#[serial]` cache-touching test in this binary could read
 //!      between a reset and an assertion.
@@ -88,6 +90,60 @@ fn read_fixture() -> Vec<u8> {
     std::fs::read(fixture_path()).expect("checked-in v3.1.0 golden fixture must exist")
 }
 
+/// A panic-safe capture/restore of process-global environment variables
+/// (review WR-11).
+///
+/// Every mutated var is captured — including its ABSENCE — and restored by
+/// `Drop`, so restores run on unwind. Two defects this closes:
+///
+/// 1. `NO_COLOR` used to be `remove_var`'d unconditionally, silently deleting a
+///    developer's exported value for every later test in the binary.
+/// 2. None of the restores ran on panic: a failure between `set_var` and the
+///    restore block left `HOME`/`XDG_CACHE_HOME` pointing at a `TempDir` about
+///    to be dropped and deleted, cascading misleading failures into every later
+///    `#[serial]` test in this binary.
+///
+/// Where the original code deliberately restored BEFORE asserting, the guard is
+/// `drop`ped explicitly at that same point; `Drop` is then a no-op on the happy
+/// path and the safety net on the unwind path.
+struct EnvGuard {
+    saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+    reset_config_on_drop: bool,
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (key, val) in self.saved.drain(..) {
+            match val {
+                Some(v) => std::env::set_var(key, v),
+                None => std::env::remove_var(key),
+            }
+        }
+        if self.reset_config_on_drop {
+            statusline::config::reset_config();
+        }
+    }
+}
+
+impl EnvGuard {
+    /// Capture the current value of each key. `None` records that the key was
+    /// UNSET, so restoring removes it again rather than inventing a value.
+    fn capture(keys: &[&'static str]) -> Self {
+        Self {
+            saved: keys.iter().map(|k| (*k, std::env::var_os(k))).collect(),
+            reset_config_on_drop: false,
+        }
+    }
+
+    /// Also drop the cached `OnceLock<Config>` when restoring, for helpers that
+    /// redirect `STATUSLINE_CONFIG`/`HOME` and must not leave a config loaded
+    /// from the throwaway tree visible to the next test.
+    fn resetting_config(mut self) -> Self {
+        self.reset_config_on_drop = true;
+        self
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Group 1: PINNED GOLDEN BYTE-IDENTICAL (both render paths vs. the fixture)
 // ---------------------------------------------------------------------------
@@ -96,7 +152,9 @@ fn read_fixture() -> Vec<u8> {
 #[serial]
 fn golden_byte_identical_main_rs_path() {
     let _guard = test_support::init();
-    // Deterministic color handling for the spawned binary.
+    // Deterministic color handling for the spawned binary. Captured, not
+    // clobbered: a developer with `NO_COLOR` exported gets it back (WR-11).
+    let _env = EnvGuard::capture(&["NO_COLOR"]);
     std::env::set_var("NO_COLOR", "1");
 
     let output = Command::new(test_support::test_binary())
@@ -115,8 +173,6 @@ fn golden_byte_identical_main_rs_path() {
         })
         .expect("Failed to execute binary");
 
-    std::env::remove_var("NO_COLOR");
-
     assert!(output.status.success(), "render must exit 0");
     let expected = read_fixture();
     assert_eq!(
@@ -129,13 +185,12 @@ fn golden_byte_identical_main_rs_path() {
 #[serial]
 fn golden_byte_identical_lib_rs_path() {
     let _guard = test_support::init();
+    let _env = EnvGuard::capture(&["NO_COLOR"]);
     std::env::set_var("NO_COLOR", "1");
 
     // The lib.rs render entry point. `update_stats = false` keeps it pure.
     let rendered = statusline::render_from_json(FIXED_PAYLOAD, false)
         .expect("render_statusline must not fail (SC1: never fails)");
-
-    std::env::remove_var("NO_COLOR");
 
     let expected = read_fixture();
     assert_eq!(
@@ -211,10 +266,16 @@ fn golden_byte_identical_lib_rs_path_ant_enabled_sliceless() {
     let (_cfg_dir, cfg) = ant_enabled_config();
     let home = tempfile::TempDir::new().expect("isolated home");
 
+    let env = EnvGuard::capture(&[
+        "NO_COLOR",
+        "STATUSLINE_CONFIG",
+        "STATUSLINE_ANT_ACCOUNT",
+        "HOME",
+    ])
+    .resetting_config();
     std::env::set_var("NO_COLOR", "1");
     std::env::set_var("STATUSLINE_CONFIG", &cfg);
     std::env::set_var("STATUSLINE_ANT_ACCOUNT", "work");
-    let orig_home = std::env::var_os("HOME");
     std::env::set_var("HOME", home.path());
     statusline::config::reset_config();
 
@@ -222,14 +283,9 @@ fn golden_byte_identical_lib_rs_path_ant_enabled_sliceless() {
         .expect("render_statusline must not fail (SC1: never fails)");
 
     // Restore env before asserting so a failure can't poison later serial tests.
-    std::env::remove_var("NO_COLOR");
-    std::env::remove_var("STATUSLINE_CONFIG");
-    std::env::remove_var("STATUSLINE_ANT_ACCOUNT");
-    match orig_home {
-        Some(h) => std::env::set_var("HOME", h),
-        None => std::env::remove_var("HOME"),
-    }
-    statusline::config::reset_config();
+    // Dropping explicitly preserves that ordering on the happy path; `Drop`
+    // covers the unwind path the old inline restores did not (WR-11).
+    drop(env);
 
     let expected = read_fixture();
     assert_eq!(
@@ -249,12 +305,11 @@ fn golden_byte_identical_lib_rs_path_ant_enabled_sliceless() {
 #[serial]
 fn age_vars_absent_with_ant_disabled_lib_path() {
     let _guard = test_support::init();
+    let _env = EnvGuard::capture(&["NO_COLOR"]);
     std::env::set_var("NO_COLOR", "1");
 
     let rendered = statusline::render_from_json(FIXED_PAYLOAD, false)
         .expect("render_statusline must not fail (SC1: never fails)");
-
-    std::env::remove_var("NO_COLOR");
 
     assert!(
         !rendered.contains("api_usage_age") && !rendered.contains("api_models_age"),
@@ -697,10 +752,17 @@ fn render_lib_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) -
     let cfg_path = home.path().join("config.toml");
     std::fs::write(&cfg_path, config_toml).expect("write config");
 
-    let orig_home = std::env::var_os("HOME");
-    let orig_xdg = std::env::var_os("XDG_CACHE_HOME");
-    let orig_cfg = std::env::var_os("STATUSLINE_CONFIG");
-    let orig_acct = std::env::var_os("STATUSLINE_ANT_ACCOUNT");
+    // Capture every var this helper mutates — INCLUDING `NO_COLOR`, which used
+    // to be deleted rather than restored (WR-11) — so `Drop` puts the process
+    // back even if `plant()` or the render panics.
+    let env = EnvGuard::capture(&[
+        "HOME",
+        "XDG_CACHE_HOME",
+        "STATUSLINE_CONFIG",
+        "STATUSLINE_ANT_ACCOUNT",
+        "NO_COLOR",
+    ])
+    .resetting_config();
 
     std::env::set_var("HOME", home.path());
     std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
@@ -713,16 +775,9 @@ fn render_lib_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) -
 
     let result = statusline::render_from_json(payload, false);
 
-    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
-    };
-    restore("HOME", orig_home);
-    restore("XDG_CACHE_HOME", orig_xdg);
-    restore("STATUSLINE_CONFIG", orig_cfg);
-    restore("STATUSLINE_ANT_ACCOUNT", orig_acct);
-    std::env::remove_var("NO_COLOR");
-    statusline::config::reset_config();
+    // Restore (and `reset_config`) BEFORE the `expect` below, preserving the
+    // original ordering; `Drop` would do the same on unwind.
+    drop(env);
 
     result.expect("render must never fail (SC1)")
 }
@@ -738,8 +793,8 @@ fn render_main_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) 
     let cfg_path = home.path().join("config.toml");
     std::fs::write(&cfg_path, config_toml).expect("write config");
 
-    let orig_home = std::env::var_os("HOME");
-    let orig_xdg = std::env::var_os("XDG_CACHE_HOME");
+    // Same panic-safe capture as the library helper above.
+    let env = EnvGuard::capture(&["HOME", "XDG_CACHE_HOME"]);
 
     std::env::set_var("HOME", home.path());
     std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
@@ -766,12 +821,11 @@ fn render_main_isolated(config_toml: &str, payload: &str, plant: impl FnOnce()) 
         })
         .expect("Failed to execute binary");
 
-    let restore = |key: &str, val: Option<std::ffi::OsString>| match val {
-        Some(v) => std::env::set_var(key, v),
-        None => std::env::remove_var(key),
-    };
-    restore("HOME", orig_home);
-    restore("XDG_CACHE_HOME", orig_xdg);
+    // ORDERING PRESERVED: the child has already exited (`wait_with_output`
+    // above), so the parent's env is restored only once the child no longer
+    // needs the redirected tree — and still BEFORE the assertion, so a failure
+    // cannot poison later serial tests.
+    drop(env);
 
     assert!(output.status.success(), "spawned render must exit 0");
     String::from_utf8(output.stdout).expect("render output is UTF-8")
@@ -1109,19 +1163,74 @@ fn resolution_tokens() -> (String, String) {
     )
 }
 
+/// Every `.rs` file under `rel_root`, as a repo-relative `/`-separated path,
+/// sorted for determinism. Used by the resolution-site guard so a second call
+/// site cannot hide in a file nobody remembered to list (WR-04).
+fn walk_rs_files(rel_root: &str) -> Vec<String> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut out = Vec::new();
+    let mut stack = vec![manifest.join(rel_root)];
+    while let Some(dir) = stack.pop() {
+        let entries =
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read_dir {}: {}", dir.display(), e));
+        for entry in entries {
+            let path = entry.expect("readable dir entry").path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                let rel = path
+                    .strip_prefix(manifest)
+                    .expect("path under CARGO_MANIFEST_DIR")
+                    .components()
+                    .map(|c| c.as_os_str().to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join("/");
+                out.push(rel);
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Exactly ONE price-source resolution site is reachable from a render, and it
 /// lives in `src/display.rs`.
 ///
-/// FAILURE MODE: adding any second resolution site — most plausibly back inside
-/// `api_equiv_cost` in `src/layout/variables.rs`, where it used to live — makes
-/// the count 2 and fails this guard.
+/// SCOPE: this walks **every** `.rs` file under `src/` recursively, allow-listing
+/// only `src/pricing/mod.rs` — the DEFINITION site of `select_synced` /
+/// `lookup_with_source`. Nothing else is skipped.
+///
+/// Until plan 11-08 the scan iterated a hardcoded `["src/display.rs",
+/// "src/layout/variables.rs"]`, so a second call added in `src/lib.rs`,
+/// `src/main.rs`, `src/hook_handler.rs` or anywhere under `src/provider/` — all
+/// render-reachable — passed untouched while re-opening the very defect this
+/// guard exists to prevent (WR-04). `src/lib.rs` was the most likely landing
+/// spot of all: CLAUDE.md warns that `src/main.rs` and `src/lib.rs` DUPLICATE
+/// the stats-update + render wiring, so a mirror call belongs there by habit.
+///
+/// FAILURE MODE: adding any second resolution site anywhere under `src/` makes
+/// the count 2 and fails this guard, naming the file and line.
 #[test]
 fn structural_guard_single_price_resolution_site() {
+    // The one legitimate site: both tokens are DECLARED here.
+    const ALLOWED: &[&str] = &["src/pricing/mod.rs"];
+
     let (select_tok, one_shot_tok) = resolution_tokens();
     let mut sites: Vec<String> = Vec::new();
     let mut one_shots: Vec<String> = Vec::new();
 
-    for rel in ["src/display.rs", "src/layout/variables.rs"] {
+    let files = walk_rs_files("src");
+    assert!(
+        files.len() >= 20,
+        "the recursive walk of `src/` recovered only {} .rs file(s) — the walk is \
+         broken, and a broken walk would make this guard pass VACUOUSLY",
+        files.len()
+    );
+
+    for rel in &files {
+        if ALLOWED.contains(&rel.as_str()) {
+            continue;
+        }
         let source = read_src(rel);
         for (i, line) in source.lines().enumerate() {
             // `code_portion` strips `//` comments, so the doc comments that
@@ -1197,13 +1306,23 @@ fn test_blocks(source: &str) -> Vec<TestBlock> {
                 .unwrap_or("<unknown>")
                 .to_string();
             let start = i;
-            let mut end = i;
-            for (j, l) in lines.iter().enumerate().skip(i + 1) {
-                if *l == "}" {
-                    end = j;
-                    break;
-                }
-            }
+            // FAIL LOUDLY rather than degrade (WR-05): the old fallback to the
+            // start index silently truncated an undelimited block to its `fn` line,
+            // which then matched no cache marker and was classified as
+            // not-cache-touching — making the read-count guards above vacuous.
+            let end = lines
+                .iter()
+                .enumerate()
+                .skip(i + 1)
+                .find(|(_, l)| **l == "}")
+                .map(|(j, _)| j)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "self-scan could not find the closing brace of `{name}` (a lone `}}` at \
+                         column 0); the serial-coverage guard would silently SKIP that test and \
+                         the read-count guards it protects would become vacuous"
+                    )
+                });
             blocks.push(TestBlock {
                 name,
                 attrs: attrs.join("\n"),
