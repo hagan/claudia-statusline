@@ -1176,3 +1176,164 @@ fn every_price_cache_touching_test_is_serial() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Group 4c: the price gate is a SUPERSET of what `render()` can substitute
+// (Plan 11-06, review BLOCKER CR-01 round 2 / 11-VERIFICATION.md gap #1)
+// ---------------------------------------------------------------------------
+//
+// The gate that decides whether the synced cache is read used to be an AST query
+// only, while the method that produces output on the layout path is raw
+// substring substitution over the UNPARSED template. Where the two disagreed, a
+// dollar figure was rendered from a table the user's `[pricing].source` said was
+// not authoritative — with no signal, because the figure looks plausible.
+
+/// The reproducer from 11-VERIFICATION.md gap #1, written as a config.
+///
+/// `[layout] format = "{{api_equiv_cost}"` is deliberate, not a typo:
+/// `parse_template` consumes the leading `{{` as an ESCAPED literal `{`
+/// (`src/layout/template.rs`), so the remainder becomes a `Literal` node and the
+/// AST contains NO `Variable` — the AST-only gate answered "unused". But
+/// `LayoutRenderer::render` does `result.replace("{api_equiv_cost}", value)`
+/// against the raw text, which still matches starting at BYTE 1 and substitutes
+/// a figure. Pre-11-06 that figure was computed bundled-only.
+const ESCAPED_BRACE_SYNCED_CONFIG: &str =
+    "[ant]\nenabled = true\n\n[pricing]\nsource = \"synced\"\n\n[layout]\nformat = \"{{api_equiv_cost}\"\n";
+
+/// CR-01: with `source = "synced"` and a fresh planted synced cache, the
+/// escaped-brace template must render the SYNCED figure.
+///
+/// FAILURE MODE (pre-11-06 `wants_pricing`): renders `BUNDLED_FIGURE` — a real
+/// dollar amount from the table the user's config says is NOT authoritative.
+#[test]
+#[serial]
+fn escaped_brace_price_template_renders_the_synced_figure() {
+    let out = render_lib_isolated(ESCAPED_BRACE_SYNCED_CONFIG, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert!(
+        out.contains(SYNCED_FIGURE),
+        "CR-01: `format = \"{{{{api_equiv_cost}}\"` with [pricing] source = \
+         \"synced\" and a fresh synced cache must render the SYNCED figure \
+         {SYNCED_FIGURE:?}. The parser sees no Variable node here, but render() \
+         substitutes the placeholder anyway — so the gate must be a SUPERSET of \
+         what render() can substitute, not an AST query alone. Rendered: {out:?}"
+    );
+    assert!(
+        !out.contains(BUNDLED_FIGURE),
+        "CR-01: a figure from the BUNDLED table leaked into a render the user \
+         pinned to `synced` — the exact silent mispricing this gate exists to \
+         prevent. Rendered: {out:?}"
+    );
+}
+
+/// The same render must read `prices.json` EXACTLY once: not zero (the CR-01
+/// bug — the gate skipped the read entirely) and not two (the CR-01-of-11-03
+/// double-resolution bug the single-resolution-site guard also pins).
+///
+/// The read counter is process-global, which is why this and its sibling are
+/// both `#[serial]` and each resets the counter inside its own `plant` closure.
+#[test]
+#[serial]
+fn escaped_brace_price_template_reads_the_price_cache_once() {
+    let out = render_lib_isolated(ESCAPED_BRACE_SYNCED_CONFIG, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        1,
+        "the escaped-brace template must resolve the configured source EXACTLY \
+         once: 0 means the gate skipped the read while render() still emitted a \
+         figure (CR-01), 2 means a second resolution site reappeared and the \
+         render can price one line from two snapshots — rendered: {out:?}"
+    );
+}
+
+/// Extract the body of `src/display.rs`'s price-variable name list: everything
+/// between the constant's declaration and its terminating `];`.
+fn price_gate_name_list() -> String {
+    let source = read_src("src/display.rs");
+    let marker = format!("const PRICE{}: &[&str]", "_VARS");
+    let start = source
+        .find(&marker)
+        .expect("src/display.rs must declare the price-gate name list constant");
+    let rest = &source[start..];
+    let end = rest
+        .find("];")
+        .expect("the price-gate name list must terminate with `];`");
+    rest[..end].to_string()
+}
+
+/// Collect every distinct `api_equiv_cost*` string literal the variable BUILDER
+/// can insert as a map key, scanning only the PRODUCTION portion of
+/// `src/layout/variables.rs` (everything before its first `#[cfg(test)]`).
+///
+/// Scoping matters: the colocated test modules assert on names the builder never
+/// inserts (e.g. `api_equiv_cost_input_labeled`, asserted ABSENT), so scanning
+/// the whole file would demand gate entries for variables that do not exist.
+fn builder_price_variable_names() -> Vec<String> {
+    let source = read_src("src/layout/variables.rs");
+    let production = match source.find("#[cfg(test)]") {
+        Some(idx) => &source[..idx],
+        None => &source[..],
+    };
+    let needle = "\"api_equiv_cost";
+    let mut names: Vec<String> = Vec::new();
+    for line in production.lines() {
+        let code = code_portion(line);
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(needle) {
+            let open = from + rel + 1; // first byte after the opening quote
+            let Some(close_rel) = code[open..].find('"') else {
+                break;
+            };
+            let name = &code[open..open + close_rel];
+            if name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !names.iter().any(|n| n == name)
+            {
+                names.push(name.to_string());
+            }
+            from = open + close_rel + 1;
+        }
+    }
+    names.sort();
+    names
+}
+
+/// The gate's name list cannot silently fall behind the builder's inserted keys.
+///
+/// FAILURE MODE: adding an eighth `api_equiv_cost*` variable to the builder
+/// without extending `src/display.rs`'s list re-opens CR-01 for that variable —
+/// a template using only the new name would render a bundled figure (or
+/// `unknown`) under `source = "synced"`. This fails by name when that happens.
+#[test]
+fn the_price_gate_name_list_covers_every_builder_price_variable() {
+    let names = builder_price_variable_names();
+    assert!(
+        names.len() >= 7,
+        "the builder scan recovered only {} price variable name(s) ({names:?}) — \
+         fewer than the seven known to exist, so the scan is broken and this \
+         guard would pass vacuously",
+        names.len()
+    );
+
+    let list = price_gate_name_list();
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|n| !list.contains(format!("\"{n}\"").as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "src/display.rs's price-gate name list is the raw half of the SUPERSET \
+         gate: any `api_equiv_cost*` key the builder in src/layout/variables.rs \
+         can insert but the list omits re-opens CR-01 for that variable — a \
+         template using it would render a figure the configured [pricing].source \
+         never authorized. Missing: {missing:?}\nScanned builder names: {names:?}"
+    );
+}
