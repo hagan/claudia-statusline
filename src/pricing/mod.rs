@@ -1589,4 +1589,211 @@ source = "buntled"
             "test bug: the planted synced rate must differ from the bundled one"
         );
     }
+
+    // -----------------------------------------------------------------------
+    // Per-DIMENSION union of the optional 1-hour cache-write rate (CR-02)
+    // -----------------------------------------------------------------------
+    //
+    // `pick` resolves the synced/bundled union per ROW: the first candidate that
+    // passes `is_valid` wins WHOLESALE. Because `is_valid` treats
+    // `cache_creation_1h` as absent-is-fine, a synced row with four good base
+    // rates and no 1-hour rate used to DISPLACE a bundled row that has one — and
+    // `src/layout/variables.rs` then collapses the entire model row's dollar
+    // figure to the shared `unknown` marker whenever the payload carries
+    // non-zero 1-hour cache-creation tokens. A routine refresh could therefore
+    // turn `claude-opus-4-8:$12.34` into `claude-opus-4-8:unknown`
+    // (11-REVIEW.md CR-02, 11-VERIFICATION.md truth 5).
+
+    /// A synced row that is a MODEST uplift over the bundled `claude-opus-4-8`
+    /// row (+10% on every dimension) and carries NO 1-hour rate.
+    ///
+    /// The uplift must stay modest on `cache_creation`: the backfill refuses a
+    /// donor cheaper than the winning row's own 5-minute rate, so a 10x row
+    /// (`cache_creation` 6.25e-5 > the bundled 1e-5 donor) would legitimately
+    /// still refuse. See `backfill_refuses_a_donor_below_the_winning_rows_5m_rate`.
+    const UPLIFT_INPUT: f64 = 5.5e-6;
+    const UPLIFT_OUTPUT: f64 = 2.75e-5;
+    const UPLIFT_CACHE_CREATION: f64 = 6.875e-6;
+    const UPLIFT_CACHE_READ: f64 = 5.5e-7;
+
+    /// The bundled `claude-opus-4-8` 1-hour rate — the donor under test.
+    fn bundled_1h(id: &str) -> Option<f64> {
+        table()
+            .prices
+            .get(id)
+            .unwrap_or_else(|| panic!("bundled table must carry {id}"))
+            .cache_creation_1h
+    }
+
+    /// Build an IN-MEMORY synced cache from `rows`. No filesystem, no
+    /// `select_synced`, so it never touches the process-global read counter and
+    /// these tests need no `#[serial]`.
+    fn cache_with(rows: &[(&str, PriceEntry)]) -> PriceCache {
+        let mut prices = HashMap::new();
+        for (id, entry) in rows {
+            prices.insert((*id).to_string(), *entry);
+        }
+        PriceCache {
+            schema_version: PRICE_CACHE_SCHEMA_VERSION,
+            fetched_at: chrono::Utc::now(),
+            source: "https://example.invalid/prices.json".to_string(),
+            version: "feedfacecafebeef".to_string(),
+            prices,
+        }
+    }
+
+    /// The synced row wins the four REQUIRED dimensions, but the one optional
+    /// dimension it omits is backfilled from the SAME id's bundled row.
+    ///
+    /// FAILURE MODE (pre-fix): `cache_creation_1h` is `None`, and the per-model
+    /// breakdown renders `claude-opus-4-8:unknown` for any session with 1-hour
+    /// cache-creation tokens.
+    #[test]
+    fn a_synced_row_without_1h_backfills_the_bundled_1h_rate() {
+        let cache = cache_with(&[(
+            "claude-opus-4-8",
+            PriceEntry {
+                input: UPLIFT_INPUT,
+                output: UPLIFT_OUTPUT,
+                cache_creation: UPLIFT_CACHE_CREATION,
+                cache_read: UPLIFT_CACHE_READ,
+                cache_creation_1h: None,
+            },
+        )]);
+        let e = priced(lookup_in("claude-opus-4-8", &HashMap::new(), Some(&cache)));
+        // The four required dimensions come from the SYNCED row.
+        assert_eq!(e.input, UPLIFT_INPUT, "synced row must win `input`");
+        assert_eq!(e.output, UPLIFT_OUTPUT, "synced row must win `output`");
+        assert_eq!(
+            e.cache_creation, UPLIFT_CACHE_CREATION,
+            "synced row must win `cache_creation`"
+        );
+        assert_eq!(
+            e.cache_read, UPLIFT_CACHE_READ,
+            "synced row must win `cache_read`"
+        );
+        // ...and the optional fifth is merged in from the bundled row.
+        assert_eq!(
+            e.cache_creation_1h,
+            bundled_1h("claude-opus-4-8"),
+            "a refresh may UPDATE a rate but must not REMOVE a dimension the \
+             bundle already prices (CR-02 / 11-VERIFICATION.md truth 5)"
+        );
+        assert!(
+            e.cache_creation_1h.is_some(),
+            "test bug: the bundled donor row must itself carry a 1-hour rate"
+        );
+    }
+
+    /// A synced row that DOES carry its own 1-hour rate keeps it — the backfill
+    /// fills a gap, it never overwrites.
+    #[test]
+    fn a_synced_row_with_its_own_1h_rate_is_not_overwritten() {
+        let own = 2e-5;
+        let cache = cache_with(&[(
+            "claude-opus-4-8",
+            PriceEntry {
+                input: SYNCED_OPUS_INPUT,
+                output: 5e-5,
+                cache_creation: 1.25e-5,
+                cache_read: 1e-6,
+                cache_creation_1h: Some(own),
+            },
+        )]);
+        let e = priced(lookup_in("claude-opus-4-8", &HashMap::new(), Some(&cache)));
+        assert_eq!(
+            e.cache_creation_1h,
+            Some(own),
+            "the synced row's OWN 1-hour rate must survive the merge"
+        );
+        assert_ne!(
+            bundled_1h("claude-opus-4-8"),
+            Some(own),
+            "test bug: the donor and the synced rate must differ for this to bite"
+        );
+    }
+
+    /// The ONE case the merge deliberately refuses: a donor cheaper than the
+    /// winning row's own 5-minute rate.
+    ///
+    /// `is_valid` encodes "a 1-hour cache write is never cheaper than a
+    /// 5-minute one" (the same rule `validate_table` applies at vendoring
+    /// time). If upstream both dropped the 1-hour key AND raised the 5-minute
+    /// rate above the bundled 1-hour rate, splicing the older, cheaper bundled
+    /// rate in would render a figure known to UNDERSTATE the 1-hour term —
+    /// exactly the ~37% understatement `cache_creation_1h_rate`'s prohibition
+    /// (R2-1) exists to end. Refusing shows an honest `unknown` instead of a
+    /// confident wrong number.
+    #[test]
+    fn backfill_refuses_a_donor_below_the_winning_rows_5m_rate() {
+        // 1.25e-5 > the bundled donor's 1e-5.
+        let cache = cache_with(&[(
+            "claude-opus-4-8",
+            PriceEntry {
+                input: SYNCED_OPUS_INPUT,
+                output: 5e-5,
+                cache_creation: 1.25e-5,
+                cache_read: 1e-6,
+                cache_creation_1h: None,
+            },
+        )]);
+        let e = priced(lookup_in("claude-opus-4-8", &HashMap::new(), Some(&cache)));
+        assert!(
+            bundled_1h("claude-opus-4-8").expect("donor rate") < e.cache_creation,
+            "test bug: this scenario requires a donor cheaper than the winning \
+             row's 5-minute rate"
+        );
+        assert_eq!(
+            e.cache_creation_1h, None,
+            "an incoherent donor must be REFUSED: rendering `unknown` beats \
+             rendering a knowingly-understated 1-hour term (R2-1)"
+        );
+    }
+
+    /// SC3: the donor is looked up by the SAME id. No fuzzy matching, no
+    /// normalization, no alias guessing, no cross-model borrowing.
+    #[test]
+    fn backfill_never_borrows_from_another_id() {
+        // A synced-ONLY id (absent from the bundled table) with no 1-hour rate.
+        // The bundled `claude-opus-4-8` row HAS one; it must not leak across.
+        let cache = cache_with(&[(
+            SYNCED_ONLY_ID,
+            PriceEntry {
+                input: SYNCED_ONLY_INPUT,
+                output: 1.5e-5,
+                cache_creation: 3.75e-6,
+                cache_read: 3e-7,
+                cache_creation_1h: None,
+            },
+        )]);
+        let e = priced(lookup_in(SYNCED_ONLY_ID, &HashMap::new(), Some(&cache)));
+        assert_eq!(
+            e.cache_creation_1h, None,
+            "no bundled row exists for `{SYNCED_ONLY_ID}`, so no rate may be \
+             borrowed from any other id (SC3)"
+        );
+        assert!(
+            bundled_1h("claude-opus-4-8").is_some(),
+            "test bug: another id's bundled 1-hour rate must exist to be borrowable"
+        );
+    }
+
+    /// A bundled-only lookup is untouched by the merge: the donor and the
+    /// winner are the same row, so the backfill is a no-op.
+    #[test]
+    fn a_bundled_only_lookup_is_unchanged_by_the_backfill() {
+        let expected = *table().prices.get("claude-opus-4-8").expect("bundled row");
+        assert_eq!(
+            priced(lookup("claude-opus-4-8", &HashMap::new())),
+            expected,
+            "a bundled-only lookup must return the bundled entry EXACTLY, \
+             including its own 1-hour rate"
+        );
+        // Same via the explicit no-synced form.
+        assert_eq!(
+            priced(lookup_in("claude-opus-4-8", &HashMap::new(), None)),
+            expected,
+            "lookup_in(.., None) must be identical to lookup()"
+        );
+    }
 }
