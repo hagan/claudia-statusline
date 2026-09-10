@@ -854,24 +854,76 @@ mod tests {
         );
     }
 
-    /// D-02: the bash and Rust transforms are ONE transform. This pins the three
-    /// clauses of the key/provider selection in `scripts/vendor-pricing.sh`
-    /// against the Rust predicate above.
+    /// D-02: the bash and Rust transforms are ONE transform.
+    ///
+    /// WHAT THIS PINS, honestly stated (the previous wording claimed the whole
+    /// transform and checked only key selection — WR-01 called that false
+    /// assurance proportional to how confidently it was worded):
+    ///
+    /// 1. **Key/provider selection** — the three literal clauses of
+    ///    [`is_selectable_claude_key`] plus the provider scope.
+    /// 2. **The optional 1-hour carry rule** — that the script guards
+    ///    `cache_creation_input_token_cost_above_1hr` by BOTH `> 0` and
+    ///    `>= cache_creation_input_token_cost`, mirroring
+    ///    `positive(..).filter(|rate| *rate >= cache_creation)` above. Before
+    ///    plan 11-08 the script carried any `number`, so an upstream row
+    ///    publishing `0` was admitted by `build_prices_map` and then REJECTED by
+    ///    `validate_table`, aborting the whole vendoring run.
+    /// 3. **The plausibility band bounds** — that the script's `MIN_RATE`/
+    ///    `MAX_RATE` are textually the same values as the Rust constants, so
+    ///    `validate_table` refuses exactly the rates `PriceEntry::is_valid`
+    ///    refuses (WR-02).
+    ///
+    /// WHAT IT STILL CANNOT SEE: any rule expressed with DIFFERENT text on the
+    /// two sides. This is a textual pin, not a semantic equivalence proof — a
+    /// jq predicate rewritten to mean the same thing with other words fails
+    /// here (loudly, which is fine), and one rewritten to mean something
+    /// DIFFERENT while keeping these substrings passes (which is the residual
+    /// risk). The only non-drifting design is to delete `build_prices_map` and
+    /// have the script call this Rust transform directly.
     ///
     /// FAILURE MODE: editing either transform without the other fails here.
     #[test]
     fn the_vendor_script_selection_matches_the_rust_predicate() {
         const SCRIPT: &str = include_str!("../../scripts/vendor-pricing.sh");
         for clause in [
+            // (1) key + provider selection
             r#"startswith("claude-")"#,
             r#"contains("/")"#,
             r#"litellm_provider == "anthropic""#,
+            // (2) the optional 1-hour carry rule
+            r#"cache_creation_input_token_cost_above_1hr > 0"#,
+            r#">= .value.cache_creation_input_token_cost"#,
         ] {
             assert!(
                 SCRIPT.contains(clause),
                 "D-02 drift: scripts/vendor-pricing.sh no longer contains `{clause}`, so the \
                  bash and Rust transforms have diverged (see \
-                 src/pricing/fetch.rs::is_selectable_claude_key)"
+                 src/pricing/fetch.rs::is_selectable_claude_key and the 1h filter in \
+                 transform_litellm)"
+            );
+        }
+
+        // (3) the plausibility band. Derived from the Rust constants rather than
+        // retyped, so moving the band in src/pricing/mod.rs fails here until the
+        // script moves with it.
+        //
+        // FORMATTING ASSUMPTION: the script writes each bound exactly as Rust's
+        // `{:e}` renders it (`1e-9`, `1e-2`). If a future band value formats
+        // differently on the two sides (e.g. `5e-9` vs `0.000000005`) this
+        // assertion fails even though the values agree — that is deliberate: a
+        // human must then re-establish the textual pin.
+        for (name, value) in [
+            ("MIN_RATE", crate::pricing::MIN_RATE),
+            ("MAX_RATE", crate::pricing::MAX_RATE),
+        ] {
+            let literal = format!("{name}=\"{value:e}\"");
+            assert!(
+                SCRIPT.contains(&literal),
+                "WR-02 drift: scripts/vendor-pricing.sh must declare `{literal}` so \
+                 validate_table refuses exactly the rates PriceEntry::is_valid refuses; \
+                 the band moved in src/pricing/mod.rs without the script following. \
+                 (This assumes the script writes the bound as Rust's `{{:e}}` formats it.)"
             );
         }
     }

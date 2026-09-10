@@ -22,7 +22,9 @@
 #      price ids + sorted inner keys) so a re-run against an unchanged snapshot
 #      produces ZERO diff.
 #   5. Self-validates the output (required metadata present; every entry's four
-#      rates finite, > 0, with cache_read < input) and fails non-zero on a bad row.
+#      rates finite, > 0, inside the MIN_RATE..MAX_RATE plausibility band shared
+#      with src/pricing/mod.rs, with cache_read < input) and fails non-zero on a
+#      bad row.
 #
 # USAGE:
 #   scripts/vendor-pricing.sh            # generate + self-validate + write data/claude_prices.json
@@ -88,6 +90,15 @@ LICENSE_STR="Pricing data derived from LiteLLM (BerriAI/litellm) model_prices_an
 # key whose `litellm_provider` is `anthropic` and whose four required per-token
 # rates are all present and numeric. Applied inside jq in build_prices_map.
 
+# Plausibility band for a per-token USD rate. These MUST equal MIN_RATE and
+# MAX_RATE in src/pricing/mod.rs, which `PriceEntry::is_valid` applies to EVERY
+# row at lookup time: a table that passes this script but not that gate would be
+# vendored, shipped, and then silently refused on every render (WR-02). The
+# drift guard `the_vendor_script_selection_matches_the_rust_predicate` in
+# src/pricing/fetch.rs fails if the two sides stop agreeing.
+MIN_RATE="1e-9"
+MAX_RATE="1e-2"
+
 # --- Usage -----------------------------------------------------------------
 
 usage() {
@@ -131,9 +142,24 @@ fetch_upstream() {
 
 # Build a compact JSON prices map (as a single line) from an upstream snapshot.
 # Selects EVERY anthropic-provider bare `claude-*` row with all four required
-# rates, mapping each to the slim schema. `cache_creation_1h` is carried only
-# when upstream publishes `cache_creation_input_token_cost_above_1hr` for that
-# row; the binary falls back to the 5-minute rate when it is absent.
+# rates, mapping each to the slim schema.
+#
+# `cache_creation_1h` is carried only when upstream publishes
+# `cache_creation_input_token_cost_above_1hr` for that row AND that rate is
+# > 0 AND >= the row's own 5-minute `cache_creation_input_token_cost` — the SAME
+# three conditions src/pricing/fetch.rs::transform_litellm applies (D-02: ONE
+# transform). Admitting a row the validator would then reject aborted the whole
+# refresh and told the operator the transform was broken when upstream was
+# merely messy (WR-01).
+#
+# When the 1-hour rate is ABSENT the binary does NOT fall back to the 5-minute
+# rate: the renderer REFUSES the 1-hour cache-write term and renders `unknown`.
+# That prohibition is documented at `PriceEntry::cache_creation_1h_rate` in
+# src/pricing/mod.rs — substituting the 5-minute rate understated the charge by
+# ~37% and replaced an honest `unknown` with a confident wrong number, which is
+# why `report_missing_1h_rows` below exists at all (WR-10). Plan 11-07 added a
+# per-id backfill from the BUNDLED table at lookup time, so this vendored table
+# stays the donor of record for that dimension — a gap here is a gap there.
 # Emits {"<id>": {input,output,cache_creation,cache_read[,cache_creation_1h]}, ...}.
 build_prices_map() {
     local upstream="$1"
@@ -159,7 +185,11 @@ build_prices_map() {
                   output:         .value.output_cost_per_token,
                   cache_creation: .value.cache_creation_input_token_cost,
                   cache_read:     .value.cache_read_input_token_cost }
+                # Mirrors src/pricing/fetch.rs: positive(..).filter(>= cache_creation).
                 + ( if (.value.cache_creation_input_token_cost_above_1hr | type == "number")
+                       and (.value.cache_creation_input_token_cost_above_1hr > 0)
+                       and (.value.cache_creation_input_token_cost_above_1hr
+                            >= .value.cache_creation_input_token_cost)
                     then { cache_creation_1h: .value.cache_creation_input_token_cost_above_1hr }
                     else {} end ))} ]
         | from_entries
@@ -290,10 +320,13 @@ PY
 # here therefore means the transform itself is broken, not that upstream is
 # messy — so aborting is the right response.
 # Asserts: metadata fields present; every prices.* entry has all four base rates
-# as finite numbers > 0 with cache_read < input, and — when present — a
-# cache_creation_1h that is finite, > 0, and >= the 5-minute cache_creation rate
-# (a 1-hour write is never cheaper than a 5-minute one). Exits non-zero with a
-# message on the first malformed entry.
+# as finite numbers > 0, INSIDE the plausibility band ${MIN_RATE}..${MAX_RATE}
+# (currently 1e-9..1e-2 — the same band PriceEntry::is_valid applies at every
+# lookup via MIN_RATE/MAX_RATE in src/pricing/mod.rs; WR-02), with
+# cache_read < input, and — when present — a cache_creation_1h that is finite,
+# in band, and >= the 5-minute cache_creation rate (a 1-hour write is never
+# cheaper than a 5-minute one). Exits non-zero with a message listing every
+# malformed entry.
 validate_table() {
     local file="$1"
 
@@ -307,25 +340,30 @@ validate_table() {
         || die "output failed metadata validation (missing source/version/vendored_at/_license or empty prices)"
 
     local bad
-    bad="$(jq -r '
+    bad="$(jq -r --argjson min "${MIN_RATE}" --argjson max "${MAX_RATE}" '
         .prices
         | to_entries[]
         | select(
-            ((.value.input          | type=="number" and isinfinite==false and isnan==false and . > 0) and
-             (.value.output         | type=="number" and isinfinite==false and isnan==false and . > 0) and
-             (.value.cache_creation | type=="number" and isinfinite==false and isnan==false and . > 0) and
-             (.value.cache_read     | type=="number" and isinfinite==false and isnan==false and . > 0) and
+            ((.value.input          | type=="number" and isinfinite==false and isnan==false and . > 0 and . >= $min and . <= $max) and
+             (.value.output         | type=="number" and isinfinite==false and isnan==false and . > 0 and . >= $min and . <= $max) and
+             (.value.cache_creation | type=="number" and isinfinite==false and isnan==false and . > 0 and . >= $min and . <= $max) and
+             (.value.cache_read     | type=="number" and isinfinite==false and isnan==false and . > 0 and . >= $min and . <= $max) and
              (.value.cache_read < .value.input) and
              (if (.value | has("cache_creation_1h")) then
-                  (.value.cache_creation_1h | type=="number" and isinfinite==false and isnan==false and . > 0)
+                  (.value.cache_creation_1h | type=="number" and isinfinite==false and isnan==false and . > 0 and . >= $min and . <= $max)
                   and (.value.cache_creation_1h >= .value.cache_creation)
               else true end)) | not)
         | .key
     ' "${file}")"
 
     if [ -n "${bad}" ]; then
-        echo "vendor-pricing: error: malformed price rows (need finite, >0, cache_read<input):" >&2
+        echo "vendor-pricing: error: malformed price rows (need finite numbers > 0 inside the" >&2
+        echo "  plausibility band ${MIN_RATE}..${MAX_RATE}, with cache_read < input and" >&2
+        echo "  cache_creation_1h >= cache_creation when present):" >&2
         echo "${bad}" | sed 's/^/  - /' >&2
+        echo "  The band is MIN_RATE/MAX_RATE in src/pricing/mod.rs, applied at every lookup" >&2
+        echo "  by PriceEntry::is_valid — a row outside it would be vendored and then refused" >&2
+        echo "  on every render. Change both sides together." >&2
         exit 1
     fi
 }
