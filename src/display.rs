@@ -964,16 +964,58 @@ fn format_statusline_with_layout(
     // `tests/ant_invariant_tests.rs`, and the site count is pinned by
     // `structural_guard_single_price_resolution_site`.
     //
-    // ZERO reads when no price variable is used (WR-07). `api_equiv_cost` is a
-    // PREFIX of all seven price variables ({api_equiv_cost}, _labeled, _input,
-    // _output, _cache_write, _cache_read, _by_model), so the prefix query is an
-    // exact superset gate. It is AST-level, so a literal mention of
-    // `api_equiv_cost` outside a `{...}` placeholder is NOT a use (RV-L1), and it
-    // fails OPEN on an unparseable template. Under `source = "bundled"`
-    // `select_synced` additionally returns `None` without reading at all.
-    // `select_synced` collapses every cache failure to the bundled table, so this
-    // stays total, offline and byte-identical when no cache exists (D-16/SC2).
-    let wants_pricing = renderer.uses_variable_prefix("api_equiv_cost");
+    // THE GATE IS A SUPERSET OF WHAT `render()` CAN SUBSTITUTE (CR-01, round 2).
+    // Two halves, ORed, because the method that actually produces output on this
+    // path — `LayoutRenderer::render` at the bottom of this function — is raw
+    // substring substitution (`.replace("{name}", value)`) over the UNPARSED
+    // template text, not an AST walk. A gate narrower than that substitution set
+    // lets a dollar figure be rendered from a table the user's `[pricing].source`
+    // says is not authoritative:
+    //
+    //   * AST half — `uses_variable_prefix("api_equiv_cost")`. `api_equiv_cost`
+    //     is a PREFIX of all seven price variables ({api_equiv_cost}, _labeled,
+    //     _input, _output, _cache_write, _cache_read, _by_model). Being AST-level
+    //     is what keeps a literal MENTION of `api_equiv_cost` outside any `{...}`
+    //     placeholder from costing a `prices.json` read the user never asked for
+    //     (RV-L1 / WR-07 — `a_literal_mention_of_a_price_var_reads_no_price_cache`).
+    //     It fails OPEN on an unparseable template, so a parse failure can never
+    //     silently blank a price. It now also scans a conditional's `{if ..}`
+    //     CONDITION, not just its branches.
+    //
+    //   * RAW half — `PRICE_VARS.iter().any(|v| renderer.uses_variable(v))`.
+    //     `uses_variable` tests `template.contains("{name}")`, i.e. EXACTLY the
+    //     substring `render()` will replace. This is the half that closes CR-01:
+    //     for `format = "{{api_equiv_cost}"` the parser eats the leading `{{` as
+    //     an escaped literal so no `Variable` node exists and the AST half says
+    //     "unused", yet `render()` substitutes `{api_equiv_cost}` starting at
+    //     byte 1 — previously emitting a BUNDLED figure under
+    //     `source = "synced"`. Pinned by
+    //     `escaped_brace_price_template_renders_the_synced_figure`.
+    //
+    // Widening does NOT weaken the zero-read guarantee: the raw half requires the
+    // BRACES `{name}`, so it turns ON only for text `render()` could substitute a
+    // price into. A brace-free mention matches nothing and the read count stays 0.
+    // `PRICE_VARS` must list every `api_equiv_cost*` key the builder in
+    // `src/layout/variables.rs` can insert; that list cannot drift silently —
+    // `the_price_gate_name_list_covers_every_builder_price_variable` in
+    // `tests/ant_invariant_tests.rs` scans the builder and fails by name if an
+    // eighth price variable is added without extending this constant.
+    //
+    // Under `source = "bundled"` `select_synced` additionally returns `None`
+    // without reading at all, and it collapses every cache failure to the bundled
+    // table, so this stays total, offline and byte-identical when no cache exists
+    // (D-16/SC2).
+    const PRICE_VARS: &[&str] = &[
+        "api_equiv_cost",
+        "api_equiv_cost_labeled",
+        "api_equiv_cost_input",
+        "api_equiv_cost_output",
+        "api_equiv_cost_cache_write",
+        "api_equiv_cost_cache_read",
+        "api_equiv_cost_by_model",
+    ];
+    let wants_pricing = renderer.uses_variable_prefix("api_equiv_cost")
+        || PRICE_VARS.iter().any(|v| renderer.uses_variable(v));
     let price_snapshot = wants_pricing
         .then(|| crate::pricing::select_synced(&full_config.pricing))
         .flatten();

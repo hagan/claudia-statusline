@@ -511,18 +511,38 @@ impl LayoutRenderer {
     ///
     /// When the template failed to parse (`self.ast` is `None`) this returns
     /// `true` — it FAILS OPEN, so a parse failure can never silently disable a
-    /// variable the user templated. Conditional branches are searched too: a
-    /// variable used only inside `{if ..}` still counts as used.
+    /// variable the user templated. Conditional branches are searched too, AND
+    /// so is the conditional's own CONDITION: a variable used only inside
+    /// `{if ..}` still counts as used (review CR-01, second instance — the arm
+    /// previously destructured `{ if_branch, else_branch, .. }` and discarded
+    /// `condition`, making that promise aspirational rather than true).
     pub fn uses_variable_prefix(&self, prefix: &str) -> bool {
+        /// The variable name a condition references. All four `Condition`
+        /// variants carry one, so all four must be scanned — an exhaustive
+        /// match here means a fifth variant cannot be added without a
+        /// compile error pointing at this gate.
+        fn cond_name(c: &Condition) -> &str {
+            match c {
+                Condition::Truthy(n)
+                | Condition::Negated(n)
+                | Condition::Equals(n, _)
+                | Condition::NotEquals(n, _) => n,
+            }
+        }
+
         fn scan(nodes: &[TemplateNode], prefix: &str) -> bool {
             nodes.iter().any(|node| match node {
                 TemplateNode::Literal(_) => false,
                 TemplateNode::Variable(name) => name.starts_with(prefix),
                 TemplateNode::Conditional {
+                    condition,
                     if_branch,
                     else_branch,
-                    ..
-                } => scan(if_branch, prefix) || scan(else_branch, prefix),
+                } => {
+                    cond_name(condition).starts_with(prefix)
+                        || scan(if_branch, prefix)
+                        || scan(else_branch, prefix)
+                }
             })
         }
 
@@ -534,8 +554,21 @@ impl LayoutRenderer {
         }
     }
 
-    /// Check if the template uses a specific variable
-    #[allow(dead_code)]
+    /// Check if the template uses a specific variable.
+    ///
+    /// STRING-LEVEL by design: this answers exactly the question
+    /// [`Self::render`] asks, because `render` is raw substring substitution
+    /// (`result.replace("{name}", value)`) over the UNPARSED template text. It
+    /// therefore reports `true` for placeholders the parser never turns into a
+    /// `Variable` node — most importantly `"{{api_equiv_cost}"`, where the
+    /// leading `{{` is consumed as an escaped literal yet `render` still
+    /// substitutes `{api_equiv_cost}` starting at byte 1.
+    ///
+    /// This is a LIVE input to the price-source gate in `src/display.rs`, ORed
+    /// with [`Self::uses_variable_prefix`] so the gate is a provable superset of
+    /// what `render` can substitute (review CR-01, round 2). It requires the
+    /// BRACES, so a bare literal mention of a variable name still matches
+    /// nothing and the RV-L1 / WR-07 zero-read guarantee is unaffected.
     pub fn uses_variable(&self, name: &str) -> bool {
         let placeholder = format!("{{{}}}", name);
         self.template.contains(&placeholder)
