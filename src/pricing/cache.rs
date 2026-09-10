@@ -73,7 +73,9 @@ use std::path::{Path, PathBuf};
 pub const PRICE_CACHE_SCHEMA_VERSION: u32 = 1;
 
 /// Hard upper bound on the byte size of a `prices.json` [`read_price_cache`]
-/// will accept, and on the number of price rows it will accept.
+/// will accept. This is the ONLY pre-parse bound and therefore the only one that
+/// bounds parse work; the ROW cap is [`MAX_PRICE_CACHE_ENTRIES`], enforced AFTER
+/// the parse (it bounds retained rows and lookup work, not parsing).
 ///
 /// The shipped synced table is 28 rows / a few KB, so 1 MiB is roughly 150x
 /// headroom. The cap is deliberately sized for **latency**, not merely for
