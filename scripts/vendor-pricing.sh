@@ -181,6 +181,16 @@ fetch_upstream() {
 # refresh and told the operator the transform was broken when upstream was
 # merely messy (WR-01).
 #
+# The SAME reasoning now covers the four BASE rates (R3-WR-02). Each is required
+# to sit inside the ${MIN_RATE}..${MAX_RATE} plausibility band here, in SELECTION
+# — not only in `validate_table`, which stays the documented backstop rather than
+# the primary filter. Rust does exactly this: `transform_litellm` applies the
+# band through `PriceEntry::is_valid` and treats a failing row as
+# `skipped += 1; continue`, so the sync succeeds with the remaining rows. Keeping
+# the band out of selection made bash abort the ENTIRE refresh on one messy
+# upstream rate while Rust skipped it and carried on — i.e. D-02's "ONE
+# transform" was aspirational, not true. This is what makes it true.
+#
 # When the 1-hour rate is ABSENT the binary does NOT fall back to the 5-minute
 # rate: the renderer REFUSES the 1-hour cache-write term and renders `unknown`.
 # That prohibition is documented at `PriceEntry::cache_creation_1h_rate` in
@@ -193,7 +203,7 @@ fetch_upstream() {
 build_prices_map() {
     local upstream="$1"
 
-    jq -c '
+    jq -c --argjson min "${MIN_RATE}" --argjson max "${MAX_RATE}" '
         [ to_entries[]
           # Mirrors src/pricing/fetch.rs::is_selectable_claude_key (D-02);
           # the drift guard the_vendor_script_selection_matches_the_rust_predicate
@@ -203,10 +213,10 @@ build_prices_map() {
           | select(.value | type == "object")
           | select(.value.litellm_provider == "anthropic")
           | select(
-              (.value.input_cost_per_token            | type == "number" and . > 0) and
-              (.value.output_cost_per_token           | type == "number" and . > 0) and
-              (.value.cache_creation_input_token_cost | type == "number" and . > 0) and
-              (.value.cache_read_input_token_cost     | type == "number" and . > 0) and
+              (.value.input_cost_per_token            | type == "number" and . > 0 and . >= $min and . <= $max) and
+              (.value.output_cost_per_token           | type == "number" and . > 0 and . >= $min and . <= $max) and
+              (.value.cache_creation_input_token_cost | type == "number" and . > 0 and . >= $min and . <= $max) and
+              (.value.cache_read_input_token_cost     | type == "number" and . > 0 and . >= $min and . <= $max) and
               (.value.cache_read_input_token_cost < .value.input_cost_per_token))
           | { key: .key,
               value: (
@@ -234,7 +244,7 @@ report_rejected_rows() {
     local upstream="$1"
     local rejected
 
-    rejected="$(jq -r '
+    rejected="$(jq -r --argjson min "${MIN_RATE}" --argjson max "${MAX_RATE}" '
         to_entries[]
         # Same selection as build_prices_map, mirroring
         # src/pricing/fetch.rs::is_selectable_claude_key (D-02).
@@ -250,7 +260,18 @@ report_rejected_rows() {
             (if (($e.value.cache_read_input_token_cost | type == "number") and
                  ($e.value.input_cost_per_token       | type == "number") and
                  ($e.value.cache_read_input_token_cost < $e.value.input_cost_per_token))
-             then empty else "cache_read>=input" end) ] as $bad
+             then empty else "cache_read>=input" end),
+            # R3-WR-02: a rate outside the plausibility band is now dropped in
+            # SELECTION, so without this arm the row would vanish from the run
+            # with no diagnostic at all — previously the operator saw only the
+            # fatal validate_table message that aborted everything.
+            (if ([ $e.value.input_cost_per_token,
+                   $e.value.output_cost_per_token,
+                   $e.value.cache_creation_input_token_cost,
+                   $e.value.cache_read_input_token_cost ]
+                 | map(select(type == "number" and . > 0 and (. < $min or . > $max)))
+                 | length) > 0
+             then "out-of-band" else empty end) ] as $bad
         | select($bad | length > 0)
         | "\($e.key) (\($bad | join(", ")))"
     ' "${upstream}")"
@@ -436,6 +457,14 @@ run_write() {
 
     mkdir -p "$(dirname "${OUTPUT_FILE}")"
     mv "${tmp_out}" "${OUTPUT_FILE}"
+    # R3-WR-07. `mktemp` creates the temp file 0600 and a same-filesystem `mv` is
+    # a rename that PRESERVES that mode, so the vendored table lands owner-only.
+    # git records 100644, so the narrowing never shows up in a diff and silently
+    # reappears on every run. src/pricing/mod.rs `include_str!`s this file, so an
+    # owner-only mode breaks any build performed by a DIFFERENT user in the same
+    # tree (container build with a non-root USER, shared CI workspace,
+    # sudo-owned checkout) at COMPILE time. This is public data; restore 0644.
+    chmod 644 "${OUTPUT_FILE}"
     echo "vendor-pricing: wrote ${OUTPUT_FILE} ($(jq '.prices | length' "${OUTPUT_FILE}") Claude ids, validated)"
 }
 

@@ -1024,6 +1024,33 @@ mod tests {
             );
         }
 
+        // (5) the plausibility band in SELECTION (WR-02, round 3), asserted
+        // inside the `build_prices_map` body ONLY. A whole-file
+        // `SCRIPT.contains(..)` is vacuous for this clause: `validate_table` has
+        // carried the identical text since R2-WR-02, which is precisely why the
+        // guard could not see that SELECTION lacked it — bash aborted the whole
+        // refresh on an out-of-band rate while `transform_litellm` did
+        // `skipped += 1; continue`.
+        let selection_body = script_function_body(SCRIPT, "build_prices_map");
+        assert!(
+            selection_body.len() < SCRIPT.len() && selection_body.len() > 100,
+            "non-vacuity: the extracted build_prices_map body must be a strict, non-trivial \
+             subset of the script (got {} bytes of {})",
+            selection_body.len(),
+            SCRIPT.len()
+        );
+        for clause in [". >= $min and . <= $max", "--argjson min", "--argjson max"] {
+            assert!(
+                selection_body.contains(clause),
+                "D-02 drift: scripts/vendor-pricing.sh::build_prices_map no longer contains \
+                 `{clause}`, so SELECTION admits a rate the validator then rejects — which \
+                 aborts the ENTIRE vendoring run, while the Rust transform skips the row and \
+                 continues (WR-02). Asserted inside the FUNCTION BODY, not the whole file, \
+                 because validate_table carries the same clause and would satisfy a \
+                 whole-file scan while selection was unbanded."
+            );
+        }
+
         // (3) the plausibility band. Derived from the Rust constants rather than
         // retyped, so moving the band in src/pricing/mod.rs fails here until the
         // script moves with it.
