@@ -978,9 +978,14 @@ fn format_statusline_with_layout(
     //     is what keeps a literal MENTION of `api_equiv_cost` outside any `{...}`
     //     placeholder from costing a `prices.json` read the user never asked for
     //     (RV-L1 / WR-07 — `a_literal_mention_of_a_price_var_reads_no_price_cache`).
-    //     It fails OPEN on an unparseable template, so a parse failure can never
-    //     silently blank a price. It now also scans a conditional's `{if ..}`
-    //     CONDITION, not just its branches.
+    //     It fails CLOSED on an unparseable template (WR-03, round 3): with no
+    //     AST it answers `false`. The price is still not blanked, because the RAW
+    //     half below is what covers `render()` and it is brace-exact — an
+    //     unparseable template that DOES carry `{api_equiv_cost}` still gates the
+    //     read ON through that half. Fail-open only bought a per-render
+    //     `prices.json` open for users whose `[layout] format` merely fails to
+    //     parse. It now also scans a conditional's `{if ..}` CONDITION, not just
+    //     its branches.
     //
     //   * RAW half — `PRICE_VARS.iter().any(|v| renderer.uses_variable(v))`.
     //     `uses_variable` tests `template.contains("{name}")`, i.e. EXACTLY the
@@ -995,6 +1000,9 @@ fn format_statusline_with_layout(
     // Widening does NOT weaken the zero-read guarantee: the raw half requires the
     // BRACES `{name}`, so it turns ON only for text `render()` could substitute a
     // price into. A brace-free mention matches nothing and the read count stays 0.
+    // The CONVERSE now also holds (WR-03): narrowing the AST half to fail CLOSED
+    // does not weaken the CR-01 superset, because the superset was never resting
+    // on the AST half — it rests on the brace-exact raw half.
     // `PRICE_VARS` must list every `api_equiv_cost*` key the builder in
     // `src/layout/variables.rs` can insert; that list cannot drift silently —
     // `the_price_gate_name_list_covers_every_builder_price_variable` in

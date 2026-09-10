@@ -509,8 +509,22 @@ impl LayoutRenderer {
     /// be used for that gate.
     ///
     /// When the template failed to parse (`self.ast` is `None`) this returns
-    /// `true` — it FAILS OPEN, so a parse failure can never silently disable a
-    /// variable the user templated. Conditional branches are searched too, AND
+    /// `false` — it FAILS CLOSED (WR-03, round 3). This method is NOT the whole
+    /// gate: `src/display.rs` ORs it with a RAW half
+    /// (`PRICE_VARS.iter().any(|v| renderer.uses_variable(v))`) that tests
+    /// `template.contains("{name}")`, i.e. exactly the substrings
+    /// [`Self::render`] — the method that actually produces output on that path
+    /// — will `.replace(..)`. The raw half is therefore an exact superset of
+    /// what an unparsed template can substitute, so answering `false` here
+    /// cannot blank a price. Meanwhile [`Self::render_template`] substitutes
+    /// NOTHING without an AST (it returns `"[tmpl err]"`), so failing open here
+    /// bought nothing and cost a `prices.json` `File::open` on EVERY render for
+    /// any user whose `[layout] format` merely fails to parse (e.g.
+    /// `"{directory}{if git}"`). Do not re-introduce fail-open on the assumption
+    /// that this method is the whole gate — see the two-half rationale in
+    /// `src/display.rs`.
+    ///
+    /// Conditional branches are searched too, AND
     /// so is the conditional's own CONDITION: a variable used only inside
     /// `{if ..}` still counts as used (review CR-01, second instance — the arm
     /// previously destructured `{ if_branch, else_branch, .. }` and discarded
@@ -547,9 +561,16 @@ impl LayoutRenderer {
 
         match &self.ast {
             Some(nodes) => scan(nodes, prefix),
-            // Fail OPEN: no AST means we cannot know, and guessing "unused"
-            // would blank a price the user asked for.
-            None => true,
+            // Fail CLOSED (WR-03, round 3). A `None` AST means `render_template`
+            // returns "[tmpl err]" and substitutes nothing, while the path that
+            // actually runs — `format_statusline_with_layout` ->
+            // `LayoutRenderer::render` — is fully covered by the RAW half of the
+            // gate in src/display.rs, which tests `template.contains("{name}")`
+            // and is an exact superset of what `render`'s `.replace("{name}", v)`
+            // can substitute. Failing open bought nothing there and cost a
+            // prices.json File::open on EVERY render for any user whose
+            // `[layout] format` fails to parse.
+            None => false,
         }
     }
 

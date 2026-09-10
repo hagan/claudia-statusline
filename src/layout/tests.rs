@@ -2252,13 +2252,35 @@ fn uses_variable_prefix_ignores_a_literal_mention() {
 }
 
 #[test]
-fn uses_variable_prefix_fails_open_on_an_unparseable_template() {
+fn uses_variable_prefix_fails_closed_on_an_unparseable_template() {
     // `{if git}` with no `{endif}` fails to parse, so there is no AST to query.
     let renderer = LayoutRenderer::with_format("{if git}{directory}", "");
     assert!(
-        renderer.uses_variable_prefix("api_equiv_cost"),
-        "an unparseable template must FAIL OPEN: a parse failure may never \
-         silently blank a price the user templated"
+        !renderer.uses_variable_prefix("api_equiv_cost"),
+        "the AST half must FAIL CLOSED (WR-03): it may not force a prices.json read \
+         for a template that references no price variable at all. Nothing is blanked — \
+         the raw half of the gate in src/display.rs is what covers render(), and it is \
+         brace-exact, so it is the half that preserves the CR-01 superset"
+    );
+}
+
+#[test]
+fn a_braced_price_var_in_an_unparseable_template_still_gates_the_read_on() {
+    // The concrete statement of "failing CLOSED on the AST half did not weaken
+    // the R2-CR-01 superset". This template does not parse (`{if git}` is never
+    // closed), so `uses_variable_prefix` is now `false` — but it DOES carry the
+    // literal `{api_equiv_cost}` that `render()`'s `.replace(..)` will
+    // substitute, so the RAW half must still turn the gate ON.
+    let renderer = LayoutRenderer::with_format("{if git}{api_equiv_cost}", "");
+    assert!(
+        !renderer.uses_variable_prefix("api_equiv_cost"),
+        "no AST here, so the AST half answers false (WR-03)"
+    );
+    assert!(
+        renderer.uses_variable("api_equiv_cost"),
+        "a user's price variable inside an UNPARSEABLE template must still gate the \
+         read ON through the raw half — otherwise fail-closed would have weakened \
+         the CR-01 superset"
     );
 }
 

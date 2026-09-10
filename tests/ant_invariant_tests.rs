@@ -956,8 +956,12 @@ fn one_render_performs_at_most_one_price_cache_read() {
 fn the_read_counter_can_observe_two_resolutions() {
     let _guard = test_support::init();
     let home = tempfile::TempDir::new().expect("isolated home");
-    let orig_home = std::env::var_os("HOME");
-    let orig_xdg = std::env::var_os("XDG_CACHE_HOME");
+    // WR-04 (round 3): the seventh env-mutating site in this file. `EnvGuard` is
+    // Drop-based, so a panic anywhere below (three `.expect(..)` in
+    // `plant_synced_prices` plus `dirs::cache_dir().expect(..)`) can no longer
+    // leak HOME/XDG_CACHE_HOME at a DELETED TempDir into every later #[serial]
+    // test in this binary, where it would mask the original failure.
+    let env = EnvGuard::capture(&["HOME", "XDG_CACHE_HOME"]);
     std::env::set_var("HOME", home.path());
     std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
 
@@ -968,14 +972,9 @@ fn the_read_counter_can_observe_two_resolutions() {
     let _ = statusline::pricing::select_synced(&cfg);
     let reads = statusline::pricing::cache::price_cache_reads();
 
-    match orig_home {
-        Some(v) => std::env::set_var("HOME", v),
-        None => std::env::remove_var("HOME"),
-    }
-    match orig_xdg {
-        Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
-        None => std::env::remove_var("XDG_CACHE_HOME"),
-    }
+    // Restore at exactly the point the manual restore block used to sit, so the
+    // happy-path restore-BEFORE-assert ordering is preserved; Drop covers unwind.
+    drop(env);
 
     assert_eq!(
         reads, 2,
@@ -1007,6 +1006,35 @@ fn a_template_without_price_vars_reads_no_price_cache() {
         statusline::pricing::cache::price_cache_reads(),
         0,
         "a price-var-free template must perform ZERO price-cache reads (WR-07) — rendered: {out:?}"
+    );
+}
+
+/// WR-03 (round 3): the case the test above CANNOT observe, because every
+/// template it uses parses.
+///
+/// `"{directory}{if git}"` has an unclosed `{if}`, so `parse_template` rejects it
+/// and `LayoutRenderer::new_with_ast` leaves `ast = None`. Before this fix
+/// `uses_variable_prefix` returned `true` for a `None` AST ("fail OPEN"), so
+/// `wants_pricing` was unconditionally true and EVERY render called
+/// `select_synced` -> `read_price_cache` -> `File::open` — for a user who never
+/// opted into pricing and whose template references no price variable at all.
+///
+/// FAILURE MODE: reverting `None => false` in
+/// `src/layout/template.rs::uses_variable_prefix` makes this report a nonzero
+/// read count.
+#[test]
+#[serial]
+fn an_unparseable_template_without_price_vars_reads_no_price_cache() {
+    let config = "[pricing]\nsource = \"auto\"\n\n[layout]\nformat = \"{directory}{if git}\"\n";
+    let out = render_lib_isolated(config, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        0,
+        "a template that fails to PARSE but uses no price variable must still read \
+         nothing (WR-03) — rendered: {out:?}"
     );
 }
 
