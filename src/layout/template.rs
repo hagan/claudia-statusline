@@ -607,6 +607,17 @@ impl LayoutRenderer {
     /// `{if ..}` still counts as used (review CR-01, second instance — the arm
     /// previously destructured `{ if_branch, else_branch, .. }` and discarded
     /// `condition`, making that promise aspirational rather than true).
+    ///
+    /// `#[allow(dead_code)]`: the price gate in `src/display.rs` now calls the
+    /// narrower [`Self::uses_variable_prefix_in_output`], because the gate's
+    /// renderer only ever [`Self::render`]s and `render` cannot evaluate a
+    /// condition (round-4 WR-03). This method is RETAINED as the
+    /// general-purpose, condition-scanning query — the correct answer for
+    /// [`Self::render_template`] consumers, which do evaluate conditions — and
+    /// is exercised by `layout::tests::uses_variable_prefix_*`. Do NOT delete
+    /// it: the day the shipped path becomes condition-aware, this is the method
+    /// the gate must revert to.
+    #[allow(dead_code)]
     pub fn uses_variable_prefix(&self, prefix: &str) -> bool {
         /// The variable name a condition references. All four `Condition`
         /// variants carry one, so all four must be scanned — an exhaustive
@@ -649,6 +660,90 @@ impl LayoutRenderer {
             // cost a
             // prices.json File::open on EVERY render for any user whose
             // `[layout] format` fails to parse.
+            None => false,
+        }
+    }
+
+    /// Does the PARSED template use a variable whose name starts with `prefix`
+    /// somewhere that can reach the OUTPUT?
+    ///
+    /// This is the AST half of the price-source gate in `src/display.rs`, and
+    /// that gate is its ONLY intended caller. [`Self::uses_variable_prefix`]
+    /// remains the general-purpose query and MUST stay condition-scanning for
+    /// [`Self::render_template`] consumers, which really do evaluate
+    /// conditions; do not "unify" the two.
+    ///
+    /// # Why the CONDITION is excluded (round-4 WR-03)
+    ///
+    /// `format_statusline_with_layout` renders through [`Self::render`], which
+    /// does not implement conditionals: `{if ..}` and `{endif}` are `{..}` spans
+    /// that resolve to no variable, so they are dropped, and the branch body
+    /// between them is emitted UNCONDITIONALLY. A template such as
+    /// `"{directory}|{if api_equiv_cost}COST{endif}"` renders `/tmp|COST` — the
+    /// condition is never evaluated and no figure can ever appear. Counting that
+    /// as a use fired the gate and cost a `prices.json` `File::open` on EVERY
+    /// render, which under the default `source = "auto"` means an open, parse
+    /// and validate at the statusline's cadence. That is the same cost class
+    /// WR-03 (round 3) removed by making the AST half fail closed, re-entering
+    /// through the condition scan.
+    ///
+    /// # Why this cannot weaken the R2-CR-01 superset
+    ///
+    /// The superset rests on the RAW half of the gate, never on this one:
+    /// [`Self::uses_variable`] tests `template.contains("{name}")`, and `render`
+    /// resolves a name only where a `{` is followed by a `}`, taking the name
+    /// from the LAST `{` in that span — so the containment test is a STRUCTURAL
+    /// superset of everything `render` can substitute, over a `PRICE_VARS` list
+    /// pinned to every price key the variable builder can insert. Plan 11-10
+    /// recorded and mechanically proved that finding when it made this half fail
+    /// CLOSED; this narrowing is the same half along a different axis and
+    /// inherits the same argument.
+    ///
+    /// Like its sibling it therefore also FAILS CLOSED on an unparseable
+    /// template (`self.ast` is `None` => `false`): the brace-exact raw half
+    /// still gates the read ON for a braced price variable in a template that
+    /// does not parse.
+    ///
+    /// # Why BRANCHES are still scanned
+    ///
+    /// `render` emits branch bodies unconditionally, so
+    /// `"{if git}{api_equiv_cost}{endif}"` genuinely substitutes a figure and
+    /// must gate the read ON. Pinned by
+    /// `a_price_var_inside_a_conditional_branch_still_gates_the_read_on` in
+    /// `tests/ant_invariant_tests.rs`.
+    ///
+    /// # Tripwire
+    ///
+    /// If [`Self::render`] ever gains conditional evaluation, or
+    /// `format_statusline_with_layout` is routed through
+    /// [`Self::render_template`], conditions BECOME output-relevant and this
+    /// gate must revert to [`Self::uses_variable_prefix`] BEFORE that change
+    /// lands. `render_ignores_a_condition_variable_it_cannot_evaluate` in
+    /// `src/layout/tests.rs` renders a condition-only template with the variable
+    /// absent and with a sentinel value and requires byte-identical output, so
+    /// it is the test that fails first and forces that sequencing.
+    pub fn uses_variable_prefix_in_output(&self, prefix: &str) -> bool {
+        /// Identical to the scan in [`LayoutRenderer::uses_variable_prefix`]
+        /// except that the `Conditional` arm does NOT look at `condition`: only
+        /// the two branches, whose bodies `render` actually emits.
+        fn scan(nodes: &[TemplateNode], prefix: &str) -> bool {
+            nodes.iter().any(|node| match node {
+                TemplateNode::Literal(_) => false,
+                TemplateNode::Variable(name) => name.starts_with(prefix),
+                TemplateNode::Conditional {
+                    condition: _,
+                    if_branch,
+                    else_branch,
+                } => scan(if_branch, prefix) || scan(else_branch, prefix),
+            })
+        }
+
+        match &self.ast {
+            Some(nodes) => scan(nodes, prefix),
+            // Fail CLOSED (WR-03, round 3), for the same reason the sibling
+            // method does: with no AST, `render_template` substitutes nothing
+            // and the path that actually runs is covered by the brace-exact RAW
+            // half of the gate in src/display.rs.
             None => false,
         }
     }

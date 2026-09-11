@@ -973,7 +973,9 @@ fn format_statusline_with_layout(
     // narrower than that substitution set lets a dollar figure be rendered from
     // a table the user's `[pricing].source` says is not authoritative:
     //
-    //   * AST half — `uses_variable_prefix("api_equiv_cost")`. `api_equiv_cost`
+    //   * AST half — `uses_variable_prefix_in_output("api_equiv_cost")` (it
+    //     was `uses_variable_prefix` until round-4 WR-03; see the NARROWED
+    //     note at the end of this bullet). `api_equiv_cost`
     //     is a PREFIX of all seven price variables ({api_equiv_cost}, _labeled,
     //     _input, _output, _cache_write, _cache_read, _by_model). Being AST-level
     //     is what keeps a literal MENTION of `api_equiv_cost` outside any `{...}`
@@ -987,6 +989,33 @@ fn format_statusline_with_layout(
     //     `prices.json` open for users whose `[layout] format` merely fails to
     //     parse. It now also scans a conditional's `{if ..}` CONDITION, not just
     //     its branches.
+    //
+    //     NARROWED TO THE OUTPUT SURFACE (WR-03, ROUND 4). The half is now
+    //     `uses_variable_prefix_in_output`: Variable nodes and BOTH conditional
+    //     BRANCHES, but NOT the conditional's own CONDITION. `render()` does not
+    //     implement conditionals — `{if ..}` and `{endif}` are spans that
+    //     resolve to no variable, so they are dropped, and the branch body is
+    //     emitted unconditionally. The reviewer verified it live against the
+    //     HEAD binary: `format = "{directory}|{if api_equiv_cost}COST{endif}"`
+    //     renders `/tmp|COST`. So a condition-only price reference can never
+    //     display a figure, while firing the gate for it bought a `prices.json`
+    //     open, parse and validate on EVERY render under the DEFAULT
+    //     `source = "auto"` — the same cost class WR-03 (round 3) removed,
+    //     re-entering through the condition scan. The superset is untouched
+    //     because it never rested on this half: the brace-exact RAW half below
+    //     is a structural superset of everything `render()` can substitute, and
+    //     BRANCH scanning is retained here because a branch body really is
+    //     emitted (`a_price_var_inside_a_conditional_branch_still_gates_the_read_on`).
+    //     `uses_variable_prefix` itself is unchanged and still scans conditions
+    //     for `render_template` consumers.
+    //
+    //     TRIPWIRE: if `render()` ever gains conditional evaluation, or this
+    //     function is routed through `render_template`, conditions become
+    //     output-relevant and this half MUST revert to `uses_variable_prefix`
+    //     before that change lands.
+    //     `render_ignores_a_condition_variable_it_cannot_evaluate` in
+    //     `src/layout/tests.rs` is the test that fails first and forces that
+    //     ordering.
     //
     //   * RAW half — `PRICE_VARS.iter().any(|v| renderer.uses_variable(v))`.
     //     `uses_variable` tests `template.contains("{name}")`, i.e. EXACTLY the
@@ -1042,7 +1071,7 @@ fn format_statusline_with_layout(
         "api_equiv_cost_cache_read",
         "api_equiv_cost_by_model",
     ];
-    let wants_pricing = renderer.uses_variable_prefix("api_equiv_cost")
+    let wants_pricing = renderer.uses_variable_prefix_in_output("api_equiv_cost")
         || PRICE_VARS.iter().any(|v| renderer.uses_variable(v));
     let price_snapshot = wants_pricing
         .then(|| crate::pricing::select_synced(&full_config.pricing))
