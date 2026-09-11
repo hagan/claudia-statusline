@@ -68,16 +68,32 @@ is unaffected — the refresh simply stops working.
 Measure the current upstream size before choosing a new value:
 
 ```bash
-curl -fsSL -o /dev/null -w '%{size_download}\n' \
+curl -q -fsSL --proto '=https' --proto-redir '=https' --max-redirs 5 \
+  --connect-timeout 10 --max-time 60 \
+  -o /dev/null -w '%{size_download}\n' \
   https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json
 ```
+
+This probe is the ONE `curl` invocation in this repository that **intentionally omits**
+`--max-filesize`, and the omission is load-bearing rather than an oversight: the probe exists to
+measure a payload suspected of having outgrown the cap, so capping it would abort the very
+measurement being taken (`curl` exit 63) and report the failure as the diagnostic. It writes to
+`/dev/null`, so nothing unbounded lands on disk, and the recipe's `--max-time` bound still holds
+it in the time dimension. Every other `curl` in the repo carries the cap —
+`scripts/vendor-pricing.sh::fetch_upstream`, `src/pricing/fetch.rs::curl_args` and the capture
+recipe under "Refreshing this fixture" below. `-q` is first in argv on all of them: `curl` reads
+`~/.curlrc` **before** argv and honours `-q` only in first position, so without it a config line
+such as `insecure` or `header = "Authorization: ..."` silently defeats the transport pin
+(R3-WR-01, now R4-WR-02 for these recipes).
 
 ## Refreshing this fixture
 
 Re-capture with the same trim, then re-run `cargo test --lib pricing::fetch`:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json \
+curl -q -fsSL --proto '=https' --proto-redir '=https' --max-redirs 5 \
+  --connect-timeout 10 --max-time 60 --max-filesize 8388608 \
+  https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json \
   | python3 -c '
 import json, sys, collections
 d = json.load(sys.stdin, object_pairs_hook=collections.OrderedDict)

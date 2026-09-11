@@ -856,6 +856,104 @@ mod tests {
         }
     }
 
+    /// R4-WR-02: the operator recipes that CAPTURE
+    /// `tests/fixtures/litellm_snapshot.json` must be transport-pinned too.
+    ///
+    /// That fixture is the ORACLE for the offline round-trip test: it is what
+    /// certifies that this Rust transform reproduces the compiled-in
+    /// `data/claude_prices.json`. A capture fetched over a downgraded redirect,
+    /// an unbounded chain, or a `~/.curlrc`-modified transport makes the
+    /// no-drift proof certify the WRONG table — the same mechanism R3-CR-01
+    /// (`scripts/vendor-pricing.sh:163`) and R3-WR-01 ([`curl_args`]) closed,
+    /// with a weaker consequence only because the result lands in a reviewed
+    /// commit rather than an automated publish.
+    ///
+    /// The recipes are PROSE, so a grep-shaped guard over the document is the
+    /// only mechanism that can see them; there is no argv to assert on. The
+    /// reference form is `scripts/vendor-pricing.sh::fetch_upstream` — copy it,
+    /// do not invent a flag set (D-02: one transport, now three callers).
+    ///
+    /// The `--max-filesize` asymmetry is pinned as a DECISION, not tolerated as
+    /// an oversight: exactly one recipe (the capture) carries the cap, and the
+    /// size probe deliberately omits it because capping a measurement of a
+    /// payload suspected of exceeding the cap aborts the measurement itself
+    /// (curl exit 63). An exactly-once assertion means a future editor cannot
+    /// silently "fix" the probe into a broken one, and cannot drop the cap from
+    /// the capture either.
+    ///
+    /// FAILURE MODE: reverting either recipe to bare `curl -fsSL` fails by name.
+    #[test]
+    fn the_fixture_refresh_recipes_are_transport_pinned() {
+        const PROVENANCE: &str =
+            include_str!("../../tests/fixtures/litellm_snapshot.provenance.md");
+
+        // Non-vacuity FIRST: if the recipes were renamed away or removed, every
+        // assertion below is trivially satisfiable and this guard reports green
+        // on a document that no longer tells the operator anything.
+        assert!(
+            PROVENANCE.matches("curl").count() >= 2,
+            "non-vacuity: tests/fixtures/litellm_snapshot.provenance.md must still contain \
+             both `curl` recipes (the size probe and the capture); found {} mention(s). \
+             This guard is BLIND if they were renamed or removed.",
+            PROVENANCE.matches("curl").count()
+        );
+
+        assert_eq!(
+            PROVENANCE.matches("curl -q -fsSL").count(),
+            2,
+            "R4-WR-02: both recipes in tests/fixtures/litellm_snapshot.provenance.md must \
+             invoke `curl -q -fsSL`, with `-q` FIRST in argv — curl reads ~/.curlrc before \
+             argv and honours -q only in first position, so a config line such as `insecure` \
+             or `header = \"Authorization: ...\"` otherwise defeats the pin. These recipes \
+             produce the ORACLE fixture for the offline round-trip test. Copy the flag set \
+             from scripts/vendor-pricing.sh::fetch_upstream."
+        );
+        assert!(
+            !PROVENANCE.contains("curl -fsSL"),
+            "R4-WR-02 regression: a bare `curl -fsSL` reappeared in \
+             tests/fixtures/litellm_snapshot.provenance.md. That is the exact invocation \
+             R3-CR-01 and R3-WR-01 declared unacceptable elsewhere in this repository, and \
+             the payload it fetches becomes the oracle the no-drift proof trusts. Use the \
+             scripts/vendor-pricing.sh::fetch_upstream form."
+        );
+
+        for flag in [
+            "--proto '=https'",
+            "--proto-redir '=https'",
+            "--max-redirs 5",
+            "--connect-timeout 10",
+            "--max-time 60",
+        ] {
+            assert!(
+                PROVENANCE.matches(flag).count() >= 2,
+                "R4-WR-02: `{flag}` must appear in BOTH recipes in \
+                 tests/fixtures/litellm_snapshot.provenance.md (found {}). Without the \
+                 proto/proto-redir pin a 302 to a plaintext or ftp target is followed in \
+                 cleartext; without the bounds the chain and the wait are unbounded. \
+                 Mirror scripts/vendor-pricing.sh::fetch_upstream.",
+                PROVENANCE.matches(flag).count()
+            );
+        }
+
+        assert_eq!(
+            PROVENANCE.matches("--max-filesize 8388608").count(),
+            1,
+            "R4-WR-02 / T-11-70: `--max-filesize 8388608` must appear EXACTLY ONCE in \
+             tests/fixtures/litellm_snapshot.provenance.md — on the CAPTURE recipe only. \
+             The size probe omits it on purpose: it measures a payload suspected of having \
+             outgrown MAX_BODY_BYTES, so the cap would abort the measurement (curl exit 63) \
+             and report the failure as the diagnostic. Two occurrences means someone \
+             \"fixed\" the probe into a broken one; zero means the capture lost its cap."
+        );
+        assert!(
+            PROVENANCE.contains("intentionally omits"),
+            "R4-WR-02 / T-11-70: the paragraph explaining WHY the size probe omits \
+             `--max-filesize` is gone from tests/fixtures/litellm_snapshot.provenance.md. \
+             The asymmetry must read as a decision, not an oversight a future editor should \
+             correct — the exactly-once assertion above is meaningless without it."
+        );
+    }
+
     /// `script_function_body` must fail LOUDLY, not degrade to a whole-file scan.
     #[test]
     #[should_panic(expected = "no line `definitely_not_a_function() {`")]
