@@ -1575,6 +1575,62 @@ mod tests {
              is silent on BOTH sides — which is the complaint R5-WR-01 actually made."
         );
 
+        // (8a) the bash half of the same contract, body-scoped inside
+        // build_prices_map. `else true end` is the SELECTION short-circuit (row
+        // retained) and `else {} end` is the CARRY short-circuit (dimension
+        // dropped). Flipping either is the bash-side way to reintroduce the
+        // divergence.
+        for (clause, meaning) in [
+            (
+                "else true end",
+                "a non-numeric 1-hour rate must NOT de-select the row",
+            ),
+            (
+                "else {} end",
+                "a non-numeric 1-hour rate must drop ONLY the carried dimension",
+            ),
+        ] {
+            assert!(
+                selection_body.contains(clause),
+                "D-02 drift (R5-WR-01): scripts/vendor-pricing.sh::build_prices_map no longer \
+                 contains `{clause}` — {meaning}. Without that short-circuit bash starts \
+                 dropping the whole ROW, which is the divergence in the OPPOSITE direction \
+                 from the one fixed in plan 11-16. Asserted inside the FUNCTION BODY, not \
+                 the whole file."
+            );
+        }
+
+        // (8b) the operator diagnostic for the retained-but-diminished row. It
+        // lives in its OWN reporter, never in report_rejected_rows, because that
+        // function's heading says the row was NOT vendored — and this row IS
+        // vendored. Printing it there would tell the operator something false.
+        let wrong_typed_body = script_function_body(SCRIPT, "report_wrong_typed_1h_rows");
+        assert!(
+            wrong_typed_body.len() < SCRIPT.len() && wrong_typed_body.len() > 100,
+            "non-vacuity: the extracted report_wrong_typed_1h_rows body must be a strict, \
+             non-trivial subset of the script (got {} bytes of {})",
+            wrong_typed_body.len(),
+            SCRIPT.len()
+        );
+        for clause in ["1h-wrong-type", "type != \"number\""] {
+            assert!(
+                wrong_typed_body.contains(clause),
+                "D-02 drift (R5-WR-01): scripts/vendor-pricing.sh::report_wrong_typed_1h_rows \
+                 no longer contains `{clause}`, so a VENDORED row that silently lost its \
+                 1-hour dimension to a wrong upstream TYPE is invisible to the operator — \
+                 indistinguishable from a row upstream simply never published one \
+                 (report_missing_1h_rows names it but cannot say WHY). The token must stay \
+                 DISTINCT from `1h-out-of-band`, which means something else entirely."
+            );
+        }
+        assert!(
+            !rejected_body.contains("1h-wrong-type"),
+            "R5-WR-01: `1h-wrong-type` must NOT appear in report_rejected_rows — that \
+             function prints `SKIPPED (upstream row unusable — NOT vendored)`, and this row \
+             IS vendored. A retained row under a rejected heading is a false statement to \
+             the operator."
+        );
+
         // (3) the plausibility band. Derived from the Rust constants rather than
         // retyped, so moving the band in src/pricing/mod.rs fails here until the
         // script moves with it.

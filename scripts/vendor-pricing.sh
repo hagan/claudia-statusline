@@ -236,6 +236,14 @@ build_prices_map() {
                        >= .value.cache_creation_input_token_cost)
                then (.value.cache_creation_input_token_cost_above_1hr >= $min)
                     and (.value.cache_creation_input_token_cost_above_1hr <= $max)
+               # R5-WR-01: this `else true` is the bash half of the TYPE-tolerance
+               # contract. A NON-NUMERIC 1-hour rate fails the `type == "number"`
+               # guard above, falls through here, and the row stays SELECTED —
+               # only the carry below drops the dimension. src/pricing/fetch.rs
+               # matches it with `lenient_optional_rate`; until plan 11-16 it did
+               # not, and `serde_json::from_value` destroyed the whole ROW instead
+               # (the THIRD axis of this defect class, after R3-WR-02/R4-WR-01).
+               # Pinned by the_vendor_script_selection_matches_the_rust_predicate.
                else true end))
           | { key: .key,
               value: (
@@ -249,6 +257,10 @@ build_prices_map() {
                        and (.value.cache_creation_input_token_cost_above_1hr
                             >= .value.cache_creation_input_token_cost)
                     then { cache_creation_1h: .value.cache_creation_input_token_cost_above_1hr }
+                    # R5-WR-01: and this `else {}` is where the DIMENSION (and
+                    # only the dimension) is dropped for a wrong-typed rate.
+                    # report_wrong_typed_1h_rows below names the affected ids, so
+                    # the loss is not silent on either side.
                     else {} end ))} ]
         | from_entries
     ' "${upstream}"
@@ -313,6 +325,55 @@ report_rejected_rows() {
     if [ -n "${rejected}" ]; then
         echo "vendor-pricing: SKIPPED (upstream row unusable — NOT vendored):" >&2
         echo "${rejected}" | sed 's/^/  ! /' >&2
+    fi
+}
+
+# List VENDORED rows whose optional 1-hour cache-write rate arrived with the
+# wrong TYPE (R5-WR-01).
+#
+# WHY THIS IS NOT AN ARM OF report_rejected_rows: that function prints
+# "SKIPPED (upstream row unusable — NOT vendored)". These rows ARE vendored —
+# build_prices_map's `type == "number"` guard short-circuits to `else true`
+# (row selected) and `else {}` (dimension dropped). Listing a retained row under
+# a rejected heading would tell the operator something false.
+#
+# WHY THE TOKEN MUST BE DISTINCT: `1h-out-of-band` (R4-WR-01) means a NUMERIC
+# rate outside the plausibility band, which rejects the whole ROW. This one means
+# a non-numeric rate, which drops only the dimension. And report_missing_1h_rows
+# already names the id — but identically to a row upstream simply never published
+# a 1-hour rate for, which is exactly the "silent and nameless" complaint
+# R5-WR-01 made. An id named here will ALSO appear there; that overlap is
+# deliberate, because the two lines answer different questions ("what will render
+# \`unknown\`" vs "why").
+#
+# The Rust counterpart is TransformOutcome::wrong_typed_1h in
+# src/pricing/fetch.rs, printed by `ant sync-pricing` with the same token and the
+# same wording (D-02 is about the two transforms agreeing, and that includes what
+# they tell the operator).
+#
+# Takes BOTH the upstream file and the SELECTED map: the map decides WHICH ids to
+# consider, so this function never re-derives the selection predicate and cannot
+# drift from it, and the upstream file supplies the raw value whose type is at
+# fault.
+report_wrong_typed_1h_rows() {
+    local upstream="$1"
+    local prices_map="$2"
+    local wrong
+
+    # jq footgun: `$kept | has(.key)` pipes $kept in as `.`, so `.key` inside
+    # has() would resolve against $kept, not against the entry. Index directly.
+    wrong="$(jq -r --argjson kept "${prices_map}" '
+        to_entries[]
+        | select($kept[.key] != null)
+        | select(.value | has("cache_creation_input_token_cost_above_1hr"))
+        | select(.value.cache_creation_input_token_cost_above_1hr
+                 | type != "number" and type != "null")
+        | "\(.key) (1h-wrong-type: \(.value.cache_creation_input_token_cost_above_1hr | type))"
+    ' "${upstream}")"
+
+    if [ -n "${wrong}" ]; then
+        echo "vendor-pricing: 1h-wrong-type (upstream published a NON-NUMERIC 1-hour cache-write rate; the row IS vendored, with the 1-hour dimension dropped):" >&2
+        echo "${wrong}" | sed 's/^/  ~ /' >&2
     fi
 }
 
@@ -467,6 +528,10 @@ run_write() {
     [ "$(printf '%s' "${prices_map}" | jq -r 'length')" -gt 0 ] \
         || die "upstream snapshot yielded zero Claude rows — refusing to write an empty table"
     report_rejected_rows "${tmp_upstream}"
+    # Causal order for the operator: rejected -> wrong-typed -> missing.
+    # run_check calls no reporters at all (it isolates DATA drift), so this is
+    # deliberately write-mode only, exactly like its two neighbours.
+    report_wrong_typed_1h_rows "${tmp_upstream}" "${prices_map}"
     report_missing_1h_rows "${prices_map}"
     report_coverage_delta "${prices_map}"
     vendored_at="$(date -u +%Y-%m-%d)"
