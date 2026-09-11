@@ -960,6 +960,21 @@ mod tests {
     ///    `MAX_RATE` are textually the same values as the Rust constants, so
     ///    `validate_table` refuses exactly the rates `PriceEntry::is_valid`
     ///    refuses (WR-02).
+    /// 4. **The band applied to the 1-hour rate in SELECTION, and the operator
+    ///    diagnostic that names it** — that `build_prices_map`'s row-level
+    ///    `select(..)` bands `cache_creation_input_token_cost_above_1hr`, and
+    ///    that `report_rejected_rows` emits a `1h-out-of-band` reason token
+    ///    (R4-WR-01). The parity rule, stated in prose because no substring can
+    ///    state it: a 1-hour rate that WOULD be carried (number, `> 0`,
+    ///    `>= cache_creation`) but falls outside the band rejects the whole
+    ///    **ROW**, mirroring `is_none_or(ok)` plus `skipped += 1; continue`;
+    ///    a rate that is absent, non-numeric, `<= 0` or below the 5-minute rate
+    ///    drops only the **DIMENSION**, mirroring
+    ///    `positive(..).filter(|rate| *rate >= cache_creation)`. Items (4) and
+    ///    (5)-(6) below are asserted per FUNCTION BODY, never whole-file,
+    ///    because `validate_table` has banded this same dimension since
+    ///    R2-WR-02 and would satisfy a whole-file scan while selection was
+    ///    unbanded.
     ///
     /// WHAT IT STILL CANNOT SEE: any rule expressed with DIFFERENT text on the
     /// two sides. This is a textual pin, not a semantic equivalence proof — a
@@ -1050,6 +1065,52 @@ mod tests {
                  whole-file scan while selection was unbanded."
             );
         }
+
+        // (6) the SAME band applied to the OPTIONAL 1-hour rate in selection
+        // (R4-WR-01), also inside `build_prices_map` only. Round 3 banded the
+        // four base rates and stopped there, so ONE upstream row with a sane
+        // base and an absurd `above_1hr` still reached `validate_table`, which
+        // `die`s — taking every other good row in the payload down with it.
+        // The field is spelled out on the left-hand side here (rather than the
+        // `. >= $min` pipe form the base rates use) precisely so this assertion
+        // cannot be satisfied by the base-rate clauses already in this body.
+        for clause in [
+            "cache_creation_input_token_cost_above_1hr >= $min",
+            "cache_creation_input_token_cost_above_1hr <= $max",
+        ] {
+            assert!(
+                selection_body.contains(clause),
+                "D-02 drift (R4-WR-01): scripts/vendor-pricing.sh::build_prices_map no longer \
+                 contains `{clause}`, so SELECTION admits a 1-hour cache-write rate that \
+                 validate_table then rejects — which aborts the ENTIRE vendoring run, while \
+                 transform_litellm merely does `skipped += 1; continue` and syncs the rest. \
+                 Asserted inside the FUNCTION BODY, not the whole file, because \
+                 validate_table has banded this dimension since R2-WR-02 and would satisfy a \
+                 whole-file scan while selection was unbanded — which is exactly how this \
+                 divergence survived the round-3 fix."
+            );
+        }
+
+        // (7) the operator diagnostic for that rejection (R4-WR-01). Without
+        // the reason arm the row is dropped by selection with NO `SKIPPED`
+        // line, so the operator sees a coverage change with no explanation —
+        // the same silent-drop failure mode R2-2 and R3-WR-02 both raised.
+        let rejected_body = script_function_body(SCRIPT, "report_rejected_rows");
+        assert!(
+            rejected_body.len() < SCRIPT.len() && rejected_body.len() > 100,
+            "non-vacuity: the extracted report_rejected_rows body must be a strict, \
+             non-trivial subset of the script (got {} bytes of {})",
+            rejected_body.len(),
+            SCRIPT.len()
+        );
+        assert!(
+            rejected_body.contains("1h-out-of-band"),
+            "R4-WR-01: scripts/vendor-pricing.sh::report_rejected_rows no longer emits the \
+             `1h-out-of-band` reason token, so a row dropped for an out-of-band 1-hour \
+             cache-write rate vanishes from the run with no diagnostic — indistinguishable \
+             from an id upstream simply never published (R2-2). The token must be DISTINCT \
+             from `out-of-band` so the operator can see which dimension failed."
+        );
 
         // (3) the plausibility band. Derived from the Rust constants rather than
         // retyped, so moving the band in src/pricing/mod.rs fails here until the
