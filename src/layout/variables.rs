@@ -64,6 +64,43 @@ const API_EQUIV_UNKNOWN: &str = "unknown";
 /// Each method sets a variable that can be referenced in the layout template.
 /// Variables are rendered with colors before being stored.
 ///
+/// # Terminal-safety boundary (R5-CR-01)
+///
+/// **This builder IS the terminal-safety boundary.** [`super::LayoutRenderer::render`]
+/// — the method that produces the shipped statusline — copies variable VALUES
+/// into its output buffer verbatim and sanitizes only the separator. That is
+/// deliberate (plan 11-11's single-pass contract: a substituted value must never
+/// be re-examined), and its sibling `render_template`'s blanket sanitize pass is
+/// not on the shipped path. So the ONLY place a boundary can live without
+/// reintroducing a re-scan is here, at the builder — which also means it does
+/// not depend on which renderer runs, or on a call site remembering.
+///
+/// Three rules, applied per ARGUMENT rather than per method:
+///
+/// 1. **Sanitize here** — every PLAIN untrusted value: Claude Code payload text
+///    (`current_dir`, `basename`, `effort`, `version`, `repo`), `git` subprocess
+///    output (branch names), and text read out of an on-disk cache (`account`,
+///    `tz`, model ids). Sanitize the value at method ENTRY, BEFORE it is wrapped
+///    in color, and before any truncation (truncating first can cut an escape
+///    mid-sequence and leave a bare ESC the sanitizer's regex no longer matches).
+///    Several of these are ALSO sanitized at their `src/display.rs` call sites;
+///    that is belt-and-braces, and double-sanitizing is idempotent by design.
+///    CLAUDE.md: "external input is untrusted".
+///
+/// 2. **Never sanitize here** — a PRE-COMPOSED COLORED string. `git_with_config`'s
+///    `full_info` arrives from `crate::git::format_git_info`, which sanitizes the
+///    branch itself and then ADDS its own SGR codes; running
+///    [`sanitize_for_terminal`] over it would strip exactly those colors, because
+///    the sanitizer's first act is to delete every `ESC [ .. m` sequence. That is
+///    the `R5-WR-02` failure mode: a colorless statusline that still passes a
+///    naive "no ESC in the output" assertion. Pinned by
+///    `directory_with_config_preserves_the_color_wrapper` and
+///    `git_with_config_sanitizes_the_branch` in `src/layout/tests.rs`.
+///
+/// 3. **Nothing to sanitize** — values this crate formats itself: costs,
+///    percentages, token counts, durations, humanized ages, progress bars,
+///    rate-limit pieces, and fixed literals such as `200k+`.
+///
 /// # Example
 ///
 /// ```ignore
@@ -96,8 +133,13 @@ impl VariableBuilder {
     }
 
     /// Set directory variables ({directory}, {dir_short}) with optional config
+    ///
+    /// Both paths are untrusted payload text and are sanitized at entry, before
+    /// the color wrap (rule 1 of the terminal-safety boundary; R5-CR-01).
     #[allow(dead_code)]
     pub fn directory(mut self, path: &str, short_path: &str, color: &str, reset: &str) -> Self {
+        let path = sanitize_for_terminal(path);
+        let short_path = sanitize_for_terminal(short_path);
         // Full shortened path
         if !path.is_empty() {
             self.variables.insert(
@@ -118,6 +160,21 @@ impl VariableBuilder {
     /// Set directory variables with component configuration
     ///
     /// Applies format, max_length, and color overrides from config.
+    ///
+    /// # Terminal safety (R5-CR-01)
+    ///
+    /// All three path inputs are untrusted: `src/display.rs` derives them from
+    /// the payload's `workspace.current_dir`, and passes `full_path` and
+    /// `basename` RAW (only `short_path` is sanitized at that call site). Since
+    /// `config.format` selects between them — `"full"`, `"basename"`, or the
+    /// default `"short"` — and `{dir_short}` is set from `basename`
+    /// UNCONDITIONALLY (which the BUILT-IN `compact` preset renders), all three
+    /// are sanitized HERE, at entry, before the color wrap and before
+    /// truncation. Truncating first could cut an escape mid-sequence and leave a
+    /// bare ESC that the sanitizer's `ESC [ .. m` regex no longer matches; the
+    /// ordering is pinned by `directory_with_config_sanitizes_before_truncating`.
+    /// Re-sanitizing the already-sanitized `short_path` is idempotent and
+    /// intended — the boundary must not depend on the call site.
     pub fn directory_with_config(
         mut self,
         full_path: &str,
@@ -127,6 +184,13 @@ impl VariableBuilder {
         reset: &str,
         config: &DirectoryComponentConfig,
     ) -> Self {
+        // Untrusted payload text -> sanitize BEFORE truncation and BEFORE the
+        // color wrap. Never sanitize the composed value: that would strip the
+        // wrapper's own SGR codes (R5-WR-02).
+        let full_path = sanitize_for_terminal(full_path);
+        let short_path = sanitize_for_terminal(short_path);
+        let basename = sanitize_for_terminal(basename);
+
         // Determine which color to use
         let color = if config.color.is_empty() {
             default_color.to_string()
@@ -147,9 +211,9 @@ impl VariableBuilder {
 
         // Format based on config
         let display_value = match config.format.as_str() {
-            "full" => truncate(full_path),
-            "basename" => truncate(basename),
-            _ => truncate(short_path), // "short" is default
+            "full" => truncate(&full_path),
+            "basename" => truncate(&basename),
+            _ => truncate(&short_path), // "short" is default
         };
 
         if !display_value.is_empty() {
@@ -163,7 +227,7 @@ impl VariableBuilder {
         if !basename.is_empty() {
             self.variables.insert(
                 "dir_short".to_string(),
-                format!("{}{}{}", color, truncate(basename), reset),
+                format!("{}{}{}", color, truncate(&basename), reset),
             );
         }
 
@@ -958,26 +1022,39 @@ impl VariableBuilder {
         color: &str,
         reset: &str,
     ) -> Self {
+        // Every field below is untrusted payload text and is inserted with NO
+        // call-site sanitization, so the ONLY boundary is here. Sanitize the
+        // inner value before the color wrap — never the composed string, which
+        // would strip the wrapper's own SGR codes (R5-CR-01 / R5-WR-02).
         if let Some(e) = effort.filter(|s| !s.is_empty()) {
-            self.variables
-                .insert("effort".to_string(), format!("{}{}{}", color, e, reset));
+            self.variables.insert(
+                "effort".to_string(),
+                format!("{}{}{}", color, sanitize_for_terminal(e), reset),
+            );
         }
         if let Some(v) = version.filter(|s| !s.is_empty()) {
             self.variables.insert(
                 "cc_version".to_string(),
-                format!("{}v{}{}", color, v, reset),
+                format!("{}v{}{}", color, sanitize_for_terminal(v), reset),
             );
         }
         if over_200k {
             self.variables
                 .insert("over_200k".to_string(), format!("{}200k+{}", color, reset));
         }
+        // Joined from the SANITIZED parts. Sanitizing the join would be
+        // equivalent — `/` is not a control character — but doing it per part
+        // keeps the boundary on the values that actually crossed it.
         let repo = match (
             repo_owner.filter(|s| !s.is_empty()),
             repo_name.filter(|s| !s.is_empty()),
         ) {
-            (Some(o), Some(n)) => Some(format!("{}/{}", o, n)),
-            (None, Some(n)) => Some(n.to_string()),
+            (Some(o), Some(n)) => Some(format!(
+                "{}/{}",
+                sanitize_for_terminal(o),
+                sanitize_for_terminal(n)
+            )),
+            (None, Some(n)) => Some(sanitize_for_terminal(n)),
             _ => None,
         };
         if let Some(r) = repo {
