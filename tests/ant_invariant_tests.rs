@@ -1064,6 +1064,109 @@ fn a_literal_mention_of_a_price_var_reads_no_price_cache() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Group 4d: a price variable that can never reach the OUTPUT costs no IO
+// (Plan 11-14, review finding R4-WR-03)
+// ---------------------------------------------------------------------------
+//
+// The layout path renders through `LayoutRenderer::render`, which does not
+// implement conditionals. `{if ..}` and `{endif}` are `{..}` spans that resolve
+// to no variable, so they are DROPPED, and the branch body between them is
+// emitted UNCONDITIONALLY. A price variable named only inside a CONDITION can
+// therefore never produce a figure — but a price variable inside a BRANCH still
+// can. The gate's AST half must distinguish the two, and both facts below are
+// asserted behaviorally rather than read off the source.
+
+/// R4-WR-03: a price variable referenced ONLY inside a conditional's CONDITION
+/// must cost ZERO price-cache reads.
+///
+/// `[pricing] source = "auto"` is the DEFAULT and it DOES read: a present cache
+/// is opened, parsed and validated on every render. At the documented ~300ms
+/// statusline cadence, firing the gate here bought roughly 12,000 pointless
+/// opens-and-parses per hour for a template that cannot display a figure — the
+/// same cost class WR-03 (round 3) removed by making the AST half fail closed,
+/// re-entering through the condition scan `11-06` added.
+///
+/// FAILURE MODE: reverting the gate's first operand in `src/display.rs` to
+/// `uses_variable_prefix` (which scans `cond_name(condition)`) makes this report
+/// 1 read.
+#[test]
+#[serial]
+fn a_condition_only_price_template_reads_no_price_cache() {
+    let config = "[ant]\nenabled = true\n\n[pricing]\nsource = \"auto\"\n\n[layout]\nformat = \"{directory}|{if api_equiv_cost}COST{endif}\"\n";
+    let out = render_lib_isolated(config, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        0,
+        "round-4 WR-03: a price variable used ONLY as a conditional's CONDITION must \
+         perform ZERO price-cache reads. `render()` does not evaluate conditionals, so \
+         this template can never emit a figure and the read is pure cost — rendered: {out:?}"
+    );
+    assert!(
+        out.contains("COST"),
+        "non-vacuity AND the premise: `render()` drops `{{if ..}}` and `{{endif}}` as \
+         unresolvable spans and emits the branch body UNCONDITIONALLY. If THIS assertion \
+         fails, the render path gained conditional evaluation, conditions became \
+         output-relevant, and the gate's AST half must be widened back from \
+         `uses_variable_prefix_in_output` to `uses_variable_prefix` — rendered: {out:?}"
+    );
+    assert!(
+        !out.contains('$'),
+        "no dollar figure of ANY provenance may appear when the template's only price \
+         reference is a condition — rendered: {out:?}"
+    );
+}
+
+/// R4-WR-03, the other side: a price variable inside a conditional's BRANCH is
+/// genuinely substitutable, so it must still gate the read ON and still render
+/// the figure from the AUTHORIZED table. This is the superset-preservation guard.
+///
+/// `render()` emits branch bodies unconditionally, so `{if git}{api_equiv_cost}
+/// {endif}` really does substitute a figure. The narrowing in `11-14` drops only
+/// the CONDITION from the AST half's scan; branch scanning stays.
+///
+/// FAILURE MODE: if the narrowing had dropped branch scanning too (a
+/// `Conditional` arm returning `false` outright), this reports 0 reads and the
+/// BUNDLED figure under `source = "synced"` — round-4 CR-01 reopened in a new
+/// form. The RAW half of the gate would also catch this particular template (it
+/// literally contains `{api_equiv_cost}`); that is belt-and-braces, not
+/// redundancy to remove, and the mutation proof of this test is run against the
+/// AST half in isolation.
+#[test]
+#[serial]
+fn a_price_var_inside_a_conditional_branch_still_gates_the_read_on() {
+    let config = "[ant]\nenabled = true\n\n[pricing]\nsource = \"synced\"\n\n[layout]\nformat = \"{directory}|{if git}{api_equiv_cost}{endif}\"\n";
+    let out = render_lib_isolated(config, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert!(
+        out.contains(SYNCED_FIGURE),
+        "a price variable inside a conditional BRANCH is substituted by `render()` \
+         (branch bodies are emitted unconditionally), so under [pricing] source = \
+         \"synced\" with a fresh cache it must render the SYNCED figure \
+         {SYNCED_FIGURE:?} — rendered: {out:?}"
+    );
+    assert!(
+        !out.contains(BUNDLED_FIGURE),
+        "a figure from the BUNDLED table leaked into a render the user pinned to \
+         `synced` — the R2-CR-01 superset was weakened by narrowing the AST half \
+         too far (branch scanning dropped) — rendered: {out:?}"
+    );
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        1,
+        "the branch-used price variable must gate the read ON and resolve the source \
+         EXACTLY once: 0 means the gate went blind to a substitutable placeholder — \
+         rendered: {out:?}"
+    );
+}
+
 /// WR-10: byte-identity on the LAYOUT render path.
 ///
 /// The arm this replaces rendered with `config_toml = ""`, which routes through

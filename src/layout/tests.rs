@@ -2401,6 +2401,172 @@ fn uses_variable_prefix_counts_a_negated_condition() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Plan 11-14: the gate's AST half is narrowed to the OUTPUT surface (R4-WR-03)
+// ---------------------------------------------------------------------------
+//
+// `uses_variable_prefix_in_output` answers the question the price gate actually
+// needs: can a variable with this prefix reach the OUTPUT of `render()`? It
+// scans Variable nodes and BOTH conditional branches — whose bodies `render()`
+// emits unconditionally — but NOT the conditional's own CONDITION, which
+// `render()` never evaluates. The general `uses_variable_prefix` is unchanged
+// and still counts a condition, because `render_template` DOES evaluate one.
+
+/// R4-WR-03: the divergence between the two queries, pinned in ONE place so it
+/// cannot be half-changed. A condition-only use is a use for the general method
+/// and NOT a use for the gate's method.
+#[test]
+fn uses_variable_prefix_in_output_ignores_a_condition_only_use() {
+    let renderer = LayoutRenderer::with_format("{if api_equiv_cost}x{endif}", "");
+    assert!(
+        !renderer.uses_variable_prefix_in_output("api_equiv_cost"),
+        "a variable used ONLY as a conditional's CONDITION cannot reach render()'s \
+         output — `{{if ..}}` is dropped as an unresolvable span — so the price gate \
+         must not read `prices.json` for it (R4-WR-03)"
+    );
+    assert!(
+        renderer.uses_variable_prefix("api_equiv_cost"),
+        "the GENERAL query must still count it: `render_template` evaluates the \
+         condition, so for that consumer the variable genuinely is used (11-06). \
+         Narrowing it here instead of adding a second method would change that answer"
+    );
+}
+
+/// R4-WR-03: a NEGATED condition is still only a condition. All four
+/// `Condition` variants carry a variable name and the gate's query must ignore
+/// every one of them, while the general query counts every one of them.
+#[test]
+fn uses_variable_prefix_in_output_ignores_a_negated_condition() {
+    let renderer = LayoutRenderer::with_format("{if !api_equiv_cost}x{endif}", "");
+    assert!(
+        !renderer.uses_variable_prefix_in_output("api_equiv_cost"),
+        "a NEGATED condition is still not output-relevant to render()"
+    );
+    assert!(
+        renderer.uses_variable_prefix("api_equiv_cost"),
+        "the general query still counts a negated condition (11-06)"
+    );
+}
+
+/// R4-WR-03: branch scanning is RETAINED. `render()` emits branch bodies
+/// unconditionally, so a placeholder inside one really is substituted and must
+/// gate the read ON.
+///
+/// FAILURE MODE: a `Conditional` arm that returns `false` outright (dropping
+/// branch scanning along with the condition) makes both assertions fail, and
+/// `a_price_var_inside_a_conditional_branch_still_gates_the_read_on` in
+/// `tests/ant_invariant_tests.rs` then renders the BUNDLED figure under
+/// `source = "synced"` — R2-CR-01 reopened.
+#[test]
+fn uses_variable_prefix_in_output_counts_a_branch_use() {
+    let if_branch = LayoutRenderer::with_format("{if git}{api_equiv_cost}{endif}", "");
+    assert!(
+        if_branch.uses_variable_prefix_in_output("api_equiv_cost"),
+        "a price variable in the IF branch is substituted by render() and must \
+         gate the read ON"
+    );
+
+    let else_branch = LayoutRenderer::with_format("{if git}x{else}{api_equiv_cost}{endif}", "");
+    assert!(
+        else_branch.uses_variable_prefix_in_output("api_equiv_cost"),
+        "the ELSE branch is emitted by render() too — scanning only `if_branch` \
+         would leave a substitutable placeholder ungated"
+    );
+}
+
+/// R4-WR-03: the ordinary case is unaffected — a plain `{api_equiv_cost}`
+/// placeholder still counts.
+#[test]
+fn uses_variable_prefix_in_output_counts_a_plain_variable() {
+    let renderer = LayoutRenderer::with_format("{directory}|{api_equiv_cost_by_model}", "");
+    assert!(
+        renderer.uses_variable_prefix_in_output("api_equiv_cost"),
+        "a templated {{api_equiv_cost_by_model}} must still match the prefix — the \
+         narrowing touches conditions only"
+    );
+}
+
+/// R4-WR-03 inherits R3-WR-03's fail-CLOSED posture: with no AST there is
+/// nothing to scan, so the answer is `false`. Nothing is blanked, because the
+/// RAW half of the gate in `src/display.rs` is brace-exact over the unparsed
+/// text and is what covers `render()`.
+#[test]
+fn uses_variable_prefix_in_output_fails_closed_on_an_unparseable_template() {
+    let renderer = LayoutRenderer::with_format("{if git}{directory}", "");
+    assert!(
+        !renderer.uses_variable_prefix_in_output("api_equiv_cost"),
+        "no AST here (`{{if git}}` is never closed), so the gate's AST half must \
+         answer false rather than force a prices.json read for a template that \
+         names no price variable (R3-WR-03)"
+    );
+    let priced = LayoutRenderer::with_format("{if git}{api_equiv_cost}", "");
+    assert!(
+        !priced.uses_variable_prefix_in_output("api_equiv_cost")
+            && priced.uses_variable("api_equiv_cost"),
+        "and when an unparseable template DOES carry the braced placeholder, the \
+         RAW half still gates the read ON — which is why failing closed here \
+         cannot weaken the R2-CR-01 superset"
+    );
+}
+
+/// The CAPABILITY TRIPWIRE the narrowing above rests on, asserted BEHAVIORALLY.
+///
+/// `uses_variable_prefix_in_output` is only safe while `render()` cannot consume
+/// a conditional's CONDITION. This renders the same condition-only template
+/// twice — once with the condition variable ABSENT from the map, once with a
+/// SENTINEL value — and requires the two outputs to be byte-identical. A
+/// renderer that evaluated the condition would produce different output for the
+/// two maps.
+///
+/// The zero-read regression in `tests/ant_invariant_tests.rs` cannot observe
+/// this: a condition-AWARE `render()` would still read nothing while silently
+/// changing what the template means. This is the fail-closed half.
+///
+/// It also covers the other way the premise can break — routing
+/// `format_statusline_with_layout` through `render_template`, which DOES
+/// evaluate conditions: under that engine the absent-key render drops `COST`
+/// while the sentinel render keeps it, and the two diverge.
+///
+/// Mutation-proven by routing BOTH renders below through
+/// [`LayoutRenderer::render_template`] (`"/tmp|"` vs `"/tmp|COST"`). Route
+/// BOTH, not just one: the sentinel render emits `COST` under either engine, so
+/// a one-sided swap passes vacuously and proves nothing.
+#[test]
+fn render_ignores_a_condition_variable_it_cannot_evaluate() {
+    let renderer = LayoutRenderer::with_format("{directory}|{if api_equiv_cost}COST{endif}", "");
+
+    let mut absent = HashMap::new();
+    absent.insert("directory".to_string(), "/tmp".to_string());
+
+    let mut present = absent.clone();
+    present.insert("api_equiv_cost".to_string(), "SENTINEL".to_string());
+
+    let without = renderer.render(&absent);
+    let with = renderer.render(&present);
+
+    assert_eq!(
+        without, with,
+        "`render()` has gained the ability to consume a conditional's CONDITION, so a \
+         price variable used only as a condition is now OUTPUT-RELEVANT. The price \
+         gate's AST half in src/display.rs — `uses_variable_prefix_in_output` — must be \
+         widened back to `uses_variable_prefix` BEFORE this test is \"fixed\", or \
+         R2-CR-01 / R4-CR-01 reopen in a new form: a dollar figure rendered from a table \
+         the user's [pricing].source says is not authoritative. absent={without:?} \
+         sentinel={with:?}"
+    );
+    assert!(
+        !without.contains("SENTINEL") && !with.contains("SENTINEL"),
+        "the condition variable's VALUE must not reach the output in any form — \
+         absent={without:?} sentinel={with:?}"
+    );
+    assert!(
+        without.contains("COST") && with.contains("COST"),
+        "non-vacuity: the branch body is emitted UNCONDITIONALLY (the `{{if ..}}` and \
+         `{{endif}}` spans resolve to no variable and are dropped), which is exactly \
+         why the condition is not output-relevant — absent={without:?} sentinel={with:?}"
+    );
+}
+
 #[test]
 fn uses_variable_matches_only_a_braced_placeholder() {
     // `uses_variable` is the raw-text half of the superset gate in
