@@ -88,17 +88,57 @@ const STDERR_BOUND: usize = 512;
 pub struct FetchOutcome {
     pub cache: PriceCache,
     pub skipped: usize,
+    /// See [`TransformOutcome::wrong_typed_1h`] — carried through so the
+    /// `ant sync-pricing` summary can name the affected ids (R5-WR-01).
+    pub wrong_typed_1h: Vec<String>,
 }
 
-/// Result of the PURE transform: the usable price rows plus the skip count.
+/// Result of the PURE transform: the usable price rows, the skip count, and the
+/// ids that were KEPT but lost their optional 1-hour dimension to a wrong
+/// upstream TYPE (R5-WR-01).
+///
+/// `wrong_typed_1h` is deliberately NOT folded into `skipped`: `skipped` counts
+/// rows rejected ENTIRELY, these rows are vendored and price every other
+/// dimension. The list exists because once such a row is retained (which is what
+/// `scripts/vendor-pricing.sh` has always done) no aggregate count covers it any
+/// more, so the dimension loss would be silent on BOTH sides of D-02 —
+/// `report_rejected_rows` never fires for a row it did not reject.
 #[derive(Debug, Clone, Default)]
 pub struct TransformOutcome {
     pub prices: HashMap<String, PriceEntry>,
     pub skipped: usize,
+    /// Sorted ids of RETAINED rows whose `cache_creation_input_token_cost_above_1hr`
+    /// was present but not a JSON number. Mirrors
+    /// `scripts/vendor-pricing.sh::report_wrong_typed_1h_rows`.
+    pub wrong_typed_1h: Vec<String>,
 }
 
-/// Tolerant view of one upstream model entry. Every cost field is optional so a
-/// row missing one is *droppable*, never a parse failure for the whole payload.
+/// Tolerant view of one upstream model entry.
+///
+/// # What "tolerant" does and does NOT mean (R5-WR-01, corrected round 5)
+///
+/// `serde_json::from_value` is **all-or-nothing over the whole struct**: one
+/// field it cannot deserialize makes the entire row an `Err`, which
+/// [`transform_litellm`] turns into `skipped += 1; continue`. The previous
+/// wording of this comment ("a row missing one is *droppable*, never a parse
+/// failure for the whole payload") was true only for a MISSING field and was
+/// read as covering a wrong-TYPED one, which it never did. Stated precisely:
+///
+/// * **Missing or `null`** — `#[serde(default)]` yields `None` on every field.
+///   Droppable; the row survives and is judged on the rates it does have.
+/// * **Wrong-typed BASE rate or `litellm_provider`** — still fails this struct's
+///   parse, so the whole ROW is dropped and counted. That is **deliberate
+///   parity**, not an oversight: `scripts/vendor-pricing.sh::build_prices_map`
+///   de-selects the same row, because `type == "number"` is the first conjunct
+///   of every base-rate clause and a non-string can never equal `"anthropic"`.
+///   Loosening these would make Rust RETAIN a row bash drops — a new D-02
+///   divergence in the opposite direction.
+/// * **Wrong-typed OPTIONAL 1-hour rate** — type-TOLERANT via
+///   [`lenient_optional_rate`], so it drops only the **DIMENSION** and the row is
+///   kept, matching the `else true` (selection) / `else {}` (carry)
+///   short-circuits on the bash side. The affected id is named in
+///   [`TransformOutcome::wrong_typed_1h`] so the loss is not silent.
+///
 /// Unknown fields (including the `*_above_200k_tokens` tier and
 /// `search_context_cost_per_query`) are ignored — see the
 /// `upstream_cost_keys_are_consumed_or_declared_out_of_scope` guard below.
@@ -114,8 +154,52 @@ struct LiteLLMEntry {
     cache_creation_input_token_cost: Option<f64>,
     #[serde(default)]
     cache_read_input_token_cost: Option<f64>,
-    #[serde(default)]
+    // The ONE type-tolerant field (R5-WR-01). `default` is still REQUIRED:
+    // serde invokes `deserialize_with` only when the field is PRESENT, so
+    // without it every row lacking the optional key would become a parse error.
+    #[serde(default, deserialize_with = "lenient_optional_rate")]
     cache_creation_input_token_cost_above_1hr: Option<f64>,
+}
+
+/// A wrong-TYPED **optional** rate drops the DIMENSION, never the ROW
+/// (R5-WR-01 / D-02).
+///
+/// This is the Rust half of `scripts/vendor-pricing.sh::build_prices_map`'s
+/// `type == "number"` short-circuit: a non-number makes the banding clause fall
+/// through to `else true` (row SELECTED) and the carry filter to `else {}`
+/// (dimension absent). Without it, one garbage optional field destroyed an
+/// otherwise perfectly priceable row, and the id silently rendered from
+/// `source=bundled` instead of `source=synced`.
+///
+/// [`serde_json::Value::as_f64`] matches `Value::Number` **only**, so the
+/// numeric STRING `"1.5"` maps to `None` exactly as jq's `type == "number"`
+/// rejects it. Do **not** "improve" this with `parse::<f64>()` — coercing a
+/// string into a rate would be a FOURTH divergence, and this is untrusted
+/// upstream network data (CLAUDE.md: "external input is untrusted").
+///
+/// Applied to `cache_creation_input_token_cost_above_1hr` and nothing else. The
+/// four base rates and `litellm_provider` stay strict because they are ALREADY
+/// at parity with bash; see [`LiteLLMEntry`].
+fn lenient_optional_rate<'de, D>(d: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    // Propagate a genuine deserializer failure with `?` rather than swallowing
+    // it: the tolerance is about the VALUE's type, not about ignoring errors.
+    let value = serde_json::Value::deserialize(d)?;
+    Ok(value.as_f64())
+}
+
+/// PRESENT, not `null`, and not a JSON number — the exact complement of what
+/// [`lenient_optional_rate`] accepts.
+///
+/// Deliberately expressed with the SAME `as_f64` primitive so the operator
+/// diagnostic and the deserializer cannot disagree about what "wrong type"
+/// means. `null` and absence are excluded because a row that simply does not
+/// publish a 1-hour rate is normal and is already reported by
+/// `report_missing_1h_rows` / rendered as `unknown`.
+fn is_wrong_typed_rate(value: &serde_json::Value) -> bool {
+    !value.is_null() && value.as_f64().is_none()
 }
 
 /// Stable 16-hex content hash of the RAW upstream bytes.
@@ -195,6 +279,7 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
 
     let mut prices: HashMap<String, PriceEntry> = HashMap::new();
     let mut skipped = 0usize;
+    let mut wrong_typed_1h: Vec<String> = Vec::new();
 
     for (id, value) in &root {
         // (1) bare `claude-*` id only — one canonical predicate, shared with
@@ -265,8 +350,23 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
             continue;
         }
 
+        // R5-WR-01: classify AFTER every gate, so only RETAINED rows are named —
+        // mirroring report_wrong_typed_1h_rows, which filters by the selected
+        // map. A row rejected for a bad base rate is reported as a SKIP, not as
+        // a lost dimension.
+        if value
+            .get("cache_creation_input_token_cost_above_1hr")
+            .is_some_and(is_wrong_typed_rate)
+        {
+            wrong_typed_1h.push(id.clone());
+        }
+
         prices.insert(id.clone(), row);
     }
+
+    // Deterministic order: `root` is a HashMap, so iteration order varies run to
+    // run and an unsorted diagnostic would be unstable output.
+    wrong_typed_1h.sort();
 
     // D-04: an upstream that yields nothing usable must NOT produce a cache.
     if prices.is_empty() {
@@ -276,7 +376,11 @@ fn transform_litellm(raw: &[u8]) -> Result<TransformOutcome> {
         )));
     }
 
-    Ok(TransformOutcome { prices, skipped })
+    Ok(TransformOutcome {
+        prices,
+        skipped,
+        wrong_typed_1h,
+    })
 }
 
 /// Fetch the raw upstream payload with a keyless `curl` (the network step).
@@ -402,6 +506,7 @@ pub fn fetch_claude_prices() -> Result<FetchOutcome> {
             prices: outcome.prices,
         },
         skipped: outcome.skipped,
+        wrong_typed_1h: outcome.wrong_typed_1h,
     })
 }
 
@@ -778,22 +883,29 @@ mod tests {
     ///
     /// The numeric-STRING case is the one that proves no coercion happens: jq's
     /// `type == "number"` is false for `"1.5e-05"`, so a Rust side that parsed
-    /// the string would be a FOURTH divergence, not a fix.
+    /// the string would be a FOURTH divergence, not a fix. It is listed with
+    /// `want_carried = None` AND `want_named = true` for exactly that reason.
     #[test]
     fn the_optional_1h_rate_accepts_only_genuine_json_numbers() {
         // (label, the `cache_creation_input_token_cost_above_1hr` JSON fragment,
-        //  expected carried-rate)
-        let cases: [(&str, Option<&str>, Option<f64>); 7] = [
-            ("absent", None, None),
-            ("null", Some("null"), None),
-            ("number", Some("1.5e-05"), Some(1.5e-05)),
-            ("numeric string", Some("\"1.5e-05\""), None),
-            ("bool", Some("true"), None),
-            ("object", Some("{}"), None),
-            ("array", Some("[]"), None),
+        //  expected carried-rate, expected to be NAMED in the diagnostic)
+        //
+        // `want_named` is asserted independently of retention: after the fix the
+        // aggregate `skipped` count no longer covers this case at all, so a
+        // diagnostic-free fix would have made the dimension loss MORE silent,
+        // not less. `null` and absence are NOT named — a row that simply does
+        // not publish a 1-hour rate is normal (report_missing_1h_rows covers it).
+        let cases: [(&str, Option<&str>, Option<f64>, bool); 7] = [
+            ("absent", None, None, false),
+            ("null", Some("null"), None, false),
+            ("number", Some("1.5e-05"), Some(1.5e-05), false),
+            ("numeric string", Some("\"1.5e-05\""), None, true),
+            ("bool", Some("true"), None, true),
+            ("object", Some("{}"), None, true),
+            ("array", Some("[]"), None, true),
         ];
 
-        for (label, fragment, want_carried) in cases {
+        for (label, fragment, want_carried, want_named) in cases {
             let tail = match fragment {
                 Some(f) => format!(",\n        \"cache_creation_input_token_cost_above_1hr\": {f}"),
                 None => String::new(),
@@ -820,7 +932,17 @@ mod tests {
                 row.cache_creation_1h, want_carried,
                 "[{label}] wrong carried value for the optional 1-hour rate"
             );
-            assert_eq!(out.skipped, 0, "[{label}] a retained row must not be counted");
+            assert_eq!(
+                out.skipped, 0,
+                "[{label}] a retained row must not be counted"
+            );
+            assert_eq!(
+                out.wrong_typed_1h.contains(&"claude-probe".to_string()),
+                want_named,
+                "[{label}] the `1h-wrong-type` diagnostic must name exactly the rows whose \
+                 rate was PRESENT and non-numeric — got {:?}",
+                out.wrong_typed_1h
+            );
         }
     }
 
@@ -840,7 +962,7 @@ mod tests {
             ("cache_read_input_token_cost", "[]"),
         ];
         for (field, bad) in fields {
-            let mut parts = vec![
+            let mut parts = [
                 ("litellm_provider", "\"anthropic\"".to_string()),
                 ("input_cost_per_token", "5e-06".to_string()),
                 ("output_cost_per_token", "2.5e-05".to_string()),
@@ -1268,6 +1390,18 @@ mod tests {
     ///    R2-WR-02 and would satisfy a whole-file scan while selection was
     ///    unbanded.
     ///
+    /// 5. **The TYPE axis of the optional 1-hour rate, pinned BEHAVIOURALLY**
+    ///    (R5-WR-01, round 5). No substring can state "serde rejects the whole
+    ///    struct while jq tolerates the field", which is exactly why the first
+    ///    four items could not see the THIRD axis of this defect class. So this
+    ///    half EXECUTES [`transform_litellm`] over a string-valued `above_1hr`
+    ///    and asserts the bash outcome: row RETAINED, dimension DROPPED, id
+    ///    NAMED, `skipped == 0`. The matching bash decision is pinned textually
+    ///    inside `build_prices_map` (`else true end` -> row retained,
+    ///    `else {} end` -> dimension dropped) and inside
+    ///    `report_wrong_typed_1h_rows` (the `1h-wrong-type` token), both
+    ///    body-scoped for the same non-vacuity reason as (4)-(6) below.
+    ///
     /// WHAT IT STILL CANNOT SEE: any rule expressed with DIFFERENT text on the
     /// two sides. This is a textual pin, not a semantic equivalence proof — a
     /// jq predicate rewritten to mean the same thing with other words fails
@@ -1402,6 +1536,43 @@ mod tests {
              cache-write rate vanishes from the run with no diagnostic — indistinguishable \
              from an id upstream simply never published (R2-2). The token must be DISTINCT \
              from `out-of-band` so the operator can see which dimension failed."
+        );
+
+        // (8) THE TYPE AXIS (R5-WR-01) — the half that is BEHAVIOURAL, because
+        // no clause pin can express "serde rejects vs jq tolerates". This is the
+        // assertion that was RED at 28dd963 and is what lets this guard SEE the
+        // third axis of the D-02 defect class at all.
+        let string_1h = upstream(&format!("{GOOD_ROW},\n{STRING_1H_ROW}"));
+        let typed = transform_litellm(string_1h.as_bytes())
+            .expect("R5-WR-01: a wrong-typed OPTIONAL rate must not empty the table");
+        assert_eq!(
+            typed.prices.len(),
+            2,
+            "D-02 drift (R5-WR-01): transform_litellm dropped the ROW for a wrong-TYPED \
+             optional 1-hour rate, while scripts/vendor-pricing.sh::build_prices_map \
+             short-circuits its `type == \"number\"` guard to `else true` and VENDORS the \
+             row. See lenient_optional_rate in this file."
+        );
+        assert_eq!(
+            typed.skipped, 0,
+            "D-02 drift (R5-WR-01): a RETAINED row must not be counted as an unusable skip"
+        );
+        assert_eq!(
+            typed
+                .prices
+                .get("claude-strtype-1h")
+                .expect("row retained (checked above)")
+                .cache_creation_1h,
+            None,
+            "D-02 drift (R5-WR-01): only the DIMENSION may be dropped, and a numeric STRING \
+             must never be coerced into a rate — jq's `type == \"number\"` rejects it too"
+        );
+        assert_eq!(
+            typed.wrong_typed_1h,
+            vec!["claude-strtype-1h".to_string()],
+            "D-02 drift (R5-WR-01): the id that lost the dimension must be NAMED. Once the \
+             row is retained, `skipped` no longer covers it, so without this list the loss \
+             is silent on BOTH sides — which is the complaint R5-WR-01 actually made."
         );
 
         // (3) the plausibility band. Derived from the Rust constants rather than

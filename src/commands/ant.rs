@@ -395,6 +395,24 @@ fn sync_pricing(quiet: bool, max_age: Option<String>) -> Result<()> {
                 if outcome.skipped == 1 { "" } else { "s" }
             );
         }
+        // R5-WR-01 / D-02: a row whose OPTIONAL 1-hour cache-write rate arrived
+        // with the wrong TYPE is SYNCED with only that dimension dropped —
+        // matching scripts/vendor-pricing.sh, whose `type == "number"` guard
+        // short-circuits to `else true` / `else {}`. Because the row is kept, no
+        // aggregate count covers it, so it is named PER ID here. Wording and
+        // token are kept aligned with report_wrong_typed_1h_rows: D-02 is about
+        // the two transforms agreeing, and that includes what they tell the
+        // operator.
+        if !outcome.wrong_typed_1h.is_empty() {
+            println!(
+                "1h-wrong-type: upstream published a non-numeric 1-hour cache-write rate; \
+                 the row is synced with the 1-hour dimension dropped (1h tokens render \
+                 `unknown`):"
+            );
+            for id in &outcome.wrong_typed_1h {
+                println!("  ~ {id}");
+            }
+        }
         println!("Cache: {}", path.display());
         println!("Source: {}", outcome.cache.source);
         println!("Snapshot: {}", outcome.cache.version);
