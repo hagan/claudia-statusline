@@ -217,7 +217,26 @@ build_prices_map() {
               (.value.output_cost_per_token           | type == "number" and . > 0 and . >= $min and . <= $max) and
               (.value.cache_creation_input_token_cost | type == "number" and . > 0 and . >= $min and . <= $max) and
               (.value.cache_read_input_token_cost     | type == "number" and . > 0 and . >= $min and . <= $max) and
-              (.value.cache_read_input_token_cost < .value.input_cost_per_token))
+              (.value.cache_read_input_token_cost < .value.input_cost_per_token) and
+              # R4-WR-01: mirrors the `cache_creation_1h.is_none_or(ok)` clause
+              # of PriceEntry::is_valid in src/pricing/mod.rs. A 1-hour rate that
+              # would be CARRIED but falls outside the band rejects the WHOLE ROW
+              # here, matching transform_litellm doing `skipped += 1; continue`.
+              # A rate that is absent / non-numeric / <= 0 / below the
+              # 5-minute rate only drops the DIMENSION (the carry filter below
+              # yields nothing), matching
+              # `positive(..).filter(|rate| *rate >= cache_creation)`.
+              # Before this clause such a row was SELECTED here and then
+              # fatally rejected by validate_table, aborting vendoring of every
+              # other good row in the same payload — the R3-WR-02 fix was one
+              # dimension short.
+              (if (.value.cache_creation_input_token_cost_above_1hr | type == "number")
+                  and (.value.cache_creation_input_token_cost_above_1hr > 0)
+                  and (.value.cache_creation_input_token_cost_above_1hr
+                       >= .value.cache_creation_input_token_cost)
+               then (.value.cache_creation_input_token_cost_above_1hr >= $min)
+                    and (.value.cache_creation_input_token_cost_above_1hr <= $max)
+               else true end))
           | { key: .key,
               value: (
                 { input:          .value.input_cost_per_token,
@@ -271,7 +290,22 @@ report_rejected_rows() {
                    $e.value.cache_read_input_token_cost ]
                  | map(select(type == "number" and . > 0 and (. < $min or . > $max)))
                  | length) > 0
-             then "out-of-band" else empty end) ] as $bad
+             then "out-of-band" else empty end),
+            # R4-WR-01: the optional 1-hour rate is banded in SELECTION too, so
+            # without this arm a row carrying an out-of-band `above_1hr` is
+            # dropped by build_prices_map with NO diagnostic at all. A distinct
+            # token (not `out-of-band`) so the operator can see WHICH dimension
+            # failed. The `cache_creation` type guard mirrors the short-circuit
+            # of jq `and` in build_prices_map, where the four base-rate clauses
+            # are evaluated before the 1-hour clause is reached.
+            (if (($e.value.cache_creation_input_token_cost_above_1hr | type == "number") and
+                 ($e.value.cache_creation_input_token_cost_above_1hr > 0) and
+                 ($e.value.cache_creation_input_token_cost | type == "number") and
+                 ($e.value.cache_creation_input_token_cost_above_1hr
+                  >= $e.value.cache_creation_input_token_cost) and
+                 (($e.value.cache_creation_input_token_cost_above_1hr < $min) or
+                  ($e.value.cache_creation_input_token_cost_above_1hr > $max)))
+             then "1h-out-of-band" else empty end) ] as $bad
         | select($bad | length > 0)
         | "\($e.key) (\($bad | join(", ")))"
     ' "${upstream}")"
