@@ -128,14 +128,28 @@ fn the_compact_preset_never_emits_an_attacker_escape_byte() {
     // R5-WR-02: the builder's own colors must SURVIVE. A fix that sanitized the
     // composed string would strip every SGR sequence and still pass the
     // assertions above.
+    //
+    // This assertion is deliberately positional rather than "the output contains
+    // an SGR sequence somewhere". `compact` is `{dir_short} {git_branch} {model}
+    // {cost_short}`, so the DIRECTORY's own color wrapper is the very first
+    // thing on the line: the mutation that sanitizes the composed directory
+    // value makes the line start with `E` instead. A `contains(RESET)` check
+    // here passed VACUOUSLY under exactly that mutation, because `{model}` is
+    // wrapped by a different builder method the mutation does not touch — see
+    // mutation 3 in `11-15-SUMMARY.md`.
+    assert!(
+        out.starts_with(b"\x1b["),
+        "the DIRECTORY's own color wrapper must survive (R5-WR-02): {:?}",
+        String::from_utf8_lossy(&out)
+    );
     assert!(
         contains(&out, RESET),
-        "the builder's color wrapper must survive (R5-WR-02): {:?}",
+        "the color wrapper's reset must survive (R5-WR-02): {:?}",
         String::from_utf8_lossy(&out)
     );
     let clean = render_bytes("[layout]\npreset = \"compact\"\n", CLEAN_DIR_PAYLOAD);
     assert!(
-        contains(&clean, b"\x1b[") && contains(&clean, RESET),
+        clean.starts_with(b"\x1b[") && contains(&clean, RESET),
         "a clean render must still be colored (R5-WR-02): {:?}",
         String::from_utf8_lossy(&clean)
     );
@@ -157,6 +171,14 @@ fn every_directory_format_sanitizes_the_untrusted_path() {
         assert!(
             contains(&out, b"EVIL"),
             "directory.format={format}: the directory text must still render: {:?}",
+            String::from_utf8_lossy(&out)
+        );
+        // The template is `{directory}|{dir_short}`, so the directory's OWN
+        // color wrapper opens the line (R5-WR-02; see the positional-assertion
+        // rationale above).
+        assert!(
+            out.starts_with(b"\x1b["),
+            "directory.format={format}: the directory's color wrapper must survive: {:?}",
             String::from_utf8_lossy(&out)
         );
     }
