@@ -2067,21 +2067,235 @@ mod tests {
         }
     }
 
+    // ------------------------------------------------------------------
+    // R5-CR-01 / R5-WR-03 — terminal-escape injection on the SHIPPED render
+    // path, and the coverage that can actually see it.
+    //
+    // These tests REPLACE `test_sanitized_output`, which was deleted rather
+    // than kept: it built a malicious path, called `sanitize_for_terminal` on
+    // it ITSELF, and then asserted that the result of its own call carried no
+    // escape bytes. It therefore tested the sanitizer twice over (that function
+    // has its own tests in `src/utils.rs`) and asserted NOTHING about
+    // `format_statusline_with_layout`, `VariableBuilder` or
+    // `LayoutRenderer::render` — a mutation deleting every sanitization call in
+    // this file left it green. That false assurance is plausibly why R5-CR-01
+    // survived five review rounds (round-5 review, WR-03).
+    //
+    // Everything below drives a REAL production entry point and asserts on the
+    // RENDERED LINE. `tests/terminal_injection_tests.rs` does the same one level
+    // further out, against the spawned binary's raw stdout bytes.
+    // ------------------------------------------------------------------
+
+    /// A directory whose basename carries an attacker ESC ("turn the rest of the
+    /// line red") plus a BEL. `\x1b[31m` is the exact byte sequence the round-5
+    /// reviewer and verifier both reproduced against `target/release/statusline`.
+    const MALICIOUS_DIR: &str = "/tmp/\x1b[31mEVIL\x07x";
+    /// The same path with nothing untrusted in it, for the color-survival control.
+    const CLEAN_DIR: &str = "/tmp/plain";
+
+    /// Assert that no attacker-controlled control byte survived into `out`.
+    /// Deliberately does NOT assert "contains no ESC at all" — the builder's own
+    /// colors are ESC sequences and MUST survive (see
+    /// `render_path_preserves_legitimate_color_while_sanitizing`).
+    fn assert_no_attacker_bytes(out: &str, ctx: &str) {
+        assert!(
+            !out.contains("\x1b[31m"),
+            "{ctx}: attacker ESC reached the terminal: {out:?}"
+        );
+        assert!(
+            !out.contains('\x07'),
+            "{ctx}: attacker BEL reached the terminal: {out:?}"
+        );
+        assert!(
+            !out.contains('\x00'),
+            "{ctx}: attacker NUL reached the terminal: {out:?}"
+        );
+    }
+
+    /// R5-CR-01, the proven-live vector: the BUILT-IN `compact` preset renders
+    /// `{dir_short}`, which `directory_with_config` sets from the RAW `basename`
+    /// unconditionally. "The user chose a shipped preset" is not a security
+    /// boundary.
+    ///
+    /// FAILURE MODE at `ba58525`: the rendered line contains `\x1b[31m` and BEL.
     #[test]
-    fn test_sanitized_output() {
-        // Test with malicious directory path containing ANSI codes
-        let malicious_dir = "/home/user/\x1b[31mdanger\x1b[0m/project";
-        let model_with_control = "claude-\x00-opus\x07";
+    fn render_path_sanitizes_untrusted_directory_input() {
+        let layout = config::LayoutConfig {
+            preset: "compact".to_string(),
+            ..Default::default()
+        };
+        let out = format_statusline_with_layout(
+            MALICIOUS_DIR,
+            Some("Opus"),
+            None,
+            None,
+            0.0,
+            None,
+            PayloadExtras::default(),
+            &layout,
+        );
+        assert_no_attacker_bytes(&out, "preset=compact / {dir_short}");
+        // Non-vacuity: the value still renders, it is merely disarmed.
+        assert!(
+            out.contains("EVIL"),
+            "the directory text must still render, got: {out:?}"
+        );
+    }
 
-        // Create a simple output string to test sanitization
-        let short_dir = sanitize_for_terminal(&shorten_path(malicious_dir));
-        assert!(!short_dir.contains('\x1b'));
-        assert!(!short_dir.contains('\x00'));
-        assert!(!short_dir.contains('\x07'));
+    /// R5-CR-01 across every `[layout.components.directory] format`. `"full"`
+    /// emits `full_path` and `"basename"` emits `basename` — the two arms
+    /// `src/display.rs` passes RAW — while `"short"` (and the empty default)
+    /// emit the call-site-sanitized `short_path`. All four must be safe, and
+    /// they must be safe for the same reason: the BUILDER sanitizes.
+    ///
+    /// FAILURE MODE at `ba58525`: `"full"` and `"basename"` leak; the other two
+    /// pass only by accident of the call site.
+    #[test]
+    fn render_path_sanitizes_untrusted_directory_input_in_every_format() {
+        for format in ["full", "basename", "short", ""] {
+            let mut layout = config::LayoutConfig {
+                format: "{directory}|{dir_short}".to_string(),
+                ..Default::default()
+            };
+            layout.components.directory.format = format.to_string();
+            let out = format_statusline_with_layout(
+                MALICIOUS_DIR,
+                Some("Opus"),
+                None,
+                None,
+                0.0,
+                None,
+                PayloadExtras::default(),
+                &layout,
+            );
+            assert_no_attacker_bytes(&out, &format!("directory.format={format:?}"));
+            assert!(
+                out.contains("EVIL"),
+                "directory.format={format:?}: the directory text must still render, got: {out:?}"
+            );
+        }
+    }
 
-        // Test model name sanitization
-        let sanitized_model = sanitize_for_terminal(model_with_control);
-        assert_eq!(sanitized_model, "claude--opus");
+    /// R5-CR-01 for `session_meta`, which inserts `{effort}`, `{cc_version}` and
+    /// `{repo}` with no sanitization at all.
+    ///
+    /// FAILURE MODE at `ba58525`: all three leak their attacker ESC.
+    #[test]
+    fn render_path_sanitizes_untrusted_session_meta_fields() {
+        let repo = crate::models::Repo {
+            host: Some("github.com".to_string()),
+            owner: Some("o\x1b[31mwn".to_string()),
+            name: Some("na\x07me".to_string()),
+        };
+        let layout = config::LayoutConfig {
+            format: "{repo}|{effort}|{cc_version}".to_string(),
+            ..Default::default()
+        };
+        let extras = PayloadExtras {
+            effort: Some("\x1b[31mxhigh"),
+            version: Some("\x1b[31m9.9.9"),
+            repo: Some(&repo),
+            ..Default::default()
+        };
+        let out = format_statusline_with_layout(
+            CLEAN_DIR,
+            Some("Opus"),
+            None,
+            None,
+            0.0,
+            None,
+            extras,
+            &layout,
+        );
+        assert_no_attacker_bytes(&out, "session_meta");
+        for expected in ["wn", "name", "xhigh", "9.9.9"] {
+            assert!(
+                out.contains(expected),
+                "session_meta: {expected:?} must still render, got: {out:?}"
+            );
+        }
+    }
+
+    /// The `R5-WR-02` pin: the fix must sanitize the untrusted INNER value,
+    /// never the composed `format!("{color}{value}{reset}")`.
+    /// `sanitize_for_terminal`'s first act strips EVERY SGR sequence, so
+    /// sanitizing after the color wrap would ship a colorless statusline — and a
+    /// naive "no ESC in the output" test would score that as a pass.
+    ///
+    /// This test is GREEN at `ba58525` and must STAY green: it is the
+    /// anti-regression for the FIX, not for the defect. Mutation 3 in
+    /// `11-15-SUMMARY.md` proves it fails when the composed string is sanitized.
+    #[test]
+    #[serial_test::serial]
+    fn render_path_preserves_legitimate_color_while_sanitizing() {
+        let _guard = ForceColors::new();
+        let dir_color = Colors::directory();
+        assert!(
+            !dir_color.is_empty(),
+            "the color override must make the directory color non-empty"
+        );
+
+        let layout = config::LayoutConfig {
+            preset: "compact".to_string(),
+            ..Default::default()
+        };
+        let render = |dir: &str| {
+            format_statusline_with_layout(
+                dir,
+                Some("Opus"),
+                None,
+                None,
+                0.0,
+                None,
+                PayloadExtras::default(),
+                &layout,
+            )
+        };
+
+        let clean = render(CLEAN_DIR);
+        assert!(
+            clean.contains(&dir_color),
+            "a clean directory must still render wrapped in its theme color, got: {clean:?}"
+        );
+        assert!(
+            clean.contains("\x1b[0m"),
+            "the color wrapper's reset must survive, got: {clean:?}"
+        );
+
+        let dirty = render(MALICIOUS_DIR);
+        assert_no_attacker_bytes(&dirty, "color-survival / malicious");
+        assert!(
+            dirty.contains(&dir_color),
+            "sanitizing must not strip the builder's OWN color (R5-WR-02), got: {dirty:?}"
+        );
+        assert!(
+            dirty.contains("\x1b[0m"),
+            "sanitizing must not strip the color wrapper's reset (R5-WR-02), got: {dirty:?}"
+        );
+    }
+
+    /// The OTHER render path. `format_statusline_string` builds its directory
+    /// segment itself (`src/display.rs:463`) from the call-site-sanitized
+    /// `short_dir` and never touches `full_path`/`basename`, so it did not carry
+    /// R5-CR-01 — but "does not carry it today" is a claim, and this pins it so
+    /// the two paths stay consistent rather than merely being asserted to be.
+    #[test]
+    fn render_path_sanitizes_untrusted_directory_input_on_the_legacy_path() {
+        let out = format_statusline_string(
+            MALICIOUS_DIR,
+            Some("Opus"),
+            None,
+            None,
+            0.0,
+            None,
+            PayloadExtras::default(),
+            &config::DisplayConfig::default(),
+        );
+        assert_no_attacker_bytes(&out, "legacy format_statusline_string path");
+        assert!(
+            out.contains("EVIL"),
+            "the directory text must still render, got: {out:?}"
+        );
     }
 
     #[test]

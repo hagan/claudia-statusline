@@ -2596,3 +2596,319 @@ fn uses_variable_matches_only_a_braced_placeholder() {
          the raw half must stay OFF (zero-read guarantee preserved)"
     );
 }
+
+// ============================================================================
+// R5-CR-01 — the builder is the terminal-safety boundary
+//
+// `LayoutRenderer::render` copies variable VALUES into the output buffer
+// verbatim (11-11's single-pass contract; it sanitizes only the separator), so
+// the only place a boundary can live without reintroducing a re-scan is the
+// builder. These pins assert that every PLAIN untrusted argument is sanitized at
+// method entry, BEFORE the color wrap — and, just as importantly, that the
+// wrap's own ANSI codes SURVIVE (R5-WR-02: `sanitize_for_terminal` strips every
+// SGR sequence, so sanitizing the COMPOSED string would ship a colorless
+// statusline and a naive "no ESC" assertion would call that a pass).
+//
+// End-to-end counterparts: `src/display.rs`'s `render_path_*` tests (through
+// `format_statusline_with_layout`) and `tests/terminal_injection_tests.rs`
+// (through the spawned binary's raw stdout bytes).
+// ============================================================================
+
+/// An attacker ESC ("rest of the line red") plus a BEL, as reproduced against
+/// `target/release/statusline` by the round-5 reviewer and verifier.
+const ATTACKER_DIR: &str = "/tmp/\x1b[31mEVIL\x07x";
+const ATTACKER_BASENAME: &str = "\x1b[31mEVIL\x07x";
+
+fn dir_config(format: &str, max_length: usize) -> DirectoryComponentConfig {
+    DirectoryComponentConfig {
+        format: format.to_string(),
+        max_length,
+        color: String::new(),
+    }
+}
+
+/// Assert an inserted variable carries no attacker byte. Does NOT assert the
+/// absence of ESC outright — the builder's own color wrapper is an ESC sequence
+/// and must survive.
+fn assert_disarmed(value: &str, ctx: &str) {
+    assert!(
+        !value.contains("\x1b[31m"),
+        "{ctx}: attacker ESC survived into the variable map: {value:?}"
+    );
+    assert!(
+        !value.contains('\x07'),
+        "{ctx}: attacker BEL survived into the variable map: {value:?}"
+    );
+}
+
+/// R5-CR-01: `format = "full"` emits `full_path`, which `src/display.rs:729`
+/// passes RAW. FAILURE MODE at `ba58525`: the ESC and BEL are in `{directory}`.
+#[test]
+fn directory_with_config_sanitizes_the_full_path() {
+    let vars = VariableBuilder::new()
+        .directory_with_config(
+            ATTACKER_DIR,
+            "/tmp/EVILx",
+            ATTACKER_BASENAME,
+            "\x1b[36m",
+            "\x1b[0m",
+            &dir_config("full", 0),
+        )
+        .build();
+    let dir = vars.get("directory").expect("{directory} must be inserted");
+    assert_disarmed(dir, "directory / format=full");
+    assert!(dir.contains("EVIL"), "the path text must survive: {dir:?}");
+}
+
+/// R5-CR-01: `format = "basename"` emits `basename`, also passed RAW.
+#[test]
+fn directory_with_config_sanitizes_the_basename() {
+    let vars = VariableBuilder::new()
+        .directory_with_config(
+            "/tmp/clean",
+            "/tmp/clean",
+            ATTACKER_BASENAME,
+            "\x1b[36m",
+            "\x1b[0m",
+            &dir_config("basename", 0),
+        )
+        .build();
+    assert_disarmed(
+        vars.get("directory").expect("{directory}"),
+        "directory / format=basename",
+    );
+}
+
+/// R5-CR-01: the default `"short"` arm. Its call site already sanitizes, so this
+/// pins IDEMPOTENCE — the builder may sanitize an already-sanitized value
+/// without changing it — and pins the boundary for any OTHER caller of this
+/// `pub` method, which is the whole point of moving it off the call site.
+#[test]
+fn directory_with_config_sanitizes_the_short_path() {
+    let vars = VariableBuilder::new()
+        .directory_with_config(
+            "/tmp/clean",
+            ATTACKER_DIR,
+            "clean",
+            "\x1b[36m",
+            "\x1b[0m",
+            &dir_config("short", 0),
+        )
+        .build();
+    assert_disarmed(
+        vars.get("directory").expect("{directory}"),
+        "directory / format=short",
+    );
+
+    // Idempotence: an already-clean value is byte-identical either way.
+    let clean = VariableBuilder::new()
+        .directory_with_config(
+            "/tmp/clean",
+            "/tmp/clean",
+            "clean",
+            "\x1b[36m",
+            "\x1b[0m",
+            &dir_config("short", 0),
+        )
+        .build();
+    assert_eq!(
+        clean.get("directory").map(String::as_str),
+        Some("\x1b[36m/tmp/clean\x1b[0m"),
+        "sanitizing a clean value must be a no-op"
+    );
+}
+
+/// R5-CR-01, THE LIVE VECTOR: `{dir_short}` is inserted UNCONDITIONALLY from
+/// `basename`, and the BUILT-IN `compact` preset renders it
+/// (`src/layout/presets.rs:5`). This is what the reviewer and verifier both
+/// reproduced against the release binary.
+#[test]
+fn directory_with_config_sanitizes_dir_short() {
+    for format in ["full", "basename", "short"] {
+        let vars = VariableBuilder::new()
+            .directory_with_config(
+                "/tmp/clean",
+                "/tmp/clean",
+                ATTACKER_BASENAME,
+                "\x1b[36m",
+                "\x1b[0m",
+                &dir_config(format, 0),
+            )
+            .build();
+        assert_disarmed(
+            vars.get("dir_short").expect("{dir_short}"),
+            &format!("dir_short / format={format}"),
+        );
+    }
+}
+
+/// Ordering pin: sanitize BEFORE truncating. Truncate-then-sanitize could cut an
+/// escape mid-sequence, leaving a partial `\x1b[3` that the sanitizer's regex
+/// (which requires a terminating `m`) no longer matches, so a bare ESC would
+/// reach the terminal. Also pins that truncation stays CHAR-based.
+#[test]
+fn directory_with_config_sanitizes_before_truncating() {
+    let vars = VariableBuilder::new()
+        .directory_with_config(
+            ATTACKER_DIR,
+            "/tmp/EVILx",
+            ATTACKER_BASENAME,
+            "",
+            "",
+            &dir_config("full", 8),
+        )
+        .build();
+    let dir = vars.get("directory").expect("{directory}");
+    assert!(
+        !dir.contains('\x1b'),
+        "no ESC byte, whole or partial, may survive truncation: {dir:?}"
+    );
+    assert!(
+        !dir.contains('\x07'),
+        "no BEL may survive truncation: {dir:?}"
+    );
+    // "/tmp/EVILx" sanitized is 10 chars; max_length 8 keeps the ellipsis form.
+    assert_eq!(
+        dir.chars().count(),
+        8,
+        "truncation must stay char-based and honor max_length: {dir:?}"
+    );
+}
+
+/// R5-WR-02 pin, builder half: sanitizing must target the untrusted INNER value,
+/// never the composed `format!("{color}{value}{reset}")`. GREEN at `ba58525` and
+/// must STAY green — mutation 3 in `11-15-SUMMARY.md` proves it fails the moment
+/// the composed string is sanitized instead.
+#[test]
+fn directory_with_config_preserves_the_color_wrapper() {
+    let vars = VariableBuilder::new()
+        .directory_with_config(
+            "/tmp/clean",
+            "/tmp/clean",
+            "clean",
+            "\x1b[36m",
+            "\x1b[0m",
+            &dir_config("full", 0),
+        )
+        .build();
+    assert_eq!(
+        vars.get("directory").map(String::as_str),
+        Some("\x1b[36m/tmp/clean\x1b[0m"),
+        "the builder's OWN color must survive the sanitizer (R5-WR-02)"
+    );
+    assert_eq!(
+        vars.get("dir_short").map(String::as_str),
+        Some("\x1b[36mclean\x1b[0m"),
+        "the builder's OWN color must survive on the dir_short var too (R5-WR-02)"
+    );
+}
+
+/// R5-CR-01: `session_meta` inserts `{effort}`, `{cc_version}` and `{repo}` with
+/// NO sanitization at `ba58525` — all three are payload text.
+#[test]
+fn session_meta_sanitizes_effort_version_and_repo() {
+    let vars = VariableBuilder::new()
+        .session_meta(
+            Some("\x1b[31mxhigh"),
+            Some("\x1b[31m9.9.9"),
+            false,
+            Some("o\x1b[31mwn"),
+            Some("na\x07me"),
+            "\x1b[90m",
+            "\x1b[0m",
+        )
+        .build();
+    for key in ["effort", "cc_version", "repo"] {
+        let v = vars.get(key).unwrap_or_else(|| panic!("{key} must be set"));
+        assert_disarmed(v, key);
+        assert!(
+            v.starts_with("\x1b[90m") && v.ends_with("\x1b[0m"),
+            "{key}: the builder's own color wrapper must survive (R5-WR-02): {v:?}"
+        );
+    }
+    assert_eq!(
+        vars.get("repo").map(String::as_str),
+        Some("\x1b[90mown/name\x1b[0m"),
+        "repo must be joined from the SANITIZED parts"
+    );
+}
+
+/// R5-CR-01 audit finding: a branch name is plain untrusted `git` output. Its
+/// only in-tree call site sanitizes (`src/display.rs:741`), but this method is
+/// `pub` and the boundary must not depend on a call site remembering.
+///
+/// `full_info` is deliberately NOT sanitized here — it arrives PRE-COMPOSED WITH
+/// COLOR from `format_git_info`, which sanitizes the branch at `src/git.rs:342`
+/// and then adds its own SGR codes; sanitizing it again would strip those
+/// (R5-WR-02). This test pins BOTH halves of that decision.
+#[test]
+fn git_with_config_sanitizes_the_branch() {
+    let pre_colored_full_info = "\x1b[32mmain\x1b[0m \x1b[33m~2\x1b[0m";
+    let vars = VariableBuilder::new()
+        .git_with_config(
+            pre_colored_full_info,
+            Some("ma\x1b[31min\x07"),
+            None,
+            false,
+            "\x1b[32m",
+            "\x1b[0m",
+            &GitComponentConfig {
+                format: "branch".to_string(),
+                show_when: "always".to_string(),
+                color: String::new(),
+            },
+        )
+        .build();
+    assert_disarmed(vars.get("git").expect("{git}"), "git / format=branch");
+    assert_disarmed(vars.get("git_branch").expect("{git_branch}"), "git_branch");
+
+    // The "full" arm must pass the PRE-COMPOSED colored string through untouched.
+    let full = VariableBuilder::new()
+        .git_with_config(
+            pre_colored_full_info,
+            Some("main"),
+            None,
+            false,
+            "\x1b[32m",
+            "\x1b[0m",
+            &GitComponentConfig::default(),
+        )
+        .build();
+    assert_eq!(
+        full.get("git").map(String::as_str),
+        Some(pre_colored_full_info),
+        "format_git_info's colors must NOT be stripped here (R5-WR-02)"
+    );
+}
+
+/// R5-CR-01 audit finding: `UsageCache.account` and `.tz` are read verbatim out
+/// of a JSON file on disk. `read_usage_cache` sanitizes the account name used to
+/// build the PATH, but nothing validates the `account`/`tz` FIELDS inside the
+/// file — a hand-edited or foreign-producer cache carries whatever it likes. The
+/// model ids beside them were already sanitized (`src/layout/variables.rs:1038`,
+/// 10-REVIEW-CODEX.md MEDIUM 1), which is the precedent this extends.
+#[test]
+fn api_usage_sanitizes_the_account_and_tz() {
+    let slice = crate::ant::cache::UsageCache {
+        schema_version: crate::ant::cache::USAGE_CACHE_SCHEMA_VERSION,
+        fetched_at: chrono::Utc::now(),
+        account: "wo\x1b[31mrk".to_string(),
+        today_usd: 1.0,
+        mtd_usd: 2.0,
+        tz: "U\x07TC".to_string(),
+        tokens_by_model: std::collections::HashMap::new(),
+    };
+    let vars = VariableBuilder::new()
+        .api_usage(Some(&slice), "\x1b[90m", "\x1b[0m")
+        .build();
+    assert_disarmed(
+        vars.get("api_account").expect("{api_account}"),
+        "api_account",
+    );
+    assert_disarmed(vars.get("api_tz").expect("{api_tz}"), "api_tz");
+    assert_eq!(
+        vars.get("api_tz").map(String::as_str),
+        Some("\x1b[90mUTC\x1b[0m"),
+        "the builder's own color wrapper must survive (R5-WR-02)"
+    );
+}
