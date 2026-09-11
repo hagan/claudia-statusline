@@ -450,6 +450,36 @@ const CLAUDE_LESS_UPSTREAM: &str = r#"{
   }
 }"#;
 
+/// R5-WR-01: two perfectly good Anthropic rows, one of which publishes its
+/// OPTIONAL 1-hour cache-write rate as a STRING.
+///
+/// `scripts/vendor-pricing.sh::build_prices_map` vendors such a row with the
+/// 1-hour dimension dropped (`type == "number"` short-circuits to `else true` /
+/// `else {}`), so the Rust transform must do the same — and must tell the
+/// operator WHICH id lost the dimension, because once the row is retained the
+/// aggregate `Skipped N unusable upstream row` count no longer covers it.
+///
+/// Kept separate from `FAKE_UPSTREAM` deliberately: five tests assert exact
+/// counts against that fixture.
+const WRONG_TYPED_1H_UPSTREAM: &str = r#"{
+  "claude-test-sonnet": {
+    "litellm_provider": "anthropic",
+    "input_cost_per_token": 3e-06,
+    "output_cost_per_token": 1.5e-05,
+    "cache_creation_input_token_cost": 3.75e-06,
+    "cache_read_input_token_cost": 3e-07,
+    "cache_creation_input_token_cost_above_1hr": 6e-06
+  },
+  "claude-test-strtype": {
+    "litellm_provider": "anthropic",
+    "input_cost_per_token": 5e-06,
+    "output_cost_per_token": 2.5e-05,
+    "cache_creation_input_token_cost": 6.25e-06,
+    "cache_read_input_token_cost": 5e-07,
+    "cache_creation_input_token_cost_above_1hr": "1.5e-05"
+  }
+}"#;
+
 impl PricingEnv {
     fn new() -> Self {
         let home = TempDir::new().expect("home temp dir");
@@ -944,6 +974,66 @@ fn sync_pricing_invalid_max_age_is_rejected_before_fetching() {
         "a malformed --max-age must be rejected BEFORE any fetch"
     );
     assert!(env.find_price_cache().is_none(), "no cache may be written");
+}
+
+// ---------------------------------------------------------------------------
+// (p8) R5-WR-01 / D-02: a wrong-TYPED optional 1-hour rate drops the DIMENSION,
+//      not the ROW — and the operator is told WHICH id lost it.
+// ---------------------------------------------------------------------------
+#[test]
+#[serial]
+fn sync_pricing_keeps_a_row_whose_1h_rate_is_wrong_typed_and_names_it() {
+    let env = PricingEnv::new();
+    env.install_curl_serving(WRONG_TYPED_1H_UPSTREAM);
+
+    let (ok, stdout, stderr) = env.run(false, None, None);
+    assert!(ok, "success path must exit 0; stderr: {stderr}");
+
+    let path = env.find_price_cache().expect("prices.json must be written");
+    let raw = fs::read_to_string(&path).expect("read cache");
+    let v: serde_json::Value = serde_json::from_str(&raw).expect("cache is valid JSON");
+    let prices = v["prices"].as_object().expect("prices is an object");
+
+    assert_eq!(
+        prices.len(),
+        2,
+        "R5-WR-01: the row with the string-valued 1-hour rate must be SYNCED, exactly as \
+         scripts/vendor-pricing.sh vendors it. Got: {:?}",
+        prices.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        prices.contains_key("claude-test-strtype"),
+        "the affected id must reach the synced cache, not fall back to the bundled table"
+    );
+    assert!(
+        prices["claude-test-strtype"]
+            .get("cache_creation_1h")
+            .is_none_or(|x| x.is_null()),
+        "only the DIMENSION may be dropped, and it must never be coerced from the string"
+    );
+    assert_eq!(
+        prices["claude-test-sonnet"]["cache_creation_1h"], 6e-06,
+        "a sane 1h rate on a sibling row is unaffected"
+    );
+
+    assert!(
+        !stdout.contains("Skipped 1 unusable upstream row"),
+        "the row is KEPT, so it must not be reported as an unusable skip, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("1h-wrong-type"),
+        "the operator must be told the 1-hour dimension was dropped for a TYPE reason — a \
+         distinct token from `1h-out-of-band` (R4-WR-01) and from a plain absence. Got: {stdout}"
+    );
+    assert!(
+        stdout.contains("claude-test-strtype"),
+        "the diagnostic must name the AFFECTED ID; an aggregate count is what R5-WR-01 \
+         complained about. Got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("claude-test-sonnet"),
+        "an unaffected row must NOT be named by the diagnostic, got: {stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------

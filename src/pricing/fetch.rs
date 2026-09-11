@@ -702,6 +702,200 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // R5-WR-01 / D-02: the TYPE axis of the optional 1-hour rate.
+    //
+    // These four tests pin the THIRD axis on which "ONE transform" was false.
+    // The reference behaviour is scripts/vendor-pricing.sh, executed offline
+    // against the same fixtures at HEAD 28dd963 (transcript in 11-16-PLAN.md
+    // and 11-16-SUMMARY.md):
+    //
+    //   1h rate wrong-typed  -> bash KEEPS the row and drops the DIMENSION
+    //                           (`type == "number"` short-circuits to
+    //                            `else true` in selection, `else {}` in carry)
+    //   base rate wrong-typed-> bash DROPS the row (`type == "number"` is the
+    //                           first conjunct of each base-rate clause)
+    //   provider wrong-typed -> bash DROPS the row (a non-string cannot equal
+    //                           "anthropic")
+    //
+    // Rust matched bash on the last two and NOT on the first: a wrong-typed
+    // optional field made `serde_json::from_value` fail for the WHOLE struct,
+    // so `transform_litellm` did `skipped += 1; continue` and the id silently
+    // rendered from `source=bundled` instead of `source=synced`.
+    // -----------------------------------------------------------------------
+
+    /// The row whose only fault is a STRING-valued optional 1-hour rate. Every
+    /// other field is a perfectly good Anthropic row.
+    const STRING_1H_ROW: &str = r#""claude-strtype-1h": {
+        "litellm_provider": "anthropic",
+        "input_cost_per_token": 5e-06,
+        "output_cost_per_token": 2.5e-05,
+        "cache_creation_input_token_cost": 6.25e-06,
+        "cache_read_input_token_cost": 5e-07,
+        "cache_creation_input_token_cost_above_1hr": "1.5e-05"
+    }"#;
+
+    /// R5-WR-01, the core regression.
+    ///
+    /// RED at 28dd963: this asserted `prices.len() == 2` against an actual `1`
+    /// and `skipped == 0` against an actual `1` — the whole row was destroyed by
+    /// one wrong-typed OPTIONAL field, while `build_prices_map` vendored it with
+    /// the dimension dropped.
+    #[test]
+    fn a_wrong_typed_optional_1h_rate_drops_the_dimension_not_the_row() {
+        let raw = upstream(&format!("{GOOD_ROW},\n{STRING_1H_ROW}"));
+        let out = transform_litellm(raw.as_bytes()).expect("both rows are priceable");
+
+        assert_eq!(
+            out.prices.len(),
+            2,
+            "R5-WR-01: a wrong-TYPED optional rate must drop the DIMENSION, not the ROW — \
+             scripts/vendor-pricing.sh::build_prices_map vendors this row. Got: {:?}",
+            {
+                let mut k: Vec<&String> = out.prices.keys().collect();
+                k.sort();
+                k
+            }
+        );
+        let row = out
+            .prices
+            .get("claude-strtype-1h")
+            .expect("R5-WR-01: the row must be RETAINED, exactly as bash retains it");
+        assert_eq!(
+            row.cache_creation_1h, None,
+            "the wrong-typed dimension must be dropped, never coerced"
+        );
+        assert_eq!(
+            row.input, 5e-06,
+            "every other dimension of the retained row must still price"
+        );
+        assert_eq!(
+            out.skipped, 0,
+            "the row is KEPT, so it must not be counted as an unusable skip"
+        );
+    }
+
+    /// Every presence/type case for the optional 1-hour rate, in one table.
+    ///
+    /// The numeric-STRING case is the one that proves no coercion happens: jq's
+    /// `type == "number"` is false for `"1.5e-05"`, so a Rust side that parsed
+    /// the string would be a FOURTH divergence, not a fix.
+    #[test]
+    fn the_optional_1h_rate_accepts_only_genuine_json_numbers() {
+        // (label, the `cache_creation_input_token_cost_above_1hr` JSON fragment,
+        //  expected carried-rate)
+        let cases: [(&str, Option<&str>, Option<f64>); 7] = [
+            ("absent", None, None),
+            ("null", Some("null"), None),
+            ("number", Some("1.5e-05"), Some(1.5e-05)),
+            ("numeric string", Some("\"1.5e-05\""), None),
+            ("bool", Some("true"), None),
+            ("object", Some("{}"), None),
+            ("array", Some("[]"), None),
+        ];
+
+        for (label, fragment, want_carried) in cases {
+            let tail = match fragment {
+                Some(f) => format!(",\n        \"cache_creation_input_token_cost_above_1hr\": {f}"),
+                None => String::new(),
+            };
+            let raw = upstream(&format!(
+                r#""claude-probe": {{
+        "litellm_provider": "anthropic",
+        "input_cost_per_token": 5e-06,
+        "output_cost_per_token": 2.5e-05,
+        "cache_creation_input_token_cost": 6.25e-06,
+        "cache_read_input_token_cost": 5e-07{tail}
+    }}"#
+            ));
+            let out = transform_litellm(raw.as_bytes())
+                .unwrap_or_else(|e| panic!("[{label}] the row must stay priceable, got Err: {e}"));
+
+            let row = out.prices.get("claude-probe").unwrap_or_else(|| {
+                panic!(
+                    "[{label}] R5-WR-01: the ROW must be retained for every presence/type of the \
+                     OPTIONAL rate — only the DIMENSION may be dropped"
+                )
+            });
+            assert_eq!(
+                row.cache_creation_1h, want_carried,
+                "[{label}] wrong carried value for the optional 1-hour rate"
+            );
+            assert_eq!(out.skipped, 0, "[{label}] a retained row must not be counted");
+        }
+    }
+
+    /// Trap 2 / T-11-83: the four BASE rates are ALREADY at parity with bash and
+    /// must STAY strict. Loosening them would make Rust retain a row that
+    /// `build_prices_map` de-selects — a NEW divergence in the opposite
+    /// direction, which is precisely the defect class R5-WR-01 exists to end.
+    ///
+    /// GREEN at 28dd963 by construction: this is an anti-regression pin for the
+    /// FIX, not a reproduction of the defect. Mutation-proven in 11-16-SUMMARY.
+    #[test]
+    fn a_wrong_typed_base_rate_still_drops_the_whole_row() {
+        let fields = [
+            ("input_cost_per_token", "\"5e-06\""),
+            ("output_cost_per_token", "\"2.5e-05\""),
+            ("cache_creation_input_token_cost", "true"),
+            ("cache_read_input_token_cost", "[]"),
+        ];
+        for (field, bad) in fields {
+            let mut parts = vec![
+                ("litellm_provider", "\"anthropic\"".to_string()),
+                ("input_cost_per_token", "5e-06".to_string()),
+                ("output_cost_per_token", "2.5e-05".to_string()),
+                ("cache_creation_input_token_cost", "6.25e-06".to_string()),
+                ("cache_read_input_token_cost", "5e-07".to_string()),
+            ];
+            for p in parts.iter_mut() {
+                if p.0 == field {
+                    p.1 = bad.to_string();
+                }
+            }
+            let body = parts
+                .iter()
+                .map(|(k, v)| format!("\"{k}\": {v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let raw = upstream(&format!("{GOOD_ROW},\n\"claude-probe\": {{{body}}}"));
+
+            let out = transform_litellm(raw.as_bytes()).expect("the good row survives");
+            assert!(
+                !out.prices.contains_key("claude-probe"),
+                "[{field}] a wrong-TYPED BASE rate must drop the WHOLE ROW, matching \
+                 build_prices_map's `type == \"number\"` de-selection. Only the OPTIONAL \
+                 1-hour rate is type-tolerant (R5-WR-01)."
+            );
+            assert_eq!(
+                out.skipped, 1,
+                "[{field}] the dropped row must be COUNTED (D-03)"
+            );
+        }
+    }
+
+    /// Same parity statement for `litellm_provider`: a non-string cannot equal
+    /// `"anthropic"` in jq, and fails the whole-struct parse in Rust. Both drop
+    /// the row. GREEN at 28dd963; pinned so it stays that way.
+    #[test]
+    fn a_wrong_typed_provider_still_drops_the_whole_row() {
+        let raw = upstream(&format!(
+            r#"{GOOD_ROW},
+            "claude-probe": {{
+                "litellm_provider": 7,
+                "input_cost_per_token": 5e-06,
+                "output_cost_per_token": 2.5e-05,
+                "cache_creation_input_token_cost": 6.25e-06,
+                "cache_read_input_token_cost": 5e-07
+            }}"#
+        ));
+        let out = transform_litellm(raw.as_bytes()).expect("the good row survives");
+        assert!(
+            !out.prices.contains_key("claude-probe"),
+            "a wrong-TYPED litellm_provider must drop the row on both sides"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // D-04: zero usable rows => Err, and NO cache is constructed.
     // -----------------------------------------------------------------------
 
