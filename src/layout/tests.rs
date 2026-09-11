@@ -173,6 +173,86 @@ fn test_only_separators() {
     assert_eq!(result, "");
 }
 
+/// Round-4 CR-01: the configured separator is emitted VERBATIM — its text is
+/// NOT a substitution surface.
+///
+/// FAILURE MODE AT HEAD (`c84482c`): this produced `"A<A>B"`. `render`
+/// pre-expanded `{sep}` into its output buffer and the substitution loop then
+/// ran over the spliced-in separator text. The price-source gate in
+/// `src/display.rs` scans only `self.template`, so that surface was never gated
+/// — which is exactly how a BUNDLED dollar figure reached a line the user had
+/// configured for `[pricing] source = "synced"`.
+#[test]
+fn render_does_not_substitute_into_the_separator() {
+    let renderer = LayoutRenderer::with_format("{a}{sep}{b}", "<{a}>");
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "A".to_string());
+    vars.insert("b".to_string(), "B".to_string());
+
+    let result = renderer.render(&vars);
+    assert_eq!(
+        result, "A<{a}>B",
+        "round-4 CR-01: a placeholder inside `[layout].separator` must be \
+         emitted verbatim and resolve nothing; substituting into the separator \
+         re-opens an ungated substitution surface"
+    );
+}
+
+/// Round-4 CR-02: a substituted VALUE is inert data, never a template.
+///
+/// FAILURE MODE AT HEAD (`c84482c`): nondeterministically `"B|B"` (the value was
+/// re-scanned by a later iteration of `result.replace(..)`) or `"|B"` (the value
+/// was swallowed by the unreplaced-placeholder sweep that ran afterwards) —
+/// which of the two depended on `HashMap` iteration order. Values arrive from
+/// untrusted external input (`workspace.current_dir`, git branch names, model
+/// ids) and `sanitize_for_terminal` does not strip braces.
+#[test]
+fn render_does_not_substitute_into_a_substituted_value() {
+    let renderer = LayoutRenderer::with_format("{a}|{b}", "");
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "{b}".to_string());
+    vars.insert("b".to_string(), "B".to_string());
+
+    let result = renderer.render(&vars);
+    assert_eq!(
+        result, "{b}|B",
+        "round-4 CR-02: the single left-to-right pass must never re-examine what \
+         it has already written, so brace syntax arriving inside a VALUE reaches \
+         the terminal verbatim instead of injecting another variable"
+    );
+}
+
+/// The variable name is taken from the LAST `{` before the closing `}`.
+///
+/// `open` is 0, the only `}` is at index 3, and the last `{` before it is at
+/// index 1 — so `name` is `"a"`, it resolves, the skipped literal `"{"` is
+/// pushed first, and the closing `}` is consumed. Hence a SINGLE leading brace
+/// and NO trailing brace.
+///
+/// This is byte-identical to HEAD: `.replace("{a}", "A")` also yielded `"{A"`,
+/// and the unreplaced-placeholder sweep then found no closing brace and kept it.
+/// It pins the rule that keeps `uses_variable` (`template.contains("{name}")`) a
+/// superset of what the scan can resolve — the R2-CR-01 lineage — and keeps
+/// `escaped_brace_price_template_renders_the_synced_figure` in
+/// `tests/ant_invariant_tests.rs` true.
+///
+/// The UNRESOLVED counterpart is `test_nested_braces` above (`"{{nested}}"` with
+/// an empty variable map, still `"}"`), which this rewrite leaves unchanged.
+#[test]
+fn render_resolves_a_nested_brace_name_from_the_last_open_brace() {
+    let renderer = LayoutRenderer::with_format("{{a}", "");
+    let mut vars = HashMap::new();
+    vars.insert("a".to_string(), "A".to_string());
+
+    let result = renderer.render(&vars);
+    assert_eq!(
+        result, "{A",
+        "the last `{{` before the `}}` names the variable; changing that would \
+         make `uses_variable` a non-superset of the scan and re-open R2-CR-01 \
+         for escaped-brace templates"
+    );
+}
+
 #[test]
 fn test_whitespace_only_variables() {
     // Empty string variables should be treated as missing

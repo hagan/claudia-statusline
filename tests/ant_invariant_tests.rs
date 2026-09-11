@@ -1176,6 +1176,115 @@ fn structural_guard_no_spawn_or_socket_in_render_modules() {
 }
 
 // ---------------------------------------------------------------------------
+// Group 4c: STRUCTURAL GUARD for the single-pass render (Plan 11-11, round-4
+// review CR-01 / CR-02)
+// ---------------------------------------------------------------------------
+
+/// `LayoutRenderer::render`'s signature line, exactly as rustfmt emits it.
+const RENDER_SIGNATURE: &str =
+    "    pub fn render(&self, variables: &HashMap<String, String>) -> String {";
+
+/// Extract `LayoutRenderer::render`'s body from `src/layout/template.rs`,
+/// anchored on [`RENDER_SIGNATURE`] and closed by the first line that is exactly
+/// four spaces plus `}` (rustfmt's impl-method close).
+///
+/// It `panic!`s by name when either anchor is missing rather than falling back
+/// to a whole-file scan, mirroring `script_function_body` in
+/// `src/pricing/fetch.rs`: a guard that silently widens its window still reports
+/// green while the thing it guards is unpinned.
+fn render_fn_body(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| *l == RENDER_SIGNATURE)
+        .unwrap_or_else(|| {
+            panic!(
+                "no line `{RENDER_SIGNATURE}` in src/layout/template.rs — \
+                 LayoutRenderer::render was renamed, moved or reformatted. Refusing to fall \
+                 back to a whole-file scan, which would silently degrade this guard into one \
+                 that passes on a COMMENT elsewhere in the file."
+            )
+        });
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, l)| **l == "    }")
+        .map(|(i, _)| i)
+        .unwrap_or_else(|| {
+            panic!(
+                "found `{RENDER_SIGNATURE}` but no closing `}}` at column four in \
+                 src/layout/template.rs — the file's formatting convention changed. Refusing \
+                 to fall back to a whole-file scan."
+            )
+        });
+    lines[start + 1..end].join("\n")
+}
+
+/// `render` must stay ONE left-to-right pass: no repeated replacement over its
+/// own output buffer, and no second sweep over already-written text.
+///
+/// FAILURE MODE: reintroducing `result = result.replace(..)` (or a post-hoc
+/// unreplaced-placeholder sweep) re-opens BOTH round-4 BLOCKERs at once — the
+/// separator becomes a substitution surface again (CR-01) and a substituted
+/// value becomes eligible for a later iteration (CR-02). Comment tails are
+/// stripped with `code_portion`, so a rationale comment naming the forbidden
+/// call can neither trip this guard nor satisfy it vacuously.
+#[test]
+fn render_is_a_single_pass_with_no_re_scan_of_its_own_output() {
+    const SOURCE: &str = include_str!("../src/layout/template.rs");
+    let body = render_fn_body(SOURCE);
+
+    // Non-vacuity: a body that is empty, or that is the whole file, would make
+    // every assertion below meaningless.
+    assert!(
+        body.len() > 200,
+        "the extracted `render` body is only {} bytes — the anchors matched \
+         something that is not the function, so this guard would pass vacuously:\n{body}",
+        body.len()
+    );
+    assert!(
+        body.len() < SOURCE.len() && SOURCE.contains(&body),
+        "the extracted `render` body must be a STRICT subset of \
+         src/layout/template.rs; it is {} bytes against a {} byte file",
+        body.len(),
+        SOURCE.len()
+    );
+
+    let code: String = body
+        .lines()
+        .map(code_portion)
+        .collect::<Vec<&str>>()
+        .join("\n");
+    assert!(
+        code.contains("push_str"),
+        "`render` must build its output by copying literal text and resolved \
+         values into a buffer (`push_str`); no `push_str` means the \
+         implementation changed shape and this guard no longer describes it. \
+         Body:\n{code}"
+    );
+    assert!(
+        !code.contains(".replace("),
+        "round-4 CR-01/CR-02: `render` performs a repeated replacement again. \
+         Replacing over a buffer it has already written re-opens BOTH: the \
+         separator becomes an ungated substitution surface (a bundled figure \
+         under `source = \"synced\"`), and a substituted value containing \
+         `{{other_var}}` becomes eligible for a later pass (untrusted input \
+         injecting a statusline variable, nondeterministically). The price \
+         gate's superset property in src/display.rs — `template.contains(\
+         \"{{name}}\")` covers everything `render` can resolve — rests on this \
+         scan being single-pass over `self.template` alone. Body:\n{code}"
+    );
+    assert!(
+        !code.contains("remove_unreplaced_variables"),
+        "the post-hoc unreplaced-placeholder sweep was folded INTO the scan and \
+         deleted; calling it again would re-scan already-written output and \
+         swallow braces that untrusted values are supposed to emit verbatim \
+         (round-4 CR-02). Body:\n{code}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Group 4b: STRUCTURAL GUARDS for the one-render-one-snapshot invariant
 // ---------------------------------------------------------------------------
 
