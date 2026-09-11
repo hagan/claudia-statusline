@@ -1612,7 +1612,20 @@ mod tests {
             wrong_typed_body.len(),
             SCRIPT.len()
         );
-        for clause in ["1h-wrong-type", "type != \"number\""] {
+        // NON-VACUITY (found by mutation, plan 11-16 Task 4): a bare
+        // `contains("1h-wrong-type")` over this body is satisfied by the ECHOED
+        // HEADING alone, so deleting the token from the PER-ID jq output line
+        // left the guard green while the operator lost the id-level attribution
+        // — the same "a comment satisfies the scan" failure mode items (4)-(6)
+        // already had to rule out. Pin the two SITES separately.
+        for clause in [
+            // the per-id formatter inside the jq program
+            r#""\(.key) (1h-wrong-type: "#,
+            // the operator-facing heading
+            "vendor-pricing: 1h-wrong-type",
+            // the type predicate that decides WHICH rows are named
+            "type != \"number\"",
+        ] {
             assert!(
                 wrong_typed_body.contains(clause),
                 "D-02 drift (R5-WR-01): scripts/vendor-pricing.sh::report_wrong_typed_1h_rows \
