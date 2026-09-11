@@ -235,6 +235,12 @@ impl VariableBuilder {
     }
 
     /// Set git variables ({git}, {git_branch})
+    ///
+    /// `branch` is plain untrusted `git` output and is sanitized here (rule 1).
+    /// `full_info` is NOT: it arrives PRE-COMPOSED WITH COLOR from
+    /// [`crate::git::format_git_info`], which sanitizes the branch itself and
+    /// then adds SGR codes — sanitizing it again would strip them (rule 2,
+    /// R5-WR-02).
     #[allow(dead_code)]
     pub fn git(mut self, full_info: &str, branch: Option<&str>) -> Self {
         if !full_info.is_empty() {
@@ -244,7 +250,7 @@ impl VariableBuilder {
         if let Some(b) = branch {
             if !b.is_empty() {
                 self.variables
-                    .insert("git_branch".to_string(), b.to_string());
+                    .insert("git_branch".to_string(), sanitize_for_terminal(b));
             }
         }
         self
@@ -254,6 +260,21 @@ impl VariableBuilder {
     ///
     /// Applies format and show_when options from config.
     /// show_when: "always" (default), "dirty" (only when dirty), "never"
+    ///
+    /// # Terminal safety (R5-CR-01)
+    ///
+    /// `branch` is a branch NAME — plain untrusted `git` output, attacker
+    /// influenceable in a cloned repo — and is sanitized here (rule 1). Its only
+    /// in-tree call site also sanitizes (`src/display.rs:741`), which is
+    /// deliberate belt-and-braces: this method is `pub`, and the boundary must
+    /// not depend on a caller remembering.
+    ///
+    /// `full_info` is deliberately NOT sanitized (rule 2): it arrives
+    /// PRE-COMPOSED WITH COLOR from [`crate::git::format_git_info`], which
+    /// sanitizes the branch at its true source and then adds its own SGR codes.
+    /// Running the sanitizer over it would delete exactly those codes and ship a
+    /// colorless git segment (R5-WR-02). `status_only` is built from integer
+    /// counts (rule 3).
     #[allow(clippy::too_many_arguments)]
     pub fn git_with_config(
         mut self,
@@ -265,6 +286,9 @@ impl VariableBuilder {
         reset: &str,
         config: &GitComponentConfig,
     ) -> Self {
+        let branch = branch.map(sanitize_for_terminal);
+        let branch = branch.as_deref();
+
         // Check show_when condition
         let should_show = match config.show_when.as_str() {
             "never" => false,
@@ -415,8 +439,13 @@ impl VariableBuilder {
     }
 
     /// Set model variables ({model}, {model_full})
+    ///
+    /// `full_name` is the raw payload model name (rule 1). `abbreviation` is
+    /// derived from [`crate::models::ModelType`] and cannot carry a control byte
+    /// — see [`Self::model_with_config`].
     #[allow(dead_code)]
     pub fn model(mut self, abbreviation: &str, full_name: &str, color: &str, reset: &str) -> Self {
+        let full_name = sanitize_for_terminal(full_name);
         if !abbreviation.is_empty() {
             self.variables.insert(
                 "model".to_string(),
@@ -435,6 +464,21 @@ impl VariableBuilder {
     /// Set model variables with component configuration
     ///
     /// Format options: "abbreviation" (default), "full", "name", "version"
+    ///
+    /// # Terminal safety (R5-CR-01)
+    ///
+    /// `full_name` is the raw payload model name (`model.display_name` /
+    /// `model.id`) and is sanitized here (rule 1), even though both in-tree call
+    /// sites already sanitize it (`src/display.rs:511`, `:806`) — the boundary
+    /// must not depend on a caller remembering.
+    ///
+    /// `abbreviation`, `family_name` and `version` are NOT sanitized, and cannot
+    /// need it: [`crate::models::ModelType::from_name`] reduces any input to one
+    /// of five fixed family literals plus a version matched by
+    /// `\d+(?:[.\-]\d+)?` and normalized to digits and dots, so none of the
+    /// three can carry a control byte whatever the payload says. If that
+    /// construction ever changes — e.g. a family echoed from the input — they
+    /// become rule-1 values and must be sanitized here too.
     #[allow(clippy::too_many_arguments)]
     pub fn model_with_config(
         mut self,
@@ -446,6 +490,8 @@ impl VariableBuilder {
         reset: &str,
         config: &ModelComponentConfig,
     ) -> Self {
+        let full_name = sanitize_for_terminal(full_name);
+
         let color = if config.color.is_empty() {
             default_color.to_string()
         } else {
@@ -454,7 +500,7 @@ impl VariableBuilder {
 
         // Format based on config
         let display_value = match config.format.as_str() {
-            "full" => full_name,
+            "full" => full_name.as_str(),
             "name" => family_name,
             "version" => version,
             _ => abbreviation, // "abbreviation" is default
@@ -1124,12 +1170,19 @@ impl VariableBuilder {
                 );
             }
 
+            // `account` and `tz` are read VERBATIM out of a JSON file on disk.
+            // `read_usage_cache` sanitizes the account name used to build the
+            // PATH, but nothing validates these FIELDS inside the file — a
+            // hand-edited or foreign-producer cache carries whatever it likes.
+            // Same class as the model ids above (R5-CR-01, rule 1).
             self.variables.insert(
                 "api_account".to_string(),
-                format!("{}{}{}", color, u.account, reset),
+                format!("{}{}{}", color, sanitize_for_terminal(&u.account), reset),
             );
-            self.variables
-                .insert("api_tz".to_string(), format!("{}{}{}", color, u.tz, reset));
+            self.variables.insert(
+                "api_tz".to_string(),
+                format!("{}{}{}", color, sanitize_for_terminal(&u.tz), reset),
+            );
         }
         self
     }
