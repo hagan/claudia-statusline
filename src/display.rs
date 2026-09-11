@@ -966,11 +966,12 @@ fn format_statusline_with_layout(
     //
     // THE GATE IS A SUPERSET OF WHAT `render()` CAN SUBSTITUTE (CR-01, round 2).
     // Two halves, ORed, because the method that actually produces output on this
-    // path — `LayoutRenderer::render` at the bottom of this function — is raw
-    // substring substitution (`.replace("{name}", value)`) over the UNPARSED
-    // template text, not an AST walk. A gate narrower than that substitution set
-    // lets a dollar figure be rendered from a table the user's `[pricing].source`
-    // says is not authoritative:
+    // path — `LayoutRenderer::render` at the bottom of this function — is not an
+    // AST walk. It is ONE left-to-right scan of the UNPARSED template text that
+    // copies literal text out and resolves each `{name}` from the variable map
+    // exactly once, never re-examining what it has already written. A gate
+    // narrower than that substitution set lets a dollar figure be rendered from
+    // a table the user's `[pricing].source` says is not authoritative:
     //
     //   * AST half — `uses_variable_prefix("api_equiv_cost")`. `api_equiv_cost`
     //     is a PREFIX of all seven price variables ({api_equiv_cost}, _labeled,
@@ -989,12 +990,15 @@ fn format_statusline_with_layout(
     //
     //   * RAW half — `PRICE_VARS.iter().any(|v| renderer.uses_variable(v))`.
     //     `uses_variable` tests `template.contains("{name}")`, i.e. EXACTLY the
-    //     substring `render()` will replace. This is the half that closes CR-01:
-    //     for `format = "{{api_equiv_cost}"` the parser eats the leading `{{` as
-    //     an escaped literal so no `Variable` node exists and the AST half says
-    //     "unused", yet `render()` substitutes `{api_equiv_cost}` starting at
-    //     byte 1 — previously emitting a BUNDLED figure under
-    //     `source = "synced"`. Pinned by
+    //     substrings `render()`'s scan can resolve: it resolves a name only
+    //     where a `{` is followed by a `}`, taking the name from the LAST `{`
+    //     before that `}`. The containment test is therefore a STRUCTURAL
+    //     superset of the scan, not an enumeration of known reproducers. This is
+    //     the half that closes CR-01: for `format = "{{api_equiv_cost}"` the
+    //     parser eats the leading `{{` as an escaped literal so no `Variable`
+    //     node exists and the AST half says "unused", yet `render()` still
+    //     resolves `api_equiv_cost` from byte 1 — previously emitting a BUNDLED
+    //     figure under `source = "synced"`. Pinned by
     //     `escaped_brace_price_template_renders_the_synced_figure`.
     //
     // Widening does NOT weaken the zero-read guarantee: the raw half requires the
@@ -1003,6 +1007,22 @@ fn format_statusline_with_layout(
     // The CONVERSE now also holds (WR-03): narrowing the AST half to fail CLOSED
     // does not weaken the CR-01 superset, because the superset was never resting
     // on the AST half — it rests on the brace-exact raw half.
+    //
+    // THE GATE DELIBERATELY DOES NOT SCAN `layout_config.separator` (CR-01,
+    // ROUND 4). It used to have to: `render()` pre-expanded `{sep}` into its
+    // output buffer and then substituted over that buffer, so the separator's
+    // TEXT was a second substitution surface — an unscanned one, which is
+    // exactly how a `[layout].separator` of `"{api_equiv_cost}"` came to render
+    // a BUNDLED figure while the user had configured `source = "synced"`. Plan
+    // 11-11 did not widen the gate to that second surface; it REMOVED the
+    // surface. `render()` now resolves `{sep}` inline as a variable, so a
+    // placeholder inside the separator is emitted VERBATIM and is inert — it
+    // cannot produce a figure from any table. Scanning the separator today would
+    // therefore buy a per-render `prices.json` `File::open` for a placeholder
+    // that can never render a price: the same cost class WR-03 (round 3)
+    // removed by making the AST half fail closed. Pinned by
+    // `a_price_var_hidden_in_the_separator_never_emits_a_price_figure` in
+    // `tests/ant_invariant_tests.rs`.
     // `PRICE_VARS` must list every `api_equiv_cost*` key the builder in
     // `src/layout/variables.rs` can insert; that list cannot drift silently —
     // `the_price_gate_name_list_covers_every_builder_price_variable` in

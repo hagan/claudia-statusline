@@ -388,10 +388,17 @@ impl LayoutRenderer {
     /// Internal constructor that parses the template into an AST.
     ///
     /// `{sep}` is parsed as a regular variable; it is bound to the safe
-    /// separator at render time in `render_template`. This avoids
-    /// pre-parse text substitution, which would let a user-configured
-    /// separator containing template syntax (e.g. `"{else}"`,
-    /// `"}{if git}"`) inject AST structure into the parsed template.
+    /// separator at render time in BOTH [`Self::render_template`] and
+    /// [`Self::render`]. This avoids pre-parse text substitution, which would
+    /// let a user-configured separator containing template syntax (e.g.
+    /// `"{else}"`, `"}{if git}"`) inject AST structure into the parsed template.
+    ///
+    /// Round-4 CR-01 was that same B5 defect surviving on the legacy path:
+    /// `render` still pre-expanded `{sep}` into its output buffer before
+    /// substituting over it, so a price placeholder sitting inside a user's
+    /// `[layout].separator` was filled in from a table the price-source gate in
+    /// `src/display.rs` had never authorized. `render` is now a single
+    /// left-to-right pass that resolves `{sep}` inline, closing it there too.
     fn new_with_ast(template: String, separator: String) -> Self {
         let (ast, parse_error) = match parse_template(&template) {
             Ok(nodes) => (Some(nodes), None),
@@ -406,41 +413,111 @@ impl LayoutRenderer {
         }
     }
 
-    /// Render the template with the provided variables (legacy path).
+    /// Render the template with the provided variables (legacy, non-AST path).
     ///
     /// Variables are provided as a HashMap where:
     /// - Key: variable name without braces (e.g., "directory")
     /// - Value: the rendered component string (with colors)
     ///
-    /// Unknown variables are replaced with empty string.
-    /// The {sep} variable is replaced with the configured separator.
+    /// # One left-to-right pass
     ///
-    /// This method preserves exact backward compatibility with the pre-conditional
-    /// template engine. For conditional template support, use `render_template()`.
+    /// This is ONE scan of `self.template`. Literal text is copied to the output
+    /// buffer and each `{name}` is resolved from the variable map exactly once,
+    /// and the scan never re-examines text it has already written. Two
+    /// consequences are load-bearing:
+    ///
+    /// * A substituted VALUE containing `{name}` is inert DATA, not a
+    ///   placeholder (round-4 CR-02). Values reach this method from untrusted
+    ///   external input — `workspace.current_dir`, git branch names, model ids —
+    ///   and [`crate::utils::sanitize_for_terminal`] deliberately does not strip
+    ///   braces, so re-scanning emitted output let that input inject a
+    ///   statusline variable. Nondeterministically, too: the old implementation
+    ///   looped over the map in randomized `HashMap` order, so the same payload
+    ///   rendered two different lines.
+    /// * `{sep}` is resolved INLINE as a variable rather than pre-expanded into
+    ///   the buffer, so the SEPARATOR'S TEXT is not part of the substitution
+    ///   surface (round-4 CR-01). This matches [`Self::render_template`] and
+    ///   extends [`Self::new_with_ast`]'s B5 rationale to this path. The
+    ///   price-source gate in `src/display.rs` scans `self.template` only;
+    ///   keeping the separator out of the substitution surface is what makes
+    ///   that a STRUCTURAL superset rather than a claim re-proved against each
+    ///   new reproducer.
+    ///
+    /// # Brace handling (the legacy unreplaced-placeholder sweep, folded in)
+    ///
+    /// * An unknown `{...}` span is DROPPED whole, from the first `{` through
+    ///   the `}`, so an unresolved variable vanishes along with its braces.
+    /// * A `{` with no following `}` is KEPT VERBATIM, together with everything
+    ///   after it.
+    /// * The variable NAME is taken from the LAST `{` before the closing `}`.
+    ///   That reproduces the old `str::replace("{name}", value)` on escaped
+    ///   forms such as `"{{api_equiv_cost}"`, where substitution began at byte
+    ///   one, and it is what keeps [`Self::uses_variable`] — i.e.
+    ///   `template.contains("{name}")` — a superset of what this scan resolves.
+    ///
+    /// Offsets are BYTE offsets from `str::find`/`str::rfind` over the ASCII
+    /// needles `{` and `}`; templates, values and separators are routinely
+    /// multi-byte UTF-8 (the default separator is `" \u{2022} "`).
+    ///
+    /// # Intentional divergence from the pre-11-11 implementation
+    ///
+    /// | Input | Before (HEAD `c84482c`) | After | Why |
+    /// |-------|-------------------------|-------|-----|
+    /// | a separator containing `{api_equiv_cost}` | the bundled figure was substituted into it | the separator text is emitted verbatim | closes CR-01; matches `render_template` |
+    /// | a variable VALUE containing `{other_var}` | nondeterministically substituted or swallowed | emitted verbatim | closes CR-02; matches `evaluate` |
+    /// | `{{name}}` where `name` RESOLVES | `""` (the substituted value was then eaten by the legacy unreplaced-placeholder sweep, which this scan now subsumes) | `{VALUE}` | a substituted value is never re-scanned. The UNRESOLVED case is unchanged and still yields `}` |
+    ///
+    /// Everything else is byte-identical. For conditional template support, use
+    /// [`Self::render_template`].
     pub fn render(&self, variables: &HashMap<String, String>) -> String {
-        let mut result = self.template.clone();
-
         // Sanitize separator (user-provided, could contain control characters)
-        // but preserve valid ANSI colors in template output
+        // but preserve valid ANSI colors in template output.
         let safe_separator = sanitize_for_terminal(&self.separator);
 
-        // Replace {sep} with sanitized separator
-        result = result.replace("{sep}", &safe_separator);
+        let mut out = String::with_capacity(self.template.len());
+        let mut rest = self.template.as_str();
 
-        // Replace all variables
-        for (key, value) in variables {
-            let placeholder = format!("{{{}}}", key);
-            result = result.replace(&placeholder, value);
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+
+            let Some(close_rel) = rest[open..].find('}') else {
+                // No closing brace: this is not a placeholder. Keep the `{` and
+                // everything after it verbatim, then stop scanning.
+                out.push_str(&rest[open..]);
+                rest = "";
+                break;
+            };
+            let close = open + close_rel;
+
+            // The LAST `{` before the `}` names the variable, so an escaped
+            // form such as `{{name}` still resolves `name` (see the rustdoc).
+            // `rest[open]` is `'{'`, so the fallback is unreachable; it is a
+            // fallback rather than an unwrap because this is the render path
+            // and the status line must never panic.
+            let name_open = rest[open..close].rfind('{').map_or(open, |r| open + r);
+            let name = &rest[name_open + 1..close];
+
+            if name == "sep" {
+                // `sep` resolves from the configured separator and NEVER from
+                // the variable map. Checked before the map lookup to preserve
+                // the precedence the old pre-expansion had.
+                out.push_str(&rest[open..name_open]);
+                out.push_str(&safe_separator);
+            } else if let Some(value) = variables.get(name) {
+                // Emitted VERBATIM: `out` is never re-scanned, so braces inside
+                // a value are data.
+                out.push_str(&rest[open..name_open]);
+                out.push_str(value);
+            }
+            // Unknown name: the whole `{..}` span is dropped, braces included.
+
+            rest = &rest[close + 1..];
         }
+        out.push_str(rest);
 
-        // Remove any unreplaced variables (unknown or empty)
-        result = remove_unreplaced_variables(&result);
-
-        // Clean up multiple separators (when components are empty)
-        // Use same sanitized separator for consistent matching
-        result = clean_separators(&result, &safe_separator);
-
-        result
+        // Clean up multiple separators (when components are empty).
+        // Uses the same sanitized separator for consistent matching.
+        clean_separators(&out, &safe_separator)
     }
 
     /// Render using the conditional template engine (AST-based).
@@ -514,9 +591,10 @@ impl LayoutRenderer {
     /// (`PRICE_VARS.iter().any(|v| renderer.uses_variable(v))`) that tests
     /// `template.contains("{name}")`, i.e. exactly the substrings
     /// [`Self::render`] — the method that actually produces output on that path
-    /// — will `.replace(..)`. The raw half is therefore an exact superset of
-    /// what an unparsed template can substitute, so answering `false` here
-    /// cannot blank a price. Meanwhile [`Self::render_template`] substitutes
+    /// — can resolve in its single left-to-right scan of the unparsed template.
+    /// The raw half is therefore a STRUCTURAL superset of what an unparsed
+    /// template can substitute, so answering `false` here cannot blank a
+    /// price. Meanwhile [`Self::render_template`] substitutes
     /// NOTHING without an AST (it returns `"[tmpl err]"`), so failing open here
     /// bought nothing and cost a `prices.json` `File::open` on EVERY render for
     /// any user whose `[layout] format` merely fails to parse (e.g.
@@ -566,8 +644,9 @@ impl LayoutRenderer {
             // actually runs — `format_statusline_with_layout` ->
             // `LayoutRenderer::render` — is fully covered by the RAW half of the
             // gate in src/display.rs, which tests `template.contains("{name}")`
-            // and is an exact superset of what `render`'s `.replace("{name}", v)`
-            // can substitute. Failing open bought nothing there and cost a
+            // and is a structural superset of what `render`'s single
+            // left-to-right scan can resolve. Failing open bought nothing and
+            // cost a
             // prices.json File::open on EVERY render for any user whose
             // `[layout] format` fails to parse.
             None => false,
@@ -577,12 +656,23 @@ impl LayoutRenderer {
     /// Check if the template uses a specific variable.
     ///
     /// STRING-LEVEL by design: this answers exactly the question
-    /// [`Self::render`] asks, because `render` is raw substring substitution
-    /// (`result.replace("{name}", value)`) over the UNPARSED template text. It
-    /// therefore reports `true` for placeholders the parser never turns into a
-    /// `Variable` node — most importantly `"{{api_equiv_cost}"`, where the
-    /// leading `{{` is consumed as an escaped literal yet `render` still
-    /// substitutes `{api_equiv_cost}` starting at byte 1.
+    /// [`Self::render`] asks. `render` is ONE left-to-right scan of the UNPARSED
+    /// template text that can resolve a name only where a `{` is followed by a
+    /// `}`, so `self.template.contains("{name}")` is a STRUCTURAL superset of
+    /// that scan's substitution set — a property of how the scan is written, not
+    /// a claim re-proved against each new reproducer. It therefore reports
+    /// `true` for placeholders the parser never turns into a `Variable` node —
+    /// most importantly `"{{api_equiv_cost}"`, where the leading `{{` is
+    /// consumed as an escaped literal yet `render` still resolves
+    /// `api_equiv_cost`, because the name is taken from the LAST `{` before the
+    /// closing `}`.
+    ///
+    /// The SEPARATOR is NOT part of that substitution surface. Since round-4
+    /// CR-01, `render` resolves `{sep}` inline as a variable instead of
+    /// pre-expanding it into the output buffer, so a placeholder sitting inside
+    /// a user's `[layout].separator` is emitted verbatim and resolves nothing.
+    /// That is why the price gate in `src/display.rs` scans only
+    /// `self.template` and does not need to scan the separator.
     ///
     /// This is a LIVE input to the price-source gate in `src/display.rs`, ORed
     /// with [`Self::uses_variable_prefix`] so the gate is a provable superset of
@@ -619,37 +709,4 @@ impl LayoutRenderer {
 
         variables
     }
-}
-
-/// Remove unreplaced {variable} placeholders from the string
-fn remove_unreplaced_variables(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == '{' {
-            // Check if this is a variable placeholder
-            let mut var_content = String::new();
-            let mut found_close = false;
-
-            for c in chars.by_ref() {
-                if c == '}' {
-                    found_close = true;
-                    break;
-                }
-                var_content.push(c);
-            }
-
-            if !found_close {
-                // Not a valid placeholder, keep the opening brace
-                result.push('{');
-                result.push_str(&var_content);
-            }
-            // If found_close is true, we skip the whole {var} placeholder
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
 }
