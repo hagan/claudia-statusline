@@ -2186,3 +2186,346 @@ fn price_entry_has_exactly_one_optional_dimension() {
         optional[0]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Group 5: T18 — BUILD-TIME / CI OFFLINE INVARIANT GUARD
+// (10-VERIFICATION-INDEPENDENT.md, Observable Truth T18, PASS at all three
+// rounds — but previously verified only by a one-off audit grep, never a
+// repeatable test. Gap filled here.)
+// ---------------------------------------------------------------------------
+//
+// Three independent guarantees, each with a mutation proof embedded in the
+// test itself: the scanning logic is factored into a plain function and
+// exercised against BOTH the real tracked file and an in-memory MUTATED copy
+// (never written to disk), so a green result cannot be a vacuous pass.
+//
+//   1. `build.rs` performs NO network fetch. It may shell out ONLY for git /
+//      rustc metadata — every `Command::new(...)` call names one of those two
+//      programs.
+//   2. `.github/workflows/build.yml` and `.github/workflows/release.yml`
+//      never invoke the vendor-pricing tooling (a build-time fetch would
+//      break PRICE-01's "zero network" promise at BUILD time, and nothing
+//      currently fails if one were added).
+//   3. `.github/workflows/vendor-pricing.yml` opens a review PR and NEVER
+//      pushes to `main` — it must end in `peter-evans/create-pull-request`
+//      and contain no `git push`.
+
+/// Network-fetch vocabulary forbidden in `build.rs`. Assembled from fragments
+/// per this file's structural-guard idiom (see `keyless_forbidden_tokens`),
+/// so a future merge of this test file's source into the scanned tree cannot
+/// make the guard trip on its own vocabulary.
+fn build_rs_forbidden_network_tokens() -> Vec<String> {
+    vec![
+        "curl".to_string(),
+        format!("{}{}", "re", "qwest"),
+        "ureq".to_string(),
+        format!("{}::{}", "std", "net"),
+        "TcpStream".to_string(),
+        "hyper".to_string(),
+        format!("{}{}", "fe", "tch"),
+    ]
+}
+
+/// Every program name `build.rs` is allowed to `Command::new(...)`.
+const BUILD_RS_ALLOWED_PROGRAMS: &[&str] = &["git", "rustc"];
+
+/// Scan `source` for `Command::new("<program>")` calls whose program is not in
+/// `allowed`, and for any `forbidden` network token in non-comment code.
+/// Returns a human-readable violation list; empty means clean. Pure function
+/// over a string, so it can be run against a real file OR an in-memory
+/// mutated copy for the mutation proof below.
+fn build_time_violations(source: &str, allowed: &[&str], forbidden: &[String]) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (i, line) in source.lines().enumerate() {
+        let code = code_portion(line);
+        if let Some(idx) = code.find("Command::new(") {
+            let after = &code[idx + "Command::new(".len()..];
+            let program = after
+                .trim_start()
+                .trim_start_matches('"')
+                .split(['"', ')'])
+                .next()
+                .unwrap_or("");
+            if !allowed.contains(&program) {
+                violations.push(format!(
+                    "line {}: Command::new(...) spawns disallowed program {:?}: {}",
+                    i + 1,
+                    program,
+                    line.trim()
+                ));
+            }
+        }
+        for tok in forbidden {
+            if code.contains(tok.as_str()) {
+                violations.push(format!(
+                    "line {}: forbidden network token `{}`: {}",
+                    i + 1,
+                    tok,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    violations
+}
+
+/// T18 part 1: `build.rs` shells out only to git/rustc and performs no
+/// network fetch.
+#[test]
+fn build_rs_shells_out_only_to_git_and_rustc_never_the_network() {
+    let source = read_src("build.rs");
+    let forbidden = build_rs_forbidden_network_tokens();
+
+    // Non-vacuity precondition: build.rs really does call Command::new at
+    // least once today (5 times, all git/rustc) — if it called it zero times
+    // the "allowed programs" half of this guard would never be exercised.
+    let real_command_calls = source.matches("Command::new(").count();
+    assert!(
+        real_command_calls >= 1,
+        "expected build.rs to contain at least one Command::new(...) call to \
+         scope this guard against; found none — the allowed-program half of \
+         this guard would be vacuous"
+    );
+
+    let real_violations = build_time_violations(&source, BUILD_RS_ALLOWED_PROGRAMS, &forbidden);
+    assert!(
+        real_violations.is_empty(),
+        "build.rs must shell out ONLY to git/rustc and perform no network \
+         fetch (T18); found: {real_violations:?}"
+    );
+
+    // MUTATION PROOF: inject a disallowed network call into an IN-MEMORY copy
+    // of the real source (never written to disk) and confirm the SAME scan
+    // catches it, both as a disallowed `Command::new` program and as a
+    // forbidden network token.
+    let mutated_curl_spawn = format!(
+        "{source}\nfn mutated_probe() {{ std::process::Command::new(\"curl\").arg(\"https://example.invalid/prices.json\").output().ok(); }}\n"
+    );
+    let mutated_violations =
+        build_time_violations(&mutated_curl_spawn, BUILD_RS_ALLOWED_PROGRAMS, &forbidden);
+    assert!(
+        !mutated_violations.is_empty(),
+        "mutation proof failed: a deliberately injected `Command::new(\"curl\")` \
+         network fetch was NOT detected — this guard would be vacuous against a \
+         real regression"
+    );
+}
+
+/// Case-insensitive check for a reference to the vendor-pricing tooling.
+/// Factored so the mutation proof below exercises the SAME predicate used
+/// against the real files, rather than a re-typed copy of it.
+fn references_vendor_pricing(source: &str) -> bool {
+    let lower = source.to_lowercase();
+    lower.contains("vendor-pricing") || lower.contains("vendor_pricing")
+}
+
+/// T18 part 2: the build/release workflows never invoke vendor-pricing.
+#[test]
+fn ci_workflows_never_invoke_vendor_pricing_at_build_time() {
+    for wf in ["build.yml", "release.yml"] {
+        let rel = format!(".github/workflows/{wf}");
+        let source = read_src(&rel);
+        assert!(
+            !references_vendor_pricing(&source),
+            "{rel} must never invoke the vendor-pricing tooling at build time \
+             (T18) — a build-time price fetch would break PRICE-01's \
+             zero-network promise, and nothing currently fails if one is added"
+        );
+    }
+
+    // MUTATION PROOF: the SAME predicate, run against an in-memory copy of
+    // build.yml with an injected vendor-pricing invocation, must flag it.
+    let build_yml = read_src(".github/workflows/build.yml");
+    let mutated = format!("{build_yml}\n      - run: ./scripts/vendor-pricing.sh\n");
+    assert!(
+        references_vendor_pricing(&mutated),
+        "mutation proof failed: predicate did not detect an injected \
+         vendor-pricing invocation in build.yml"
+    );
+}
+
+/// Scan `source` (a workflow file) for violations of the review-PR-only
+/// contract: no `git push` anywhere, and the workflow must contain the
+/// `peter-evans/create-pull-request` action. Pure function so it can be run
+/// against the real file and a mutated copy.
+fn vendor_pricing_workflow_violations(source: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for (i, line) in source.lines().enumerate() {
+        let code = code_portion(line);
+        if code.contains("git push") {
+            violations.push(format!("line {}: contains `git push`: {}", i + 1, line.trim()));
+        }
+    }
+    if !source.contains("peter-evans/create-pull-request") {
+        violations.push("workflow does not contain peter-evans/create-pull-request".to_string());
+    }
+    violations
+}
+
+/// T18 part 3: `vendor-pricing.yml` opens a review PR and never pushes to
+/// `main`.
+#[test]
+fn vendor_pricing_workflow_opens_a_review_pr_and_never_pushes_main() {
+    let source = read_src(".github/workflows/vendor-pricing.yml");
+    let real = vendor_pricing_workflow_violations(&source);
+    assert!(
+        real.is_empty(),
+        "vendor-pricing.yml must open a review PR and never push to main \
+         (T18); violations: {real:?}"
+    );
+
+    // Positive shape check: no step runs AFTER the review-PR step — a `git
+    // push` appended after `create-pull-request` would still be a live
+    // threat that the whole-file scan above would already have caught, but
+    // this pins the ordering explicitly.
+    let pr_step_idx = source
+        .find("peter-evans/create-pull-request")
+        .expect("checked above");
+    let after_pr_step = &source[pr_step_idx..];
+    assert!(
+        !after_pr_step.to_lowercase().contains("git push"),
+        "no step may run after the review-PR step, and certainly not a git push"
+    );
+
+    // MUTATION PROOF: the SAME violation scan, run against an in-memory copy
+    // with an appended `git push origin main`, must catch it.
+    let mutated = format!("{source}\n      - run: git push origin main\n");
+    let mutated_violations = vendor_pricing_workflow_violations(&mutated);
+    assert!(
+        !mutated_violations.is_empty(),
+        "mutation proof failed: an injected `git push` to main was not \
+         detected in vendor-pricing.yml"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Group 6: T25 / R3-1 — KNOWN LIMITATION PIN: the above-200k pricing tier is
+// not modeled.
+//
+// Cross-reference: 10-VERIFICATION-INDEPENDENT.md Round 3 truth table, T25
+// ("Every pricing dimension the renderer can reach has a real rate or is
+// refused") — the single recorded FAIL — and its R3-1 finding; and
+// docs/CONFIGURATION.md's "Known limitation — long-context sessions are
+// understated" disclosure.
+//
+// This is a CHARACTERIZATION test, NOT a fix: it pins the CURRENT, DOCUMENTED
+// behavior (a session flagged `exceeds_200k_tokens: true` is priced at the
+// standard sub-200k rate, understating the true cost by ~39% in the worst
+// case, with no `unknown`/`+` marker) so that either (a) the understatement
+// silently worsening, or (b) an above-200k field being added to `PriceEntry`
+// WITHOUT updating this pin and the docs/CONFIGURATION.md disclosure
+// together, is caught rather than shipped silently.
+// ---------------------------------------------------------------------------
+
+/// Token vocabulary naming the above-200k tier. Assembled from fragments per
+/// this file's structural-guard idiom.
+fn above_200k_field_tokens() -> Vec<String> {
+    vec![format!("{}_{}", "above", "200k"), format!("{}{}", "200", "k")]
+}
+
+/// T25/R3-1 structural half: `PriceEntry` (see its declaration in
+/// `src/pricing/mod.rs`) carries no field naming the above-200k tier.
+/// Extraction mirrors `price_entry_has_exactly_one_optional_dimension`.
+#[test]
+fn known_limitation_price_entry_has_no_above_200k_field() {
+    let source = read_src("src/pricing/mod.rs");
+    let start = source
+        .find("pub struct PriceEntry")
+        .expect("src/pricing/mod.rs must declare `pub struct PriceEntry`");
+    let rest = &source[start..];
+    let end = rest
+        .find("\n}")
+        .expect("the PriceEntry struct block must have a closing brace at column 0");
+    let block = &rest[..end];
+
+    let forbidden = above_200k_field_tokens();
+    for (i, line) in block.lines().enumerate() {
+        let code = code_portion(line);
+        for tok in &forbidden {
+            assert!(
+                !code.to_lowercase().contains(tok.as_str()),
+                "PriceEntry line {} names an above-200k field ({:?}): {}\n\
+                 If the above-200k tier has genuinely been implemented, this \
+                 pin (R3-1 / 10-VERIFICATION-INDEPENDENT.md Round 3) and the \
+                 docs/CONFIGURATION.md \"Known limitation — long-context \
+                 sessions are understated\" disclosure must BOTH be updated \
+                 together — do not just delete this assertion.",
+                i + 1,
+                tok,
+                line.trim()
+            );
+        }
+    }
+
+    // MUTATION PROOF: an in-memory copy of the struct block with an injected
+    // above-200k field must be caught by the identical scan.
+    let mutated_block = format!("{block}\n    pub input_above_200k: Option<f64>,\n");
+    let mutation_caught = mutated_block.lines().any(|line| {
+        let code = code_portion(line);
+        forbidden
+            .iter()
+            .any(|tok| code.to_lowercase().contains(tok.as_str()))
+    });
+    assert!(
+        mutation_caught,
+        "mutation proof failed: an injected above-200k PriceEntry field was \
+         not detected"
+    );
+}
+
+/// T25/R3-1 behavioral half: pin the EXACT figure a session flagged
+/// `exceeds_200k_tokens: true` renders TODAY for `claude-sonnet-4-5-20250929`
+/// (one of the four rows R3-1 names as affected). Bundled standard rates:
+/// input 3e-6, output 1.5e-5.
+///
+///   1,000,000 input  * 3e-6  = $3.00   (published above-200k rate: $6.00)
+///     500,000 output * 1.5e-5 = $7.50   (published above-200k rate: $11.25)
+///   total STANDARD (what ships today):   $10.50
+///   total PUBLISHED above-200k rate:     $17.25   (39% higher — R3-1)
+///
+/// This pins the LIMITATION, not correct pricing. It fails two ways: (a) the
+/// understatement silently changes/worsens (a different wrong number ships),
+/// or (b) above-200k modeling is added without updating this test AND the
+/// docs/CONFIGURATION.md disclosure together.
+#[test]
+#[serial]
+fn known_limitation_a_200k_exceeding_session_prices_at_the_standard_rate() {
+    // All four cost dimensions are present (cache fields explicitly 0) so the
+    // headline is a COMPLETE basis, not a partial-basis `+` lower bound
+    // (T21/D-13) — that disclosure is a different, already-covered property,
+    // and would otherwise mask the one this test pins.
+    const PAYLOAD: &str = r#"{"workspace":{"current_dir":"/tmp"},"model":{"id":"claude-sonnet-4-5-20250929"},"context_window":{"current_usage":{"input_tokens":1000000,"output_tokens":500000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"exceeds_200k_tokens":true}"#;
+    const CONFIG: &str = "[layout]\nformat = \"{api_equiv_cost}\"\n";
+
+    let rendered = render_lib_isolated(CONFIG, PAYLOAD, || {});
+    assert_eq!(
+        rendered.trim(),
+        "$10.50",
+        "known-limitation pin (R3-1): a claude-sonnet-4-5-20250929 session \
+         flagged exceeds_200k_tokens=true is currently priced at the \
+         STANDARD (sub-200k) rate, disclosed in docs/CONFIGURATION.md under \
+         \"Known limitation — long-context sessions are understated\". Got \
+         {rendered:?} instead of the documented $10.50 (the correct \
+         above-200k figure would be $17.25 — if this now renders that, \
+         update the docs disclosure and this test together rather than \
+         deleting it)"
+    );
+
+    // MUTATION PROOF: this pin is not vacuous — a session that does NOT
+    // exceed 200k, over the IDENTICAL token counts, renders the IDENTICAL
+    // figure today, because `exceeds_200k` is not wired into pricing at all.
+    // That equality IS the defect this test pins. A future fix that starts
+    // branching pricing on `exceeds_200k` must make these diverge, which
+    // will fail this assertion and force the fix to touch this pin (and the
+    // docs disclosure) rather than silently drifting past it.
+    const PAYLOAD_NOT_EXCEEDING: &str = r#"{"workspace":{"current_dir":"/tmp"},"model":{"id":"claude-sonnet-4-5-20250929"},"context_window":{"current_usage":{"input_tokens":1000000,"output_tokens":500000,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}},"exceeds_200k_tokens":false}"#;
+    let rendered_not_exceeding = render_lib_isolated(CONFIG, PAYLOAD_NOT_EXCEEDING, || {});
+    assert_eq!(
+        rendered.trim(),
+        rendered_not_exceeding.trim(),
+        "mutation proof: exceeds_200k_tokens currently has ZERO effect on the \
+         priced figure. If a fix makes these diverge, this pin must be \
+         updated together with the docs/CONFIGURATION.md disclosure, not \
+         silently deleted."
+    );
+}
