@@ -1577,6 +1577,234 @@ fn the_price_gate_name_list_covers_every_builder_price_variable() {
 }
 
 // ---------------------------------------------------------------------------
+// Group 5b: THE SEPARATOR IS NOT A SUBSTITUTION SURFACE, AND A SUBSTITUTED
+// VALUE IS NOT A TEMPLATE (Plan 11-11, round-4 review CR-01 / CR-02)
+// ---------------------------------------------------------------------------
+//
+// Both round-4 BLOCKERs share ONE root cause in `LayoutRenderer::render`: it
+// pre-expanded `{sep}` into an output buffer and then ran
+// `result.replace("{key}", value)` over that already-mutated buffer, in
+// randomized `HashMap` iteration order.
+//
+//   * CR-01 — the SEPARATOR'S TEXT became a substitution surface that NEITHER
+//     half of the price-source gate in `src/display.rs` scans (both look at
+//     `self.template` only, never at `self.separator`). A price placeholder
+//     hidden in `[layout].separator` therefore rendered a BUNDLED figure under
+//     `[pricing] source = "synced"`, because the gate never fired: the resolved
+//     snapshot stayed `None` while the substitution happened anyway.
+//   * CR-02 — the loop re-scanned its own prior output, so a substituted VALUE
+//     containing `{other_var}` became eligible for a later iteration. Untrusted
+//     input (`workspace.current_dir`, a git branch, a model id — CLAUDE.md:
+//     "external input is untrusted") could inject a statusline variable, and
+//     WHETHER it did depended on hash order: 6 identical invocations produced
+//     3x `/tmp/|` and 3x `/tmp/$0.97|`.
+//
+// The fix (plan 11-11, user decision D-R4-1) is a single left-to-right pass that
+// resolves `{sep}` inline as a variable and never re-examines what it has
+// already written. CONSEQUENCE ACCEPTED BY THE USER: a price placeholder in
+// `[layout].separator` now renders NOTHING at all — the separator is inert,
+// matching `render_template`, the AST path that never exhibited either defect.
+// The alternative (make the separator placeholder WORK by also widening the
+// gate) was considered and rejected: it would leave a second substitution
+// surface the gate must track forever.
+
+/// The round-4 CR-01 reproducer as a config: `[layout].separator` carries a
+/// price placeholder while `format` names NO price variable, so neither half of
+/// the gate in `src/display.rs` fires.
+const SEPARATOR_HIDDEN_PRICE_CONFIG: &str = "[ant]\nenabled = true\n\n[pricing]\nsource = \"synced\"\n\n[layout]\nformat = \"{directory}{sep}{git}\"\nseparator = \"{api_equiv_cost}\"\n";
+
+/// Byte-identical to [`SEPARATOR_HIDDEN_PRICE_CONFIG`] except for the configured
+/// source, so a render difference between the two can only come from
+/// `[pricing].source`.
+const SEPARATOR_HIDDEN_PRICE_CONFIG_BUNDLED: &str = "[ant]\nenabled = true\n\n[pricing]\nsource = \"bundled\"\n\n[layout]\nformat = \"{directory}{sep}{git}\"\nseparator = \"{api_equiv_cost}\"\n";
+
+/// The round-4 CR-02 reproducer as a config. The separator is deliberately NOT
+/// used (a LITERAL `|` joins the two components) so this case isolates the
+/// value-re-scan defect from the separator pre-expansion defect above.
+const BRACE_DIR_CONFIG: &str =
+    "[ant]\nenabled = true\n\n[pricing]\nsource = \"synced\"\n\n[layout]\nformat = \"{directory}|{git}\"\n";
+
+/// [`PRICED_PAYLOAD`] with `workspace.current_dir` carrying BRACE SYNTAX, as the
+/// round-4 verifier's transcript did. Same `model.id` and same `context_window`
+/// block, so the same bundled/synced figures are in play and a leaked figure is
+/// recognizable by value.
+const BRACE_DIR_PAYLOAD: &str = r#"{"workspace":{"current_dir":"/tmp/{api_equiv_cost}"},"model":{"id":"claude-opus-4-8"},"context_window":{"current_usage":{"input_tokens":100000,"output_tokens":10000,"cache_creation_input_tokens":20000,"cache_read_input_tokens":200000}}}"#;
+
+/// How many identical renders the determinism regression performs.
+///
+/// The round-4 verifier used 6 and observed a 3/3 split. The defect is
+/// `HashMap`-iteration-order dependent, so a run count of 6 can miss it with
+/// probability on the order of (1/2)^6; 20 drives that to ~(1/2)^20. It is a
+/// NAMED const so the run count is greppable and cannot silently drift back
+/// down to a number that makes the guard flaky-green.
+const DETERMINISM_RUNS: usize = 20;
+
+/// Round-4 CR-01: a price placeholder hidden in `[layout].separator` must never
+/// put a dollar figure on the line, from EITHER table.
+///
+/// FAILURE MODE AT HEAD (`c84482c`): this render emits `/tmp$0.97` — a figure
+/// from the BUNDLED table while the user configured `source = "synced"`. The
+/// gate in `src/display.rs` scans only `self.template`, so it never saw the
+/// placeholder and never resolved the synced snapshot; `render` pre-expanded
+/// `{sep}` into its buffer anyway, where the substitution loop then filled it
+/// from the unauthorized table. That literally falsifies ROADMAP SC2 ("lookups
+/// prefer it over the bundled table").
+#[test]
+#[serial]
+fn a_price_var_hidden_in_the_separator_never_emits_a_price_figure() {
+    let out = render_lib_isolated(SEPARATOR_HIDDEN_PRICE_CONFIG, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    assert!(
+        !out.contains(BUNDLED_FIGURE),
+        "round-4 CR-01: the render emitted the BUNDLED figure {BUNDLED_FIGURE:?} \
+         under [pricing] source = \"synced\". render() pre-expanded {{sep}} into \
+         its output buffer BEFORE the substitution loop, making the separator's \
+         text a substitution surface that neither half of the price gate in \
+         src/display.rs scans (both read self.template, never self.separator). \
+         The user's configured source was silently ignored. Rendered: {out:?}"
+    );
+    assert!(
+        !out.contains(SYNCED_FIGURE),
+        "the separator must be INERT under the single-pass render (user decision \
+         D-R4-1): a SYNCED figure {SYNCED_FIGURE:?} appearing here means \
+         separator substitution was re-introduced, which re-opens CR-01 the \
+         moment the gate falls behind that second surface. Rendered: {out:?}"
+    );
+    assert!(
+        !out.contains('$'),
+        "the configured format names only {{directory}}, {{sep}} and {{git}}, so \
+         NO dollar figure of any provenance belongs on this line. Rendered: {out:?}"
+    );
+    assert!(
+        out.contains("/tmp"),
+        "non-vacuity: the render must still produce the directory component — an \
+         empty or failed render would satisfy every negative assertion above \
+         while proving nothing. Rendered: {out:?}"
+    );
+    assert_eq!(
+        statusline::pricing::cache::price_cache_reads(),
+        0,
+        "a format naming no price variable must cost ZERO prices.json reads. \
+         This assertion is NECESSARY BUT NOT SUFFICIENT: the CR-01 defect \
+         satisfied this very invariant (reads were 0 — that was the whole \
+         problem, the gate never fired) while still printing a bundled figure, \
+         which is why the figure assertions above exist. Rendered: {out:?}"
+    );
+}
+
+/// Round-4 CR-01, the provenance half: with a price placeholder hidden in the
+/// separator, `source = "synced"` and `source = "bundled"` render identically —
+/// and after the fix that identity is CORRECT rather than a symptom.
+///
+/// READ THE INVERSION CAREFULLY. At HEAD the two are ALSO byte-identical: both
+/// render `/tmp$0.97`. There the identity is the SYMPTOM — a figure is printed
+/// while `[pricing].source` is ignored. After the single-pass rewrite they are
+/// byte-identical because NO figure is printed at all, which is the only correct
+/// outcome for a `format` that names no price variable. So the EQUALITY is not
+/// what fails at HEAD; the FIGURE assertions are.
+#[test]
+#[serial]
+fn a_separator_hidden_price_var_renders_identically_under_synced_and_bundled() {
+    let synced_out = render_lib_isolated(SEPARATOR_HIDDEN_PRICE_CONFIG, PRICED_PAYLOAD, || {
+        plant_synced_prices(1);
+        plant_usage_slice("work");
+        statusline::pricing::cache::reset_price_cache_reads();
+    });
+    let bundled_out = render_lib_isolated(
+        SEPARATOR_HIDDEN_PRICE_CONFIG_BUNDLED,
+        PRICED_PAYLOAD,
+        || {
+            plant_synced_prices(1);
+            plant_usage_slice("work");
+            statusline::pricing::cache::reset_price_cache_reads();
+        },
+    );
+    assert_eq!(
+        synced_out, bundled_out,
+        "a format that names no price variable cannot be affected by \
+         [pricing].source, so these two renders must agree. (They also agreed at \
+         HEAD — for the WRONG reason: both printed a bundled figure.)"
+    );
+    for (label, out) in [("synced", &synced_out), ("bundled", &bundled_out)] {
+        assert!(
+            !out.contains(BUNDLED_FIGURE) && !out.contains(SYNCED_FIGURE),
+            "round-4 CR-01: the {label} render put a dollar figure on the line \
+             from a placeholder hidden in [layout].separator. Under the \
+             single-pass render the separator is emitted VERBATIM and resolves \
+             nothing, so neither {BUNDLED_FIGURE:?} nor {SYNCED_FIGURE:?} can \
+             appear. Rendered: {out:?}"
+        );
+    }
+}
+
+/// Round-4 CR-02: an untrusted value carrying brace syntax must be emitted
+/// VERBATIM as inert data, identically on every render.
+///
+/// FAILURE MODE AT HEAD (`c84482c`): `render`'s substitution loop re-scans its
+/// own prior output, so `{api_equiv_cost}` arriving inside the DIRECTORY PATH
+/// becomes eligible for a later iteration of the same loop. Whether it is
+/// substituted (`/tmp/$0.97|`) or swallowed by `remove_unreplaced_variables`
+/// (`/tmp/|`) depends on `HashMap` iteration order — the verifier saw a 3/3
+/// split over 6 runs. Either way the braces are NEVER emitted literally at HEAD,
+/// which makes the verbatim assertion below a DETERMINISTIC red there,
+/// independent of hash order.
+#[test]
+#[serial]
+fn render_is_deterministic_when_an_untrusted_value_carries_brace_syntax() {
+    let mut outs: Vec<String> = Vec::with_capacity(DETERMINISM_RUNS);
+    for _ in 0..DETERMINISM_RUNS {
+        let out = render_lib_isolated(BRACE_DIR_CONFIG, BRACE_DIR_PAYLOAD, || {
+            plant_synced_prices(1);
+            plant_usage_slice("work");
+            statusline::pricing::cache::reset_price_cache_reads();
+        });
+        assert_eq!(
+            statusline::pricing::cache::price_cache_reads(),
+            0,
+            "the format names no price variable, so this render must cost ZERO \
+             prices.json reads — a non-zero count means brace syntax arriving in \
+             UNTRUSTED INPUT changed the gate's answer. Rendered: {out:?}"
+        );
+        outs.push(out);
+    }
+
+    let mut distinct: Vec<&str> = outs.iter().map(String::as_str).collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        distinct.len(),
+        1,
+        "round-4 CR-02: {DETERMINISM_RUNS} IDENTICAL invocations produced \
+         {} distinct outputs: {distinct:?}. `render` used \
+         `result.replace(..)` in randomized HashMap iteration order over a \
+         buffer it had already written to, so a value containing {{other_var}} \
+         was sometimes re-substituted and sometimes swallowed. SC2 promises a \
+         byte-identical line.",
+        distinct.len()
+    );
+
+    let out = &outs[0];
+    assert!(
+        out.contains("{api_equiv_cost}"),
+        "the untrusted directory path must reach the terminal VERBATIM as inert \
+         data: a single left-to-right pass never re-examines what it has \
+         written, so the braces survive unchanged. At HEAD they never did — they \
+         were either substituted or swallowed (round-4 CR-02, CLAUDE.md \
+         'external input is untrusted'). Rendered: {out:?}"
+    );
+    assert!(
+        !out.contains(BUNDLED_FIGURE) && !out.contains(SYNCED_FIGURE),
+        "round-4 CR-02: a price figure ({BUNDLED_FIGURE:?} / {SYNCED_FIGURE:?}) \
+         was injected into the line from the DIRECTORY PATH — untrusted external \
+         input naming a statusline variable the user never templated. \
+         Rendered: {out:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Group 6: A REFRESH CANNOT REMOVE A DIMENSION THE BUNDLE PRICES (Plan 11-07)
 // ---------------------------------------------------------------------------
 //
