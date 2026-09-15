@@ -9,6 +9,7 @@
 //! D-10 forbids a `cache_dir` key (location is controlled by `XDG_CACHE_HOME`)
 //! and there are no usage/staleness sub-toggles in this foundation plan.
 
+use crate::config_validation::Validate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -85,6 +86,9 @@ pub struct AntConfig {
     #[serde(default = "default_models_stale_after")]
     pub models_stale_after: String,
 }
+
+/// Semantic rules for `[ant]` are filled in by plan 12-06.
+impl Validate for AntConfig {}
 
 /// Default usage-cache staleness threshold (D-10).
 fn default_usage_stale_after() -> String {

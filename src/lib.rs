@@ -35,6 +35,9 @@ pub mod ant;
 pub mod common;
 /// Configuration management module for loading and saving settings
 pub mod config;
+/// Config validation core for `config validate` (QUAL-01/QUAL-02): findings,
+/// the per-section engine and the TOML-diagnostic redaction boundary.
+pub mod config_validation;
 /// Adaptive context window learning from usage patterns
 pub mod context_learning;
 /// SQLite database backend for persistent statistics

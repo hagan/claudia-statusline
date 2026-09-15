@@ -35,6 +35,11 @@ env_logger = "0.11"  # Environment-based log configuration
 regex = "1.10"  # For sanitizing terminal output
 hostname = "0.4"  # For device ID generation
 sha2 = "0.10"  # For stable device ID hashing
+# Unknown-key detection for `config validate` ONLY (D-01); never on the render path.
+# EXACT pin: 0.1.12 adds exactly one Cargo.lock entry and zero transitive dependencies,
+# while 0.1.13+ pulls in `serde_core` and a SECOND `syn` major version — unacceptable for a
+# size-optimized binary (opt-level = "z", lto, codegen-units = 1). Do not float to "0.1".
+serde_ignored = "=0.1.12"
 
 # Optional dependencies for turso-sync feature
 libsql = { version = "0.6", optional = true }

@@ -1,3 +1,4 @@
+use crate::config_validation::Validate;
 use crate::error::{Result, StatuslineError};
 use crate::gsd::config::GsdConfig;
 use log::warn;
@@ -120,6 +121,9 @@ pub struct DisplayConfig {
     #[serde(default)]
     pub rate_limit_reset_countdown: bool,
 }
+
+/// Semantic rules for `[display]` are filled in by plan 12-05.
+impl Validate for DisplayConfig {}
 
 /// Context window configuration
 ///
@@ -262,6 +266,9 @@ pub struct ContextConfig {
     pub percentage_mode: String,
 }
 
+/// Semantic rules for `[context]` are filled in by plan 12-05.
+impl Validate for ContextConfig {}
+
 /// Cost threshold configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -272,6 +279,9 @@ pub struct CostConfig {
     /// Medium cost threshold (below this is yellow, above is red)
     pub medium_threshold: f64,
 }
+
+/// Semantic rules for `[cost]` are filled in by plan 12-05.
+impl Validate for CostConfig {}
 
 /// Database configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -303,6 +313,9 @@ pub struct DatabaseConfig {
     pub retention_days_monthly: Option<u32>,
 }
 
+/// Semantic rules for `[database]` are filled in by plan 12-05.
+impl Validate for DatabaseConfig {}
+
 /// Retry configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -319,6 +332,9 @@ pub struct RetryConfig {
     /// Network operation retry configuration
     pub network_ops: RetrySettings,
 }
+
+/// Semantic rules for `[retry]` are filled in by plan 12-05.
+impl Validate for RetryConfig {}
 
 /// Individual retry settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -345,6 +361,9 @@ pub struct TranscriptConfig {
     pub buffer_lines: usize,
 }
 
+/// Semantic rules for `[transcript]` are filled in by plan 12-05.
+impl Validate for TranscriptConfig {}
+
 /// Git configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -352,6 +371,9 @@ pub struct GitConfig {
     /// Timeout for git operations in milliseconds
     pub timeout_ms: u32,
 }
+
+/// Semantic rules for `[git]` are filled in by plan 12-05.
+impl Validate for GitConfig {}
 
 /// Burn rate calculation configuration
 ///
@@ -406,6 +428,9 @@ pub struct BurnRateConfig {
     #[serde(default = "default_min_duration_seconds")]
     pub min_duration_seconds: u64,
 }
+
+/// Semantic rules for `[burn_rate]` are filled in by plan 12-05.
+impl Validate for BurnRateConfig {}
 
 /// Layout configuration for customizable statusline format
 ///
@@ -490,6 +515,9 @@ pub struct LayoutConfig {
     #[serde(default = "default_true")]
     pub show_unknown_vars: bool,
 }
+
+/// Semantic rules for `[layout]` are filled in by plan 12-05.
+impl Validate for LayoutConfig {}
 
 /// Per-component configuration for fine-grained customization
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -782,6 +810,9 @@ pub struct TokenRateConfig {
     pub rate_display: String,
 }
 
+/// Semantic rules for `[token_rate]` are filled in by plan 12-05.
+impl Validate for TokenRateConfig {}
+
 /// Sync configuration for cloud synchronization
 #[cfg(feature = "turso-sync")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -803,6 +834,10 @@ pub struct SyncConfig {
     /// Turso-specific configuration
     pub turso: TursoConfig,
 }
+
+/// Semantic rules for `[sync]` are filled in by plan 12-05.
+#[cfg(feature = "turso-sync")]
+impl Validate for SyncConfig {}
 
 /// Turso-specific sync configuration
 #[cfg(feature = "turso-sync")]
@@ -1067,8 +1102,19 @@ impl Config {
         let contents = fs::read_to_string(path)
             .map_err(|e| StatuslineError::Config(format!("Failed to read config file: {}", e)))?;
 
-        let config: Config = toml::from_str(&contents)
-            .map_err(|e| StatuslineError::Config(format!("Failed to parse config file: {}", e)))?;
+        // The `toml` diagnostic is REDACTED before it reaches this message.
+        // `Display`ing the error echoes the offending source line verbatim AND
+        // quotes the offending value inline, and this message reaches the RENDER
+        // path at the default log level via `build_config`'s `warn!` — so an
+        // `[ant.accounts.*] admin_key_command` typo used to print an API key.
+        // `sanitize_for_terminal` is not a mitigation: it preserves printable
+        // bytes. See `crate::config_validation::redact_toml_error` (T-12-53).
+        let config: Config = toml::from_str(&contents).map_err(|e| {
+            StatuslineError::Config(format!(
+                "Failed to parse config file: {}",
+                crate::config_validation::redact_toml_error(&contents, &e)
+            ))
+        })?;
 
         Ok(config)
     }

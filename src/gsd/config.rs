@@ -5,6 +5,7 @@
 //! Uses `#[serde(default)]` so existing configs without a `[gsd]` section
 //! silently receive sensible defaults.
 
+use crate::config_validation::Validate;
 use serde::{Deserialize, Serialize};
 
 /// Configuration for the GSD (Get Shit Done) project tracking module.
@@ -67,6 +68,9 @@ pub struct GsdConfig {
     /// Enable staleness detection
     pub stale_enabled: bool,
 }
+
+/// Semantic rules for `[gsd]` are filled in by plan 12-05.
+impl Validate for GsdConfig {}
 
 impl Default for GsdConfig {
     fn default() -> Self {

@@ -24,6 +24,7 @@
 //! time — never priced as `$0.00`, and never allowed to suppress a
 //! `[pricing.aliases]` entry (see [`pick`]).
 
+use crate::config_validation::Validate;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -574,6 +575,9 @@ pub struct PricingConfig {
     /// the default window rather than disabling demotion.
     pub max_age: String,
 }
+
+/// Semantic rules for `[pricing]` are filled in by plan 12-06.
+impl Validate for PricingConfig {}
 
 // Manual Default is the project idiom for a config section (mirrors `AntConfig`):
 // it makes the safe defaults — empty aliases + `Auto` source — explicit at the

@@ -30,6 +30,10 @@ mod ant;
 mod commands;
 mod common;
 mod config;
+// Declared in BOTH crate roots on purpose: src/lib.rs and src/main.rs carry
+// INDEPENDENT module graphs, and the binary-only `src/commands/config.rs` becomes
+// a caller in plan 12-09.
+mod config_validation;
 mod context_learning;
 mod database;
 mod display;
