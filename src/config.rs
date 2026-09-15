@@ -1084,6 +1084,133 @@ impl From<&str> for Config {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Config source resolution: ONE candidate list, TWO traversals
+// ---------------------------------------------------------------------------
+
+/// Process-global count of `exists()` evaluations performed by
+/// [`Config::find_config_file`].
+///
+/// **Observability instrumentation, NOT a supported API** — the same shape and
+/// the same caveat as `crate::pricing::cache::price_cache_reads`. It exists so
+/// the render path's short-circuit (stop at the FIRST existing candidate) is an
+/// OBSERVED fact rather than a claim about the source's shape: a regression that
+/// routed `find_config_file` through the diagnostic resolver would make the cold
+/// config load pay four filesystem probes, one of which may sit on a slow or
+/// unavailable mount (T-12-54). It is compiled into every profile on purpose.
+static CONFIG_EXISTS_PROBES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Number of `exists()` probes [`Config::find_config_file`] has made this
+/// process. See [`CONFIG_EXISTS_PROBES`]; not a supported API.
+// Genuinely uncalled by the BINARY in Wave 1: read from the library's own tests
+// (and from `src/commands/config.rs` once plan 12-09 lands).
+#[allow(dead_code)]
+#[doc(hidden)]
+pub fn config_exists_probes() -> usize {
+    CONFIG_EXISTS_PROBES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Reset the probe counter. See [`CONFIG_EXISTS_PROBES`]; not a supported API.
+#[allow(dead_code)]
+#[doc(hidden)]
+pub fn reset_config_exists_probes() {
+    CONFIG_EXISTS_PROBES.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// One entry of the config search order, with its hit/miss verdict (D-08).
+// Constructed only by `resolve_config_source`; the BINARY gains a caller in 12-08/12-09.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigCandidate {
+    /// Stable machine token: `env_statusline_config_path`,
+    /// `env_statusline_config`, `xdg_config_dir`, `home_dotfile`.
+    pub source: &'static str,
+    /// The path this candidate resolves to, or `None` when it cannot be
+    /// computed at all (the env var is unset, or `dirs::home_dir()` is `None`).
+    pub path: Option<PathBuf>,
+    /// Whether that path exists. Always `false` for an uncomputable candidate.
+    pub exists: bool,
+}
+
+/// The full, walked search order plus the winner (D-08).
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedConfig {
+    /// Every candidate, in search order, each carrying a computed `exists`.
+    pub candidates: Vec<ConfigCandidate>,
+    /// The first existing candidate — the file `Config::load()` would read.
+    pub active: Option<PathBuf>,
+    /// That candidate's `source` token.
+    pub active_source: Option<&'static str>,
+}
+
+/// The SINGLE definition of the config search order — pure path construction.
+///
+/// It performs **no filesystem access**: no `exists`, no `metadata`, no read.
+/// Both traversals consume it, which is what keeps them from drifting apart
+/// (T-12-15), while leaving each free to decide how far to walk.
+///
+/// On macOS `crate::common::get_config_dir()` resolves through
+/// `dirs::config_dir()` to `$HOME/Library/Application Support/...`, NOT
+/// `$HOME/.config/...`. This list reports what the code actually does; D-10's
+/// misplaced-config warning is what covers the difference.
+fn config_candidate_paths() -> Vec<(&'static str, Option<PathBuf>)> {
+    vec![
+        // 1. Environment variable set by the `--config` CLI flag.
+        (
+            "env_statusline_config_path",
+            env::var("STATUSLINE_CONFIG_PATH").ok().map(PathBuf::from),
+        ),
+        // 2. Environment variable.
+        (
+            "env_statusline_config",
+            env::var("STATUSLINE_CONFIG").ok().map(PathBuf::from),
+        ),
+        // 3. XDG / platform config directory.
+        (
+            "xdg_config_dir",
+            Some(crate::common::get_config_dir().join("config.toml")),
+        ),
+        // 4. Home directory dotfile.
+        (
+            "home_dotfile",
+            dirs::home_dir().map(|home| home.join(".claudia-statusline.toml")),
+        ),
+    ]
+}
+
+/// DIAGNOSTIC config-source resolution: walk the WHOLE candidate list.
+///
+/// Every candidate gets an `exists` verdict, so `config path` (plan 12-08) and
+/// `config validate` (plan 12-09) can show hit/miss for each. This is
+/// deliberately NOT what the render path uses — see [`CONFIG_EXISTS_PROBES`].
+#[allow(dead_code)]
+pub fn resolve_config_source() -> ResolvedConfig {
+    let mut candidates = Vec::new();
+    let mut active: Option<PathBuf> = None;
+    let mut active_source: Option<&'static str> = None;
+
+    for (source, path) in config_candidate_paths() {
+        let exists = path.as_ref().map(|p| p.exists()).unwrap_or(false);
+        if exists && active.is_none() {
+            active = path.clone();
+            active_source = Some(source);
+        }
+        candidates.push(ConfigCandidate {
+            source,
+            path,
+            exists,
+        });
+    }
+
+    ResolvedConfig {
+        candidates,
+        active,
+        active_source,
+    }
+}
+
 // Configuration loading
 impl Config {
     /// Load configuration from file, or use defaults
@@ -1175,35 +1302,20 @@ impl Config {
         Ok(())
     }
 
-    /// Find config file in standard locations
+    /// Find config file in standard locations — the RENDER path's traversal.
+    ///
+    /// Shares the candidate LIST with [`resolve_config_source`] but NOT the
+    /// traversal: this returns on the FIRST candidate that exists, exactly as it
+    /// did before the diagnostic resolver existed, so a cold config load still
+    /// costs one `exists()` probe when `STATUSLINE_CONFIG_PATH` wins. It must
+    /// never call `resolve_config_source`, which walks all four (T-12-54); the
+    /// difference is observed by `config_exists_probes`, not asserted.
     fn find_config_file() -> Option<PathBuf> {
-        // Check in order of priority:
-        // 1. Environment variable from CLI flag
-        if let Ok(path) = std::env::var("STATUSLINE_CONFIG_PATH") {
-            let path = PathBuf::from(path);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-
-        // 2. Environment variable
-        if let Ok(path) = std::env::var("STATUSLINE_CONFIG") {
-            let path = PathBuf::from(path);
-            if path.exists() {
-                return Some(path);
-            }
-        }
-
-        // 3. XDG config directory
-        let config_dir = crate::common::get_config_dir();
-        let path = config_dir.join("config.toml");
-        if path.exists() {
-            return Some(path);
-        }
-
-        // 4. Home directory
-        if let Some(home_dir) = dirs::home_dir() {
-            let path = home_dir.join(".claudia-statusline.toml");
+        for (_source, candidate) in config_candidate_paths() {
+            let Some(path) = candidate else {
+                continue;
+            };
+            CONFIG_EXISTS_PROBES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if path.exists() {
                 return Some(path);
             }
@@ -1827,5 +1939,316 @@ mod tests {
         assert!(serialized.contains("show_duration"));
         assert!(serialized.contains("show_lines_changed"));
         assert!(serialized.contains("show_cost"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Config source resolution (plan 12-04 Task 2)
+    // -----------------------------------------------------------------------
+
+    /// Panic-safe save/restore for the environment variables the resolver reads.
+    struct ResolverEnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl ResolverEnvGuard {
+        const KEYS: [&'static str; 4] = [
+            "STATUSLINE_CONFIG_PATH",
+            "STATUSLINE_CONFIG",
+            "XDG_CONFIG_HOME",
+            "HOME",
+        ];
+
+        fn new() -> Self {
+            Self {
+                saved: Self::KEYS.iter().map(|k| (*k, env::var(k).ok())).collect(),
+            }
+        }
+
+        fn set(&self, key: &str, value: &Path) {
+            env::set_var(key, value);
+        }
+
+        fn unset(&self, key: &str) {
+            env::remove_var(key);
+        }
+    }
+
+    impl Drop for ResolverEnvGuard {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => env::set_var(key, v),
+                    None => env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// Fixture layout: one file per candidate, each with a DISTINCT
+    /// `display.progress_bar_width` so the winner is identifiable from the
+    /// loaded `Config` alone.
+    struct ResolverFixture {
+        _dir: TempDir,
+        env_path_file: PathBuf,
+        env_config_file: PathBuf,
+        xdg_home: PathBuf,
+        xdg_file: PathBuf,
+        fake_home: PathBuf,
+        home_file: PathBuf,
+    }
+
+    impl ResolverFixture {
+        fn new() -> Self {
+            let dir = TempDir::new().unwrap();
+            let root = dir.path().to_path_buf();
+
+            let env_path_file = root.join("from_env_path.toml");
+            std::fs::write(&env_path_file, "[display]\nprogress_bar_width = 11\n").unwrap();
+
+            let env_config_file = root.join("from_env_config.toml");
+            std::fs::write(&env_config_file, "[display]\nprogress_bar_width = 12\n").unwrap();
+
+            let xdg_home = root.join("xdg");
+            let xdg_dir = xdg_home.join("claudia-statusline");
+            std::fs::create_dir_all(&xdg_dir).unwrap();
+            let xdg_file = xdg_dir.join("config.toml");
+            std::fs::write(&xdg_file, "[display]\nprogress_bar_width = 13\n").unwrap();
+
+            let fake_home = root.join("home");
+            std::fs::create_dir_all(&fake_home).unwrap();
+            let home_file = fake_home.join(".claudia-statusline.toml");
+            std::fs::write(&home_file, "[display]\nprogress_bar_width = 14\n").unwrap();
+
+            Self {
+                _dir: dir,
+                env_path_file,
+                env_config_file,
+                xdg_home,
+                xdg_file,
+                fake_home,
+                home_file,
+            }
+        }
+
+        /// Point all four candidates at this fixture's files.
+        fn point_all(&self, guard: &ResolverEnvGuard) {
+            guard.set("STATUSLINE_CONFIG_PATH", &self.env_path_file);
+            guard.set("STATUSLINE_CONFIG", &self.env_config_file);
+            guard.set("XDG_CONFIG_HOME", &self.xdg_home);
+            guard.set("HOME", &self.fake_home);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolver_reports_all_four_candidates_in_order() {
+        let guard = ResolverEnvGuard::new();
+        let fixture = ResolverFixture::new();
+        fixture.point_all(&guard);
+
+        let resolved = resolve_config_source();
+        assert_eq!(
+            resolved.candidates.len(),
+            4,
+            "the search order has exactly four candidates"
+        );
+        let tokens: Vec<&str> = resolved.candidates.iter().map(|c| c.source).collect();
+        assert_eq!(
+            tokens,
+            vec![
+                "env_statusline_config_path",
+                "env_statusline_config",
+                "xdg_config_dir",
+                "home_dotfile",
+            ],
+            "source tokens must appear in the documented search order"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolver_active_matches_independently_expected_winner() {
+        let guard = ResolverEnvGuard::new();
+        let fixture = ResolverFixture::new();
+
+        // Each row carries its expected winner LITERALLY. The oracle is the row,
+        // never the other traversal — comparing the resolver against
+        // `find_config_file` would be a wrapper checked against its own delegate.
+        //
+        // (label, setup, expected active path, expected progress_bar_width)
+        type Row = (&'static str, fn(&ResolverEnvGuard, &ResolverFixture), usize);
+        let rows: Vec<Row> = vec![
+            (
+                "env_statusline_config_path wins over everything",
+                |g, f| f.point_all(g),
+                11,
+            ),
+            (
+                "env_statusline_config wins when candidate 1 is unset",
+                |g, f| {
+                    f.point_all(g);
+                    g.unset("STATUSLINE_CONFIG_PATH");
+                },
+                12,
+            ),
+            (
+                "xdg_config_dir wins when neither env var is set",
+                |g, f| {
+                    f.point_all(g);
+                    g.unset("STATUSLINE_CONFIG_PATH");
+                    g.unset("STATUSLINE_CONFIG");
+                },
+                13,
+            ),
+            (
+                "home_dotfile wins when the xdg file is absent",
+                |g, f| {
+                    f.point_all(g);
+                    g.unset("STATUSLINE_CONFIG_PATH");
+                    g.unset("STATUSLINE_CONFIG");
+                    let _ = std::fs::remove_file(&f.xdg_file);
+                },
+                14,
+            ),
+        ];
+
+        let expected_paths: Vec<PathBuf> = vec![
+            fixture.env_path_file.clone(),
+            fixture.env_config_file.clone(),
+            fixture.xdg_file.clone(),
+            fixture.home_file.clone(),
+        ];
+
+        for ((label, setup, expected_width), expected_path) in rows.into_iter().zip(expected_paths)
+        {
+            setup(&guard, &fixture);
+
+            let resolved = resolve_config_source();
+            assert_eq!(
+                resolved.active.as_deref(),
+                Some(expected_path.as_path()),
+                "{label}: resolver picked the wrong active config"
+            );
+
+            // Independent cross-check: the file `Config::load()` ACTUALLY read,
+            // observed through a value unique to that fixture file.
+            let loaded = Config::load().expect("fixture configs must load");
+            assert_eq!(
+                loaded.display.progress_bar_width, expected_width,
+                "{label}: Config::load() did not read the resolver's active file"
+            );
+        }
+
+        // Total miss: every candidate computable, none existing.
+        let empty = TempDir::new().unwrap();
+        guard.set("STATUSLINE_CONFIG_PATH", &empty.path().join("nope1.toml"));
+        guard.set("STATUSLINE_CONFIG", &empty.path().join("nope2.toml"));
+        guard.set("XDG_CONFIG_HOME", empty.path());
+        guard.set("HOME", empty.path());
+        let resolved = resolve_config_source();
+        assert_eq!(
+            resolved.active, None,
+            "total miss must resolve to no config"
+        );
+        assert_eq!(resolved.active_source, None);
+        assert_eq!(
+            Config::load().unwrap().display.progress_bar_width,
+            Config::default().display.progress_bar_width,
+            "a total miss must load defaults"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn find_config_file_short_circuits_on_first_hit() {
+        let guard = ResolverEnvGuard::new();
+        let fixture = ResolverFixture::new();
+        fixture.point_all(&guard);
+
+        // Candidate 1 exists -> the render path must stop there.
+        reset_config_exists_probes();
+        let loaded = Config::load().expect("candidate 1 must load");
+        assert_eq!(loaded.display.progress_bar_width, 11);
+        assert_eq!(
+            config_exists_probes(),
+            1,
+            "a first-candidate hit must cost exactly ONE exists() probe"
+        );
+
+        // No candidate exists, all four computable -> four probes, then defaults.
+        let empty = TempDir::new().unwrap();
+        guard.set("STATUSLINE_CONFIG_PATH", &empty.path().join("nope1.toml"));
+        guard.set("STATUSLINE_CONFIG", &empty.path().join("nope2.toml"));
+        guard.set("XDG_CONFIG_HOME", empty.path());
+        guard.set("HOME", empty.path());
+        reset_config_exists_probes();
+        let _ = Config::load().expect("a total miss must fall back to defaults");
+        assert_eq!(
+            config_exists_probes(),
+            4,
+            "a total miss must probe every computable candidate"
+        );
+
+        // The DIAGNOSTIC traversal, with candidate 1 winning again, must still
+        // evaluate all four — the other direction of the same difference.
+        fixture.point_all(&guard);
+        reset_config_exists_probes();
+        let resolved = resolve_config_source();
+        assert_eq!(
+            resolved
+                .candidates
+                .iter()
+                .filter(|c| c.path.is_some())
+                .count(),
+            4,
+            "the resolver must compute every candidate path"
+        );
+        assert_eq!(resolved.active_source, Some("env_statusline_config_path"));
+        // Later candidates carry a COMPUTED exists flag, not a default `false`:
+        // candidate 3 exists in this fixture and the resolver says so, even
+        // though candidate 1 already won.
+        assert!(
+            resolved.candidates[2].exists,
+            "the resolver must evaluate candidates after the winner"
+        );
+        assert!(resolved.candidates[3].exists);
+        assert_eq!(
+            config_exists_probes(),
+            0,
+            "the diagnostic resolver must not charge the render path's probe counter"
+        );
+    }
+
+    #[test]
+    fn candidate_paths_perform_no_filesystem_access() {
+        let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config.rs"))
+            .expect("read own source");
+
+        let mut body = String::new();
+        let mut inside = false;
+        for line in source.lines() {
+            if !inside {
+                if line.starts_with("fn config_candidate_paths") {
+                    inside = true;
+                }
+                continue;
+            }
+            if line == "}" {
+                break;
+            }
+            body.push_str(line);
+            body.push('\n');
+        }
+        assert!(
+            !body.is_empty(),
+            "failed to extract the body of fn config_candidate_paths"
+        );
+
+        for forbidden in ["exists(", "metadata(", "read_to_string(", "read_dir("] {
+            assert!(
+                !body.contains(forbidden),
+                "config_candidate_paths must perform NO filesystem access, found `{forbidden}` in:\n{body}"
+            );
+        }
     }
 }
