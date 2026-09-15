@@ -239,4 +239,80 @@ Last activity: 2026-02-22 -- Plan 05-01 complete
         assert_eq!(data.phase_name.as_deref(), Some("Layout Refactoring"));
         assert_eq!(data.last_activity_date.as_deref(), Some("2026-02-22"));
     }
+
+    // ------------------------------------------------------------------
+    // Plan 12-03 -- D-17 prose-pattern widenings.
+    //
+    // Written RED (Task 1) before any parser change. They assert through
+    // `phase_token` so this commit COMPILES while `StateData::phase_number`
+    // is still `Option<u32>`; Task 2 widens the field to `Option<String>`
+    // and only the helper changes.
+    // ------------------------------------------------------------------
+
+    /// The parsed phase token as TEXT, independent of the concrete type of
+    /// `StateData::phase_number`.
+    fn phase_token(data: &StateData) -> Option<String> {
+        data.phase_number.map(|n| n.to_string())
+    }
+
+    #[test]
+    fn phase_without_of_parses() {
+        // Named form, no " of M".
+        let data = parse_state("## Current Position\n\nPhase: 12 (Config Validation)\n");
+        assert_eq!(phase_token(&data).as_deref(), Some("12"));
+        assert_eq!(data.phase_name.as_deref(), Some("Config Validation"));
+
+        // Bare form: a number publishes, with no name at all.
+        let data = parse_state("Phase: 12\n");
+        assert_eq!(phase_token(&data).as_deref(), Some("12"));
+        assert_eq!(data.phase_name, None);
+
+        // Negative arm: widening must NOT start accepting prose (T-12-09).
+        let data = parse_state("Phase: complete\n");
+        assert_eq!(phase_token(&data), None);
+        assert_eq!(data.phase_name, None);
+    }
+
+    #[test]
+    fn decimal_phase_number_parses() {
+        let data = parse_state("Phase: 999.1 of 3 (Columns)\n");
+        assert_eq!(phase_token(&data).as_deref(), Some("999.1"));
+        assert_eq!(data.phase_name.as_deref(), Some("Columns"));
+
+        let data = parse_state("Phase: 10.1\n");
+        assert_eq!(phase_token(&data).as_deref(), Some("10.1"));
+
+        // Zero padding survives VERBATIM -- the published variable is the
+        // user-visible phase identifier (D-17). Normalisation for the ROADMAP
+        // lookup lives in `roadmap::normalize_phase_token`, not here.
+        let data = parse_state("Phase: 05.1 of 7 (Inserted)\n");
+        assert_eq!(phase_token(&data).as_deref(), Some("05.1"));
+        assert_eq!(data.phase_name.as_deref(), Some("Inserted"));
+    }
+
+    #[test]
+    fn current_focus_dash_variants() {
+        for dash in [" \u{2014} ", " \u{2013} ", " -- ", " - "] {
+            let content = format!("**Current focus:** Phase 12{}Config Validation\n", dash);
+            let data = parse_state(&content);
+            assert_eq!(
+                phase_token(&data).as_deref(),
+                Some("12"),
+                "separator {:?} should parse the number",
+                dash
+            );
+            assert_eq!(
+                data.phase_name.as_deref(),
+                Some("Config Validation"),
+                "separator {:?} should parse the name",
+                dash
+            );
+        }
+
+        // Negative arm: a separator-less focus line yields NO name -- the scan
+        // splits only on the four separator tokens, never on a bare space
+        // (T-12-11).
+        let data = parse_state("**Current focus:** Phase 12 Config Validation\n");
+        assert_eq!(data.phase_name, None);
+    }
 }

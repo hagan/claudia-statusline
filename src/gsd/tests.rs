@@ -1798,3 +1798,188 @@ fn test_gsd_truncation_handles_multibyte_chars_apply_truncations() {
         task
     );
 }
+
+// ============================================================================
+// Plan 12-03 -- D-17 prose-phase pipeline, at PROVIDER level
+//
+// The parser-level tests live in `src/gsd/state.rs`; these are the level at
+// which the two defects the round-1 review found are observable: the
+// publication GATE in `state::fill_vars` and the zero-padding-sensitive
+// ROADMAP lookup in `roadmap::count_plan_checkboxes`.
+// ============================================================================
+
+/// Build a `.planning` fixture directory with the given STATE.md and an
+/// optional ROADMAP.md. The `TempDir` is returned so the caller keeps it alive.
+fn planning_fixture(state_md: &str, roadmap_md: Option<&str>) -> (TempDir, PathBuf) {
+    let tmp = TempDir::new().unwrap();
+    let planning = tmp.path().join(".planning");
+    fs::create_dir_all(&planning).unwrap();
+    fs::write(planning.join("STATE.md"), state_md).unwrap();
+    fs::write(planning.join("config.json"), "{}").unwrap();
+    if let Some(roadmap) = roadmap_md {
+        fs::write(planning.join("ROADMAP.md"), roadmap).unwrap();
+    }
+    (tmp, planning)
+}
+
+/// Render the SHIPPED default template over a variable map.
+///
+/// `src/templates/default.tmpl` is embedded here by the same path the binary
+/// embeds it, so the `{if gsd_phase}` gate under test is the real one rather
+/// than a hand-written stand-in.
+fn render_default_template(vars: &HashMap<String, String>) -> String {
+    crate::layout::LayoutRenderer::with_format(include_str!("../templates/default.tmpl"), " | ")
+        .render_template(vars, false)
+}
+
+/// A `Phase: N` line with NO name must still publish the phase variables.
+///
+/// Fails against a parser-only widening: `state::fill_vars` gated all three
+/// variables on a name being present, so the default template's
+/// `{if gsd_phase}` stayed false and the whole GSD segment stayed suppressed.
+#[test]
+fn number_only_state_publishes_phase_vars() {
+    let (_tmp, planning) = planning_fixture("## Current Position\n\nPhase: 12\n", None);
+    let result = provider_with_planning(planning).collect().unwrap();
+
+    assert_eq!(
+        result.get("gsd_phase_number").unwrap(),
+        "12",
+        "a bare `Phase: 12` must publish the number"
+    );
+    assert!(
+        !result.get("gsd_phase").unwrap().is_empty(),
+        "gsd_phase must be non-empty so the default template's GSD segment is not suppressed; got {:?}",
+        result.get("gsd_phase")
+    );
+}
+
+/// Plan progress must resolve when STATE.md and ROADMAP.md spell the same
+/// phase with DIFFERENT zero-padding, in both directions -- while the
+/// PUBLISHED identifier stays the STATE.md text verbatim.
+///
+/// Normalisation belongs at the ROADMAP lookup boundary
+/// (`roadmap::normalize_phase_token`), never at publication (D-17).
+#[test]
+// Rows 2 and 3 (the padding MISMATCH rows) require Task 3's
+// lookup-boundary normalisation in `roadmap::normalize_phase_token`; the
+// `#[ignore]` is removed there. Rust has no per-row ignore, so the whole
+// table is held back rather than splitting the matrix in two.
+#[ignore = "un-ignored in plan 12-03 Task 3 (ROADMAP lookup normalisation)"]
+fn plan_progress_survives_zero_padding_mismatch() {
+    let rows = [
+        ("4", "**Phase 4:"),
+        ("04", "**Phase 4:"),
+        ("4", "**Phase 04:"),
+        ("999.1", "**Phase 999.1:"),
+    ];
+
+    for (state_token, roadmap_header) in rows {
+        let state_md = format!("## Current Position\n\nPhase: {} (Padding)\n", state_token);
+        let roadmap_md = format!(
+            "## Phases\n\n- [ ] {} Padding** - desc\n\nPlans:\n- [x] p-01-PLAN.md -- first\n- [ ] p-02-PLAN.md -- second\n- [ ] p-03-PLAN.md -- third\n",
+            roadmap_header
+        );
+        let (_tmp, planning) = planning_fixture(&state_md, Some(&roadmap_md));
+        let result = provider_with_planning(planning).collect().unwrap();
+
+        assert_eq!(
+            result.get("gsd_plan_fraction").unwrap(),
+            "1/3",
+            "STATE token {:?} vs ROADMAP header {:?} must still resolve plan progress",
+            state_token,
+            roadmap_header
+        );
+        assert_eq!(
+            result.get("gsd_plan_total").unwrap(),
+            "3",
+            "STATE token {:?} vs ROADMAP header {:?} must count all three plans",
+            state_token,
+            roadmap_header
+        );
+        assert_eq!(
+            result.get("gsd_phase_number").unwrap(),
+            state_token,
+            "the published identifier must stay VERBATIM ({:?} must not be normalised)",
+            state_token
+        );
+    }
+}
+
+/// The PRIMARY `Phase:` name wins over the `**Current focus:**` fallback.
+///
+/// Pins the existing precedence so widening the fallback separators cannot
+/// silently invert it.
+#[test]
+fn conflicting_primary_and_fallback_phase_names() {
+    let state_md = "**Current focus:** Phase 12 \u{2014} From Fallback\n\n## Current Position\n\nPhase: 12 (From Primary)\n";
+    let (_tmp, planning) = planning_fixture(state_md, None);
+    let result = provider_with_planning(planning).collect().unwrap();
+
+    assert_eq!(
+        result.get("gsd_phase_name").unwrap(),
+        "From Primary",
+        "the primary `Phase:` name must outrank the `**Current focus:**` fallback"
+    );
+    assert_eq!(result.get("gsd_phase_number").unwrap(), "12");
+}
+
+/// D-18 clause 4 POSITIVE proof.
+///
+/// A repo whose STATE.md newly parses under the widened D-17 patterns GAINS
+/// the GSD segment in default-template output; this change to default output
+/// is INTENDED and AUTHORIZED under D-18 clause 2, and this phase's
+/// byte-identity invariant is scoped to price-cache state (pinned by plan
+/// 12-01), not to all rendered output.
+#[test]
+fn widened_patterns_add_the_gsd_segment() {
+    // Arm A: no recognisable phase line at all -- the segment must stay absent.
+    let (_tmp_a, planning_a) =
+        planning_fixture("# Project State\n\nNothing parseable here.\n", None);
+    let mut vars_a = provider_with_planning(planning_a).collect().unwrap();
+    vars_a.insert("directory".into(), "/tmp/proof".into());
+    let rendered_a = render_default_template(&vars_a);
+
+    // Arm B: the SAME binary and the SAME payload, with a STATE.md that is
+    // unparseable under the pre-D-17 patterns (no " of ", em-dash focus line)
+    // and parseable under the widened ones.
+    let (_tmp_b, planning_b) = planning_fixture(
+        "**Current focus:** Phase 999.1 \u{2014} Columns\n\n## Current Position\n\nPhase: 999.1\n",
+        None,
+    );
+    let mut vars_b = provider_with_planning(planning_b).collect().unwrap();
+    vars_b.insert("directory".into(), "/tmp/proof".into());
+    let rendered_b = render_default_template(&vars_b);
+
+    assert_eq!(
+        rendered_a, "/tmp/proof",
+        "with no parseable phase the whole GSD segment must be suppressed"
+    );
+    assert!(
+        !rendered_a.contains("P999.1"),
+        "arm A must not carry a phase identifier; got {:?}",
+        rendered_a
+    );
+
+    let summary = vars_b.get("gsd_summary").cloned().unwrap_or_default();
+    assert!(
+        !summary.is_empty(),
+        "arm B must build a GSD summary; got {:?}",
+        summary
+    );
+    assert!(
+        rendered_b.contains(&summary),
+        "arm B must render the GSD segment ({:?}); got {:?}",
+        summary,
+        rendered_b
+    );
+    assert!(
+        rendered_b.contains("P999.1"),
+        "arm B must carry the decimal phase identifier verbatim; got {:?}",
+        rendered_b
+    );
+    assert_ne!(
+        rendered_a, rendered_b,
+        "the widened patterns must change default output -- that IS the D-17 fix"
+    );
+}
