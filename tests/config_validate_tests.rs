@@ -708,6 +708,31 @@ fn render_unaffected_by_price_cache_state() {
         "the seeded price cache must sit in the cache directory the binary resolves \
          (live={live_dir:?} seeded={seeded:?})"
     );
+    // ADDED by plan 12-02, which landed `caches.prices`: assert the FIELD too,
+    // now that it exists. This does NOT replace the `ant sync-pricing` probe
+    // above — the probe observes the READ (the self-throttle fires only if the
+    // document was opened, parsed and accepted), whereas this field-level check
+    // pins the reported path byte-for-byte. Keep both: one proves consumption,
+    // the other proves identity.
+    let prices_path = doctor["caches"]["prices"]["path"]
+        .as_str()
+        .expect("caches.prices.path must be a string (plan 12-02)")
+        .to_string();
+    assert!(
+        seeded.iter().any(|p| p.display().to_string() == prices_path),
+        "caches.prices.path must be byte-EQUAL to a seeded path \
+         (reported={prices_path:?} seeded={seeded:?})"
+    );
+    assert_eq!(
+        doctor["caches"]["prices"]["present"],
+        serde_json::Value::Bool(true),
+        "the freshly seeded price cache must be reported present by `ant doctor --json`"
+    );
+    assert_eq!(
+        doctor["caches"]["prices"]["stale"],
+        serde_json::Value::Bool(false),
+        "a price cache fetched just now must not be reported stale"
+    );
 
     let fresh = render("fresh");
 

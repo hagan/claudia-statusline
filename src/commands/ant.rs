@@ -50,6 +50,7 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
     };
     use crate::ant::duration::humanize_age;
     use crate::ant::fetch::CredentialMode;
+    use crate::pricing::cache::{price_cache_path, read_price_cache};
     use serde_json::json;
 
     let config = Config::load()?;
@@ -78,8 +79,22 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
         .map(|u| crate::ant::duration::is_stale(u.age(), &ant.usage_stale_after))
         .unwrap_or(false);
 
+    // The PRICE cache (plan 12-02; closes Phase 11's deferred WR-08). Its
+    // threshold is `[pricing].max_age` (default "30d"), NOT an `[ant]` key, so it
+    // is read from the ALREADY-loaded `config` rather than re-loading. The reader
+    // is TOTAL and byte-capped before parse, so a missing, corrupt, oversized or
+    // wrong-schema cache simply reports "absent" — this row can never fail the
+    // report, and it never spawns, networks or creates a directory.
+    let prices = read_price_cache();
+    let prices_age = prices.as_ref().map(|p| humanize_age(p.age()));
+    let prices_stale = prices
+        .as_ref()
+        .map(|p| crate::ant::duration::is_stale(p.age(), &config.pricing.max_age))
+        .unwrap_or(false);
+
     // Resolve cache paths for the report (path math only; never creates a dir).
     let models_path = models_cache_path().ok().map(|p| p.display().to_string());
+    let prices_path = price_cache_path().ok().map(|p| p.display().to_string());
     let usage_path = active_account
         .as_deref()
         .and_then(|a| usage_cache_path(a).ok())
@@ -156,6 +171,12 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
                     "stale": usage_stale,
                     "path": usage_path,
                 },
+                "prices": {
+                    "present": prices.is_some(),
+                    "age": prices_age,
+                    "stale": prices_stale,
+                    "path": prices_path,
+                },
             },
             "credentials": {
                 "models": models_cred,
@@ -225,6 +246,13 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
                 if usage_stale { " (stale)" } else { "" }
             ),
             _ => println!("  Usage:  absent"),
+        }
+        match (&prices_age, &prices_path) {
+            (Some(age), Some(path)) => println!(
+                "  Prices: present, age {age}{}\n    {path}",
+                if prices_stale { " (stale)" } else { "" }
+            ),
+            _ => println!("  Prices: absent"),
         }
         println!();
         println!("Credentials (source labels only — never executed in passive mode):");
