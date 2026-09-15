@@ -70,12 +70,12 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
     let models_age = models.as_ref().map(|m| humanize_age(m.age()));
     let models_stale = models
         .as_ref()
-        .map(|m| age_is_stale(m.age(), &ant.models_stale_after))
+        .map(|m| crate::ant::duration::is_stale(m.age(), &ant.models_stale_after))
         .unwrap_or(false);
     let usage_age = usage.as_ref().map(|u| humanize_age(u.age()));
     let usage_stale = usage
         .as_ref()
-        .map(|u| age_is_stale(u.age(), &ant.usage_stale_after))
+        .map(|u| crate::ant::duration::is_stale(u.age(), &ant.usage_stale_after))
         .unwrap_or(false);
 
     // Resolve cache paths for the report (path math only; never creates a dir).
@@ -261,17 +261,6 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Passive staleness check for the doctor report: parse the user's threshold
-/// lazily and compare. A malformed threshold OR a negative/future age (clock
-/// skew) collapses to NOT-stale (`false`) — the report must never fail on bad
-/// user TOML (mirrors `display::is_stale`, D-16).
-fn age_is_stale(age: chrono::Duration, threshold: &str) -> bool {
-    match crate::ant::duration::parse_max_age(threshold) {
-        Ok(max) => age.to_std().map(|a| a >= max).unwrap_or(false),
-        Err(_) => false,
-    }
 }
 
 /// `ant sync-models`: fetch the Models API out-of-band and publish the cache.
