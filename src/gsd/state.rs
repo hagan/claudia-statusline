@@ -17,8 +17,8 @@
 //! The phase number is kept as the TEXT written in STATE.md (`"12"`,
 //! `"999.1"`, `"05.1"`) -- decimal and zero-padded phase identifiers are
 //! user-visible and must round-trip verbatim (D-17 widening 2). Zero-padding
-//! normalisation for the ROADMAP section lookup lives in
-//! [`super::roadmap::normalize_phase_token`], NOT here.
+//! normalisation happens at the ROADMAP section-lookup boundary in
+//! [`super::roadmap`], NOT here.
 
 use super::cache::{self, CachedParse};
 use std::collections::HashMap;
@@ -368,8 +368,8 @@ Last activity: 2026-02-22 -- Plan 05-01 complete
         assert_eq!(phase_token(&data).as_deref(), Some("10.1"));
 
         // Zero padding survives VERBATIM -- the published variable is the
-        // user-visible phase identifier (D-17). Normalisation for the ROADMAP
-        // lookup lives in `roadmap::normalize_phase_token`, not here.
+        // user-visible phase identifier (D-17). Normalisation happens at the
+        // ROADMAP section-lookup boundary in `super::roadmap`, not here.
         let data = parse_state("Phase: 05.1 of 7 (Inserted)\n");
         assert_eq!(phase_token(&data).as_deref(), Some("05.1"));
         assert_eq!(data.phase_name.as_deref(), Some("Inserted"));

@@ -87,13 +87,61 @@ pub fn fill_plan_vars(planning_dir: &Path, phase_number: &str, vars: &mut HashMa
     }
 }
 
+/// Normalize a phase token for SECTION LOOKUP: strip leading zeros from each
+/// dot-separated segment, keeping at least one digit.
+///
+/// `"04"` -> `"4"`, `"05.1"` -> `"5.1"`, `"999.1"` -> `"999.1"`, `"0"` ->
+/// `"0"`, `"00"` -> `"0"`. A segment containing a non-digit is passed through
+/// unchanged, so the function is total and never panics on adversarial
+/// Markdown (T-12-09).
+///
+/// This exists ONLY so a STATE.md and a ROADMAP.md that spell the same phase
+/// with different padding still match. The PUBLISHED `gsd_phase_number` is
+/// never normalised -- D-17 requires it to be the literal STATE.md text.
+fn normalize_phase_token(raw: &str) -> String {
+    raw.split('.')
+        .map(|segment| {
+            if segment.is_empty() || !segment.bytes().all(|b| b.is_ascii_digit()) {
+                segment.to_string()
+            } else {
+                let stripped = segment.trim_start_matches('0');
+                if stripped.is_empty() {
+                    "0".to_string()
+                } else {
+                    stripped.to_string()
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(".")
+}
+
+/// The phase token carried by a ROADMAP header line: the text between the
+/// literal `**Phase ` and the NEXT `:`.
+///
+/// Returns `None` for a header with no colon, which then simply does not match
+/// any requested phase.
+fn header_phase_token(line: &str) -> Option<&str> {
+    const MARKER: &str = "**Phase ";
+    let start = line.find(MARKER)? + MARKER.len();
+    let rest = &line[start..];
+    let colon = rest.find(':')?;
+    Some(rest[..colon].trim())
+}
+
 /// Count plan-level checkboxes within a specific phase section.
 ///
-/// Locates the phase header line matching `**Phase {number}:` and then counts
-/// subsequent checkbox lines until the next phase header or end of content.
-/// Only counts checkboxes that do NOT contain `**Phase ` (i.e., plan-level).
+/// Locates the phase header line whose own `**Phase <token>:` matches
+/// `phase_number` after [`normalize_phase_token`] is applied to BOTH sides,
+/// then counts subsequent checkbox lines until the next phase header or end of
+/// content. Only counts checkboxes that do NOT contain `**Phase ` (i.e.,
+/// plan-level).
+///
+/// The comparison is EQUALITY on the extracted token, not a `contains` of a
+/// `**Phase {n}:` marker: equality removes outright the class of defect where
+/// a request for phase `1` could fire inside a `**Phase 12` header (T-12-51).
 fn count_plan_checkboxes(content: &str, phase_number: &str) -> (u32, u32) {
-    let phase_marker = format!("**Phase {}:", phase_number);
+    let target = normalize_phase_token(phase_number.trim());
     let mut in_phase_section = false;
     let mut completed = 0u32;
     let mut total = 0u32;
@@ -103,7 +151,9 @@ fn count_plan_checkboxes(content: &str, phase_number: &str) -> (u32, u32) {
 
         // Check if this line is a phase header
         if trimmed.contains("**Phase ") && trimmed.starts_with("- [") {
-            if trimmed.contains(&phase_marker) {
+            let matches_target = header_phase_token(trimmed)
+                .is_some_and(|token| normalize_phase_token(token) == target);
+            if matches_target {
                 in_phase_section = true;
                 continue;
             } else if in_phase_section {
@@ -253,6 +303,55 @@ Plans:
     }
 
     // ---- Plan-level progress tests ----
+
+    #[test]
+    fn normalize_phase_token_cases() {
+        assert_eq!(normalize_phase_token("04"), "4");
+        assert_eq!(normalize_phase_token("4"), "4");
+        assert_eq!(normalize_phase_token("05.1"), "5.1");
+        assert_eq!(normalize_phase_token("999.1"), "999.1");
+        assert_eq!(normalize_phase_token("0"), "0");
+        assert_eq!(normalize_phase_token("00"), "0");
+        // Non-numeric segments pass through unchanged -- total, never panics.
+        assert_eq!(normalize_phase_token("beta"), "beta");
+        assert_eq!(normalize_phase_token("01.beta"), "1.beta");
+        assert_eq!(normalize_phase_token(""), "");
+    }
+
+    #[test]
+    fn count_plan_checkboxes_tolerates_zero_padding_both_ways() {
+        let content = r#"
+- [ ] **Phase 4: Padded** - desc
+
+Plans:
+- [x] p-01-PLAN.md -- first
+- [ ] p-02-PLAN.md -- second
+"#;
+        assert_eq!(count_plan_checkboxes(content, "04"), (1, 2));
+        assert_eq!(count_plan_checkboxes(content, "4"), (1, 2));
+
+        let padded_header = r#"
+- [ ] **Phase 04: Padded** - desc
+
+Plans:
+- [x] p-01-PLAN.md -- first
+- [ ] p-02-PLAN.md -- second
+"#;
+        assert_eq!(count_plan_checkboxes(padded_header, "4"), (1, 2));
+    }
+
+    #[test]
+    fn count_plan_checkboxes_matches_the_whole_token_not_a_prefix() {
+        let content = r#"
+- [ ] **Phase 12: Twelve** - desc
+
+Plans:
+- [x] p-01-PLAN.md -- first
+"#;
+        // A request for phase 1 must NOT match the phase 12 header (T-12-51).
+        assert_eq!(count_plan_checkboxes(content, "1"), (0, 0));
+        assert_eq!(count_plan_checkboxes(content, "12"), (1, 1));
+    }
 
     #[test]
     fn test_count_plan_checkboxes_typical() {

@@ -1861,11 +1861,6 @@ fn number_only_state_publishes_phase_vars() {
 /// Normalisation belongs at the ROADMAP lookup boundary
 /// (`roadmap::normalize_phase_token`), never at publication (D-17).
 #[test]
-// Rows 2 and 3 (the padding MISMATCH rows) require Task 3's
-// lookup-boundary normalisation in `roadmap::normalize_phase_token`; the
-// `#[ignore]` is removed there. Rust has no per-row ignore, so the whole
-// table is held back rather than splitting the matrix in two.
-#[ignore = "un-ignored in plan 12-03 Task 3 (ROADMAP lookup normalisation)"]
 fn plan_progress_survives_zero_padding_mismatch() {
     let rows = [
         ("4", "**Phase 4:"),
