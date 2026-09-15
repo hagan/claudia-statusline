@@ -56,6 +56,26 @@ fn load_user_preset(name: &str) -> Option<String> {
     parsed.format
 }
 
+/// Is `name` a user preset that will actually LOAD?
+///
+/// This exists so `config validate` decides preset legality by the SAME
+/// resolution [`get_preset_format`] performs. Membership in
+/// [`list_available_presets`] is NOT that oracle and gives a wrong answer in
+/// two directions:
+///
+/// * it enumerates every directory-entry FILE STEM, including non-`.toml`
+///   files — a stray `notes.txt` becomes the "available preset" `notes`, which
+///   `load_user_preset` can never load; and
+/// * a `.toml` that parses but omits the `format` key also yields `None` from
+///   `load_user_preset`, so the renderer falls back to [`PRESET_DEFAULT`]
+///   silently even though the file exists and is listed.
+///
+/// Delegating to `load_user_preset` adds no new path-interpolation site of its
+/// own: the path probed here is the one the render path already builds.
+pub fn user_preset_is_usable(name: &str) -> bool {
+    load_user_preset(name).is_some()
+}
+
 /// List all available presets (built-in + user)
 #[allow(dead_code)]
 pub fn list_available_presets() -> Vec<String> {

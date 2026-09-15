@@ -203,6 +203,98 @@ fn check_enum(cx: &SectionContext, field: &str, value: &str, legal: &[&str], rep
     );
 }
 
+/// The colour NAMES `Theme::resolve_color` resolves (`src/theme.rs`).
+///
+/// Duplicated here deliberately rather than exported from `theme.rs`: this plan
+/// leaves `src/theme.rs` byte-unchanged. `check_color` accepts anything in this
+/// list, plus an empty string, a `#RRGGBB` literal, an ANSI escape, or a key in
+/// the TARGET FILE's theme palette.
+const KNOWN_COLOR_NAMES: &[&str] = &[
+    "black",
+    "red",
+    "green",
+    "yellow",
+    "blue",
+    "magenta",
+    "cyan",
+    "white",
+    "gray",
+    "bright_red",
+    "bright_green",
+    "bright_yellow",
+    "bright_blue",
+    "bright_magenta",
+    "bright_cyan",
+    "bright_white",
+    "light_gray",
+    "orange",
+];
+
+/// Built-in layout preset names, lowercase.
+///
+/// This is the set `get_preset_format` matches AFTER `to_lowercase()`, plus
+/// `default` — the value its `_ =>` arm produces.
+const BUILTIN_PRESETS: &[&str] = &["default", "compact", "detailed", "minimal", "power"];
+
+/// Validate a component colour override against what the renderer can resolve.
+///
+/// The theme is read from the TARGET FILE through `SectionContext::target_string`
+/// and never from `get_config()`: when `config validate` is given a positional
+/// PATH, the process's own theme is the wrong document (T-12-55).
+///
+/// When the selected theme cannot be loaded at all, an unrecognised name is
+/// downgraded to a WARNING — a legitimate `[palette.custom]` entry must never
+/// become a false error just because its theme file is unreadable from here.
+fn check_color(cx: &SectionContext, field: &str, value: &str, report: &mut Report) {
+    if value.is_empty() {
+        return;
+    }
+    // Already an ANSI literal, in either of the two spellings resolve_color takes.
+    if value.starts_with("\u{1b}[") || value.starts_with("\\x1b[") {
+        return;
+    }
+    if value.len() == 7
+        && value.starts_with('#')
+        && value[1..].chars().all(|c| c.is_ascii_hexdigit())
+    {
+        return;
+    }
+    if KNOWN_COLOR_NAMES.contains(&value) {
+        return;
+    }
+
+    let theme_name = cx.target_string("display.theme", &DisplayConfig::default().theme);
+    match crate::theme::ThemeManager::new().load_theme(&theme_name) {
+        Ok(theme) => {
+            let in_palette = theme
+                .palette
+                .as_ref()
+                .is_some_and(|p| p.custom.contains_key(value));
+            if !in_palette {
+                report.error(
+                    FindingKind::InvalidValue,
+                    cx.key(field),
+                    format!(
+                        "`{}` is not a colour the renderer can resolve; use an empty string, a #RRGGBB literal, an ANSI escape, a key from the theme's [palette.custom], or one of: {}",
+                        field,
+                        KNOWN_COLOR_NAMES.join(", ")
+                    ),
+                );
+            }
+        }
+        Err(_) => {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key(field),
+                format!(
+                    "`{}` is not a built-in colour name, and the theme selected by `display.theme` could not be loaded, so its [palette.custom] keys could not be checked",
+                    field
+                ),
+            );
+        }
+    }
+}
+
 /// Semantic rules for `[display]` (plan 12-05).
 impl Validate for DisplayConfig {
     fn validate(&self, cx: &SectionContext, report: &mut Report) {
@@ -778,8 +870,36 @@ pub struct BurnRateConfig {
     pub min_duration_seconds: u64,
 }
 
-/// Semantic rules for `[burn_rate]` are filled in by plan 12-05.
-impl Validate for BurnRateConfig {}
+/// Semantic rules for `[burn_rate]` (plan 12-05).
+impl Validate for BurnRateConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        // `src/stats/session.rs` matches this with a `_ =>` arm that silently
+        // falls back to wall-clock.
+        check_enum(
+            cx,
+            "mode",
+            &self.mode,
+            &["wall_clock", "active_time", "auto_reset"],
+            report,
+        );
+
+        if !(15..=120).contains(&self.inactivity_threshold_minutes) {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("inactivity_threshold_minutes"),
+                "`inactivity_threshold_minutes` is documented as 15-120; outside that range session boundaries become unreliable",
+            );
+        }
+
+        if !(30..=300).contains(&self.min_duration_seconds) {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("min_duration_seconds"),
+                "`min_duration_seconds` is documented as 30-300; outside that range the burn rate is either noisy or suppressed for a long time",
+            );
+        }
+    }
+}
 
 /// Layout configuration for customizable statusline format
 ///
@@ -865,8 +985,171 @@ pub struct LayoutConfig {
     pub show_unknown_vars: bool,
 }
 
-/// Semantic rules for `[layout]` are filled in by plan 12-05.
-impl Validate for LayoutConfig {}
+/// Semantic rules for `[layout]` (plan 12-05).
+impl Validate for LayoutConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        // Legality is decided by the RENDERER's own resolution, not by
+        // `list_available_presets()`. `get_preset_format` lowercases before
+        // matching, so `preset = "Compact"` WORKS today and must not be
+        // rejected; and a user preset is legal only if it actually LOADS.
+        let lowercased = self.preset.to_lowercase();
+        if !BUILTIN_PRESETS.contains(&lowercased.as_str())
+            && !crate::layout::user_preset_is_usable(&self.preset)
+        {
+            // Suggestions ONLY. `list_available_presets()` enumerates directory
+            // stems — including non-`.toml` files that can never load — so it is
+            // not a legality oracle. Sorted so the message is process-independent.
+            let mut suggestions = crate::layout::list_available_presets();
+            suggestions.sort();
+            suggestions.dedup();
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("preset"),
+                format!(
+                    "unknown layout preset; the built-ins are default, compact, detailed, minimal, power (matched case-insensitively), and a user preset must be a .toml file in the preset directory containing a `format` key. Names found: {}",
+                    suggestions.join(", ")
+                ),
+            );
+        }
+
+        if self.separator.contains('{') {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("separator"),
+                "`separator` is inserted literally and never expanded; a `{` suggests a template variable that will render as text",
+            );
+        }
+
+        // `format` deliberately has NO rule: template-variable checking is out of
+        // scope for this phase because there is no static variable registry —
+        // `list_vars` produces variables by RUNNING the providers.
+
+        self.components.validate(&cx.child("components"), report);
+    }
+}
+
+/// Fan out to each component's rules (plan 12-05).
+impl Validate for ComponentsConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        self.directory.validate(&cx.child("directory"), report);
+        self.git.validate(&cx.child("git"), report);
+        self.context.validate(&cx.child("context"), report);
+        self.cost.validate(&cx.child("cost"), report);
+        self.model.validate(&cx.child("model"), report);
+        self.token_rate.validate(&cx.child("token_rate"), report);
+    }
+}
+
+/// Semantic rules for `[layout.components.directory]` (plan 12-05).
+impl Validate for DirectoryComponentConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "format",
+            &self.format,
+            &["short", "full", "basename"],
+            report,
+        );
+        if (1..=2).contains(&self.max_length) {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("max_length"),
+                "a `max_length` of 1 or 2 truncates every path to an unreadable stub (0 means no limit)",
+            );
+        }
+        check_color(cx, "color", &self.color, report);
+    }
+}
+
+/// Semantic rules for `[layout.components.git]` (plan 12-05).
+impl Validate for GitComponentConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "format",
+            &self.format,
+            &["full", "branch", "status"],
+            report,
+        );
+        check_enum(
+            cx,
+            "show_when",
+            &self.show_when,
+            &["always", "dirty", "never"],
+            report,
+        );
+        check_color(cx, "color", &self.color, report);
+    }
+}
+
+/// Semantic rules for `[layout.components.context]` (plan 12-05).
+impl Validate for ContextComponentConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "format",
+            &self.format,
+            &["full", "bar", "percent", "tokens"],
+            report,
+        );
+        if self.bar_width == Some(0) {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("bar_width"),
+                "`bar_width` must be at least 1 — omit the key to inherit `display.progress_bar_width`",
+            );
+        }
+    }
+}
+
+/// Semantic rules for `[layout.components.cost]` (plan 12-05).
+impl Validate for CostComponentConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "format",
+            &self.format,
+            &["full", "cost_only", "rate_only", "with_daily"],
+            report,
+        );
+        check_color(cx, "color", &self.color, report);
+    }
+}
+
+/// Semantic rules for `[layout.components.model]` (plan 12-05).
+impl Validate for ModelComponentConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "format",
+            &self.format,
+            &["abbreviation", "full", "name", "version"],
+            report,
+        );
+        check_color(cx, "color", &self.color, report);
+    }
+}
+
+/// Semantic rules for `[layout.components.token_rate]` (plan 12-05).
+impl Validate for TokenRateComponentConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "format",
+            &self.format,
+            &["rate_only", "with_session", "with_daily", "full"],
+            report,
+        );
+        check_enum(
+            cx,
+            "time_unit",
+            &self.time_unit,
+            &["second", "minute", "hour"],
+            report,
+        );
+        check_color(cx, "color", &self.color, report);
+    }
+}
 
 /// Per-component configuration for fine-grained customization
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1159,8 +1442,32 @@ pub struct TokenRateConfig {
     pub rate_display: String,
 }
 
-/// Semantic rules for `[token_rate]` are filled in by plan 12-05.
-impl Validate for TokenRateConfig {}
+/// Semantic rules for `[token_rate]` (plan 12-05).
+impl Validate for TokenRateConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        check_enum(
+            cx,
+            "display_mode",
+            &self.display_mode,
+            &["summary", "detailed", "cache_only"],
+            report,
+        );
+        check_enum(
+            cx,
+            "rate_display",
+            &self.rate_display,
+            &["both", "output_only", "input_only"],
+            report,
+        );
+        if (1..=9).contains(&self.rate_window_seconds) {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("rate_window_seconds"),
+                "a rolling window under 10 seconds makes the displayed rate jump between renders (0 means the session average)",
+            );
+        }
+    }
+}
 
 /// Sync configuration for cloud synchronization
 #[cfg(feature = "turso-sync")]
@@ -3081,5 +3388,512 @@ mod tests {
             "`auth_token` has no rule at all: {:?}",
             report.findings
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Enum fall-throughs, preset and colour legality (plan 12-05 Task 2)
+    // -----------------------------------------------------------------------
+
+    /// Every enum family this plan closes: (section, struct-under-test builder,
+    /// dotted key, an illegal value, the legal set).
+    #[test]
+    fn every_enum_family_names_its_legal_set() {
+        // burn_rate.mode
+        let report = validate_section(
+            &BurnRateConfig {
+                mode: "wallclock".to_string(),
+                ..BurnRateConfig::default()
+            },
+            "burn_rate",
+            "[burn_rate]\n",
+        );
+        let msg = &findings_for(&report, "burn_rate.mode")[0].message;
+        assert_eq!(
+            severities_at(&report, "burn_rate.mode"),
+            vec![Severity::Error]
+        );
+        for legal in ["wall_clock", "active_time", "auto_reset"] {
+            assert!(msg.contains(legal), "missing `{legal}` in: {msg}");
+        }
+
+        // token_rate.display_mode and token_rate.rate_display
+        let report = validate_section(
+            &TokenRateConfig {
+                display_mode: "verbose".to_string(),
+                rate_display: "all".to_string(),
+                ..TokenRateConfig::default()
+            },
+            "token_rate",
+            "[token_rate]\n",
+        );
+        let msg = &findings_for(&report, "token_rate.display_mode")[0].message;
+        for legal in ["summary", "detailed", "cache_only"] {
+            assert!(msg.contains(legal), "missing `{legal}` in: {msg}");
+        }
+        let msg = &findings_for(&report, "token_rate.rate_display")[0].message;
+        for legal in ["both", "output_only", "input_only"] {
+            assert!(msg.contains(legal), "missing `{legal}` in: {msg}");
+        }
+
+        // The six component families, all reached through `[layout]`.
+        let layout = LayoutConfig {
+            components: ComponentsConfig {
+                directory: DirectoryComponentConfig {
+                    format: "abbrev".to_string(),
+                    ..DirectoryComponentConfig::default()
+                },
+                git: GitComponentConfig {
+                    format: "oneline".to_string(),
+                    show_when: "sometimes".to_string(),
+                    ..GitComponentConfig::default()
+                },
+                context: ContextComponentConfig {
+                    format: "graph".to_string(),
+                    ..ContextComponentConfig::default()
+                },
+                cost: CostComponentConfig {
+                    format: "totals".to_string(),
+                    ..CostComponentConfig::default()
+                },
+                model: ModelComponentConfig {
+                    format: "short".to_string(),
+                    ..ModelComponentConfig::default()
+                },
+                token_rate: TokenRateComponentConfig {
+                    format: "brief".to_string(),
+                    time_unit: "fortnight".to_string(),
+                    ..TokenRateComponentConfig::default()
+                },
+            },
+            ..LayoutConfig::default()
+        };
+        let report = validate_section(&layout, "layout", "[layout]\n");
+
+        let expected: [(&str, &[&str]); 8] = [
+            (
+                "layout.components.directory.format",
+                &["short", "full", "basename"],
+            ),
+            (
+                "layout.components.git.format",
+                &["full", "branch", "status"],
+            ),
+            (
+                "layout.components.git.show_when",
+                &["always", "dirty", "never"],
+            ),
+            (
+                "layout.components.context.format",
+                &["full", "bar", "percent", "tokens"],
+            ),
+            (
+                "layout.components.cost.format",
+                &["full", "cost_only", "rate_only", "with_daily"],
+            ),
+            (
+                "layout.components.model.format",
+                &["abbreviation", "full", "name", "version"],
+            ),
+            (
+                "layout.components.token_rate.format",
+                &["rate_only", "with_session", "with_daily", "full"],
+            ),
+            (
+                "layout.components.token_rate.time_unit",
+                &["second", "minute", "hour"],
+            ),
+        ];
+        for (key, legal) in expected {
+            let found = findings_for(&report, key);
+            assert_eq!(
+                found.len(),
+                1,
+                "expected exactly one finding at {key}: {:?}",
+                report.findings
+            );
+            assert_eq!(found[0].severity, Severity::Error, "{key}");
+            for value in legal {
+                assert!(
+                    found[0].message.contains(value),
+                    "the message at {key} must name `{value}`: {}",
+                    found[0].message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn every_enum_family_accepts_its_legal_values() {
+        for mode in ["wall_clock", "active_time", "auto_reset"] {
+            let report = validate_section(
+                &BurnRateConfig {
+                    mode: mode.to_string(),
+                    ..BurnRateConfig::default()
+                },
+                "burn_rate",
+                "[burn_rate]\n",
+            );
+            assert!(report.findings.is_empty(), "{mode}: {:?}", report.findings);
+        }
+
+        for display_mode in ["summary", "detailed", "cache_only"] {
+            for rate_display in ["both", "output_only", "input_only"] {
+                let report = validate_section(
+                    &TokenRateConfig {
+                        display_mode: display_mode.to_string(),
+                        rate_display: rate_display.to_string(),
+                        ..TokenRateConfig::default()
+                    },
+                    "token_rate",
+                    "[token_rate]\n",
+                );
+                assert!(report.findings.is_empty(), "{:?}", report.findings);
+            }
+        }
+
+        // One legal value per component family, exercised together.
+        let layout = LayoutConfig {
+            components: ComponentsConfig {
+                directory: DirectoryComponentConfig {
+                    format: "basename".to_string(),
+                    ..DirectoryComponentConfig::default()
+                },
+                git: GitComponentConfig {
+                    format: "branch".to_string(),
+                    show_when: "dirty".to_string(),
+                    ..GitComponentConfig::default()
+                },
+                context: ContextComponentConfig {
+                    format: "percent".to_string(),
+                    ..ContextComponentConfig::default()
+                },
+                cost: CostComponentConfig {
+                    format: "cost_only".to_string(),
+                    ..CostComponentConfig::default()
+                },
+                model: ModelComponentConfig {
+                    format: "version".to_string(),
+                    ..ModelComponentConfig::default()
+                },
+                token_rate: TokenRateComponentConfig {
+                    format: "with_daily".to_string(),
+                    time_unit: "minute".to_string(),
+                    ..TokenRateComponentConfig::default()
+                },
+            },
+            ..LayoutConfig::default()
+        };
+        let report = validate_section(&layout, "layout", "[layout]\n");
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+
+        // And the shipped defaults.
+        let report = validate_section(&LayoutConfig::default(), "layout", "[layout]\n");
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+        let report = validate_section(&TokenRateConfig::default(), "token_rate", "[token_rate]\n");
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+        let report = validate_section(&BurnRateConfig::default(), "burn_rate", "[burn_rate]\n");
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn layout_format_is_never_a_finding() {
+        // Template-variable checking is explicitly out of scope: there is no
+        // static variable registry to check against.
+        for format in [
+            "",
+            "{directory} {nonsense_variable} {git",
+            "}}}{{{",
+            "literally anything at all",
+        ] {
+            let layout = LayoutConfig {
+                format: format.to_string(),
+                ..LayoutConfig::default()
+            };
+            let report = validate_section(&layout, "layout", "[layout]\n");
+            assert!(
+                findings_for(&report, "layout.format").is_empty(),
+                "layout.format must never produce a finding: {:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
+    fn layout_separator_and_component_widths() {
+        let layout = LayoutConfig {
+            separator: " {sep} ".to_string(),
+            ..LayoutConfig::default()
+        };
+        let report = validate_section(&layout, "layout", "[layout]\n");
+        assert_eq!(
+            severities_at(&report, "layout.separator"),
+            vec![Severity::Warning]
+        );
+
+        let layout = LayoutConfig {
+            components: ComponentsConfig {
+                directory: DirectoryComponentConfig {
+                    max_length: 2,
+                    ..DirectoryComponentConfig::default()
+                },
+                context: ContextComponentConfig {
+                    bar_width: Some(0),
+                    ..ContextComponentConfig::default()
+                },
+                ..ComponentsConfig::default()
+            },
+            ..LayoutConfig::default()
+        };
+        let report = validate_section(&layout, "layout", "[layout]\n");
+        assert_eq!(
+            severities_at(&report, "layout.components.directory.max_length"),
+            vec![Severity::Warning]
+        );
+        assert_eq!(
+            severities_at(&report, "layout.components.context.bar_width"),
+            vec![Severity::Error]
+        );
+
+        // 0 means "no limit" and `None` means "inherit" — neither is a finding.
+        let report = validate_section(&LayoutConfig::default(), "layout", "[layout]\n");
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[test]
+    fn token_rate_window_under_ten_seconds_warns() {
+        let report = validate_section(
+            &TokenRateConfig {
+                rate_window_seconds: 5,
+                ..TokenRateConfig::default()
+            },
+            "token_rate",
+            "[token_rate]\n",
+        );
+        assert_eq!(
+            severities_at(&report, "token_rate.rate_window_seconds"),
+            vec![Severity::Warning]
+        );
+
+        for ok in [0u64, 10, 120] {
+            let report = validate_section(
+                &TokenRateConfig {
+                    rate_window_seconds: ok,
+                    ..TokenRateConfig::default()
+                },
+                "token_rate",
+                "[token_rate]\n",
+            );
+            assert!(report.findings.is_empty(), "{ok}: {:?}", report.findings);
+        }
+    }
+
+    /// A component colour override, reached through the full `[layout]` path.
+    fn layout_with_directory_color(color: &str) -> LayoutConfig {
+        LayoutConfig {
+            components: ComponentsConfig {
+                directory: DirectoryComponentConfig {
+                    color: color.to_string(),
+                    ..DirectoryComponentConfig::default()
+                },
+                ..ComponentsConfig::default()
+            },
+            ..LayoutConfig::default()
+        }
+    }
+
+    #[test]
+    fn colour_legality_follows_resolve_color() {
+        for legal in ["", "cyan", "bright_magenta", "light_gray", "#FF5733"] {
+            let report =
+                validate_section(&layout_with_directory_color(legal), "layout", "[layout]\n");
+            assert!(
+                findings_for(&report, "layout.components.directory.color").is_empty(),
+                "`{legal}` must be accepted: {:?}",
+                report.findings
+            );
+        }
+        // Both ANSI spellings resolve_color accepts.
+        for literal in ["\u{1b}[36m", "\\x1b[36m"] {
+            let report = validate_section(
+                &layout_with_directory_color(literal),
+                "layout",
+                "[layout]\n",
+            );
+            assert!(
+                findings_for(&report, "layout.components.directory.color").is_empty(),
+                "an ANSI literal must be accepted: {:?}",
+                report.findings
+            );
+        }
+
+        // Unknown name against a LOADABLE theme is an error naming the vocabulary.
+        let report = validate_section(
+            &layout_with_directory_color("puce"),
+            "layout",
+            "[layout]\ndummy = 0\n\n[display]\ntheme = \"dark\"\n",
+        );
+        let found = findings_for(&report, "layout.components.directory.color");
+        assert_eq!(found.len(), 1, "{:?}", report.findings);
+        assert_eq!(found[0].severity, Severity::Error);
+        assert!(found[0].message.contains("cyan"));
+
+        // An unloadable theme downgrades to a WARNING: the name might be a
+        // legitimate [palette.custom] key in a theme we cannot read from here.
+        let report = validate_section(
+            &layout_with_directory_color("puce"),
+            "layout",
+            "[layout]\ndummy = 0\n\n[display]\ntheme = \"no-such-theme-12-05\"\n",
+        );
+        assert_eq!(
+            severities_at(&report, "layout.components.directory.color"),
+            vec![Severity::Warning],
+            "{:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn colour_rules_read_the_target_files_theme_not_the_process_config() {
+        // The process config names a theme that LOADS; the target document names
+        // one that does not. The severity proves which document was consulted.
+        let original = env::var("STATUSLINE_THEME").ok();
+        env::set_var("STATUSLINE_THEME", "dark");
+        reset_config();
+        assert_eq!(get_config().display.theme, "dark");
+
+        let report = validate_section(
+            &layout_with_directory_color("puce"),
+            "layout",
+            "[layout]\ndummy = 0\n\n[display]\ntheme = \"no-such-theme-12-05\"\n",
+        );
+        assert_eq!(
+            severities_at(&report, "layout.components.directory.color"),
+            vec![Severity::Warning],
+            "the TARGET file's theme decides, never `get_config()`: {:?}",
+            report.findings
+        );
+
+        match original {
+            Some(v) => env::set_var("STATUSLINE_THEME", v),
+            None => env::remove_var("STATUSLINE_THEME"),
+        }
+        reset_config();
+    }
+
+    // --- preset legality: the renderer's own predicate, not the listing ------
+
+    /// Point `HOME` / `XDG_CONFIG_HOME` at a temp tree and return the user
+    /// preset directory the RENDER PATH resolves (`dirs::config_dir()`).
+    fn isolated_preset_dir(guard: &ResolverEnvGuard, dir: &TempDir) -> PathBuf {
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        guard.set("HOME", &home);
+        guard.set("XDG_CONFIG_HOME", &dir.path().join("xdg"));
+
+        let preset_dir = dirs::config_dir()
+            .expect("a config dir under the isolated HOME")
+            .join("claudia-statusline")
+            .join("presets");
+        std::fs::create_dir_all(&preset_dir).unwrap();
+        preset_dir
+    }
+
+    fn preset_report(name: &str) -> Report {
+        let layout = LayoutConfig {
+            preset: name.to_string(),
+            ..LayoutConfig::default()
+        };
+        validate_section(&layout, "layout", "[layout]\n")
+    }
+
+    #[test]
+    fn preset_name_is_case_insensitive() {
+        // `get_preset_format` lowercases before matching, so "Compact" WORKS
+        // today; rejecting it would be a false positive.
+        for name in ["Compact", "DEFAULT", "Minimal", "PoWeR", "detailed"] {
+            let report = preset_report(name);
+            assert!(
+                report.findings.is_empty(),
+                "`{name}` resolves to a built-in and must yield zero findings: {:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn preset_rejects_unloadable_user_file() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        std::fs::write(preset_dir.join("notes.txt"), "just some notes\n").unwrap();
+
+        assert_eq!(
+            severities_at(&preset_report("notes"), "layout.preset"),
+            vec![Severity::Error],
+            "a non-.toml stem can never load and must not be accepted"
+        );
+
+        // The two oracles genuinely disagree — which is exactly why legality is
+        // decided by the LOADER and not by this listing.
+        assert!(
+            crate::layout::list_available_presets().contains(&"notes".to_string()),
+            "list_available_presets() reports the unloadable stem"
+        );
+        assert!(!crate::layout::user_preset_is_usable("notes"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn preset_rejects_toml_without_format_key() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        std::fs::write(preset_dir.join("broken.toml"), "separator = \" \"\n").unwrap();
+
+        // `load_user_preset` returns `None` (no `format` key), so the renderer
+        // falls back to PRESET_DEFAULT silently.
+        assert_eq!(
+            crate::layout::get_preset_format("broken"),
+            crate::layout::PRESET_DEFAULT,
+            "the renderer falls back — that is the silence being ended"
+        );
+        assert_eq!(
+            severities_at(&preset_report("broken"), "layout.preset"),
+            vec![Severity::Error]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn preset_accepts_usable_user_file() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        std::fs::write(preset_dir.join("mine.toml"), "format = \"{directory}\"\n").unwrap();
+
+        let report = preset_report("mine");
+        assert!(
+            report.findings.is_empty(),
+            "a user preset that LOADS must yield zero findings: {:?}",
+            report.findings
+        );
+        assert_eq!(crate::layout::get_preset_format("mine"), "{directory}");
+    }
+
+    #[test]
+    fn preset_unknown_name_is_an_error_naming_the_builtins() {
+        let report = preset_report("compakt");
+        let found = findings_for(&report, "layout.preset");
+        assert_eq!(found.len(), 1, "{:?}", report.findings);
+        assert_eq!(found[0].severity, Severity::Error);
+        assert_eq!(found[0].kind, FindingKind::InvalidValue);
+        for name in ["default", "compact", "detailed", "minimal", "power"] {
+            assert!(
+                found[0].message.contains(name),
+                "the message must name `{name}`: {}",
+                found[0].message
+            );
+        }
     }
 }
