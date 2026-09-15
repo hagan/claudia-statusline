@@ -141,7 +141,15 @@ impl GsdProvider {
         // Build formatted phase prefix: "P5" or "Phase 5" etc.
         let phase_prefix = phase_format.replace("{n}", &phase_number);
 
-        let mut summary = format!("{}{}{}", phase_prefix, separator, phase_name);
+        // A STATE.md that names no phase (`Phase: 12`) publishes a number with
+        // no name (D-17). Emitting the separator and the colon anyway would
+        // render a dangling "P12\u{b7}" / "P12: "; the name-less form is the
+        // bare prefix, matching `state::fill_vars`'s `P{number}`.
+        let mut summary = if phase_name.is_empty() {
+            phase_prefix.clone()
+        } else {
+            format!("{}{}{}", phase_prefix, separator, phase_name)
+        };
 
         if !progress.is_empty() {
             summary.push(' ');
@@ -153,10 +161,12 @@ impl GsdProvider {
         }
 
         // Also update gsd_phase to use the new format
-        vars.insert(
-            "gsd_phase".into(),
-            format!("{}: {}", phase_prefix, phase_name),
-        );
+        let phase_display = if phase_name.is_empty() {
+            phase_prefix
+        } else {
+            format!("{}: {}", phase_prefix, phase_name)
+        };
+        vars.insert("gsd_phase".into(), phase_display);
         vars.insert("gsd_summary".into(), summary);
     }
 
