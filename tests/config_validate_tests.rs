@@ -719,7 +719,9 @@ fn render_unaffected_by_price_cache_state() {
         .expect("caches.prices.path must be a string (plan 12-02)")
         .to_string();
     assert!(
-        seeded.iter().any(|p| p.display().to_string() == prices_path),
+        seeded
+            .iter()
+            .any(|p| p.display().to_string() == prices_path),
         "caches.prices.path must be byte-EQUAL to a seeded path \
          (reported={prices_path:?} seeded={seeded:?})"
     );

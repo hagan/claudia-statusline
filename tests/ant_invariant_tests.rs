@@ -1509,6 +1509,130 @@ fn structural_guard_single_price_resolution_site() {
     );
 }
 
+/// Assemble the staleness vocabulary from fragments at RUNTIME so this file's
+/// own guard does not literally contain the declaration tokens it searches for.
+/// Mirrors [`resolution_tokens`] and `keyless_forbidden_tokens`.
+///
+/// Returns, in order: the consolidated diagnostic helper's declaration token,
+/// the PRE-12-02 second spelling that lived in `src/commands/ant.rs` (searched
+/// too, because a guard that knows only the surviving name cannot catch a
+/// reintroduction under the old one), and the price SOURCE SELECTION
+/// declaration token that this guard COUNTS rather than forbids.
+fn staleness_tokens() -> (String, String, String) {
+    (
+        format!("fn is{}(", "_stale"),
+        format!("fn age{}(", "_is_stale"),
+        format!("fn select{}(", "_synced_at"),
+    )
+}
+
+/// Exactly ONE **shared diagnostic** staleness decision exists under `src/`, and
+/// it lives in `src/ant/duration.rs`; the price **source-selection** decision is
+/// a separate, deliberate site whose count is pinned rather than forbidden.
+///
+/// # SCOPE — read this before trusting the name
+///
+/// This is a SOURCE-TOKEN SCAN over every `.rs` file under `src/`, recursively.
+/// It bounds **declaration sites**. It is **not** a call-graph reachability
+/// proof: it cannot tell you that a given site is reached from a render, only
+/// that no second site was declared.
+///
+/// `crate::pricing::select_synced_at` is **counted, not forbidden.** It decides
+/// price-cache freshness for SOURCE SELECTION, and it genuinely diverges from
+/// the diagnostic helper: on a MALFORMED threshold `is_stale` returns `false`
+/// (never stale) while `select_synced_at` falls back to the DEFAULT 30d window
+/// and still demotes an old cache. Blindly routing pricing through the shared
+/// helper would therefore CHANGE RENDERING, which is why plan 12-02 scoped the
+/// guarantee instead of widening it. (The divergence itself is pinned
+/// behaviourally by
+/// `duration::tests::is_stale_and_price_source_selection_diverge_only_on_malformed_threshold`.)
+///
+/// So the claim this guard supports is precisely **"exactly one SHARED
+/// DIAGNOSTIC staleness decision"** — NOT "exactly one staleness decision in
+/// `src/`", which was already false before this phase and remains false after
+/// it. A guard whose name over-claims is worse than no guard, because the next
+/// reader stops looking.
+///
+/// # FAILURE MODES
+///
+/// A. A second diagnostic staleness function declared anywhere under `src/`
+///    outside the allow-list — under EITHER historical spelling. Until plan
+///    12-02 there were two byte-identical private copies (`src/display.rs` and
+///    `src/commands/ant.rs`) and `config validate` was about to add a third;
+///    two surfaces reporting the same fact eventually disagree (D-12).
+/// B. The pricing source-selection site count moving off exactly one, or that
+///    one site leaving `src/pricing/mod.rs` — i.e. somebody adding a FOURTH
+///    freshness decision, or relocating the third.
+#[test]
+fn structural_guard_single_diagnostic_staleness_site() {
+    // The one legitimate DIAGNOSTIC site: the consolidated helper is DECLARED here.
+    const ALLOWED: &[&str] = &["src/ant/duration.rs"];
+    // The one legitimate price SOURCE SELECTION site.
+    const SELECTION_HOME: &str = "src/pricing/mod.rs";
+
+    let (is_stale_tok, age_is_stale_tok, selection_tok) = staleness_tokens();
+    let mut diagnostic_sites: Vec<String> = Vec::new();
+    let mut selection_sites: Vec<String> = Vec::new();
+
+    let files = walk_rs_files("src");
+    assert!(
+        files.len() >= 20,
+        "the recursive walk of `src/` recovered only {} .rs file(s) — the walk is \
+         broken, and a broken walk would make this guard pass VACUOUSLY",
+        files.len()
+    );
+
+    for rel in &files {
+        let source = read_src(rel);
+        for (i, line) in source.lines().enumerate() {
+            // `code_portion` strips `//` comments, so the doc comments that
+            // DESCRIBE the prohibition neither trip this guard nor satisfy it.
+            let code = code_portion(line);
+            if !ALLOWED.contains(&rel.as_str())
+                && (code.contains(is_stale_tok.as_str())
+                    || code.contains(age_is_stale_tok.as_str()))
+            {
+                diagnostic_sites.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+            }
+            if code.contains(selection_tok.as_str()) {
+                selection_sites.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+            }
+        }
+    }
+
+    // --- A. Zero re-definition of the shared diagnostic decision -------------
+    assert!(
+        diagnostic_sites.is_empty(),
+        "the DIAGNOSTIC staleness decision must be declared in EXACTLY ONE place \
+         ({ALLOWED:?} — D-12). A second copy means two surfaces (`ant doctor`, the \
+         render path, `config validate`) each own a private answer to the same \
+         question, and they will eventually disagree; that is exactly the state \
+         plan 12-02 consolidated away. Call `crate::ant::duration::is_stale` \
+         instead. Found {} offending declaration(s): {:#?}",
+        diagnostic_sites.len(),
+        diagnostic_sites
+    );
+
+    // --- B. Stable pricing source-selection site count -----------------------
+    assert_eq!(
+        selection_sites.len(),
+        1,
+        "the price SOURCE SELECTION decision must be declared EXACTLY ONCE. This \
+         guard counts it rather than forbidding it (see the SCOPE note above): it \
+         is a deliberate THIRD freshness decision whose malformed-threshold \
+         behaviour differs from the shared diagnostic helper's. A count other than \
+         one means a fourth freshness decision was added, or this one was moved. \
+         Found {} site(s): {:#?}",
+        selection_sites.len(),
+        selection_sites
+    );
+    assert!(
+        selection_sites[0].starts_with(&format!("{SELECTION_HOME}:")),
+        "the single price source-selection site must stay in {SELECTION_HOME}, found: {:?}",
+        selection_sites[0]
+    );
+}
+
 /// A `#[test]` block, as recovered from this file's own source.
 struct TestBlock {
     name: String,
