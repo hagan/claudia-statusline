@@ -597,3 +597,180 @@ fn seeded_cache_is_actually_consumed() {
          (reported={reported} seeded={seeded:?})"
     );
 }
+
+// ===========================================================================
+// Task 2: the D-18-scoped SC3 render-stability proofs.
+// ===========================================================================
+
+/// Offset of the first differing byte, or `None` when the slices are equal.
+fn first_difference(a: &[u8], b: &[u8]) -> Option<usize> {
+    if let Some(i) = a.iter().zip(b.iter()).position(|(x, y)| x != y) {
+        return Some(i);
+    }
+    if a.len() == b.len() {
+        None
+    } else {
+        Some(a.len().min(b.len()))
+    }
+}
+
+/// A fixed render payload whose `workspace.current_dir` is `dir`.
+fn render_payload(dir: &Path) -> String {
+    serde_json::json!({
+        "session_id": "phase-12-sc3-fixed-session",
+        "workspace": { "current_dir": dir.display().to_string() },
+        "model": { "id": "claude-opus-4-8" }
+    })
+    .to_string()
+}
+
+/// SC3, scoped per D-18 clause 1: the rendered status line is byte-identical
+/// across the four PRICE-CACHE states (absent / fresh / stale / corrupt) and
+/// exits 0 in all four.
+///
+/// **What this establishes and what it does not.** It establishes CACHE-STATE
+/// stability within a SINGLE binary; it establishes NOTHING about compatibility
+/// with a pre-Phase-12 binary (D-18 clause 3 forbids labelling a four-state
+/// comparison as before/after compatibility), and it makes no claim about the
+/// GSD segment, whose intended change under D-17/D-18 is pinned by plan 12-03.
+///
+/// `workspace.current_dir` points at the TEMP HOME on purpose: that directory
+/// contains no `.planning/` tree, so `gsd_phase` is empty and IDENTICAL on every
+/// side of the comparison. The default template gates its entire GSD segment on
+/// that variable, so holding it constant is what D-18 clause 3 requires of any
+/// byte-identity assertion.
+#[test]
+#[serial]
+fn render_unaffected_by_price_cache_state() {
+    let env = ConfigEnv::new(&clean_config());
+    let payload = render_payload(env.home_path());
+
+    let render = |label: &str| -> Vec<u8> {
+        let (ok, code, stdout, stderr) = env.run_with_stdin(&[], &payload);
+        assert!(
+            ok && code == Some(0),
+            "the render must exit 0 in the {label} cache state; code={code:?} stderr={stderr}"
+        );
+        stdout
+    };
+
+    // --- 1. absent -------------------------------------------------------
+    env.clear_caches();
+    // NEGATIVE CONTROL for the consumption probe used on the fresh arm below:
+    // with no cache on disk the self-throttle cannot fire, so the command falls
+    // through to the fetch (which cannot spawn `curl` under the replaced PATH).
+    let (_, _, throttle_absent, _) = env.run(&["ant", "sync-pricing", "--max-age", "365d"]);
+    assert!(
+        !String::from_utf8_lossy(&throttle_absent).contains("Price cache is fresh"),
+        "negative control: with the caches cleared the price cache must NOT be reported fresh"
+    );
+    let absent = render("absent");
+
+    // --- 2. fresh --------------------------------------------------------
+    let seeded = env.seed_cache("ant/prices.json", &fresh_price_cache_body());
+
+    // GUARD against the mis-seed class recurring here: prove the seeded price
+    // file is the one the binary READS before comparing any bytes. Without this,
+    // a future path regression silently turns the comparison below into "absent
+    // four times" and it still passes.
+    //
+    // `ant sync-pricing --max-age` self-throttles on `read_price_cache()` BEFORE
+    // any network or subprocess work, so this message is emitted if and only if
+    // the seeded document was read, parsed and accepted at the real cache path.
+    let (ok, code, throttle_fresh, stderr) = env.run(&["ant", "sync-pricing", "--max-age", "365d"]);
+    let throttle_text = String::from_utf8_lossy(&throttle_fresh).into_owned();
+    assert!(
+        ok && code == Some(0),
+        "the self-throttled sync must exit 0 with a fresh cache; code={code:?} stderr={stderr}"
+    );
+    assert!(
+        throttle_text.contains("Price cache is fresh"),
+        "the seeded price cache must be CONSUMED by the binary; got {throttle_text:?} \
+         (seeded={seeded:?})"
+    );
+    // ...and it must have been read from the root the binary actually resolves:
+    // all three caches share the `ant/` directory, so the models path `ant
+    // doctor --json` reports has the same parent as the seeded prices file.
+    let (_, _, doctor_out, _) = env.run(&["ant", "doctor", "--json"]);
+    let doctor = parse_json(&doctor_out, "ant doctor --json");
+    let models_path = doctor["caches"]["models"]["path"]
+        .as_str()
+        .expect("caches.models.path must be a string")
+        .to_string();
+    let live_dir = Path::new(&models_path)
+        .parent()
+        .expect("the models cache path has a parent")
+        .to_path_buf();
+    assert!(
+        seeded
+            .iter()
+            .any(|p| p.parent() == Some(live_dir.as_path())),
+        "the seeded price cache must sit in the cache directory the binary resolves \
+         (live={live_dir:?} seeded={seeded:?})"
+    );
+
+    let fresh = render("fresh");
+
+    // --- 3. stale --------------------------------------------------------
+    env.seed_cache("ant/prices.json", &stale_price_cache_body());
+    let stale = render("stale");
+
+    // --- 4. corrupt ------------------------------------------------------
+    env.seed_cache("ant/prices.json", "{not json");
+    let corrupt = render("corrupt");
+
+    let states = [
+        ("absent", &absent),
+        ("fresh", &fresh),
+        ("stale", &stale),
+        ("corrupt", &corrupt),
+    ];
+    for (label, bytes) in &states[1..] {
+        assert!(
+            first_difference(&absent, bytes).is_none(),
+            "the render must be byte-identical across price-cache states, but `absent` and \
+             `{label}` differ at byte offset {offset:?}: absent={absent_text:?} {label}={text:?}",
+            offset = first_difference(&absent, bytes),
+            absent_text = String::from_utf8_lossy(&absent),
+            text = String::from_utf8_lossy(bytes),
+        );
+    }
+
+    // The render must stay SILENT about cache health — "warnings never affect
+    // the render" is observable here rather than merely asserted.
+    for (label, bytes) in [("stale", &stale), ("corrupt", &corrupt)] {
+        let text = String::from_utf8_lossy(bytes).to_lowercase();
+        assert!(
+            !text.contains("warn") && !text.contains("stale"),
+            "the {label} render must not mention cache health: {text:?}"
+        );
+    }
+}
+
+/// NON-VACUITY PROOF for the byte comparator used by
+/// [`render_unaffected_by_price_cache_state`]: it can report a difference.
+///
+/// The difference is driven from the PAYLOAD (two different
+/// `workspace.current_dir` values), not from the environment, so the
+/// instrument's sensitivity does not depend on `NO_COLOR` handling.
+#[test]
+#[serial]
+fn render_byte_comparison_can_detect_a_difference() {
+    let env = ConfigEnv::new(&clean_config());
+
+    let other_dir = env.home_path().join("a-different-directory");
+    fs::create_dir_all(&other_dir).expect("create the second render directory");
+
+    let (ok_a, code_a, here, err_a) = env.run_with_stdin(&[], &render_payload(env.home_path()));
+    assert!(ok_a, "render must exit 0; code={code_a:?} stderr={err_a}");
+    let (ok_b, code_b, there, err_b) = env.run_with_stdin(&[], &render_payload(&other_dir));
+    assert!(ok_b, "render must exit 0; code={code_b:?} stderr={err_b}");
+
+    assert!(
+        first_difference(&here, &there).is_some(),
+        "the byte comparator is VACUOUS: two renders of visibly different payloads compared \
+         equal ({:?} vs {:?})",
+        String::from_utf8_lossy(&here),
+        String::from_utf8_lossy(&there),
+    );
+}
