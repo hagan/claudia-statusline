@@ -519,6 +519,189 @@ fn cap_chars(s: &str, max: usize) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// The per-section engine
+// ---------------------------------------------------------------------------
+
+/// Every top-level section `Config` recognizes — all fourteen, INCLUDING
+/// `"sync"` unconditionally.
+///
+/// `sync` is RECOGNIZED in every build and only DESERIALIZED and validated
+/// under `#[cfg(feature = "turso-sync")]`. In a default-features build a
+/// `[sync]` table is recognized and skipped SILENTLY: not an error, because
+/// D-09 would otherwise fail a legitimate turso user's config, and not a
+/// warning, because that is noise on every such config. A fourteen-element
+/// array that omits `sync` is the documented failure mode — do not write one.
+pub const KNOWN_SECTIONS: &[&str] = &[
+    "display",
+    "context",
+    "cost",
+    "database",
+    "retry",
+    "transcript",
+    "git",
+    "sync",
+    "burn_rate",
+    "layout",
+    "token_rate",
+    "gsd",
+    "ant",
+    "pricing",
+];
+
+/// Hard cap on how deep [`present_keys_for_section`] will walk.
+///
+/// Deeply nested tables are bounded by `toml`'s own parser, but the walk is
+/// recursive and must not be the thing that overflows the stack (T-12-12).
+const MAX_PRESENT_KEY_DEPTH: usize = 32;
+
+/// Dotted paths PRESENT under `document[section]`, relative to that section.
+///
+/// Intermediate tables are included as well as leaves, so
+/// `layout.components.git.enabled` contributes `components`,
+/// `components.git` and `components.git.enabled`. This is what backs
+/// [`SectionContext::is_set`] — the only way to tell an explicitly-written
+/// default from an omitted field once serde has applied `#[serde(default)]`.
+pub fn present_keys_for_section(document: &toml::Value, section: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    if let Some(value) = document.get(section) {
+        collect_present_keys(value, "", 0, &mut out);
+    }
+    out
+}
+
+fn collect_present_keys(
+    value: &toml::Value,
+    prefix: &str,
+    depth: usize,
+    out: &mut BTreeSet<String>,
+) {
+    if depth >= MAX_PRESENT_KEY_DEPTH {
+        return;
+    }
+    let Some(table) = value.as_table() else {
+        return;
+    };
+    for (key, child) in table {
+        let path = if prefix.is_empty() {
+            key.clone()
+        } else {
+            format!("{}.{}", prefix, key)
+        };
+        collect_present_keys(child, &path, depth + 1, out);
+        out.insert(path);
+    }
+}
+
+/// Validate one config document's TEXT, appending findings to `report`.
+///
+/// The pipeline (D-02):
+///
+/// 1. parse the whole document as a `toml::Value` — a failure is ONE
+///    `SyntaxError` and a return, because nothing else is knowable;
+/// 2. reject a non-table document;
+/// 3. report every unrecognized top-level key as an `UnknownKey` ERROR (D-09);
+/// 4. deserialize each KNOWN section's SUBTREE directly into its concrete type
+///    through `serde_ignored`;
+/// 5. on success report the ignored paths (PREFIXED with the section name —
+///    per-section paths come back relative) and run the section's semantic
+///    rules; on failure record EXACTLY ONE `TypeError` for that section, skip
+///    its semantic pass, and CONTINUE to the next section.
+///
+/// Step 4 is load-bearing, not stylistic: `[pricing]` MUST go through
+/// `PricingConfig::deserialize` directly and never through
+/// `crate::pricing::deserialize_lenient`, which opens with
+/// `toml::Value::deserialize(deserializer)?` and consumes the whole subtree —
+/// making a whole-`Config` `serde_ignored` pass silently blind in exactly the
+/// section QUAL-02 names.
+pub fn validate_config_text(text: &str, report: &mut Report) {
+    let document: toml::Value = match toml::from_str(text) {
+        Ok(value) => value,
+        Err(e) => {
+            report.error(
+                FindingKind::SyntaxError,
+                "<file>",
+                redact_toml_error(text, &e),
+            );
+            return;
+        }
+    };
+
+    let Some(table) = document.as_table() else {
+        report.error(
+            FindingKind::SyntaxError,
+            "<file>",
+            "config file must be a TOML table of sections",
+        );
+        return;
+    };
+
+    macro_rules! check_section {
+        ($name:expr, $ty:ty, $sub:expr) => {{
+            let mut ignored: Vec<String> = Vec::new();
+            match serde_ignored::deserialize::<_, _, $ty>($sub.clone(), |path| {
+                ignored.push(path.to_string())
+            }) {
+                Ok(section) => {
+                    for relative in ignored {
+                        // Per-section paths are RELATIVE (`aliasess`, not
+                        // `pricing.aliasess`) — the engine must prefix.
+                        report.error(
+                            FindingKind::UnknownKey,
+                            redact_key_path(&format!("{}.{}", $name, relative)),
+                            "unknown key (not a recognized setting)",
+                        );
+                    }
+                    let present = present_keys_for_section(&document, $name);
+                    let cx = SectionContext::new($name, &present, &document);
+                    section.validate(&cx, report);
+                }
+                Err(e) => {
+                    // EXACTLY ONE finding for a failed section, keyed at the
+                    // section name: the semantic pass is skipped (its input
+                    // never existed), and every other section still reports.
+                    report.error(FindingKind::TypeError, $name, redact_toml_error(text, &e));
+                }
+            }
+        }};
+    }
+
+    for (name, sub) in table {
+        if !KNOWN_SECTIONS.contains(&name.as_str()) {
+            report.error(
+                FindingKind::UnknownKey,
+                redact_key_path(name),
+                "unknown top-level section",
+            );
+            continue;
+        }
+
+        match name.as_str() {
+            "display" => check_section!("display", crate::config::DisplayConfig, sub),
+            "context" => check_section!("context", crate::config::ContextConfig, sub),
+            "cost" => check_section!("cost", crate::config::CostConfig, sub),
+            "database" => check_section!("database", crate::config::DatabaseConfig, sub),
+            "retry" => check_section!("retry", crate::config::RetryConfig, sub),
+            "transcript" => check_section!("transcript", crate::config::TranscriptConfig, sub),
+            "git" => check_section!("git", crate::config::GitConfig, sub),
+            "burn_rate" => check_section!("burn_rate", crate::config::BurnRateConfig, sub),
+            "layout" => check_section!("layout", crate::config::LayoutConfig, sub),
+            "token_rate" => check_section!("token_rate", crate::config::TokenRateConfig, sub),
+            "gsd" => check_section!("gsd", crate::gsd::config::GsdConfig, sub),
+            "ant" => check_section!("ant", crate::ant::config::AntConfig, sub),
+            "pricing" => check_section!("pricing", crate::pricing::PricingConfig, sub),
+            "sync" => {
+                // Recognized in EVERY build; deserialized and validated only
+                // where the type exists. Silence is deliberate — see
+                // `KNOWN_SECTIONS`.
+                #[cfg(feature = "turso-sync")]
+                check_section!("sync", crate::config::SyncConfig, sub);
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -682,5 +865,248 @@ mod tests {
         assert_eq!(child.key("enabled"), "layout.components.git.enabled");
         assert!(child.is_set("enabled"));
         assert!(!child.is_set("components.git.enabled"));
+    }
+
+    // -----------------------------------------------------------------------
+    // The per-section engine (plan 12-04 Task 3)
+    // -----------------------------------------------------------------------
+
+    fn run(text: &str) -> Report {
+        let mut report = Report::new();
+        validate_config_text(text, &mut report);
+        report
+    }
+
+    fn findings_at<'a>(report: &'a Report, key: &str) -> Vec<&'a Finding> {
+        report.findings.iter().filter(|f| f.key == key).collect()
+    }
+
+    fn has(report: &Report, kind: FindingKind, key: &str) -> bool {
+        report
+            .findings
+            .iter()
+            .any(|f| f.kind == kind && f.key == key)
+    }
+
+    #[test]
+    fn known_sections_cover_every_config_field_including_sync() {
+        assert_eq!(
+            KNOWN_SECTIONS.len(),
+            14,
+            "Config has exactly 14 top-level sections and no top-level scalars"
+        );
+        assert!(
+            KNOWN_SECTIONS.contains(&"sync"),
+            "`sync` must be RECOGNIZED in every build, feature or not"
+        );
+    }
+
+    #[test]
+    fn pricing_unknown_key_is_reported() {
+        // MUTATION PROOF 1 of the phase: a whole-`Config` `serde_ignored` pass
+        // cannot satisfy this assertion, because `src/config.rs` carries
+        // `deserialize_with = "crate::pricing::deserialize_lenient"` on the
+        // `pricing` field and that function consumes the whole subtree. The
+        // throwaway pass was written, run, observed to report `display.show_gti`
+        // while MISSING `pricing.aliasess`, and deleted (see 12-04-SUMMARY.md).
+        let report = run("[display]\nshow_gti = true\n\n[pricing]\naliasess = 1\n");
+        assert!(
+            has(&report, FindingKind::UnknownKey, "pricing.aliasess"),
+            "the per-section pass must see inside [pricing]: {:?}",
+            report.findings
+        );
+        assert!(
+            has(&report, FindingKind::UnknownKey, "display.show_gti"),
+            "and must still report other sections: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn type_error_in_one_section_does_not_suppress_another() {
+        let report = run("[display]\nprogress_bar_width = \"wide\"\n\n[pricing]\naliasess = 1\n");
+        assert!(
+            has(&report, FindingKind::TypeError, "display"),
+            "the bad type must be reported: {:?}",
+            report.findings
+        );
+        assert!(
+            has(&report, FindingKind::UnknownKey, "pricing.aliasess"),
+            "a type error in ONE section must not suppress another (D-02): {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn failed_section_reports_exactly_one_finding() {
+        // `source` fails deserialization (strict enum) AND `max_age` is
+        // semantically invalid. D-02's deliberate behaviour: the section's
+        // semantic pass never runs, so this is ONE finding, not two or three.
+        let report = run("[pricing]\nsource = \"nonsense\"\nmax_age = \"not-a-duration\"\n");
+
+        let pricing: Vec<&Finding> = report
+            .findings
+            .iter()
+            .filter(|f| f.key == "pricing" || f.key.starts_with("pricing."))
+            .collect();
+        assert_eq!(
+            pricing.len(),
+            1,
+            "a FAILED section must produce exactly ONE finding: {:?}",
+            pricing
+        );
+        assert_eq!(pricing[0].key, "pricing");
+        assert_eq!(pricing[0].kind, FindingKind::TypeError);
+        // Assert the ABSENCE explicitly — this is the contract downstream tests
+        // must not contradict by demanding a per-field finding as well.
+        assert!(
+            findings_at(&report, "pricing.max_age").is_empty(),
+            "a failed section must NOT also report its semantic rules: {:?}",
+            report.findings
+        );
+        assert!(findings_at(&report, "pricing.source").is_empty());
+    }
+
+    #[test]
+    fn unknown_top_level_section_is_an_error() {
+        let report = run("[nonsense]\nk = 1\n");
+        assert!(
+            has(&report, FindingKind::UnknownKey, "nonsense"),
+            "{:?}",
+            report.findings
+        );
+        assert_eq!(report.findings[0].severity, Severity::Error, "D-09");
+    }
+
+    #[test]
+    fn sync_section_is_never_an_unknown_key() {
+        // Must hold under BOTH `cargo test --lib` and
+        // `cargo test --all-features --lib`.
+        let report = run("[sync]\n");
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|f| f.kind == FindingKind::UnknownKey),
+            "[sync] must never be an unknown key in any build: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn free_form_map_keys_are_not_unknown_keys() {
+        let text = concat!(
+            "[pricing.aliases]\n",
+            "\"my-proxy\" = \"claude-opus-4-8\"\n",
+            "\n",
+            "[ant.accounts.work]\n",
+            "admin_key_command = [\"security\", \"-w\"]\n",
+            "nope = 1\n",
+        );
+        let report = run(text);
+
+        for finding in &report.findings {
+            assert!(
+                !finding.key.contains("my-proxy"),
+                "map KEYS are consumed, never ignored: {:?}",
+                finding
+            );
+        }
+        assert!(
+            findings_at(&report, "ant.accounts.work").is_empty(),
+            "a free-form map VALUE table is not an unknown key: {:?}",
+            report.findings
+        );
+        assert!(
+            has(&report, FindingKind::UnknownKey, "ant.accounts.work.nope"),
+            "but a typo INSIDE a map value's struct is: {:?}",
+            report.findings
+        );
+        assert_eq!(
+            report
+                .findings
+                .iter()
+                .filter(|f| f.kind == FindingKind::UnknownKey)
+                .count(),
+            1,
+            "exactly one unknown key here: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn syntax_error_reports_one_finding_with_position() {
+        let report = run("[display\nprogress_bar_width = 10\n");
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "an unparseable document yields exactly one finding: {:?}",
+            report.findings
+        );
+        assert_eq!(report.findings[0].kind, FindingKind::SyntaxError);
+        assert!(
+            report.findings[0].message.contains("line")
+                && report.findings[0].message.contains("column"),
+            "the syntax finding must carry a locator: {}",
+            report.findings[0].message
+        );
+    }
+
+    #[test]
+    fn engine_never_emits_config_values() {
+        for (label, text) in [("syntax", SENTINEL_SYNTAX), ("type", SENTINEL_TYPE)] {
+            let report = run(text);
+            assert!(
+                !report.findings.is_empty(),
+                "{label}: the fixture must actually produce findings"
+            );
+            for finding in &report.findings {
+                assert!(
+                    !finding.message.contains("SENTINEL"),
+                    "{label}: finding message leaked a config value: {:?}",
+                    finding
+                );
+                assert!(
+                    !finding.key.contains("SENTINEL"),
+                    "{label}: finding key leaked a config value: {:?}",
+                    finding
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn section_context_reports_explicit_field_presence() {
+        // The exact helper the engine calls to build each SectionContext.
+        let written: toml::Value = toml::from_str("[pricing]\nmax_age = \"30d\"\n").expect("parse");
+        let omitted: toml::Value =
+            toml::from_str("[pricing]\nsource = \"bundled\"\n").expect("parse");
+
+        let keys_written = present_keys_for_section(&written, "pricing");
+        let keys_omitted = present_keys_for_section(&omitted, "pricing");
+        let cx_written = SectionContext::new("pricing", &keys_written, &written);
+        let cx_omitted = SectionContext::new("pricing", &keys_omitted, &omitted);
+
+        assert!(
+            cx_written.is_set("max_age"),
+            "an explicitly written field must be visible as SET"
+        );
+        assert!(
+            !cx_omitted.is_set("max_age"),
+            "an omitted field must NOT be visible as SET"
+        );
+
+        // Why this capability has to exist: after deserialization the two are
+        // indistinguishable, because `max_age` defaults to exactly "30d".
+        let a: crate::pricing::PricingConfig =
+            toml::from_str::<toml::Value>("[pricing]\nmax_age = \"30d\"\n")
+                .unwrap()
+                .get("pricing")
+                .unwrap()
+                .clone()
+                .try_into()
+                .unwrap();
+        let b = crate::pricing::PricingConfig::default();
+        assert_eq!(a.max_age, b.max_age);
     }
 }
