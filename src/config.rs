@@ -1,4 +1,4 @@
-use crate::config_validation::Validate;
+use crate::config_validation::{FindingKind, Report, SectionContext, Validate};
 use crate::error::{Result, StatuslineError};
 use crate::gsd::config::GsdConfig;
 use log::warn;
@@ -122,8 +122,153 @@ pub struct DisplayConfig {
     pub rate_limit_reset_countdown: bool,
 }
 
-/// Semantic rules for `[display]` are filled in by plan 12-05.
-impl Validate for DisplayConfig {}
+// ---------------------------------------------------------------------------
+// Shared semantic-validation helpers (plan 12-05)
+//
+// None of these performs network IO, spawns a process, or writes to disk. The
+// only filesystem access any rule in this file makes is the `.exists()`-guarded
+// read the theme manager and the preset loader already perform on the render
+// path, and it happens once per `config validate` run, never per render.
+// ---------------------------------------------------------------------------
+
+/// Reject a non-finite float BEFORE any range comparison.
+///
+/// TOML genuinely accepts `nan`, `inf`, `+inf` and `-inf` as float literals, and
+/// EVERY comparison against a `nan` is `false` — so a bare `v < 0.0` guard lets
+/// `nan` through silently, which is precisely the class of silent fall-through
+/// `config validate` exists to end. Every float rule in this file calls this
+/// FIRST and skips its range comparison when it returns `false`, so one field
+/// never produces both a finiteness error and a bogus range/relation finding.
+fn check_finite(cx: &SectionContext, field: &str, v: f64, report: &mut Report) -> bool {
+    if v.is_finite() {
+        return true;
+    }
+    report.error(
+        FindingKind::InvalidValue,
+        cx.key(field),
+        format!(
+            "`{}` must be a finite number — TOML accepts `nan`, `inf` and `-inf` as float literals, but none of them is usable here",
+            field
+        ),
+    );
+    false
+}
+
+/// Finiteness gate followed by an inclusive range check.
+///
+/// Returns `true` only when the value is finite AND within `[min, max]`, so a
+/// caller can skip a cross-field relation that a rejected value would make
+/// meaningless.
+fn check_in_range(
+    cx: &SectionContext,
+    field: &str,
+    v: f64,
+    min: f64,
+    max: f64,
+    report: &mut Report,
+) -> bool {
+    if !check_finite(cx, field, v, report) {
+        return false;
+    }
+    if v < min || v > max {
+        report.error(
+            FindingKind::InvalidValue,
+            cx.key(field),
+            format!("`{}` must be between {} and {} inclusive", field, min, max),
+        );
+        return false;
+    }
+    true
+}
+
+/// Check an enum-like string against its legal set (D-04).
+///
+/// The message ALWAYS enumerates the legal set — that is what turns a silent
+/// `match … { _ => default }` fall-through into an actionable finding. The
+/// offending value is deliberately NOT echoed: `Finding::message` carries no
+/// config value text (the key is the locator), which keeps every message safe
+/// by construction rather than by per-field review.
+fn check_enum(cx: &SectionContext, field: &str, value: &str, legal: &[&str], report: &mut Report) {
+    if legal.contains(&value) {
+        return;
+    }
+    report.error(
+        FindingKind::InvalidValue,
+        cx.key(field),
+        format!(
+            "invalid value for `{}`; legal values are: {}",
+            field,
+            legal.join(", ")
+        ),
+    );
+}
+
+/// Semantic rules for `[display]` (plan 12-05).
+impl Validate for DisplayConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        if self.progress_bar_width == 0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("progress_bar_width"),
+                "`progress_bar_width` must be at least 1 — a zero-width bar renders nothing",
+            );
+        } else if self.progress_bar_width > 100 {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("progress_bar_width"),
+                "`progress_bar_width` is a fixed character count, not a percentage; a width above 100 will not fit a normal terminal",
+            );
+        }
+
+        // All three feed the SAME progress bar, so they share a scale and an
+        // expected ordering.
+        let caution_ok = check_in_range(
+            cx,
+            "context_caution_threshold",
+            self.context_caution_threshold,
+            0.0,
+            100.0,
+            report,
+        );
+        let warning_ok = check_in_range(
+            cx,
+            "context_warning_threshold",
+            self.context_warning_threshold,
+            0.0,
+            100.0,
+            report,
+        );
+        let critical_ok = check_in_range(
+            cx,
+            "context_critical_threshold",
+            self.context_critical_threshold,
+            0.0,
+            100.0,
+            report,
+        );
+
+        let ascending = self.context_caution_threshold <= self.context_warning_threshold
+            && self.context_warning_threshold <= self.context_critical_threshold;
+        if caution_ok && warning_ok && critical_ok && !ascending {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("context_warning_threshold"),
+                "the three context thresholds colour one progress bar and are expected to ascend: caution <= warning <= critical",
+            );
+        }
+
+        // Built-ins PLUS the user themes directory — `embedded_themes()` alone
+        // would reject a legitimate user theme file.
+        let themes = crate::theme::ThemeManager::new().list_themes();
+        if !themes.iter().any(|t| t == &self.theme) {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("theme"),
+                format!("unknown theme; available themes are: {}", themes.join(", ")),
+            );
+        }
+    }
+}
 
 /// Context window configuration
 ///
@@ -266,8 +411,68 @@ pub struct ContextConfig {
     pub percentage_mode: String,
 }
 
-/// Semantic rules for `[context]` are filled in by plan 12-05.
-impl Validate for ContextConfig {}
+/// Semantic rules for `[context]` (plan 12-05).
+impl Validate for ContextConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        if self.window_size == 0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("window_size"),
+                "`window_size` must be greater than 0 — it is the fallback context window for models detection does not recognize",
+            );
+        }
+
+        // The map KEYS are free-form model display names and are NEVER a
+        // finding; only a zero VALUE is.
+        for (model, size) in &self.model_windows {
+            if *size == 0 {
+                report.error(
+                    FindingKind::InvalidValue,
+                    crate::config_validation::redact_key_path(
+                        &cx.key(&format!("model_windows.{}", model)),
+                    ),
+                    "a `model_windows` override must be greater than 0",
+                );
+            }
+        }
+
+        check_in_range(
+            cx,
+            "learning_confidence_threshold",
+            self.learning_confidence_threshold,
+            0.0,
+            1.0,
+            report,
+        );
+
+        if self.window_size > 0 && self.buffer_size >= self.window_size {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("buffer_size"),
+                "`buffer_size` is reserved out of `window_size`; a buffer at or above the window leaves no usable context",
+            );
+        }
+
+        check_in_range(
+            cx,
+            "auto_compact_threshold",
+            self.auto_compact_threshold,
+            0.0,
+            100.0,
+            report,
+        );
+
+        // `src/utils.rs` matches this with a `_ =>` arm that silently falls back
+        // to "full".
+        check_enum(
+            cx,
+            "percentage_mode",
+            &self.percentage_mode,
+            &["full", "working"],
+            report,
+        );
+    }
+}
 
 /// Cost threshold configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -280,8 +485,38 @@ pub struct CostConfig {
     pub medium_threshold: f64,
 }
 
-/// Semantic rules for `[cost]` are filled in by plan 12-05.
-impl Validate for CostConfig {}
+/// Semantic rules for `[cost]` (plan 12-05).
+impl Validate for CostConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        let low_ok = check_finite(cx, "low_threshold", self.low_threshold, report);
+        if low_ok && self.low_threshold < 0.0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("low_threshold"),
+                "`low_threshold` is a dollar amount and must not be negative",
+            );
+        }
+
+        let medium_ok = check_finite(cx, "medium_threshold", self.medium_threshold, report);
+        if medium_ok && self.medium_threshold < 0.0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("medium_threshold"),
+                "`medium_threshold` is a dollar amount and must not be negative",
+            );
+        }
+
+        // Only meaningful once both values are real numbers — the finiteness
+        // gate short-circuits this relation rather than comparing against `nan`.
+        if low_ok && medium_ok && self.low_threshold >= self.medium_threshold {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("low_threshold"),
+                "cost colours ascend green -> yellow -> red, so `low_threshold` is expected to be below `medium_threshold`",
+            );
+        }
+    }
+}
 
 /// Database configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -313,8 +548,47 @@ pub struct DatabaseConfig {
     pub retention_days_monthly: Option<u32>,
 }
 
-/// Semantic rules for `[database]` are filled in by plan 12-05.
-impl Validate for DatabaseConfig {}
+/// Semantic rules for `[database]` (plan 12-05).
+impl Validate for DatabaseConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        if self.busy_timeout_ms == 0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("busy_timeout_ms"),
+                "`busy_timeout_ms` must be greater than 0 — a zero busy timeout fails immediately on any lock contention",
+            );
+        }
+
+        // A RELATIVE `path` is resolved against the data directory at runtime,
+        // so probing its parent from the validating process's CWD would be a
+        // false positive. Only an ABSOLUTE path can be checked here, and it is
+        // checked by stat alone — the directory is NEVER created.
+        if !self.path.is_empty() {
+            let path = Path::new(&self.path);
+            if path.is_absolute() {
+                if let Some(parent) = path.parent() {
+                    if !parent.as_os_str().is_empty() && !parent.exists() {
+                        report.warn(
+                            FindingKind::InvalidValue,
+                            cx.key("path"),
+                            "the parent directory of `path` does not exist; the database cannot be created there",
+                        );
+                    }
+                }
+            }
+        }
+
+        // A real deserialized field (`skip_serializing`, never an unknown key —
+        // D-09), retained only for v2.x compatibility.
+        if self.json_backup {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("json_backup"),
+                "`json_backup` has had no effect since v3.0.0 — storage is SQLite-only and JSON writes were removed",
+            );
+        }
+    }
+}
 
 /// Retry configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -333,8 +607,18 @@ pub struct RetryConfig {
     pub network_ops: RetrySettings,
 }
 
-/// Semantic rules for `[retry]` are filled in by plan 12-05.
-impl Validate for RetryConfig {}
+/// Semantic rules for `[retry]` (plan 12-05).
+///
+/// Each nested `RetrySettings` is validated through `cx.child(..)`, which
+/// narrows the dotted prefix and the present-key set in one call.
+impl Validate for RetryConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        self.file_ops.validate(&cx.child("file_ops"), report);
+        self.db_ops.validate(&cx.child("db_ops"), report);
+        self.git_ops.validate(&cx.child("git_ops"), report);
+        self.network_ops.validate(&cx.child("network_ops"), report);
+    }
+}
 
 /// Individual retry settings
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,6 +637,45 @@ pub struct RetrySettings {
     pub backoff_factor: f32,
 }
 
+/// Semantic rules for one `[retry.*]` block (plan 12-05).
+impl Validate for RetrySettings {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        if self.max_attempts == 0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("max_attempts"),
+                "`max_attempts` must be at least 1 — zero attempts means the operation never runs",
+            );
+        } else if self.max_attempts > 10 {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("max_attempts"),
+                "`max_attempts` above 10 multiplies the worst-case latency of an operation the render path waits on",
+            );
+        }
+
+        if self.initial_delay_ms > self.max_delay_ms {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("initial_delay_ms"),
+                "`initial_delay_ms` must not exceed `max_delay_ms`",
+            );
+        }
+
+        // `backoff_factor` is an `f32`; widened only so ONE finiteness gate
+        // serves every float rule in this file.
+        if check_finite(cx, "backoff_factor", self.backoff_factor as f64, report)
+            && self.backoff_factor < 1.0
+        {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("backoff_factor"),
+                "`backoff_factor` must be at least 1.0 — a factor below 1.0 shrinks the delay on every retry",
+            );
+        }
+    }
+}
+
 /// Transcript processing configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -361,8 +684,18 @@ pub struct TranscriptConfig {
     pub buffer_lines: usize,
 }
 
-/// Semantic rules for `[transcript]` are filled in by plan 12-05.
-impl Validate for TranscriptConfig {}
+/// Semantic rules for `[transcript]` (plan 12-05).
+impl Validate for TranscriptConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        if self.buffer_lines == 0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("buffer_lines"),
+                "`buffer_lines` must be at least 1 — a zero-line buffer discards every transcript line",
+            );
+        }
+    }
+}
 
 /// Git configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -372,8 +705,24 @@ pub struct GitConfig {
     pub timeout_ms: u32,
 }
 
-/// Semantic rules for `[git]` are filled in by plan 12-05.
-impl Validate for GitConfig {}
+/// Semantic rules for `[git]` (plan 12-05).
+impl Validate for GitConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        if self.timeout_ms == 0 {
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("timeout_ms"),
+                "`timeout_ms` must be greater than 0 — a zero timeout aborts every git call",
+            );
+        } else if self.timeout_ms > 5000 {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("timeout_ms"),
+                "the render path's whole budget is a few milliseconds; a git timeout above 5000ms can stall the status line",
+            );
+        }
+    }
+}
 
 /// Burn rate calculation configuration
 ///
@@ -835,9 +1184,44 @@ pub struct SyncConfig {
     pub turso: TursoConfig,
 }
 
-/// Semantic rules for `[sync]` are filled in by plan 12-05.
+/// Semantic rules for `[sync]` (plan 12-05). Exists only under
+/// `--features turso-sync`, the only build where `SyncConfig` is a field.
 #[cfg(feature = "turso-sync")]
-impl Validate for SyncConfig {}
+impl Validate for SyncConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        // The struct's own doc says turso is the only supported provider.
+        check_enum(cx, "provider", &self.provider, &["turso"], report);
+
+        check_in_range(
+            cx,
+            "soft_quota_fraction",
+            self.soft_quota_fraction,
+            0.0,
+            1.0,
+            report,
+        );
+
+        if self.sync_interval_seconds == 0 {
+            report.warn(
+                FindingKind::InvalidValue,
+                cx.key("sync_interval_seconds"),
+                "`sync_interval_seconds` of 0 removes every interval guard between sync attempts",
+            );
+        }
+
+        let turso = cx.child("turso");
+        if self.enabled && self.turso.database_url.is_empty() {
+            report.warn(
+                FindingKind::InvalidValue,
+                turso.key("database_url"),
+                "sync is enabled but `database_url` is empty; nothing can be synced",
+            );
+        }
+        // `turso.auth_token` deliberately has NO rule: it is a credential, and
+        // no finding may carry it or reference its content. Pinned by
+        // `validate_sync_never_echoes_auth_token`.
+    }
+}
 
 /// Turso-specific sync configuration
 #[cfg(feature = "turso-sync")]
@@ -2250,5 +2634,452 @@ mod tests {
                 "config_candidate_paths must perform NO filesystem access, found `{forbidden}` in:\n{body}"
             );
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Semantic validation rules (plan 12-05 Task 1)
+    // -----------------------------------------------------------------------
+
+    use crate::config_validation::{present_keys_for_section, Severity};
+
+    /// Build a `SectionContext` over an inline document and run ONE section's
+    /// rules. The document is the TARGET file, exactly as the engine supplies
+    /// it, so cross-section lookups (`display.theme`) resolve from it.
+    fn validate_section<V: Validate>(section: &V, name: &str, document: &str) -> Report {
+        let doc: toml::Value = toml::from_str(document).expect("fixture document parses");
+        let keys = present_keys_for_section(&doc, name);
+        let cx = SectionContext::new(name, &keys, &doc);
+        let mut report = Report::new();
+        section.validate(&cx, &mut report);
+        report
+    }
+
+    fn findings_for<'a>(
+        report: &'a Report,
+        key: &str,
+    ) -> Vec<&'a crate::config_validation::Finding> {
+        report.findings.iter().filter(|f| f.key == key).collect()
+    }
+
+    fn severities_at(report: &Report, key: &str) -> Vec<Severity> {
+        findings_for(report, key)
+            .iter()
+            .map(|f| f.severity)
+            .collect()
+    }
+
+    #[test]
+    fn validate_display_rejects_unknown_theme_and_names_the_alternatives() {
+        let display = DisplayConfig {
+            theme: "nonexistent".to_string(),
+            ..DisplayConfig::default()
+        };
+        let report = validate_section(&display, "display", "[display]\ntheme = \"nonexistent\"\n");
+
+        let theme_findings = findings_for(&report, "display.theme");
+        assert_eq!(
+            theme_findings.len(),
+            1,
+            "exactly one finding for an unknown theme: {:?}",
+            report.findings
+        );
+        assert_eq!(theme_findings[0].severity, Severity::Error);
+        assert_eq!(theme_findings[0].kind, FindingKind::InvalidValue);
+        let msg = &theme_findings[0].message;
+        for name in ["dark", "light", "gruvbox"] {
+            assert!(
+                msg.contains(name),
+                "the message must enumerate real theme names, missing `{name}`: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_display_accepts_every_embedded_theme() {
+        for name in crate::theme::Theme::embedded_themes() {
+            let display = DisplayConfig {
+                theme: name.to_string(),
+                ..DisplayConfig::default()
+            };
+            let report = validate_section(&display, "display", "[display]\n");
+            assert!(
+                findings_for(&report, "display.theme").is_empty(),
+                "embedded theme `{name}` must validate: {:?}",
+                report.findings
+            );
+        }
+    }
+
+    #[test]
+    fn validate_display_bar_width_and_threshold_order() {
+        let display = DisplayConfig {
+            progress_bar_width: 0,
+            ..DisplayConfig::default()
+        };
+        let report = validate_section(&display, "display", "[display]\n");
+        assert_eq!(
+            severities_at(&report, "display.progress_bar_width"),
+            vec![Severity::Error]
+        );
+
+        let wide = DisplayConfig {
+            progress_bar_width: 400,
+            ..DisplayConfig::default()
+        };
+        let report = validate_section(&wide, "display", "[display]\n");
+        assert_eq!(
+            severities_at(&report, "display.progress_bar_width"),
+            vec![Severity::Warning]
+        );
+
+        // Out of range is an ERROR; merely out of ORDER is a warning.
+        let out_of_range = DisplayConfig {
+            context_warning_threshold: 140.0,
+            ..DisplayConfig::default()
+        };
+        let report = validate_section(&out_of_range, "display", "[display]\n");
+        assert_eq!(
+            severities_at(&report, "display.context_warning_threshold"),
+            vec![Severity::Error],
+            "an out-of-range threshold must not ALSO produce the ordering warning: {:?}",
+            report.findings
+        );
+
+        let unordered = DisplayConfig {
+            context_caution_threshold: 95.0,
+            ..DisplayConfig::default()
+        };
+        let report = validate_section(&unordered, "display", "[display]\n");
+        assert_eq!(
+            severities_at(&report, "display.context_warning_threshold"),
+            vec![Severity::Warning]
+        );
+    }
+
+    #[test]
+    fn validate_display_default_is_clean() {
+        let report = validate_section(&DisplayConfig::default(), "display", "[display]\n");
+        assert!(
+            report.findings.is_empty(),
+            "the shipped default must validate cleanly: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn validate_context_section_rules() {
+        let context = ContextConfig {
+            window_size: 0,
+            learning_confidence_threshold: 1.7,
+            auto_compact_threshold: -1.0,
+            percentage_mode: "partial".to_string(),
+            ..ContextConfig::default()
+        };
+        let report = validate_section(&context, "context", "[context]\n");
+
+        for key in [
+            "context.window_size",
+            "context.learning_confidence_threshold",
+            "context.auto_compact_threshold",
+            "context.percentage_mode",
+        ] {
+            assert_eq!(
+                severities_at(&report, key),
+                vec![Severity::Error],
+                "expected one error at {key}: {:?}",
+                report.findings
+            );
+        }
+
+        let mode = findings_for(&report, "context.percentage_mode")[0]
+            .message
+            .clone();
+        assert!(
+            mode.contains("full") && mode.contains("working"),
+            "the enum message must name the legal set: {mode}"
+        );
+
+        // Cross-field: a buffer at or above the window leaves nothing usable.
+        let crowded = ContextConfig {
+            buffer_size: ContextConfig::default().window_size,
+            ..ContextConfig::default()
+        };
+        let report = validate_section(&crowded, "context", "[context]\n");
+        assert_eq!(
+            severities_at(&report, "context.buffer_size"),
+            vec![Severity::Warning]
+        );
+    }
+
+    #[test]
+    fn validate_context_model_windows_keys_are_never_findings() {
+        let mut context = ContextConfig::default();
+        context
+            .model_windows
+            .insert("Claude 3.5 Sonnet".to_string(), 200_000);
+        context.model_windows.insert("zero-model".to_string(), 0);
+        let report = validate_section(&context, "context", "[context]\n");
+
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| !f.key.contains("Claude 3.5 Sonnet")),
+            "a legitimate free-form model key must produce NO finding: {:?}",
+            report.findings
+        );
+        assert_eq!(
+            severities_at(&report, "context.model_windows.zero-model"),
+            vec![Severity::Error],
+            "but a zero VALUE is an error: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn validate_cost_rejects_non_finite() {
+        // TOML accepts `nan` and `inf` literals; a bare `v < 0.0` guard passes
+        // both silently. Confirm the document shape is real, not hypothetical.
+        let doc = "[cost]\nlow_threshold = nan\nmedium_threshold = inf\n";
+        let parsed: CostConfig = toml::from_str::<toml::Value>(doc)
+            .expect("nan/inf are valid TOML floats")
+            .get("cost")
+            .unwrap()
+            .clone()
+            .try_into()
+            .expect("and deserialize into f64 fields");
+        assert!(parsed.low_threshold.is_nan());
+        assert!(parsed.medium_threshold.is_infinite());
+
+        let report = validate_section(&parsed, "cost", doc);
+
+        assert_eq!(
+            severities_at(&report, "cost.low_threshold"),
+            vec![Severity::Error],
+            "exactly one error, and NO range-relation warning, for a non-finite value: {:?}",
+            report.findings
+        );
+        assert_eq!(
+            severities_at(&report, "cost.medium_threshold"),
+            vec![Severity::Error],
+            "{:?}",
+            report.findings
+        );
+        assert_eq!(report.findings.len(), 2, "{:?}", report.findings);
+        assert!(!report.has_warnings());
+    }
+
+    #[test]
+    fn validate_cost_ordering_is_a_warning_not_an_error() {
+        let cost = CostConfig {
+            low_threshold: 5.0,
+            medium_threshold: 1.0,
+        };
+        let report = validate_section(&cost, "cost", "[cost]\n");
+        assert_eq!(
+            severities_at(&report, "cost.low_threshold"),
+            vec![Severity::Warning],
+            "an inverted (but valid) pair is advisory only: {:?}",
+            report.findings
+        );
+        assert!(!report.has_errors());
+
+        let negative = CostConfig {
+            low_threshold: -1.0,
+            medium_threshold: 10.0,
+        };
+        let report = validate_section(&negative, "cost", "[cost]\n");
+        assert_eq!(
+            severities_at(&report, "cost.low_threshold"),
+            vec![Severity::Error]
+        );
+    }
+
+    #[test]
+    fn validate_database_section_rules() {
+        let db = DatabaseConfig {
+            busy_timeout_ms: 0,
+            json_backup: true,
+            ..DatabaseConfig::default()
+        };
+        let report = validate_section(&db, "database", "[database]\n");
+        assert_eq!(
+            severities_at(&report, "database.busy_timeout_ms"),
+            vec![Severity::Error]
+        );
+        assert_eq!(
+            severities_at(&report, "database.json_backup"),
+            vec![Severity::Warning],
+            "json_backup is a real deserialized field, never an unknown key (D-09)"
+        );
+
+        // A relative path is resolved against the data directory at runtime and
+        // must NOT be probed from the validating process's CWD.
+        let relative = DatabaseConfig {
+            path: "stats.db".to_string(),
+            ..DatabaseConfig::default()
+        };
+        let report = validate_section(&relative, "database", "[database]\n");
+        assert!(
+            findings_for(&report, "database.path").is_empty(),
+            "a relative path must not be a false positive: {:?}",
+            report.findings
+        );
+
+        let absent = std::env::temp_dir().join("claudia-statusline-no-such-dir-12-05");
+        assert!(!absent.exists(), "fixture precondition");
+        let missing_parent = DatabaseConfig {
+            path: absent.join("stats.db").to_string_lossy().to_string(),
+            ..DatabaseConfig::default()
+        };
+        let report = validate_section(&missing_parent, "database", "[database]\n");
+        assert_eq!(
+            severities_at(&report, "database.path"),
+            vec![Severity::Warning]
+        );
+        assert!(
+            !absent.exists(),
+            "validation must STAT only — it may never create the directory"
+        );
+    }
+
+    #[test]
+    fn validate_retry_reports_nested_keys_per_block() {
+        let mut retry = RetryConfig::default();
+        retry.file_ops.max_attempts = 0;
+        retry.db_ops.initial_delay_ms = 10_000;
+        retry.db_ops.max_delay_ms = 100;
+        retry.git_ops.backoff_factor = 0.5;
+        retry.network_ops.max_attempts = 50;
+
+        let report = validate_section(&retry, "retry", "[retry]\n");
+        assert_eq!(
+            severities_at(&report, "retry.file_ops.max_attempts"),
+            vec![Severity::Error]
+        );
+        assert_eq!(
+            severities_at(&report, "retry.db_ops.initial_delay_ms"),
+            vec![Severity::Error]
+        );
+        assert_eq!(
+            severities_at(&report, "retry.git_ops.backoff_factor"),
+            vec![Severity::Error]
+        );
+        assert_eq!(
+            severities_at(&report, "retry.network_ops.max_attempts"),
+            vec![Severity::Warning]
+        );
+
+        let mut nonfinite = RetryConfig::default();
+        nonfinite.file_ops.backoff_factor = f32::NAN;
+        let report = validate_section(&nonfinite, "retry", "[retry]\n");
+        assert_eq!(
+            severities_at(&report, "retry.file_ops.backoff_factor"),
+            vec![Severity::Error],
+            "the finiteness gate covers the f32 field too: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn validate_transcript_and_git_sections() {
+        let report = validate_section(
+            &TranscriptConfig { buffer_lines: 0 },
+            "transcript",
+            "[transcript]\n",
+        );
+        assert_eq!(
+            severities_at(&report, "transcript.buffer_lines"),
+            vec![Severity::Error]
+        );
+
+        let report = validate_section(&GitConfig { timeout_ms: 0 }, "git", "[git]\n");
+        assert_eq!(
+            severities_at(&report, "git.timeout_ms"),
+            vec![Severity::Error]
+        );
+
+        let report = validate_section(&GitConfig { timeout_ms: 30_000 }, "git", "[git]\n");
+        assert_eq!(
+            severities_at(&report, "git.timeout_ms"),
+            vec![Severity::Warning]
+        );
+
+        let report = validate_section(&GitConfig::default(), "git", "[git]\n");
+        assert!(report.findings.is_empty(), "{:?}", report.findings);
+    }
+
+    #[cfg(feature = "turso-sync")]
+    #[test]
+    fn validate_sync_provider_and_quota() {
+        let sync = SyncConfig {
+            provider: "libsql".to_string(),
+            soft_quota_fraction: 1.5,
+            ..SyncConfig::default()
+        };
+        let report = validate_section(&sync, "sync", "[sync]\n");
+
+        assert_eq!(
+            severities_at(&report, "sync.provider"),
+            vec![Severity::Error],
+            "{:?}",
+            report.findings
+        );
+        assert!(
+            findings_for(&report, "sync.provider")[0]
+                .message
+                .contains("turso"),
+            "the message must name the only supported provider"
+        );
+        assert_eq!(
+            severities_at(&report, "sync.soft_quota_fraction"),
+            vec![Severity::Error],
+            "{:?}",
+            report.findings
+        );
+
+        let report = validate_section(&SyncConfig::default(), "sync", "[sync]\n");
+        assert!(
+            report.findings.is_empty(),
+            "the shipped sync default must validate cleanly: {:?}",
+            report.findings
+        );
+    }
+
+    #[cfg(feature = "turso-sync")]
+    #[test]
+    fn validate_sync_never_echoes_auth_token() {
+        let sync = SyncConfig {
+            enabled: true,
+            provider: "libsql".to_string(),
+            soft_quota_fraction: 9.0,
+            sync_interval_seconds: 0,
+            turso: TursoConfig {
+                auth_token: "sk-ant-SENTINEL-EEE".to_string(),
+                ..TursoConfig::default()
+            },
+        };
+        let report = validate_section(
+            &sync,
+            "sync",
+            "[sync]\n[sync.turso]\nauth_token = \"sk-ant-SENTINEL-EEE\"\n",
+        );
+
+        assert!(
+            !report.findings.is_empty(),
+            "the fixture must actually produce findings"
+        );
+        for finding in &report.findings {
+            assert!(
+                !finding.key.contains("SENTINEL") && !finding.message.contains("SENTINEL"),
+                "a credential must never reach a finding: {:?}",
+                finding
+            );
+        }
+        assert!(
+            findings_for(&report, "sync.turso.auth_token").is_empty(),
+            "`auth_token` has no rule at all: {:?}",
+            report.findings
+        );
     }
 }
