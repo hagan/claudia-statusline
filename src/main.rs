@@ -110,6 +110,36 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+enum SessionsAction {
+    /// List sessions newest first with an index for `show` (default)
+    List {
+        /// Show every session instead of the newest 25
+        #[arg(long)]
+        all: bool,
+        /// Only sessions with attribution data (main_requests > 0)
+        #[arg(long)]
+        attributed: bool,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+    /// Print all parameters of one session: `#` from the list or a session id prefix
+    Show {
+        /// List index (1-based) or session id prefix
+        selector: String,
+    },
+    /// Interactive: list, read a selection from the terminal, show it
+    Pick {
+        /// Show every session instead of the newest 25
+        #[arg(long)]
+        all: bool,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
     /// Token attribution per Claude Code version (default) or per session:
     /// main requests, input traffic and output per request, subagent share.
@@ -122,6 +152,13 @@ enum Commands {
         /// List the most recent sessions instead
         #[arg(long)]
         sessions: bool,
+    },
+
+    /// Browse recorded sessions: list them newest first, pick one, print its
+    /// parameters (model, workspace, tokens, agent transcripts, resume line).
+    Sessions {
+        #[command(subcommand)]
+        action: Option<SessionsAction>,
     },
 
     /// DEPRECATED alias for `statusline config generate`.
@@ -385,6 +422,16 @@ pub(crate) enum HookAction {
 }
 
 fn main() -> Result<()> {
+    // Rust ignores SIGPIPE and turns a closed stdout into a panic inside
+    // println!. Restore the Unix default so `statusline sessions | head`
+    // ends silently (exit 141) like any other CLI. The statusline render path
+    // is unaffected: Claude Code reads the whole line.
+    #[cfg(unix)]
+    // SAFETY: called before any thread exists; SIG_DFL is a valid disposition.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
     // Handle log level with precedence: CLI > env > default
@@ -481,6 +528,27 @@ fn main() -> Result<()> {
                 sessions,
             } => {
                 return commands::stats::show_stats(by_version, sessions);
+            }
+            Commands::Sessions { action } => {
+                let res = match action.unwrap_or(SessionsAction::List {
+                    all: false,
+                    attributed: false,
+                    limit: 25,
+                }) {
+                    SessionsAction::List {
+                        all,
+                        attributed,
+                        limit,
+                    } => commands::sessions::list(all, attributed, limit),
+                    SessionsAction::Show { selector } => commands::sessions::show(&selector),
+                    SessionsAction::Pick { all, limit } => commands::sessions::pick(all, limit),
+                };
+                // Selection mistakes are user-facing: plain text, not Debug.
+                if let Err(e) = res {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                return Ok(());
             }
 
             #[cfg(feature = "turso-sync")]

@@ -40,6 +40,7 @@ sha2 = "0.10"  # For stable device ID hashing
 # while 0.1.13+ pulls in `serde_core` and a SECOND `syn` major version — unacceptable for a
 # size-optimized binary (opt-level = "z", lto, codegen-units = 1). Do not float to "0.1".
 serde_ignored = "=0.1.12"
+libc = "0.2"  # SIGPIPE reset so `statusline ... | head` exits quietly
 
 # Optional dependencies for turso-sync feature
 libsql = { version = "0.6", optional = true }
