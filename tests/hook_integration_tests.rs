@@ -121,6 +121,7 @@ fn test_statusline_detects_hook_compaction() {
 
     // Run statusline
     let mut child = Command::new(binary)
+        .env("XDG_DATA_HOME", temp_dir.path()) // own stats.db: a render writes sessions + transcript_progress
         .env_remove("NO_COLOR") // Ensure colors are enabled for testing
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -168,6 +169,7 @@ fn test_statusline_without_hook_shows_percentage() {
 
     // Run statusline
     let output = Command::new(binary)
+        .env("XDG_DATA_HOME", temp_dir.path()) // own stats.db: a render writes sessions + transcript_progress
         .env_remove("NO_COLOR")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -207,6 +209,7 @@ fn test_hook_state_transition() {
     // Helper to get statusline output
     let get_output = || -> String {
         let output = Command::new(binary)
+            .env("XDG_DATA_HOME", temp_dir.path()) // own stats.db: a render writes sessions + transcript_progress
             .env_remove("NO_COLOR")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -445,6 +448,7 @@ fn test_full_compaction_lifecycle_with_postcompact() {
     // Helper to get statusline output
     let get_output = || -> String {
         let output = Command::new(binary)
+            .env("XDG_DATA_HOME", temp_dir.path()) // own stats.db: a render writes sessions + transcript_progress
             .env_remove("NO_COLOR")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())

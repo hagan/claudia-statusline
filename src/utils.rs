@@ -280,8 +280,7 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
                         // Sonnet 3.5–4.5: 200k.
                         if version_number >= 5 || (version_number == 4 && minor_version >= 6) {
                             1_000_000
-                        } else if version_number == 4
-                            || (version_number == 3 && minor_version >= 5)
+                        } else if version_number == 4 || (version_number == 3 && minor_version >= 5)
                         {
                             200_000
                         } else {
@@ -293,8 +292,7 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
                         // Opus 3.5–4.5: 200k.
                         if version_number >= 5 || (version_number == 4 && minor_version >= 6) {
                             1_000_000
-                        } else if version_number == 4
-                            || (version_number == 3 && minor_version >= 5)
+                        } else if version_number == 4 || (version_number == 3 && minor_version >= 5)
                         {
                             200_000
                         } else {
@@ -441,10 +439,19 @@ pub fn get_token_breakdown_from_transcript(
     let mut sum_output = 0u32;
     let mut sum_cache_creation = 0u32;
     let mut has_data = false;
+    // One API response is written as several lines (one per content block), all
+    // with the same usage. Count each requestId once; lines without an id (old
+    // transcripts) are counted individually.
+    let mut seen_requests = std::collections::HashSet::new();
 
     for line in lines {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
             if entry.message.role == "assistant" {
+                if let Some(rid) = &entry.request_id {
+                    if !seen_requests.insert(rid.clone()) {
+                        continue;
+                    }
+                }
                 if let Some(usage) = entry.message.usage {
                     has_data = true;
 
@@ -860,6 +867,33 @@ mod tests {
         crate::config::Config::default()
     }
     use std::fs;
+
+    #[test]
+    fn test_token_breakdown_dedupes_content_block_lines() {
+        // One API response = several transcript lines (thinking, text, tool_use),
+        // each repeating the same usage under one requestId. Sums must count it once.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.jsonl");
+        let mk = |rid: &str, cr: u32, cc: u32, out: u32| {
+            format!(
+                r#"{{"type":"assistant","requestId":"{rid}","timestamp":"2026-09-16T00:00:00Z","message":{{"role":"assistant","content":[],"usage":{{"input_tokens":1,"cache_read_input_tokens":{cr},"cache_creation_input_tokens":{cc},"output_tokens":{out}}}}}}}"#
+            )
+        };
+        let mut lines = vec![mk("r1", 100, 10, 5); 3];
+        lines.push(mk("r2", 200, 20, 7));
+        // A legacy line without requestId still counts on its own.
+        lines.push(
+            r#"{"type":"assistant","timestamp":"t","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"cache_read_input_tokens":300,"cache_creation_input_tokens":30,"output_tokens":9}}}"#.to_string(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let b = get_token_breakdown_from_transcript(path.to_str().unwrap()).unwrap();
+        assert_eq!(b.output_tokens, 5 + 7 + 9);
+        assert_eq!(b.cache_creation_tokens, 10 + 20 + 30);
+        // "last" semantics unchanged
+        assert_eq!(b.cache_read_tokens, 300);
+        assert_eq!(b.input_tokens, 1);
+    }
 
     #[test]
     fn test_validate_transcript_file_security() {

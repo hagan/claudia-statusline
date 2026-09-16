@@ -91,6 +91,7 @@ impl MigrationRunner {
             Box::new(AddAdaptiveLearning),
             Box::new(AddBurnRateTracking),
             Box::new(AddDailyTokenTracking),
+            Box::new(AddAgentTracking),
         ]
     }
 
@@ -661,6 +662,64 @@ impl Migration for AddDailyTokenTracking {
     }
 }
 
+/// Migration 007: per-session subagent/main token attribution, the Claude Code
+/// version that produced the session, and the incremental transcript parse
+/// state that makes the subagent scan cheap on every render.
+pub struct AddAgentTracking;
+
+impl Migration for AddAgentTracking {
+    fn version(&self) -> u32 {
+        7
+    }
+
+    fn description(&self) -> &str {
+        "Add claude_version + agent/main token columns to sessions and the transcript_progress table"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        for col in [
+            "claude_version TEXT",
+            "agent_count INTEGER DEFAULT 0",
+            "agent_requests INTEGER DEFAULT 0",
+            "agent_input_tokens INTEGER DEFAULT 0",
+            "agent_output_tokens INTEGER DEFAULT 0",
+            "main_requests INTEGER DEFAULT 0",
+            "main_input_tokens INTEGER DEFAULT 0",
+            "main_output_tokens INTEGER DEFAULT 0",
+        ] {
+            tx.execute(&format!("ALTER TABLE sessions ADD COLUMN {}", col), [])?;
+        }
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS transcript_progress (
+                path TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                is_agent INTEGER NOT NULL DEFAULT 0,
+                agent_type TEXT,
+                size INTEGER NOT NULL DEFAULT 0,
+                mtime INTEGER NOT NULL DEFAULT 0,
+                offset INTEGER NOT NULL DEFAULT 0,
+                last_request_id TEXT,
+                requests INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_transcript_progress_session
+                ON transcript_progress(session_id);",
+        )?;
+        Ok(())
+    }
+
+    fn down(&self, tx: &Transaction) -> Result<()> {
+        tx.execute("DROP INDEX IF EXISTS idx_transcript_progress_session", [])?;
+        tx.execute("DROP TABLE IF EXISTS transcript_progress", [])?;
+        // The added sessions columns stay (SQLite DROP COLUMN caveat, as above).
+        Ok(())
+    }
+}
+
 /// Run migrations on a specific database path
 /// Returns Err only on critical failures that prevent migrations from running
 pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
@@ -690,9 +749,51 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 6 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3),
-        // AddAdaptiveLearning (v4), AddBurnRateTracking (v5), AddDailyTokenTracking (v6)
-        assert_eq!(runner.current_version().unwrap(), 6);
+        // We now have 7 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3),
+        // AddAdaptiveLearning (v4), AddBurnRateTracking (v5), AddDailyTokenTracking (v6),
+        // AddAgentTracking (v7)
+        assert_eq!(runner.current_version().unwrap(), 7);
+    }
+
+    #[test]
+    fn test_agent_tracking_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_agents.db");
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.migrate().unwrap();
+        assert_eq!(runner.current_version().unwrap(), 7);
+
+        let session_columns: Vec<String> = runner
+            .conn
+            .prepare("PRAGMA table_info(sessions)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for col in [
+            "claude_version",
+            "agent_count",
+            "agent_requests",
+            "agent_input_tokens",
+            "agent_output_tokens",
+            "main_requests",
+            "main_input_tokens",
+            "main_output_tokens",
+        ] {
+            assert!(session_columns.iter().any(|c| c == col), "missing {col}");
+        }
+
+        let has_progress: i64 = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='transcript_progress'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_progress, 1);
     }
 
     #[test]
@@ -795,8 +896,8 @@ mod tests {
         let mut runner = MigrationRunner::new(&db_path).unwrap();
         runner.migrate().unwrap();
 
-        // Verify version is 6
-        assert_eq!(runner.current_version().unwrap(), 6);
+        // Verify the runner is at the latest version (v7 follows the token migration)
+        assert_eq!(runner.current_version().unwrap(), 7);
 
         // Verify token columns were added to daily_stats
         let daily_columns: Vec<String> = runner

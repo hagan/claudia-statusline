@@ -50,6 +50,48 @@ impl SqliteDatabase {
         })
     }
 
+    /// Record the Claude Code version and the main/agent token attribution for a
+    /// session. Values are absolute session totals from `agents::scan`, not
+    /// deltas, so this is a plain overwrite; a missing row is left alone.
+    pub fn update_session_agents(
+        &self,
+        session_id: &str,
+        claude_version: Option<&str>,
+        summary: &crate::agents::AgentsSummary,
+    ) -> Result<()> {
+        let retry_config = RetryConfig::for_db_ops();
+        retry_if_retryable(&retry_config, || {
+            let conn = self.get_connection()?;
+            conn.execute(
+                "UPDATE sessions SET
+                    claude_version = COALESCE(?2, claude_version),
+                    agent_count = ?3, agent_requests = ?4,
+                    agent_input_tokens = ?5, agent_output_tokens = ?6,
+                    main_requests = ?7, main_input_tokens = ?8, main_output_tokens = ?9
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    claude_version,
+                    summary.agent_files as i64,
+                    summary.agents.requests as i64,
+                    summary.agents.input_traffic() as i64,
+                    summary.agents.output_tokens as i64,
+                    summary.main.requests as i64,
+                    summary.main.input_traffic() as i64,
+                    summary.main.output_tokens as i64,
+                ],
+            )?;
+            Ok(())
+        })
+        .map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(e.to_string()),
+            ),
+        })
+    }
+
     /// Update only max_tokens_observed for a session (for adaptive learning)
     /// Only updates if new value is greater than current value
     pub fn update_max_tokens_observed(&self, session_id: &str, current_tokens: u32) -> Result<()> {

@@ -23,10 +23,15 @@ use crate::models::StatuslineInput;
 /// When `update_stats` is `false`, or no session/cost is present, it performs no writes
 /// for that step and simply reads back today's accumulated daily total.
 ///
-/// The returned value is the daily total observed immediately after the cost update
+/// The returned daily total is the one observed immediately after the cost update
 /// (the later max-token write does not change the returned figure), matching the prior
-/// behavior of both call sites.
-pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool) -> f64 {
+/// behavior of both call sites. The second element is the main/agent token attribution
+/// for the session (see `agents::scan`), computed whenever a session and transcript are
+/// present and persisted to the session row when `update_stats` is `true`.
+pub fn update_stats_and_daily_total(
+    input: &StatuslineInput,
+    update_stats: bool,
+) -> (f64, Option<crate::agents::AgentsSummary>) {
     use crate::{common, config, stats, utils};
 
     let model_name = input.model.as_ref().and_then(|m| m.detection_name());
@@ -145,5 +150,31 @@ pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool)
         }
     }
 
-    daily_total
+    // 4. Main/agent token attribution. Read whenever we can (the lib path renders
+    //    with update_stats=false too); written to the session row only when the
+    //    caller updates stats. Skipped when no stats.db exists yet so a read-only
+    //    render never creates one.
+    let agents = match (session_id, transcript_path) {
+        (Some(sid), Some(transcript)) => {
+            let db_path = common::get_data_dir().join("stats.db");
+            if db_path.exists() {
+                crate::agents::scan(&db_path, sid, transcript)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    };
+    if update_stats {
+        if let (Some(sid), Some(summary)) = (session_id, agents.as_ref()) {
+            let db_path = common::get_data_dir().join("stats.db");
+            if let Ok(db) = crate::database::SqliteDatabase::new(&db_path) {
+                if let Err(e) = db.update_session_agents(sid, input.version.as_deref(), summary) {
+                    log::debug!("agents: session update failed: {}", e);
+                }
+            }
+        }
+    }
+
+    (daily_total, agents)
 }

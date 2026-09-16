@@ -89,5 +89,9 @@ fn line_counters_never_subtract_from_daily_totals() {
             |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .unwrap();
-    assert_eq!((added, removed), (510, 203), "line resets must add, not subtract");
+    assert_eq!(
+        (added, removed),
+        (510, 203),
+        "line resets must add, not subtract"
+    );
 }

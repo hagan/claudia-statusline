@@ -26,6 +26,7 @@ use std::env;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+mod agents;
 mod ant;
 mod commands;
 mod common;
@@ -110,6 +111,19 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Token attribution per Claude Code version (default) or per session:
+    /// main requests, input traffic and output per request, subagent share.
+    /// Compare rows across versions to spot a behaviour change after an update.
+    Stats {
+        /// Group by Claude Code version (default view)
+        #[arg(long)]
+        by_version: bool,
+
+        /// List the most recent sessions instead
+        #[arg(long)]
+        sessions: bool,
+    },
+
     /// DEPRECATED alias for `statusline config generate`.
     ///
     /// Hidden from `--help` but still dispatched verbatim so no existing script
@@ -462,6 +476,12 @@ fn main() -> Result<()> {
             Commands::Health { json } => {
                 return commands::health::show_health_report(json);
             }
+            Commands::Stats {
+                by_version,
+                sessions,
+            } => {
+                return commands::stats::show_stats(by_version, sessions);
+            }
 
             #[cfg(feature = "turso-sync")]
             Commands::Sync {
@@ -506,6 +526,7 @@ fn main() -> Result<()> {
     // Read JSON from stdin
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
+    mirror_input(&buffer);
 
     // Parse input
     let input: StatuslineInput = match serde_json::from_str(&buffer) {
@@ -538,7 +559,7 @@ fn main() -> Result<()> {
 
     // Update stats and resolve today's daily total via the single shared
     // implementation (see src/render.rs). The binary always updates stats.
-    let daily_total = render::update_stats_and_daily_total(&input, true);
+    let (daily_total, agents) = render::update_stats_and_daily_total(&input, true);
 
     // Format and print output
     format_output(
@@ -555,10 +576,36 @@ fn main() -> Result<()> {
             exceeds_200k: input.exceeds_200k_tokens,
             version: input.version.as_deref(),
             repo: input.workspace.as_ref().and_then(|w| w.repo.as_ref()),
+            agents: agents.as_ref(),
+            prompt_cache: input.prompt_cache.as_ref(),
         },
     );
 
     Ok(())
+}
+
+/// Keep a copy of the last raw stdin payload so a Claude Code update that adds,
+/// renames or drops a field can be seen with `jq . <file>` instead of guessed.
+///
+/// Default location: `<data dir>/last-input.json` (owner-only). Set
+/// `STATUSLINE_DEBUG_INPUT=<path>` to relocate it or `STATUSLINE_DEBUG_INPUT=off`
+/// to disable. Best-effort: a failure here never affects the render.
+fn mirror_input(payload: &str) {
+    let target = match env::var("STATUSLINE_DEBUG_INPUT") {
+        Ok(v) if v.eq_ignore_ascii_case("off") => return,
+        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => common::get_data_dir().join("last-input.json"),
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&target) {
+        let _ = std::io::Write::write_all(&mut f, payload.as_bytes());
+    }
 }
 
 #[cfg(test)]

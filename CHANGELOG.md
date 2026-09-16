@@ -7,6 +7,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> Subagent token attribution and update-drift tooling. Claude Code reports the
+> session's cost with subagents included, but every token field in the payload
+> (`context_window`, `prompt_cache`) describes the main conversation only, so
+> Agent-tool work was invisible. This release reads the agent transcripts.
+
+### Added
+
+- **`🤖N xx%` segment**: number of agent transcripts in the session and the
+  agents' share of the session's input traffic (fresh + cache read + cache
+  write). Rendered only when agents exist; `display.show_agents` (default true).
+  Template variables `{agents}`, `{agents_count}`, `{agents_pct}`,
+  `{agents_tokens}` (`152M/449k` = input traffic / output), `{agents_types}`
+  (`Explore×14 Plan×1`). `{agents}` appended to the `default`, `detailed` and
+  `power` presets (separator auto-hidden when empty).
+- **Incremental transcript parsing** (`src/agents.rs`): each main/agent file
+  keeps a byte offset, running totals and the last `requestId` in the new
+  `transcript_progress` table (migration 007), so a render reads only what was
+  appended. Measured on a 15 MB main transcript + 15 agent files: 0.10 s cold,
+  0.05 s warm.
+- **`statusline stats [--by-version | --sessions]`**: main requests, input
+  traffic per request, output per request, agent count/requests and agent share,
+  grouped by the Claude Code `version` that produced each session (now stored
+  in `sessions.claude_version`). A step change between versions is the signal
+  that an update changed agent or context behaviour.
+- **`prompt_cache` payload parsing** (Claude Code >= 2.1.251): `{prompt_cache}`,
+  `{cache_hit}`, `{cache_misses}`, `{cache_miss_cause}`, `{cache_warm}`; opt-in
+  segment via `display.show_prompt_cache` (`cache 91% miss:2 tools_changed`).
+- **Stdin mirror**: the raw payload of the last render is written to
+  `<data dir>/last-input.json` (mode 0600) so a new or renamed field after a
+  Claude Code update shows up in `jq .` instead of being guessed.
+  `STATUSLINE_DEBUG_INPUT=<path>` relocates it, `=off` disables it.
+
+### Fixed
+
+- Transcript token sums counted every line of a response. Claude Code writes
+  one transcript line per content block (thinking, text, tool_use, ...), each
+  repeating the same `usage`, which inflated `total_output_tokens` and
+  `total_cache_creation_tokens` about 2.2× (996 lines for 454 requests in one
+  measured session). Sums are now de-duplicated per `requestId`; lines without
+  an id (older transcripts) still count individually.
+
 ## [3.3.0] - 2026-09-28
 
 > **Minor release**: the "Cost Accuracy & Honesty" milestone. A bundled, offline Claude price table powers new opt-in API-equivalent cost variables, an optional out-of-band `statusline ant sync-pricing` keeps prices current without touching the render path, `statusline config validate` checks your config before it silently misbehaves, and `statusline gsd state --json` exposes GSD project state as machine-readable JSON. The render path stays offline and never fails. Fully backward-compatible; no breaking changes.
