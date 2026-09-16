@@ -469,6 +469,29 @@ pub fn redact_key_path(raw: &str) -> String {
     cap_chars(&joined, MAX_MESSAGE_CHARS)
 }
 
+/// Sanitize a message produced by ANOTHER module's validating parser.
+///
+/// The project's validating parsers (`crate::ant::duration::parse_max_age`,
+/// `crate::ant::cache::sanitize_account_name`) are written for CLI flags and
+/// deliberately quote the offending input back at the user
+/// (``invalid --max-age '30x' (need a unit: s/m/h/d)``). That is exactly the
+/// value echo [`Finding`] forbids, so a rule that wants to reuse one of those
+/// messages — and they are worth reusing, they name the grammar — must pass it
+/// through here first.
+///
+/// Same construction as [`redact_toml_error`]'s step 2-4 and deliberately
+/// sharing its [`redact_quoted_runs`] helper: every double-, single- and
+/// backtick-quoted run becomes the literal `"<redacted>"`, control characters
+/// are dropped, and the result is capped at [`MAX_MESSAGE_CHARS`]. An
+/// UNTERMINATED run redacts to end of input, so the failure mode is "too much
+/// removed", never "a value survived" — which is why callers append any legal-
+/// set or grammar text of their own AFTER this call rather than before it.
+pub fn redact_value_text(raw: &str) -> String {
+    let mut redacted = redact_quoted_runs(raw);
+    redacted.retain(|c| c == '\t' || !c.is_control());
+    cap_chars(redacted.trim(), MAX_MESSAGE_CHARS)
+}
+
 /// Replace every `"…"`, `'…'` and `` `…` `` run with the literal `"<redacted>"`.
 ///
 /// An unterminated run redacts to end of input — the failure mode must be "too

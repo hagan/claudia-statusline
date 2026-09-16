@@ -24,7 +24,7 @@
 //! time — never priced as `$0.00`, and never allowed to suppress a
 //! `[pricing.aliases]` entry (see [`pick`]).
 
-use crate::config_validation::Validate;
+use crate::config_validation::{FindingKind, Report, SectionContext, Validate};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
@@ -576,8 +576,163 @@ pub struct PricingConfig {
     pub max_age: String,
 }
 
-/// Semantic rules for `[pricing]` are filled in by plan 12-06.
-impl Validate for PricingConfig {}
+/// Semantic rules for `[pricing]` (plan 12-06, QUAL-02).
+///
+/// Two knobs, and the severity of the second is the whole point of this impl.
+///
+/// * **`max_age`** — an ERROR when [`crate::ant::duration::parse_max_age`]
+///   rejects it. Until now an unparseable value silently behaved as the 30d
+///   default ([`max_age_window`]), which is precisely the silent fallback
+///   QUAL-02 exists to end. A SEPARATE warning fires when the field is
+///   EXPLICITLY SET while `source` ignores it; `max_age` is a defaulted
+///   `String`, so that rule is gated on [`SectionContext::is_set`] rather than
+///   on a non-empty test, which would warn on every config in the world that
+///   merely selects `source = "bundled"`.
+/// * **`aliases`** — severities that match what the SHIPPED resolver can
+///   actually decide. [`lookup_in`] resolves an alias target against the per-id
+///   UNION of the selected synced cache and the bundled table, so a target the
+///   bundled table does not carry may still render correctly today. It is
+///   therefore an ERROR only under [`PricingSource::Bundled`], where
+///   [`select_synced_at`] reads no cache at all and the union provably IS the
+///   bundled table; under `Auto`/`Synced` it is a WARNING (the conservative
+///   downgrade: the bundled table alone cannot decide the case).
+///
+/// There is deliberately **no rule for `source`**. [`PricingSource`] is a strict
+/// `rename_all = "lowercase"` serde enum, so a typo fails DESERIALIZATION and is
+/// reported as a single `TypeError` by the per-section engine — which also skips
+/// the semantic pass for that section, so a rule here could never fire.
+///
+/// No message echoes a config VALUE. The alias findings are keyed at
+/// `pricing.aliases.<source id>` so a consumer can locate the exact entry
+/// without the value having to appear in the sentence.
+impl Validate for PricingConfig {
+    fn validate(&self, cx: &SectionContext, report: &mut Report) {
+        self.validate_max_age(cx, report);
+        self.validate_aliases_against(table(), cx, report);
+    }
+}
+
+impl PricingConfig {
+    /// `max_age` must parse, and must not be set where it is ignored.
+    fn validate_max_age(&self, cx: &SectionContext, report: &mut Report) {
+        if let Err(e) = crate::ant::duration::parse_max_age(&self.max_age) {
+            // The parser's own message names the grammar, but it also quotes the
+            // offending input back (it was written for a CLI flag), so it goes
+            // through the redaction boundary first. The grammar sentence is
+            // appended AFTER redaction: an unterminated quote in the user's value
+            // redacts to end of input, which would otherwise swallow it.
+            let detail = crate::config_validation::redact_value_text(&e.to_string());
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("max_age"),
+                format!(
+                    "`max_age` is not a valid duration ({detail}); the grammar is a \
+                     non-negative integer followed by exactly one unit of s/m/h/d"
+                ),
+            );
+        }
+
+        // Ignored-in-this-mode advice. `is_set` is mandatory here — see the impl
+        // doc: the field is defaulted, so after deserialization "the user wrote
+        // 30d" and "the user omitted it" are otherwise indistinguishable.
+        if cx.is_set("max_age") {
+            let why = match self.source {
+                PricingSource::Bundled => Some(
+                    "`source = bundled` reads no price cache at all, so `max_age` has nothing \
+                     to age out",
+                ),
+                PricingSource::Synced => Some(
+                    "`source = synced` is an explicit opt-out of staleness demotion and uses \
+                     the cache regardless of its age",
+                ),
+                PricingSource::Auto => None,
+            };
+            if let Some(why) = why {
+                report.warn(
+                    FindingKind::InvalidValue,
+                    cx.key("max_age"),
+                    format!("`max_age` is set but ignored: {why}. It only takes effect under `source = auto`"),
+                );
+            }
+        }
+    }
+
+    /// Alias rules, with the bundled table INJECTED.
+    ///
+    /// [`Validate::validate`] passes [`table()`]. The parameter exists so the
+    /// "target present but UNUSABLE" arm is testable: every row of the shipped
+    /// bundled table passes [`PriceEntry::is_valid`] (pinned by
+    /// `every_row_has_finite_positive_rates_and_cache_read_lt_input`), so that
+    /// branch is unreachable through `table()` and would otherwise be a rule no
+    /// test could ever exercise.
+    fn validate_aliases_against(
+        &self,
+        table: &PriceTable,
+        cx: &SectionContext,
+        report: &mut Report,
+    ) {
+        // Deterministic order: `aliases` is a `HashMap`, and `Report` is
+        // serialized by plan 12-09. `Report::sort_findings` gives a total order
+        // too, but emitting in a stable order keeps the unsorted report stable
+        // for anyone who reads `findings` directly.
+        let mut entries: Vec<(&String, &String)> = self.aliases.iter().collect();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+
+        for (source_id, target) in entries {
+            let key =
+                crate::config_validation::redact_key_path(&cx.key(&format!("aliases.{source_id}")));
+
+            match table.prices.get(target.as_str()) {
+                None if self.source == PricingSource::Bundled => {
+                    report.error(
+                        FindingKind::InvalidValue,
+                        key.clone(),
+                        "this alias's target is not an exact id in the bundled price table, and \
+                         `source = bundled` reads no price cache, so the resolution union IS the \
+                         bundled table and the alias provably cannot resolve; the target must be \
+                         an exact bundled table id",
+                    );
+                }
+                None => {
+                    report.warn(
+                        FindingKind::InvalidValue,
+                        key.clone(),
+                        "this alias's target is absent from the BUNDLED price table; lookup \
+                         resolves against the union of the synced cache and the bundled table, \
+                         so it can only resolve through a synced price cache — run \
+                         `statusline ant sync-pricing`, or point it at an exact bundled table id",
+                    );
+                }
+                Some(entry) if !entry.is_valid() => {
+                    report.warn(
+                        FindingKind::InvalidValue,
+                        key.clone(),
+                        "this alias's target is present in the bundled price table but its row is \
+                         UNUSABLE (a rate outside the plausible band, non-finite, or a cache-read \
+                         rate not below the input rate), so the lookup falls through to `unknown` \
+                         unless a synced source supplies a usable row",
+                    );
+                }
+                Some(_) => {}
+            }
+
+            // Independent of how the TARGET resolved: an alias whose SOURCE id is
+            // itself a bundled id is unusual but NOT dead. Since plan 11-04
+            // (WR-04) an id that is present but whose row is unusable reaches the
+            // alias step exactly as an absent id does, so the entry still fires
+            // in that case.
+            if table.prices.contains_key(source_id.as_str()) {
+                report.warn(
+                    FindingKind::InvalidValue,
+                    key,
+                    "this alias's SOURCE id is itself an id in the bundled price table; lookup \
+                     tries the exact id FIRST, so the alias only fires when that direct row is \
+                     unusable in the selected source",
+                );
+            }
+        }
+    }
+}
 
 // Manual Default is the project idiom for a config section (mirrors `AntConfig`):
 // it makes the safe defaults — empty aliases + `Auto` source — explicit at the
@@ -1912,6 +2067,282 @@ source = "buntled"
             priced(lookup_in("claude-opus-4-8", &HashMap::new(), None)),
             expected,
             "lookup_in(.., None) must be identical to lookup()"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // `PricingConfig`'s `Validate` impl (plan 12-06, QUAL-02). The banner
+    // deliberately does NOT spell the `impl … for …` line, so the acceptance
+    // grep for the DEFINITION counts exactly one site.
+    // -----------------------------------------------------------------------
+
+    /// Validate a `[pricing]` section exactly the way the engine does: parse the
+    /// document, deserialize the `pricing` SUBTREE straight into
+    /// [`PricingConfig`] (never through `deserialize_lenient`, which would hide
+    /// the very thing the per-section pass exists to see), then run the rules
+    /// against a context built from that same document.
+    fn validate_pricing_doc(document: &str) -> crate::config_validation::Report {
+        use crate::config_validation::{present_keys_for_section, Report, SectionContext};
+
+        let doc: toml::Value = toml::from_str(document).expect("fixture document parses");
+        let section: PricingConfig = match doc.get("pricing") {
+            Some(sub) => sub
+                .clone()
+                .try_into()
+                .expect("fixture [pricing] deserializes"),
+            None => PricingConfig::default(),
+        };
+        let keys = present_keys_for_section(&doc, "pricing");
+        let cx = SectionContext::new("pricing", &keys, &doc);
+        let mut report = Report::new();
+        section.validate(&cx, &mut report);
+        report
+    }
+
+    fn severities(
+        report: &crate::config_validation::Report,
+    ) -> Vec<crate::config_validation::Severity> {
+        report.findings.iter().map(|f| f.severity).collect()
+    }
+
+    /// A real, valid id out of `data/claude_prices.json`.
+    const REAL_BUNDLED_ID: &str = "claude-4-sonnet-20250514";
+
+    #[test]
+    fn validate_pricing_bad_max_age_unit() {
+        let report = validate_pricing_doc("[pricing]\nmax_age = \"30x\"\n");
+        assert_eq!(
+            report.findings.len(),
+            1,
+            "an unparseable max_age is exactly one finding: {:?}",
+            report.findings
+        );
+        let f = &report.findings[0];
+        assert_eq!(f.severity, crate::config_validation::Severity::Error);
+        assert_eq!(f.kind, FindingKind::InvalidValue);
+        assert_eq!(f.key, "pricing.max_age");
+        assert!(
+            f.message.contains("s/m/h/d"),
+            "the message must name the grammar: {}",
+            f.message
+        );
+        // The redaction boundary holds even here: the offending VALUE never
+        // reaches the message, only the grammar does.
+        assert!(
+            !f.message.contains("30x"),
+            "the message must not echo the config value: {}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn validate_pricing_max_age_ignored_under_bundled() {
+        // ARM 1 — EXPLICITLY SET under `bundled`: exactly one WARNING.
+        let set = validate_pricing_doc("[pricing]\nsource = \"bundled\"\nmax_age = \"30d\"\n");
+        assert_eq!(
+            severities(&set),
+            vec![crate::config_validation::Severity::Warning],
+            "an explicitly-set max_age under `bundled` warns exactly once: {:?}",
+            set.findings
+        );
+        assert_eq!(set.findings[0].key, "pricing.max_age");
+
+        // ARM 2 — OMITTED under the SAME source: ZERO findings. This arm is what
+        // proves the `is_set` guard works; without it the rule would fire on
+        // every config that merely selects `source = "bundled"`, because
+        // `max_age` is a defaulted String and reads "30d" either way.
+        let omitted = validate_pricing_doc("[pricing]\nsource = \"bundled\"\n");
+        assert!(
+            omitted.findings.is_empty(),
+            "an OMITTED max_age must yield nothing: {:?}",
+            omitted.findings
+        );
+        // Non-vacuity: both arms really do carry the same deserialized value.
+        let cfg: PricingConfig = toml::from_str("source = \"bundled\"\n").unwrap();
+        assert_eq!(cfg.max_age, DEFAULT_PRICE_MAX_AGE);
+    }
+
+    #[test]
+    fn validate_pricing_max_age_set_under_synced_also_warns() {
+        let report = validate_pricing_doc("[pricing]\nsource = \"synced\"\nmax_age = \"1h\"\n");
+        assert_eq!(
+            severities(&report),
+            vec![crate::config_validation::Severity::Warning],
+            "{:?}",
+            report.findings
+        );
+        // ...and under `auto`, where it DOES take effect, it is silent.
+        let auto = validate_pricing_doc("[pricing]\nsource = \"auto\"\nmax_age = \"1h\"\n");
+        assert!(auto.findings.is_empty(), "{:?}", auto.findings);
+    }
+
+    #[test]
+    fn validate_pricing_alias_target_missing_under_bundled_is_error() {
+        let report = validate_pricing_doc(
+            "[pricing]\nsource = \"bundled\"\n\n[pricing.aliases]\n\"my-proxy\" = \"claude-not-a-real-model\"\n",
+        );
+        assert_eq!(
+            severities(&report),
+            vec![crate::config_validation::Severity::Error],
+            "{:?}",
+            report.findings
+        );
+        assert_eq!(report.findings[0].key, "pricing.aliases.my-proxy");
+        assert!(
+            !report.findings[0]
+                .message
+                .contains("claude-not-a-real-model"),
+            "the message must not echo the target value: {}",
+            report.findings[0].message
+        );
+    }
+
+    #[test]
+    fn validate_pricing_alias_target_missing_under_auto_is_warning() {
+        // The SAME alias, one word of config different.
+        let bundled = validate_pricing_doc(
+            "[pricing]\nsource = \"bundled\"\n\n[pricing.aliases]\n\"my-proxy\" = \"claude-not-a-real-model\"\n",
+        );
+        let auto = validate_pricing_doc(
+            "[pricing]\nsource = \"auto\"\n\n[pricing.aliases]\n\"my-proxy\" = \"claude-not-a-real-model\"\n",
+        );
+
+        assert_eq!(
+            severities(&auto),
+            vec![crate::config_validation::Severity::Warning],
+            "under a non-bundled source the bundled table alone cannot decide, so this must \
+             never be an error: {:?}",
+            auto.findings
+        );
+        // The correction, asserted directly: same input, DIFFERENT severity.
+        assert_ne!(
+            bundled.findings[0].severity, auto.findings[0].severity,
+            "the alias-target severity must depend on `source`, because `lookup_in` resolves \
+             against the synced/bundled UNION"
+        );
+        assert!(
+            auto.findings[0].message.contains("sync-pricing"),
+            "the warning must name the remedy: {}",
+            auto.findings[0].message
+        );
+    }
+
+    #[test]
+    fn validate_pricing_alias_to_valid_id_is_clean() {
+        // Non-vacuity: the target really is a usable row of the shipped table.
+        assert!(
+            table()
+                .prices
+                .get(REAL_BUNDLED_ID)
+                .is_some_and(|e| e.is_valid()),
+            "{REAL_BUNDLED_ID} must be a usable bundled row for this test to mean anything"
+        );
+        let report = validate_pricing_doc(&format!(
+            "[pricing]\nsource = \"auto\"\n\n[pricing.aliases]\n\"my-proxy\" = \"{REAL_BUNDLED_ID}\"\n"
+        ));
+        assert!(
+            report.findings.is_empty(),
+            "an alias to a real, valid bundled id must be clean: {:?}",
+            report.findings
+        );
+    }
+
+    #[test]
+    fn validate_pricing_alias_source_key_is_a_table_id() {
+        let report = validate_pricing_doc(&format!(
+            "[pricing]\nsource = \"auto\"\n\n[pricing.aliases]\n\"{REAL_BUNDLED_ID}\" = \"claude-opus-4-8\"\n"
+        ));
+        assert_eq!(
+            severities(&report),
+            vec![crate::config_validation::Severity::Warning],
+            "{:?}",
+            report.findings
+        );
+        let message = &report.findings[0].message;
+        assert!(
+            message.contains("unusable"),
+            "the message must explain the unusable-row fallback: {message}"
+        );
+        assert!(
+            !message.to_lowercase().contains("dead"),
+            "the alias is NOT dead — WR-04 lets an unusable direct row fall through to it: {message}"
+        );
+    }
+
+    #[test]
+    fn validate_pricing_alias_target_present_but_unusable_is_warning() {
+        // The shipped table has no unusable row (pinned by
+        // `every_row_has_finite_positive_rates_and_cache_read_lt_input`), so this
+        // arm injects one — otherwise the rule would be untestable and therefore
+        // unfalsifiable.
+        let mut injected = PriceTable::default();
+        injected.prices.insert(
+            "broken-row".to_string(),
+            PriceEntry {
+                input: 1.0e-6,
+                output: 5.0e-6,
+                cache_creation: 1.2e-6,
+                // cache_read >= input makes the row unusable (IN-03).
+                cache_read: 9.0e-6,
+                cache_creation_1h: None,
+            },
+        );
+        assert!(
+            !injected.prices["broken-row"].is_valid(),
+            "the injected row must actually be unusable"
+        );
+
+        let doc: toml::Value = toml::from_str(
+            "[pricing]\nsource = \"auto\"\n\n[pricing.aliases]\n\"my-proxy\" = \"broken-row\"\n",
+        )
+        .unwrap();
+        let section: PricingConfig = doc.get("pricing").unwrap().clone().try_into().unwrap();
+        let keys = crate::config_validation::present_keys_for_section(&doc, "pricing");
+        let cx = crate::config_validation::SectionContext::new("pricing", &keys, &doc);
+        let mut report = crate::config_validation::Report::new();
+        section.validate_aliases_against(&injected, &cx, &mut report);
+
+        assert_eq!(
+            severities(&report),
+            vec![crate::config_validation::Severity::Warning],
+            "{:?}",
+            report.findings
+        );
+        assert!(
+            report.findings[0].message.contains("UNUSABLE"),
+            "{}",
+            report.findings[0].message
+        );
+
+        // Mutation guard on the same instrument: an alias to a USABLE injected
+        // row is silent, so the warning above is not fired unconditionally.
+        injected.prices.insert(
+            "good-row".to_string(),
+            PriceEntry {
+                input: 3.0e-6,
+                output: 1.5e-5,
+                cache_creation: 3.75e-6,
+                cache_read: 3.0e-7,
+                cache_creation_1h: None,
+            },
+        );
+        let doc2: toml::Value = toml::from_str(
+            "[pricing]\nsource = \"auto\"\n\n[pricing.aliases]\n\"my-proxy\" = \"good-row\"\n",
+        )
+        .unwrap();
+        let section2: PricingConfig = doc2.get("pricing").unwrap().clone().try_into().unwrap();
+        let keys2 = crate::config_validation::present_keys_for_section(&doc2, "pricing");
+        let cx2 = crate::config_validation::SectionContext::new("pricing", &keys2, &doc2);
+        let mut report2 = crate::config_validation::Report::new();
+        section2.validate_aliases_against(&injected, &cx2, &mut report2);
+        assert!(report2.findings.is_empty(), "{:?}", report2.findings);
+    }
+
+    #[test]
+    fn validate_pricing_default_section_is_clean() {
+        assert!(
+            validate_pricing_doc("[pricing]\n").findings.is_empty(),
+            "the shipped default must validate cleanly"
         );
     }
 }
