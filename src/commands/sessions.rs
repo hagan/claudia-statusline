@@ -55,7 +55,8 @@ struct TranscriptRow {
     output_tokens: i64,
 }
 
-const SESSION_COLUMNS: &str = "session_id, start_time, last_updated, cost, lines_added, lines_removed,
+const SESSION_COLUMNS: &str =
+    "session_id, start_time, last_updated, cost, lines_added, lines_removed,
     max_tokens_observed, model_name, workspace_dir, total_input_tokens, total_output_tokens,
     total_cache_read_tokens, total_cache_creation_tokens, active_time_seconds, claude_version,
     COALESCE(agent_count, 0), COALESCE(agent_requests, 0), COALESCE(agent_input_tokens, 0),
@@ -116,9 +117,7 @@ pub(crate) fn load_sessions(
     } else {
         ""
     };
-    let sql = format!(
-        "SELECT {SESSION_COLUMNS} FROM sessions {filter} ORDER BY last_updated DESC"
-    );
+    let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions {filter} ORDER BY last_updated DESC");
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map([], map_session)?;
     let mut out = Vec::new();
@@ -226,8 +225,17 @@ fn ws_tail(s: &Option<String>) -> String {
 fn print_list(rows: &[SessionRow]) {
     println!(
         "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>6} {:>8}",
-        "#", "session", "start", "last", "version", "model", "workspace", "main_req", "agents",
-        "share%", "cost*"
+        "#",
+        "session",
+        "start",
+        "last",
+        "version",
+        "model",
+        "workspace",
+        "main_req",
+        "agents",
+        "share%",
+        "cost*"
     );
     for (i, r) in rows.iter().enumerate() {
         println!(
@@ -238,7 +246,10 @@ fn print_list(rows: &[SessionRow]) {
             &r.last_updated[..r.last_updated.len().min(16)],
             short(&r.claude_version, 9),
             short(&r.model_name, 18),
-            ws_tail(&r.workspace_dir).chars().take(22).collect::<String>(),
+            ws_tail(&r.workspace_dir)
+                .chars()
+                .take(22)
+                .collect::<String>(),
             r.main_requests,
             r.agent_count,
             share(r.agent_input_tokens, r.main_input_tokens),
@@ -259,9 +270,18 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
         .map(|t| t.path.clone());
 
     println!("session_id        {}", r.session_id);
-    println!("claude_version    {}", r.claude_version.as_deref().unwrap_or("?"));
-    println!("model             {}", r.model_name.as_deref().unwrap_or("?"));
-    println!("workspace         {}", r.workspace_dir.as_deref().unwrap_or("?"));
+    println!(
+        "claude_version    {}",
+        r.claude_version.as_deref().unwrap_or("?")
+    );
+    println!(
+        "model             {}",
+        r.model_name.as_deref().unwrap_or("?")
+    );
+    println!(
+        "workspace         {}",
+        r.workspace_dir.as_deref().unwrap_or("?")
+    );
     println!("start             {}", r.start_time);
     println!("last_updated      {}", r.last_updated);
     println!(
@@ -352,7 +372,9 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
 
 /// `sessions list [--all] [--attributed] [--limit N]`
 pub(crate) fn list(all: bool, attributed: bool, limit: usize) -> Result<()> {
-    let Some(conn) = open_db()? else { return Ok(()) };
+    let Some(conn) = open_db()? else {
+        return Ok(());
+    };
     let rows = load_sessions(&conn, attributed, if all { 0 } else { limit })?;
     if rows.is_empty() {
         println!("(no sessions recorded)");
@@ -365,7 +387,9 @@ pub(crate) fn list(all: bool, attributed: bool, limit: usize) -> Result<()> {
 /// `sessions show <#|id-prefix>` — the index refers to the default list
 /// ordering (newest first, all sessions), independent of any `--limit`.
 pub(crate) fn show(selector: &str) -> Result<()> {
-    let Some(conn) = open_db()? else { return Ok(()) };
+    let Some(conn) = open_db()? else {
+        return Ok(());
+    };
     let rows = load_sessions(&conn, false, 0)?;
     let r = resolve(&rows, selector)?;
     print_show(&conn, r)
@@ -380,7 +404,9 @@ pub(crate) fn pick(all: bool, limit: usize) -> Result<()> {
             "sessions pick needs a terminal on stdin; use `sessions show <#|id>` in scripts".into(),
         ));
     }
-    let Some(conn) = open_db()? else { return Ok(()) };
+    let Some(conn) = open_db()? else {
+        return Ok(());
+    };
     let rows = load_sessions(&conn, false, if all { 0 } else { limit })?;
     if rows.is_empty() {
         println!("(no sessions recorded)");
@@ -433,10 +459,17 @@ mod tests {
 
     #[test]
     fn resolve_by_index_and_prefix() {
-        let rows = vec![row("e0490618-aaaa"), row("fe2e3416-bbbb"), row("fe2e0000-cccc")];
+        let rows = vec![
+            row("e0490618-aaaa"),
+            row("fe2e3416-bbbb"),
+            row("fe2e0000-cccc"),
+        ];
         assert_eq!(resolve(&rows, "2").unwrap().session_id, "fe2e3416-bbbb");
         assert_eq!(resolve(&rows, "E049").unwrap().session_id, "e0490618-aaaa");
-        assert!(resolve(&rows, "fe2e").is_err(), "ambiguous prefix must fail");
+        assert!(
+            resolve(&rows, "fe2e").is_err(),
+            "ambiguous prefix must fail"
+        );
         assert!(resolve(&rows, "0").is_err());
         assert!(resolve(&rows, "4").is_err());
         assert!(resolve(&rows, "zzz").is_err());
