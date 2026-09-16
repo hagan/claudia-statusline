@@ -580,4 +580,77 @@ mod tests {
         assert_eq!(share(25, 75), 25.0);
         assert_eq!(share(0, 0), 0.0);
     }
+
+    #[test]
+    fn under_workspace_matches_per_component() {
+        let f = "/home/x/appz";
+        assert!(under_workspace(Some(&"/home/x/appz".into()), f));
+        assert!(under_workspace(Some(&"/home/x/appz/".into()), f));
+        assert!(under_workspace(Some(&"/home/x/appz/sub/deep".into()), f));
+        assert!(under_workspace(
+            Some(&"/home/x/appz".into()),
+            "/home/x/appz/"
+        ));
+        assert!(
+            !under_workspace(Some(&"/home/x/appz2".into()), f),
+            "raw prefix must not match a sibling"
+        );
+        assert!(!under_workspace(Some(&"/home/x".into()), f));
+        assert!(!under_workspace(None, f));
+    }
+
+    #[test]
+    fn index_and_filter_keeps_global_index_and_limits_after_filter() {
+        let mut rows = vec![row("a"), row("b"), row("c"), row("d")];
+        rows[1].workspace_dir = Some("/elsewhere".into());
+        rows[3].workspace_dir = None;
+        let f = Some("/home/x/Claude");
+
+        let all: Vec<usize> = index_and_filter(&rows, None, 0)
+            .iter()
+            .map(|(i, _)| *i)
+            .collect();
+        assert_eq!(all, vec![1, 2, 3, 4]);
+
+        let view = index_and_filter(&rows, f, 0);
+        let idx: Vec<usize> = view.iter().map(|(i, _)| *i).collect();
+        assert_eq!(idx, vec![1, 3], "# stays the unfiltered position");
+        assert_eq!(view[1].1.session_id, "c");
+
+        let limited = index_and_filter(&rows, f, 1);
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].0, 1);
+        assert_eq!(index_and_filter(&rows, None, 2).len(), 2);
+    }
+
+    #[test]
+    fn workspace_filter_expands_tilde_and_relative_paths() {
+        assert_eq!(workspace_filter(None, false).unwrap(), None);
+
+        let cwd = std::env::current_dir().unwrap();
+        let here = workspace_filter(None, true).unwrap().unwrap();
+        assert_eq!(here, cwd.canonicalize().unwrap().to_string_lossy());
+        assert_eq!(
+            workspace_filter(Some(".".into()), false).unwrap().unwrap(),
+            here
+        );
+        assert_eq!(
+            workspace_filter(Some("/no/such/dir/at/all".into()), false)
+                .unwrap()
+                .unwrap(),
+            "/no/such/dir/at/all",
+            "a missing path is passed through verbatim"
+        );
+        if let Some(home) = dirs::home_dir() {
+            let got = workspace_filter(Some("~".into()), false).unwrap().unwrap();
+            assert_eq!(got, home.canonicalize().unwrap().to_string_lossy());
+            assert!(
+                workspace_filter(Some("~x/y".into()), false)
+                    .unwrap()
+                    .unwrap()
+                    .starts_with("~x"),
+                "~user is not expanded"
+            );
+        }
+    }
 }

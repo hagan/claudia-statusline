@@ -555,23 +555,16 @@ fn main() -> Result<()> {
                         limit,
                         workspace,
                         here,
-                    } => commands::sessions::list(
-                        all,
-                        attributed,
-                        limit,
-                        commands::sessions::workspace_filter(workspace, here)?,
-                    ),
+                    } => commands::sessions::workspace_filter(workspace, here)
+                        .and_then(|ws| commands::sessions::list(all, attributed, limit, ws)),
                     SessionsAction::Show { selector } => commands::sessions::show(&selector),
                     SessionsAction::Pick {
                         all,
                         limit,
                         workspace,
                         here,
-                    } => commands::sessions::pick(
-                        all,
-                        limit,
-                        commands::sessions::workspace_filter(workspace, here)?,
-                    ),
+                    } => commands::sessions::workspace_filter(workspace, here)
+                        .and_then(|ws| commands::sessions::pick(all, limit, ws)),
                 };
                 // Selection mistakes are user-facing: plain text, not Debug.
                 if let Err(e) = res {
