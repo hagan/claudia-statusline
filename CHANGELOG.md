@@ -38,9 +38,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `<data dir>/last-input.json` (mode 0600) so a new or renamed field after a
   Claude Code update shows up in `jq .` instead of being guessed.
   `STATUSLINE_DEBUG_INPUT=<path>` relocates it, `=off` disables it.
+- **`statusline sessions [list | show | pick]`**: browse the sessions the
+  database knows about. `list` (default) prints them newest first with an
+  index, Claude Code version, model, workspace, main requests, agent count and
+  share (`--all`, `--attributed`, `--limit N`). `show <#|id-prefix>` prints
+  every stored column of one session, its agent transcripts from
+  `transcript_progress` and a ready `claude --resume <id>` line; an ambiguous
+  prefix is refused with the candidates. `pick` is the interactive variant and
+  refuses to run without a terminal on stdin.
 
 ### Fixed
 
+- `statusline <subcommand> | head` panicked with "failed printing to stdout:
+  Broken pipe". `main()` now restores the default SIGPIPE disposition so a
+  closed pipe ends the process quietly (status 141) like other CLIs; the render
+  path is unaffected because Claude Code reads the whole line.
 - Transcript token sums counted every line of a response. Claude Code writes
   one transcript line per content block (thinking, text, tool_use, ...), each
   repeating the same `usage`, which inflated `total_output_tokens` and

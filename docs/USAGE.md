@@ -88,6 +88,54 @@ statusline health --json
 # }
 ```
 
+### Token Attribution per Claude Code Version
+
+Claude Code's cost figure includes subagents, but every token field it sends
+describes the main conversation only. The statusline reads the agent
+transcripts (`<project>/<session>/subagents/agent-*.jsonl`) and stores the
+result per session, so the `🤖N xx%` segment and the `stats` view can show how
+much of a session's input traffic went to agents.
+
+```bash
+statusline stats                 # per Claude Code version (default)
+statusline stats --sessions      # newest 25 sessions, same ratios
+```
+
+Columns: `main_req` (requests of the main conversation), `in_k/req` (input
+traffic per main request in thousands: fresh + cache read + cache write),
+`out/req`, `agents` (agent transcripts), `agent_req`, `share%` (agent input
+traffic / (agent + main)). A step change between two versions is the signal
+that an update changed agent or context behaviour.
+
+### Session Browser
+
+```bash
+statusline sessions                        # list: newest 25, index + short id
+statusline sessions list --all             # every recorded session
+statusline sessions list --attributed      # only sessions with attribution data
+statusline sessions list --limit 50
+statusline sessions show 2                 # by index from the default list
+statusline sessions show fe2e              # by session id prefix
+statusline sessions pick                   # interactive: list, type a selection, show
+```
+
+`show` prints the full session id, Claude Code version, model, workspace,
+start and last-update times, active time, the cost counter of the last CLI
+process (resets on `--resume`; daily money lives in `daily_stats`), lines
+added/removed, the largest context seen, the payload token totals, main vs
+agent attribution, one row per agent transcript (type, requests, input,
+cache reads, output, size), the main transcript path and a ready
+`claude --resume <session_id>` line.
+
+An index always refers to the default ordering (all sessions, newest first),
+independent of `--limit`. An ambiguous prefix is refused with the matching ids;
+`pick` refuses to run without a terminal on stdin so it never hangs a script.
+
+The raw payload of the last render is mirrored to
+`~/.local/share/claudia-statusline/last-input.json` (mode 0600); inspect it
+with `jq .` after a Claude Code update to spot new or renamed fields.
+`STATUSLINE_DEBUG_INPUT=<path>` relocates the mirror, `=off` disables it.
+
 ### Database Maintenance
 
 ```bash
