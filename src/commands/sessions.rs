@@ -222,7 +222,78 @@ fn ws_tail(s: &Option<String>) -> String {
     parts.into_iter().rev().collect::<Vec<_>>().join("/")
 }
 
-fn print_list(rows: &[SessionRow]) {
+/// Resolve `--workspace PATH` / `--here` into the directory to filter on.
+///
+/// `~` is expanded and the path canonicalized when it exists, because the
+/// `sessions.workspace_dir` column holds absolute paths as Claude Code sent
+/// them: a relative `--workspace .` or a `~/appz` spelling would otherwise
+/// match nothing and look like "no sessions here". A non-existent path is
+/// passed through as-is so an old workspace that has since been deleted or
+/// renamed can still be queried.
+pub(crate) fn workspace_filter(workspace: Option<String>, here: bool) -> Result<Option<String>> {
+    let raw = match (workspace, here) {
+        (Some(w), _) => w,
+        (None, true) => std::env::current_dir()
+            .map_err(|e| StatuslineError::Other(format!("cannot read the current directory: {e}")))?
+            .to_string_lossy()
+            .into_owned(),
+        (None, false) => return Ok(None),
+    };
+    let expanded = match raw.strip_prefix("~") {
+        Some(rest) if rest.is_empty() || rest.starts_with('/') => match dirs::home_dir() {
+            Some(h) => format!("{}{}", h.to_string_lossy(), rest),
+            None => raw.clone(),
+        },
+        _ => raw.clone(),
+    };
+    Ok(Some(
+        std::fs::canonicalize(&expanded)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or(expanded),
+    ))
+}
+
+/// True when `dir` is `filter` itself or a directory below it.
+///
+/// Compared per path component, not as a raw string prefix: a plain
+/// `starts_with` would make `/home/guest/appz` also match `/home/guest/appz2`.
+fn under_workspace(dir: Option<&String>, filter: &str) -> bool {
+    let Some(dir) = dir else { return false };
+    let d = dir.trim_end_matches('/');
+    let f = filter.trim_end_matches('/');
+    d == f || d.strip_prefix(f).is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Pair every session with its 1-based position in the *unfiltered* newest-first
+/// ordering, then keep only the ones under `filter`.
+///
+/// The index deliberately stays the global one, so `sessions show <#>` — which
+/// always resolves against the full list — keeps working on a number copied
+/// from a filtered listing. That makes the printed `#` column non-contiguous
+/// when a filter is active, which is the intended trade: a stable identifier is
+/// worth more than pretty numbering, and the alternative (renumbering per
+/// filter) would make `show` silently open the wrong session.
+fn index_and_filter<'a>(
+    rows: &'a [SessionRow],
+    filter: Option<&str>,
+    limit: usize,
+) -> Vec<(usize, &'a SessionRow)> {
+    let mut out: Vec<(usize, &SessionRow)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| (i + 1, r))
+        .filter(|(_, r)| match filter {
+            Some(f) => under_workspace(r.workspace_dir.as_ref(), f),
+            None => true,
+        })
+        .collect();
+    if limit > 0 && out.len() > limit {
+        out.truncate(limit);
+    }
+    out
+}
+
+fn print_list(rows: &[(usize, &SessionRow)]) {
     println!(
         "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>6} {:>8}",
         "#",
@@ -237,10 +308,10 @@ fn print_list(rows: &[SessionRow]) {
         "share%",
         "cost*"
     );
-    for (i, r) in rows.iter().enumerate() {
+    for (i, r) in rows.iter() {
         println!(
             "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>5.1}% {:>8.2}",
-            i + 1,
+            i,
             &r.session_id[..r.session_id.len().min(8)],
             &r.start_time[..r.start_time.len().min(16)],
             &r.last_updated[..r.last_updated.len().min(16)],
@@ -370,17 +441,33 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
     Ok(())
 }
 
-/// `sessions list [--all] [--attributed] [--limit N]`
-pub(crate) fn list(all: bool, attributed: bool, limit: usize) -> Result<()> {
+/// `sessions list [--all] [--attributed] [--limit N] [--workspace PATH|--here]`
+pub(crate) fn list(
+    all: bool,
+    attributed: bool,
+    limit: usize,
+    workspace: Option<String>,
+) -> Result<()> {
     let Some(conn) = open_db()? else {
         return Ok(());
     };
-    let rows = load_sessions(&conn, attributed, if all { 0 } else { limit })?;
-    if rows.is_empty() {
-        println!("(no sessions recorded)");
+    // Always load the full set: the limit has to be applied *after* the
+    // workspace filter, or asking for 25 sessions in one project would first
+    // take the newest 25 overall and then show only the handful of those that
+    // happen to be in it.
+    let rows = load_sessions(&conn, attributed, 0)?;
+    let view = index_and_filter(&rows, workspace.as_deref(), if all { 0 } else { limit });
+    if view.is_empty() {
+        match &workspace {
+            Some(w) => println!("(no sessions recorded under {w})"),
+            None => println!("(no sessions recorded)"),
+        }
         return Ok(());
     }
-    print_list(&rows);
+    print_list(&view);
+    if workspace.is_some() {
+        println!("\nfiltered by workspace; # is the position in the unfiltered list, so `sessions show <#>` still works");
+    }
     Ok(())
 }
 
@@ -398,7 +485,7 @@ pub(crate) fn show(selector: &str) -> Result<()> {
 /// `sessions pick [--all] [--limit N]` — print the list, read one selection
 /// from the terminal, show it. Refuses to run without a terminal on stdin so
 /// it never hangs a pipeline.
-pub(crate) fn pick(all: bool, limit: usize) -> Result<()> {
+pub(crate) fn pick(all: bool, limit: usize, workspace: Option<String>) -> Result<()> {
     if !io::stdin().is_terminal() {
         return Err(StatuslineError::Other(
             "sessions pick needs a terminal on stdin; use `sessions show <#|id>` in scripts".into(),
@@ -407,12 +494,18 @@ pub(crate) fn pick(all: bool, limit: usize) -> Result<()> {
     let Some(conn) = open_db()? else {
         return Ok(());
     };
-    let rows = load_sessions(&conn, false, if all { 0 } else { limit })?;
-    if rows.is_empty() {
-        println!("(no sessions recorded)");
+    // Full set for resolve(), so a `#` typed at the prompt means the same
+    // global position it does in the printed list (and in `sessions show`).
+    let rows = load_sessions(&conn, false, 0)?;
+    let view = index_and_filter(&rows, workspace.as_deref(), if all { 0 } else { limit });
+    if view.is_empty() {
+        match &workspace {
+            Some(w) => println!("(no sessions recorded under {w})"),
+            None => println!("(no sessions recorded)"),
+        }
         return Ok(());
     }
-    print_list(&rows);
+    print_list(&view);
     print!("session (#, id prefix, empty = quit): ");
     io::stdout().flush()?;
     let mut line = String::new();

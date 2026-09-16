@@ -117,7 +117,25 @@ statusline sessions list --limit 50
 statusline sessions show 2                 # by index from the default list
 statusline sessions show fe2e              # by session id prefix
 statusline sessions pick                   # interactive: list, type a selection, show
+statusline sessions list --here            # only this project: workspace == $PWD or below
+statusline sessions list --workspace ~/src # only that directory tree
+statusline sessions pick --here            # same filter, interactive
 ```
+
+`--here` / `--workspace PATH` restrict the listing to sessions whose workspace
+is that directory *or a directory below it*, so running it in a repo root also
+finds sessions opened in its subdirectories. Matching is per path component, so
+`~/proj` never matches `~/proj2`. `~` is expanded and the path canonicalized,
+because the stored workspace is absolute — a path that does not exist is still
+queried verbatim, so a since-deleted workspace remains listable. The two flags
+are mutually exclusive.
+
+Under a filter the `#` column keeps the position from the **unfiltered** list
+and therefore goes non-contiguous (`1 3 4`). That is deliberate: `show <#>`
+always resolves against the full ordering, so a number copied out of a filtered
+listing opens the session you actually looked at. A session's workspace is the
+last one Claude Code reported for it, so a session that moved between
+directories is listed under the most recent one only.
 
 `show` prints the full session id, Claude Code version, model, workspace,
 start and last-update times, active time, the cost counter of the last CLI

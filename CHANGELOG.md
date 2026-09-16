@@ -46,6 +46,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `transcript_progress` and a ready `claude --resume <id>` line; an ambiguous
   prefix is refused with the candidates. `pick` is the interactive variant and
   refuses to run without a terminal on stdin.
+- **`sessions list --here` / `--workspace PATH`** (also on `pick`): restrict the
+  listing to sessions whose workspace is that directory *or below it*, so one
+  project's history can be read without the other projects interleaved;
+  `--here` is `$PWD`. Matching is per path component (`~/proj` never matches
+  `~/proj2`), `~` is expanded and the path canonicalized against the absolute
+  paths stored in `workspace_dir`, and a non-existent path is still queried so a
+  deleted workspace stays listable. The two flags are mutually exclusive and
+  `--limit` applies *after* the filter. Under a filter the `#` column keeps its
+  position in the unfiltered list and so goes non-contiguous — deliberate, since
+  `show <#>` always resolves against the full ordering and renumbering per
+  filter would make a copied number open the wrong session.
 
 ### Fixed
 
