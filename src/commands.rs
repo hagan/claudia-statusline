@@ -15,6 +15,8 @@ pub(crate) mod hooks;
 pub(crate) mod list_vars;
 pub(crate) mod maintenance;
 pub(crate) mod migrate;
+pub(crate) mod sessions;
+pub(crate) mod stats;
 
 #[cfg(feature = "turso-sync")]
 pub(crate) mod sync;

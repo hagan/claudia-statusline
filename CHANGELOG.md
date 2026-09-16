@@ -7,6 +7,70 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+> Subagent token attribution and update-drift tooling. Claude Code reports the
+> session's cost with subagents included, but every token field in the payload
+> (`context_window`, `prompt_cache`) describes the main conversation only, so
+> Agent-tool work was invisible. This release reads the agent transcripts.
+
+### Added
+
+- **`🤖N xx%` segment**: number of agent transcripts in the session and the
+  agents' share of the session's input traffic (fresh + cache read + cache
+  write). Rendered only when agents exist; `display.show_agents` (default true).
+  Template variables `{agents}`, `{agents_count}`, `{agents_pct}`,
+  `{agents_tokens}` (`152M/449k` = input traffic / output), `{agents_types}`
+  (`Explore×14 Plan×1`). `{agents}` appended to the `default`, `detailed` and
+  `power` presets (separator auto-hidden when empty).
+- **Incremental transcript parsing** (`src/agents.rs`): each main/agent file
+  keeps a byte offset, running totals and the last `requestId` in the new
+  `transcript_progress` table (migration 007), so a render reads only what was
+  appended. Measured on a 15 MB main transcript + 15 agent files: 0.10 s cold,
+  0.05 s warm.
+- **`statusline stats [--by-version | --sessions]`**: main requests, input
+  traffic per request, output per request, agent count/requests and agent share,
+  grouped by the Claude Code `version` that produced each session (now stored
+  in `sessions.claude_version`). A step change between versions is the signal
+  that an update changed agent or context behaviour.
+- **`prompt_cache` payload parsing** (Claude Code >= 2.1.251): `{prompt_cache}`,
+  `{cache_hit}`, `{cache_misses}`, `{cache_miss_cause}`, `{cache_warm}`; opt-in
+  segment via `display.show_prompt_cache` (`cache 91% miss:2 tools_changed`).
+- **Stdin mirror**: the raw payload of the last render is written to
+  `<data dir>/last-input.json` (mode 0600) so a new or renamed field after a
+  Claude Code update shows up in `jq .` instead of being guessed.
+  `STATUSLINE_DEBUG_INPUT=<path>` relocates it, `=off` disables it.
+- **`statusline sessions [list | show | pick]`**: browse the sessions the
+  database knows about. `list` (default) prints them newest first with an
+  index, Claude Code version, model, workspace, main requests, agent count and
+  share (`--all`, `--attributed`, `--limit N`). `show <#|id-prefix>` prints
+  every stored column of one session, its agent transcripts from
+  `transcript_progress` and a ready `claude --resume <id>` line; an ambiguous
+  prefix is refused with the candidates. `pick` is the interactive variant and
+  refuses to run without a terminal on stdin.
+- **`sessions list --here` / `--workspace PATH`** (also on `pick`): restrict the
+  listing to sessions whose workspace is that directory *or below it*, so one
+  project's history can be read without the other projects interleaved;
+  `--here` is `$PWD`. Matching is per path component (`~/proj` never matches
+  `~/proj2`), `~` is expanded and the path canonicalized against the absolute
+  paths stored in `workspace_dir`, and a non-existent path is still queried so a
+  deleted workspace stays listable. The two flags are mutually exclusive and
+  `--limit` applies *after* the filter. Under a filter the `#` column keeps its
+  position in the unfiltered list and so goes non-contiguous — deliberate, since
+  `show <#>` always resolves against the full ordering and renumbering per
+  filter would make a copied number open the wrong session.
+
+### Fixed
+
+- `statusline <subcommand> | head` panicked with "failed printing to stdout:
+  Broken pipe". `main()` now restores the default SIGPIPE disposition so a
+  closed pipe ends the process quietly (status 141) like other CLIs; the render
+  path is unaffected because Claude Code reads the whole line.
+- Transcript token sums counted every line of a response. Claude Code writes
+  one transcript line per content block (thinking, text, tool_use, ...), each
+  repeating the same `usage`, which inflated `total_output_tokens` and
+  `total_cache_creation_tokens` about 2.2× (996 lines for 454 requests in one
+  measured session). Sums are now de-duplicated per `requestId`; lines without
+  an id (older transcripts) still count individually.
+
 ## [3.2.0] - 2026-06-15
 
 > **Minor release**: optional, default-OFF `[ant]` enrichment that lets the statusline surface authoritative Claude API data (model context windows; per-account org-wide usage/cost) it can't get from the stdin payload. The render path stays **offline, auth-free, sub-few-ms, and byte-identical to v3.1.0** when `[ant]` is disabled — all network/auth/subprocess work is out-of-band in a new `statusline ant` subcommand. Strictly opt-in, lean-dependency (shells out to `ant`/`curl`, no new mandatory deps), and degrades silently everywhere. Fully backward-compatible; no breaking changes.

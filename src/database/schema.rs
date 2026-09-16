@@ -17,8 +17,38 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_cache_read_tokens INTEGER DEFAULT 0,
     total_cache_creation_tokens INTEGER DEFAULT 0,
     active_time_seconds INTEGER DEFAULT 0,
-    last_activity TEXT
+    last_activity TEXT,
+    claude_version TEXT,
+    agent_count INTEGER DEFAULT 0,
+    agent_requests INTEGER DEFAULT 0,
+    agent_input_tokens INTEGER DEFAULT 0,
+    agent_output_tokens INTEGER DEFAULT 0,
+    main_requests INTEGER DEFAULT 0,
+    main_input_tokens INTEGER DEFAULT 0,
+    main_output_tokens INTEGER DEFAULT 0
 );
+
+-- Incremental transcript parse state (v7): one row per main/subagent transcript
+-- file. `offset` is the byte position after the last complete line consumed;
+-- `last_request_id` carries requestId de-duplication across renders. Absolute
+-- totals (not deltas) so a row can be recomputed by deleting it.
+CREATE TABLE IF NOT EXISTS transcript_progress (
+    path TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    is_agent INTEGER NOT NULL DEFAULT 0,
+    agent_type TEXT,
+    size INTEGER NOT NULL DEFAULT 0,
+    mtime INTEGER NOT NULL DEFAULT 0,
+    offset INTEGER NOT NULL DEFAULT 0,
+    last_request_id TEXT,
+    requests INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_progress_session ON transcript_progress(session_id);
 
 -- Daily aggregates (materialized for performance, includes v6 token columns)
 CREATE TABLE IF NOT EXISTS daily_stats (

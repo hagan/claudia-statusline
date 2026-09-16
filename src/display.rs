@@ -30,6 +30,50 @@ pub struct PayloadExtras<'a> {
     pub version: Option<&'a str>,
     /// Repository identity parsed by Claude Code from the `origin` remote.
     pub repo: Option<&'a Repo>,
+    /// Main/agent token attribution from `agents::scan` (absent without a session
+    /// or transcript). Drives the `🤖N xx%` segment and the `{agents*}` variables.
+    pub agents: Option<&'a crate::agents::AgentsSummary>,
+    /// Main-conversation prompt-cache statistics from the payload (CC >= 2.1.251).
+    pub prompt_cache: Option<&'a crate::models::PromptCache>,
+}
+
+/// `🤖3 30%`: number of agent transcripts and the agents' share of the session's
+/// input traffic. `None` when the session has not spawned agents, so the segment
+/// costs no width in ordinary sessions.
+fn format_agents(summary: &crate::agents::AgentsSummary) -> Option<String> {
+    if !summary.has_agents() {
+        return None;
+    }
+    let pct = summary
+        .agent_share_percent()
+        .map(|p| format!(" {:.0}%", p))
+        .unwrap_or_default();
+    Some(format!("🤖{}{}", summary.agent_files, pct))
+}
+
+/// `cache 91% miss:2 tools_changed`: hit ratio, miss count, latest miss cause.
+/// Each piece is omitted when the payload lacks it; `None` when nothing is known.
+fn format_prompt_cache(pc: &crate::models::PromptCache) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(r) = pc.hit_ratio {
+        parts.push(format!("cache {:.0}%", r * 100.0));
+    }
+    if let Some(m) = pc.misses.filter(|&m| m > 0) {
+        parts.push(format!("miss:{}", m));
+        if let Some(c) = pc
+            .last_miss_cause
+            .as_ref()
+            .and_then(|c| c.causes.as_ref())
+            .and_then(|v| v.first())
+        {
+            parts.push(c.clone());
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
 }
 
 /// Build a [`ContextUsage`] from Claude Code's payload `context_window`, used in
@@ -638,6 +682,23 @@ fn format_statusline_string(
         }
     }
 
+    // 7a. Subagent attribution: agent count and share of input traffic. Silent
+    //     unless the session spawned agents. This is the only place the tokens
+    //     burned by Agent-tool work become visible; the payload's token fields
+    //     describe the main conversation alone.
+    if display_config.show_agents {
+        if let Some(s) = extras.agents.and_then(format_agents) {
+            parts.push(format!("{}{}{}", Colors::light_gray(), s, Colors::reset()));
+        }
+    }
+
+    // 7a'. Prompt-cache health of the main conversation (opt-in).
+    if display_config.show_prompt_cache {
+        if let Some(s) = extras.prompt_cache.and_then(format_prompt_cache) {
+            parts.push(format!("{}{}{}", Colors::light_gray(), s, Colors::reset()));
+        }
+    }
+
     // 7b. Rate limits (Pro/Max subscription windows). Opt-in via config; absent
     //     for API-key usage so it renders nothing unless the payload carries them.
     if display_config.show_rate_limits {
@@ -892,6 +953,19 @@ fn format_statusline_with_layout(
             &Colors::light_gray(),
             &reset,
         );
+    }
+
+    // Subagent attribution: {agents}, {agents_count}, {agents_pct}, {agents_tokens},
+    // {agents_types}. All absent in sessions without agents (clean_separators then
+    // drops the separator in front of {agents} in the presets).
+    if let Some(summary) = extras.agents {
+        builder = builder.agents(summary, &Colors::light_gray(), &reset);
+    }
+
+    // Prompt cache (main conversation): {prompt_cache}, {cache_hit}, {cache_misses},
+    // {cache_miss_cause}, {cache_warm}. Absent before the first API response.
+    if let Some(pc) = extras.prompt_cache {
+        builder = builder.prompt_cache(pc, &Colors::light_gray(), &reset);
     }
 
     // Session metadata (opt-in template variables): {effort}, {cc_version},

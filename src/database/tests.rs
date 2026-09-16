@@ -118,9 +118,12 @@ fn test_session_update() {
             },
         )
         .unwrap();
+    // Downward re-report (>= half the stored value) is a correction: the
+    // session baseline is replaced, but it must not subtract from the day
+    // total (upstream counters only move backwards on process resets).
     assert_eq!(
-        day_total, 5.0,
-        "Day total should be replaced, not accumulated"
+        day_total, 10.0,
+        "Day total must not decrease on a downward correction"
     );
     assert_eq!(
         session_total, 5.0,
@@ -179,7 +182,8 @@ fn test_session_update_delta_calculation() {
     assert_eq!(session_total, 20.0);
     assert_eq!(day_total, 30.0); // 10 + 20
 
-    // Update first session with LOWER value - should decrease day total
+    // Update first session with a slightly LOWER value — a correction, which
+    // must contribute nothing to the day total (never subtract)
     let (day_total, session_total) = db
         .update_session(
             "session1",
@@ -199,8 +203,8 @@ fn test_session_update_delta_calculation() {
         .unwrap();
     assert_eq!(session_total, 8.0, "Session should have new value");
     assert_eq!(
-        day_total, 28.0,
-        "Day total should decrease by 2 (30 - 2 = 28)"
+        day_total, 30.0,
+        "Day total must not decrease on a downward correction"
     );
 
     // Update first session with HIGHER value - should increase day total
@@ -223,11 +227,12 @@ fn test_session_update_delta_calculation() {
         .unwrap();
     assert_eq!(session_total, 15.0, "Session should have new value");
     assert_eq!(
-        day_total, 35.0,
-        "Day total should increase by 7 (28 + 7 = 35)"
+        day_total, 37.0,
+        "Day total should increase by 7 (30 + 7 = 37)"
     );
 
-    // Update second session to zero - should decrease day total
+    // Update second session to zero — a counter reset: the new counter value
+    // (0.0) is counted as fresh spend, so the day total is unchanged
     let (day_total, session_total) = db
         .update_session(
             "session2",
@@ -247,8 +252,8 @@ fn test_session_update_delta_calculation() {
         .unwrap();
     assert_eq!(session_total, 0.0, "Session should be zero");
     assert_eq!(
-        day_total, 15.0,
-        "Day total should be just session1 (35 - 20 = 15)"
+        day_total, 37.0,
+        "A reset to zero must not subtract the old session cost"
     );
 }
 

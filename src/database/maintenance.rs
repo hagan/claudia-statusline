@@ -90,6 +90,26 @@ pub fn perform_maintenance(
             records_pruned += deleted;
         }
 
+        // Prune transcript parse state whose file is gone (deleted sessions,
+        // temp transcripts). Rows are small but keyed by absolute path, so they
+        // never match again once the file disappears.
+        let stale: Vec<String> = conn
+            .prepare("SELECT path FROM transcript_progress")
+            .and_then(|mut stmt| {
+                stmt.query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|p| !std::path::Path::new(p).exists())
+            .collect();
+        for path in stale {
+            records_pruned += conn.execute(
+                "DELETE FROM transcript_progress WHERE path = ?1",
+                params![path],
+            )?;
+        }
+
         records_pruned > 0
     } else {
         false

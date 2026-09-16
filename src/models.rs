@@ -40,6 +40,9 @@ pub struct StatuslineInput {
     pub exceeds_200k_tokens: Option<bool>,
     /// Claude Code version string (e.g. "2.1.90").
     pub version: Option<String>,
+    /// Prompt-cache statistics for the MAIN conversation (Claude Code >= 2.1.251).
+    /// Subagent requests are not counted here (documented upstream).
+    pub prompt_cache: Option<PromptCache>,
 }
 
 /// Reasoning effort level (`effort`).
@@ -47,6 +50,36 @@ pub struct StatuslineInput {
 pub struct Effort {
     /// One of `low`, `medium`, `high`, `xhigh`, `max`.
     pub level: Option<String>,
+}
+
+/// Prompt-cache statistics (`prompt_cache`). All fields optional: the object
+/// appears only after the first API response and its shape may grow.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptCache {
+    /// Whether the cache is currently warm.
+    pub warm: Option<bool>,
+    /// Cache lifetime tier, `5m` or `1h`.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub ttl: Option<String>,
+    /// Fraction of requests served from cache, 0.0..=1.0.
+    pub hit_ratio: Option<f64>,
+    /// Requests observed this session.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub requests: Option<u64>,
+    /// Cache misses this session.
+    pub misses: Option<u64>,
+    /// Why the most recent miss happened.
+    pub last_miss_cause: Option<PromptCacheMissCause>,
+    /// Miss count per cause, e.g. `{"tools_changed": 2}`.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    pub miss_causes: Option<std::collections::HashMap<String, u64>>,
+}
+
+/// Cause list attached to the latest prompt-cache miss.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptCacheMissCause {
+    /// Cause identifiers, e.g. `tools_changed`, `system_prompt_changed`.
+    pub causes: Option<Vec<String>>,
 }
 
 /// Live context-window usage reported directly by Claude Code.
@@ -358,6 +391,13 @@ pub struct TranscriptEntry {
     pub message: TranscriptMessage,
     /// ISO 8601 formatted timestamp
     pub timestamp: String,
+    /// API request this line belongs to. Claude Code writes ONE line PER CONTENT
+    /// BLOCK of a response (thinking, text, tool_use, ...), each carrying the same
+    /// `usage`, so token sums must be de-duplicated on this id (2.2x inflation
+    /// otherwise, measured 2026-09-16: 996 lines for 454 requests). Absent in
+    /// older transcripts, in which case every line counts.
+    #[serde(rename = "requestId", default)]
+    pub request_id: Option<String>,
 }
 
 /// Message within a transcript entry

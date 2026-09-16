@@ -891,6 +891,103 @@ impl VariableBuilder {
         self
     }
 
+    /// Set subagent-attribution variables from `agents::scan`:
+    /// `{agents}` (`🤖3 30%`), `{agents_count}`, `{agents_pct}` (`30%`),
+    /// `{agents_tokens}` (`152M/449k` = input traffic / output),
+    /// `{agents_types}` (`Explore×2 general-purpose×1`). All absent when the
+    /// session has not spawned agents.
+    pub fn agents(
+        mut self,
+        summary: &crate::agents::AgentsSummary,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        if !summary.has_agents() {
+            return self;
+        }
+        let paint = |s: String| format!("{}{}{}", color, s, reset);
+        let pct = summary.agent_share_percent().map(|p| format!("{:.0}%", p));
+        self.variables.insert(
+            "agents_count".to_string(),
+            paint(summary.agent_files.to_string()),
+        );
+        if let Some(p) = &pct {
+            self.variables
+                .insert("agents_pct".to_string(), paint(p.clone()));
+        }
+        self.variables.insert(
+            "agents_tokens".to_string(),
+            paint(format!(
+                "{}/{}",
+                crate::agents::short_tokens(summary.agents.input_traffic()),
+                crate::agents::short_tokens(summary.agents.output_tokens)
+            )),
+        );
+        let types: Vec<String> = summary
+            .agent_types
+            .iter()
+            .map(|(t, n)| format!("{}×{}", t, n))
+            .collect();
+        if !types.is_empty() {
+            self.variables
+                .insert("agents_types".to_string(), paint(types.join(" ")));
+        }
+        let combined = match pct {
+            Some(p) => format!("🤖{} {}", summary.agent_files, p),
+            None => format!("🤖{}", summary.agent_files),
+        };
+        self.variables.insert("agents".to_string(), paint(combined));
+        self
+    }
+
+    /// Set prompt-cache variables from the payload's `prompt_cache` object:
+    /// `{cache_hit}` (`91%`), `{cache_misses}`, `{cache_miss_cause}`,
+    /// `{cache_warm}` (`warm`/`cold`) and the combined `{prompt_cache}`.
+    pub fn prompt_cache(
+        mut self,
+        pc: &crate::models::PromptCache,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        let paint = |s: String| format!("{}{}{}", color, s, reset);
+        let mut combined = Vec::new();
+        if let Some(r) = pc.hit_ratio {
+            let s = format!("{:.0}%", r * 100.0);
+            combined.push(format!("cache {}", s));
+            self.variables.insert("cache_hit".to_string(), paint(s));
+        }
+        if let Some(m) = pc.misses {
+            self.variables
+                .insert("cache_misses".to_string(), paint(m.to_string()));
+            if m > 0 {
+                combined.push(format!("miss:{}", m));
+            }
+        }
+        if let Some(c) = pc
+            .last_miss_cause
+            .as_ref()
+            .and_then(|c| c.causes.as_ref())
+            .and_then(|v| v.first())
+        {
+            self.variables
+                .insert("cache_miss_cause".to_string(), paint(c.clone()));
+            if pc.misses.unwrap_or(0) > 0 {
+                combined.push(c.clone());
+            }
+        }
+        if let Some(w) = pc.warm {
+            self.variables.insert(
+                "cache_warm".to_string(),
+                paint(if w { "warm" } else { "cold" }.to_string()),
+            );
+        }
+        if !combined.is_empty() {
+            self.variables
+                .insert("prompt_cache".to_string(), paint(combined.join(" ")));
+        }
+        self
+    }
+
     /// Set session-metadata variables from the modern payload:
     /// `{effort}` (e.g. `xhigh`), `{cc_version}` (e.g. `v2.1.90`), `{over_200k}`
     /// (`200k+` when the response crossed the fixed 200k threshold), and

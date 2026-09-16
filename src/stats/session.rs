@@ -99,7 +99,10 @@ impl StatsData {
             self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0)
         };
 
-        let cost_delta = update.cost - last_cost;
+        // Guard against upstream counter resets (session resumed in a new CLI
+        // process reports a near-zero cumulative cost for the same session id):
+        // never let a backwards-moving counter subtract from the aggregates.
+        let cost_delta = crate::utils::clamp_reset_delta_f64(update.cost, last_cost);
 
         // Calculate line deltas from previous values
         // If session was reset, treat as new session (delta = full value)
@@ -119,8 +122,13 @@ impl StatsData {
                 .map(|s| s.lines_removed)
                 .unwrap_or(0)
         };
-        let lines_added_delta = (update.lines_added as i64) - (last_lines_added as i64);
-        let lines_removed_delta = (update.lines_removed as i64) - (last_lines_removed as i64);
+        // Same reset guard as for cost (see above).
+        let lines_added_delta =
+            crate::utils::clamp_reset_delta_i64(update.lines_added as i64, last_lines_added as i64);
+        let lines_removed_delta = crate::utils::clamp_reset_delta_i64(
+            update.lines_removed as i64,
+            last_lines_removed as i64,
+        );
 
         // Query active_time_seconds and last_activity from SQLite for JSON backup persistence
         let (active_time_seconds, last_activity) = if let Ok(db_path) = Self::get_sqlite_path() {

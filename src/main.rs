@@ -26,6 +26,7 @@ use std::env;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+mod agents;
 mod ant;
 mod commands;
 mod common;
@@ -103,7 +104,69 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+enum SessionsAction {
+    /// List sessions newest first with an index for `show` (default)
+    List {
+        /// Show every session instead of the newest 25
+        #[arg(long)]
+        all: bool,
+        /// Only sessions with attribution data (main_requests > 0)
+        #[arg(long)]
+        attributed: bool,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        /// Only sessions whose workspace is this directory or below it
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<String>,
+        /// Shorthand for --workspace $PWD: only this project's sessions
+        #[arg(long, conflicts_with = "workspace")]
+        here: bool,
+    },
+    /// Print all parameters of one session: `#` from the list or a session id prefix
+    Show {
+        /// List index (1-based) or session id prefix
+        selector: String,
+    },
+    /// Interactive: list, read a selection from the terminal, show it
+    Pick {
+        /// Show every session instead of the newest 25
+        #[arg(long)]
+        all: bool,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        /// Only sessions whose workspace is this directory or below it
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<String>,
+        /// Shorthand for --workspace $PWD: only this project's sessions
+        #[arg(long, conflicts_with = "workspace")]
+        here: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
+    /// Token attribution per Claude Code version (default) or per session:
+    /// main requests, input traffic and output per request, subagent share.
+    /// Compare rows across versions to spot a behaviour change after an update.
+    Stats {
+        /// Group by Claude Code version (default view)
+        #[arg(long)]
+        by_version: bool,
+
+        /// List the most recent sessions instead
+        #[arg(long)]
+        sessions: bool,
+    },
+
+    /// Browse recorded sessions: list them newest first, pick one, print its
+    /// parameters (model, workspace, tokens, agent transcripts, resume line).
+    Sessions {
+        #[command(subcommand)]
+        action: Option<SessionsAction>,
+    },
+
     /// Generate example config file
     GenerateConfig,
 
@@ -275,6 +338,16 @@ pub(crate) enum HookAction {
 }
 
 fn main() -> Result<()> {
+    // Rust ignores SIGPIPE and turns a closed stdout into a panic inside
+    // println!. Restore the Unix default so `statusline sessions | head`
+    // ends silently (exit 141) like any other CLI. The statusline render path
+    // is unaffected: Claude Code reads the whole line.
+    #[cfg(unix)]
+    // SAFETY: called before any thread exists; SIG_DFL is a valid disposition.
+    unsafe {
+        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
+    }
+
     let cli = Cli::parse();
 
     // Handle log level with precedence: CLI > env > default
@@ -408,6 +481,44 @@ fn main() -> Result<()> {
             Commands::Health { json } => {
                 return commands::health::show_health_report(json);
             }
+            Commands::Stats {
+                by_version,
+                sessions,
+            } => {
+                return commands::stats::show_stats(by_version, sessions);
+            }
+            Commands::Sessions { action } => {
+                let res = match action.unwrap_or(SessionsAction::List {
+                    all: false,
+                    attributed: false,
+                    limit: 25,
+                    workspace: None,
+                    here: false,
+                }) {
+                    SessionsAction::List {
+                        all,
+                        attributed,
+                        limit,
+                        workspace,
+                        here,
+                    } => commands::sessions::workspace_filter(workspace, here)
+                        .and_then(|ws| commands::sessions::list(all, attributed, limit, ws)),
+                    SessionsAction::Show { selector } => commands::sessions::show(&selector),
+                    SessionsAction::Pick {
+                        all,
+                        limit,
+                        workspace,
+                        here,
+                    } => commands::sessions::workspace_filter(workspace, here)
+                        .and_then(|ws| commands::sessions::pick(all, limit, ws)),
+                };
+                // Selection mistakes are user-facing: plain text, not Debug.
+                if let Err(e) = res {
+                    eprintln!("error: {e}");
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
 
             #[cfg(feature = "turso-sync")]
             Commands::Sync {
@@ -444,6 +555,7 @@ fn main() -> Result<()> {
     // Read JSON from stdin
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
+    mirror_input(&buffer);
 
     // Parse input
     let input: StatuslineInput = match serde_json::from_str(&buffer) {
@@ -476,7 +588,7 @@ fn main() -> Result<()> {
 
     // Update stats and resolve today's daily total via the single shared
     // implementation (see src/render.rs). The binary always updates stats.
-    let daily_total = render::update_stats_and_daily_total(&input, true);
+    let (daily_total, agents) = render::update_stats_and_daily_total(&input, true);
 
     // Format and print output
     format_output(
@@ -493,10 +605,36 @@ fn main() -> Result<()> {
             exceeds_200k: input.exceeds_200k_tokens,
             version: input.version.as_deref(),
             repo: input.workspace.as_ref().and_then(|w| w.repo.as_ref()),
+            agents: agents.as_ref(),
+            prompt_cache: input.prompt_cache.as_ref(),
         },
     );
 
     Ok(())
+}
+
+/// Keep a copy of the last raw stdin payload so a Claude Code update that adds,
+/// renames or drops a field can be seen with `jq . <file>` instead of guessed.
+///
+/// Default location: `<data dir>/last-input.json` (owner-only). Set
+/// `STATUSLINE_DEBUG_INPUT=<path>` to relocate it or `STATUSLINE_DEBUG_INPUT=off`
+/// to disable. Best-effort: a failure here never affects the render.
+fn mirror_input(payload: &str) {
+    let target = match env::var("STATUSLINE_DEBUG_INPUT") {
+        Ok(v) if v.eq_ignore_ascii_case("off") => return,
+        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
+        _ => common::get_data_dir().join("last-input.json"),
+    };
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    if let Ok(mut f) = opts.open(&target) {
+        let _ = std::io::Write::write_all(&mut f, payload.as_bytes());
+    }
 }
 
 #[cfg(test)]

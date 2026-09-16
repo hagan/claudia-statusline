@@ -1,13 +1,16 @@
 //! Preset layout definitions and user preset loading.
 
 /// Built-in layout presets
-pub const PRESET_DEFAULT: &str = "{directory}{sep}{git}{sep}{context}{sep}{model}{sep}{cost}";
+// `{agents}` is empty in sessions without subagents; clean_separators() drops
+// the separator in front of an empty variable, so it costs no width until used.
+pub const PRESET_DEFAULT: &str =
+    "{directory}{sep}{git}{sep}{context}{sep}{model}{sep}{cost}{sep}{agents}";
 pub const PRESET_COMPACT: &str = "{dir_short} {git_branch} {model} {cost_short}";
 pub const PRESET_DETAILED: &str =
-    "{directory}{sep}{git}\n{context}{sep}{model}{sep}{duration}{sep}{cost}";
+    "{directory}{sep}{git}\n{context}{sep}{model}{sep}{duration}{sep}{cost}{sep}{agents}";
 pub const PRESET_MINIMAL: &str = "{directory} {model}";
 pub const PRESET_POWER: &str =
-    "{directory}{sep}{git}{sep}{context}\n{model}{sep}{duration}{sep}{lines}{sep}{cost} ({burn_rate})";
+    "{directory}{sep}{git}{sep}{context}\n{model}{sep}{duration}{sep}{lines}{sep}{cost} ({burn_rate}){sep}{agents}";
 
 /// Get the format string for a preset name
 ///

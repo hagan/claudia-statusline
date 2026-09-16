@@ -217,6 +217,30 @@ FROM sessions GROUP BY strftime('%Y-%m', start_time, 'localtime');
 ## Advanced Features
 
 <details>
+<summary><b>Subagent Attribution & Session Browser</b></summary>
+
+Claude Code's cost includes subagents, but its token fields describe the main
+conversation only. The statusline reads the agent transcripts and shows
+`🤖3 30%` (agent count, share of input traffic) whenever a session has spawned
+agents. The same data feeds two commands:
+
+```bash
+statusline stats                 # per Claude Code version: spot drift after an update
+statusline stats --sessions      # newest sessions with the same ratios
+
+statusline sessions              # list sessions newest first, with an index
+statusline sessions show 2       # all parameters of one session (+ claude --resume line)
+statusline sessions show fe2e    # ... or by session id prefix
+statusline sessions pick         # interactive picker
+```
+
+Segment toggle: `display.show_agents` (default `true`). Template variables:
+`{agents}`, `{agents_count}`, `{agents_pct}`, `{agents_tokens}`, `{agents_types}`.
+Details in [docs/USAGE.md](docs/USAGE.md#session-browser).
+
+</details>
+
+<details>
 <summary><b>Database Maintenance</b></summary>
 
 Keep your stats database optimized:

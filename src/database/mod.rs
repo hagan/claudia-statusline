@@ -131,11 +131,11 @@ impl SqliteDatabase {
                     .map_err(crate::error::StatuslineError::Database)?;
                 tx.execute_batch(SCHEMA)
                     .map_err(crate::error::StatuslineError::Database)?;
-                // Mark as fully migrated (v6 includes daily/monthly token tracking).
+                // Mark as fully migrated (v7 includes agent tracking + transcript_progress).
                 tx.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
-                     VALUES (?1, ?2, '', 'New database with complete schema (v6)', 0)",
-                    params![6, chrono::Local::now().to_rfc3339()],
+                     VALUES (?1, ?2, '', 'New database with complete schema (v7)', 0)",
+                    params![7, chrono::Local::now().to_rfc3339()],
                 )
                 .map_err(crate::error::StatuslineError::Database)?;
                 tx.commit().map_err(crate::error::StatuslineError::Database)?;

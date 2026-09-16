@@ -2,6 +2,7 @@ use super::schema::SessionUpdate;
 use super::SqliteDatabase;
 use crate::common::{current_date, current_month, current_timestamp};
 use crate::retry::{retry_if_retryable, RetryConfig};
+use crate::utils::{clamp_reset_delta_f64, clamp_reset_delta_i64};
 use rusqlite::{params, OptionalExtension, Result, Transaction};
 
 // Type alias for session archive data tuple
@@ -39,6 +40,48 @@ impl SqliteDatabase {
 
             tx.commit()?;
             Ok(result)
+        })
+        .map_err(|e| match e {
+            crate::error::StatuslineError::Database(db_err) => db_err,
+            _ => rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some(e.to_string()),
+            ),
+        })
+    }
+
+    /// Record the Claude Code version and the main/agent token attribution for a
+    /// session. Values are absolute session totals from `agents::scan`, not
+    /// deltas, so this is a plain overwrite; a missing row is left alone.
+    pub fn update_session_agents(
+        &self,
+        session_id: &str,
+        claude_version: Option<&str>,
+        summary: &crate::agents::AgentsSummary,
+    ) -> Result<()> {
+        let retry_config = RetryConfig::for_db_ops();
+        retry_if_retryable(&retry_config, || {
+            let conn = self.get_connection()?;
+            conn.execute(
+                "UPDATE sessions SET
+                    claude_version = COALESCE(?2, claude_version),
+                    agent_count = ?3, agent_requests = ?4,
+                    agent_input_tokens = ?5, agent_output_tokens = ?6,
+                    main_requests = ?7, main_input_tokens = ?8, main_output_tokens = ?9
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    claude_version,
+                    summary.agent_files as i64,
+                    summary.agents.requests as i64,
+                    summary.agents.input_traffic() as i64,
+                    summary.agents.output_tokens as i64,
+                    summary.main.requests as i64,
+                    summary.main.input_traffic() as i64,
+                    summary.main.output_tokens as i64,
+                ],
+            )?;
+            Ok(())
         })
         .map_err(|e| match e {
             crate::error::StatuslineError::Database(db_err) => db_err,
@@ -281,10 +324,18 @@ impl SqliteDatabase {
             // - This can cause transcript sum < DB stored value (false "decrease")
             // - Negative deltas would incorrectly subtract from daily/monthly totals
             // Solution: clamp token deltas to 0 minimum
+            //
+            // COST/LINES RESET: the payload counters (total_cost_usd, lines
+            // added/removed) are cumulative per CLI process. When a session is
+            // resumed in a new process the counters restart from zero while the
+            // session_id stays the same, so `new < old` here. Subtracting would
+            // drive daily/monthly totals negative. A drop below half the stored
+            // value is treated as such a reset (the new counter value is fresh
+            // spend); a smaller drop is a correction and contributes nothing.
             (
-                cost - old_cost,
-                lines_added as i64 - old_lines_added,
-                lines_removed as i64 - old_lines_removed,
+                clamp_reset_delta_f64(cost, old_cost),
+                clamp_reset_delta_i64(lines_added as i64, old_lines_added),
+                clamp_reset_delta_i64(lines_removed as i64, old_lines_removed),
                 (input_tokens - old_input).max(0),
                 (output_tokens - old_output).max(0),
                 (cache_read_tokens - old_cache_read).max(0),
@@ -320,10 +371,13 @@ impl SqliteDatabase {
                 // Use archived values as baseline - only count incremental delta
                 // This prevents double-counting when cumulative cost continues after reset
                 // Token deltas use full values since they're not archived
+                // Same upstream-counter-reset guard as the live-session branch:
+                // a resumed CLI process can report values below the archived
+                // baseline, which must never subtract from the aggregates.
                 (
-                    cost - archived_cost,
-                    lines_added as i64 - archived_lines_added,
-                    lines_removed as i64 - archived_lines_removed,
+                    clamp_reset_delta_f64(cost, archived_cost),
+                    clamp_reset_delta_i64(lines_added as i64, archived_lines_added),
+                    clamp_reset_delta_i64(lines_removed as i64, archived_lines_removed),
                     input_tokens,
                     output_tokens,
                     cache_read_tokens,

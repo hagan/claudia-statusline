@@ -31,6 +31,7 @@
 // #![doc(html_root_url = "https://docs.rs/statusline/2.7.0")]
 
 /// Ant (opt-in Claude API enrichment) module: `[ant]` config + versioned model cache
+pub mod agents;
 pub mod ant;
 pub mod common;
 /// Configuration management module for loading and saving settings
@@ -149,7 +150,7 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
     let session_id = input.session_id.as_deref();
 
     // Load or update stats (single shared implementation; see src/render.rs).
-    let daily_total = render::update_stats_and_daily_total(input, update_stats);
+    let (daily_total, agents) = render::update_stats_and_daily_total(input, update_stats);
 
     // Format the output to string
     let output = display::format_output_to_string(
@@ -166,6 +167,8 @@ pub fn render_statusline(input: &StatuslineInput, update_stats: bool) -> Result<
             exceeds_200k: input.exceeds_200k_tokens,
             version: input.version.as_deref(),
             repo: input.workspace.as_ref().and_then(|w| w.repo.as_ref()),
+            agents: agents.as_ref(),
+            prompt_cache: input.prompt_cache.as_ref(),
         },
     );
 
