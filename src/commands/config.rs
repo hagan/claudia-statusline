@@ -379,6 +379,13 @@ fn path(json_output: bool) -> Result<()> {
 /// oversized file can yield a complete, valid TOML document followed by
 /// padding, which would let an arbitrarily large file through the supposed
 /// bound. That is the discipline `src/pricing/cache.rs:348-353` established.
+///
+/// Deliberately its OWN constant rather than an import of the price-cache cap.
+/// `crate::config_validation::MAX_CACHE_PROBE_BYTES` imports that one because it
+/// bounds reads of the very files that reader reads, and the two must agree. A
+/// user-authored config file is a different artifact: coupling it here would
+/// mean a future decision about price-cache size silently retuned what config
+/// files are accepted.
 const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
 
 /// What the target-file ladder produced: the text, or a value-free reason.

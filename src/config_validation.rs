@@ -786,14 +786,40 @@ pub struct CacheStatus {
 
 /// Hard upper bound on the bytes this module will read from a cache file.
 ///
-/// The number is `crate::pricing::cache::MAX_PRICE_CACHE_BYTES` (1 MiB) — that
-/// constant is private to its module, so it is MIRRORED here rather than
-/// imported, and the rationale for the size (bounding latency, not merely
-/// allocation) lives with the original. Over-cap is a REJECTION, not a
-/// truncate-and-parse: reading exactly the cap from an oversized file can yield
-/// a complete valid document followed by padding, which would let an
-/// arbitrarily large file through the supposed bound.
-const MAX_CACHE_PROBE_BYTES: u64 = 1024 * 1024;
+/// This IS `crate::pricing::cache::MAX_PRICE_CACHE_BYTES`, not a copy of its
+/// value. Plan 12-06 mirrored the literal with a comment naming the source and
+/// recorded the drift risk as accepted, because the source constant was private;
+/// plan 12-09 made it `pub(crate)` and bound the two together, so the probe cap
+/// and the reader cap can no longer disagree. The rationale for the size
+/// (bounding latency, not merely allocation) lives with the original.
+///
+/// Over-cap is a REJECTION, not a truncate-and-parse: reading exactly the cap
+/// from an oversized file can yield a complete valid document followed by
+/// padding, which would let an arbitrarily large file through the supposed bound.
+const MAX_CACHE_PROBE_BYTES: u64 = crate::pricing::cache::MAX_PRICE_CACHE_BYTES;
+
+/// The POST-parse row cap a typed cache reader enforces, as
+/// `(json object field, maximum entries)`.
+///
+/// Only the price cache has one. `read_price_cache`
+/// (`src/pricing/cache.rs:364`) checks `cache.prices.len()` AFTER
+/// `serde_json::from_str` and discards the whole cache above
+/// `MAX_PRICE_CACHE_ENTRIES`, so a >4096-row `prices.json` that is under the
+/// byte cap parses here perfectly well while the render silently falls back to
+/// the bundled table.
+///
+/// Plan 12-06 flagged that gap and left it open, on the grounds that the
+/// alternative was calling the typed readers — which would have cost the
+/// single-bounded-read guarantee and re-introduced the fifo hazard step 2 of the
+/// ladder removes. It costs neither: [`classify_cache`] already parsed the one
+/// buffer it read, so counting the rows in the value it is holding adds no read,
+/// no open and no allocation of consequence.
+fn typed_reader_row_cap(name: &str) -> Option<(&'static str, usize)> {
+    match name {
+        "prices" => Some(("prices", crate::pricing::cache::MAX_PRICE_CACHE_ENTRIES)),
+        _ => None,
+    }
+}
 
 /// A human label for a filesystem object kind. Carries no path or content.
 ///
@@ -1020,6 +1046,29 @@ pub fn classify_cache(
             )
         }
     }
+    // The typed reader's POST-parse row cap, applied to the buffer already in
+    // hand. Without this a cache the reader REJECTS classifies `Fresh` — a
+    // silent fallback reported as health, inside the command written to end
+    // silent fallbacks.
+    if let Some((field, cap)) = typed_reader_row_cap(name) {
+        let rows = value
+            .get(field)
+            .and_then(|v| v.as_object())
+            .map(|m| m.len())
+            .unwrap_or(0);
+        if rows > cap {
+            return cache_status(
+                name,
+                CacheState::Unparseable,
+                Some(p),
+                Some(format!(
+                    "more than {cap} rows; the reader discards it after parsing and the render \
+                     falls back to the bundled table"
+                )),
+            );
+        }
+    }
+
     let Some(fetched_at) = value
         .get("fetched_at")
         .and_then(|v| v.as_str())
@@ -1866,6 +1915,90 @@ mod tests {
             CacheState::Absent
         );
         let _ = link;
+    }
+
+    /// The probe cap IS the reader's byte cap, not a copy of its value.
+    ///
+    /// Plan 12-06 mirrored the literal and recorded the drift risk as accepted
+    /// because the source constant was private. It is now `pub(crate)` and
+    /// imported, so drift is impossible by construction — this assertion is a
+    /// tripwire against someone re-introducing a literal, not a drift detector.
+    #[test]
+    fn cache_probe_cap_is_the_price_cache_cap() {
+        assert_eq!(
+            MAX_CACHE_PROBE_BYTES,
+            crate::pricing::cache::MAX_PRICE_CACHE_BYTES,
+            "the cache probe must bound reads at exactly the cap `read_price_cache` enforces"
+        );
+    }
+
+    /// A `prices.json` the typed reader REJECTS must not classify as healthy.
+    ///
+    /// `read_price_cache` enforces `MAX_PRICE_CACHE_ENTRIES` AFTER parsing, so
+    /// a >4096-row file under the byte cap used to probe `Fresh` here while the
+    /// render silently fell back to the bundled table. Both arms are asserted:
+    /// the NON-VACUITY control at exactly the cap must still be `Fresh`, or the
+    /// rejecting arm would prove nothing beyond "big files are rejected".
+    #[test]
+    fn classify_cache_applies_the_typed_readers_row_cap() {
+        let cap = crate::pricing::cache::MAX_PRICE_CACHE_ENTRIES;
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let body = |rows: usize| {
+            let mut prices = serde_json::Map::new();
+            for i in 0..rows {
+                prices.insert(format!("m{i}"), serde_json::json!({}));
+            }
+            serde_json::json!({
+                "schema_version": 1,
+                "fetched_at": chrono::Utc::now().to_rfc3339(),
+                "prices": prices,
+            })
+            .to_string()
+        };
+
+        // NON-VACUITY CONTROL: exactly at the cap is accepted by the reader, so
+        // it must stay Fresh here.
+        let at_cap = dir.path().join("at-cap.json");
+        let at_cap_body = body(cap);
+        assert!(
+            (at_cap_body.len() as u64) < MAX_CACHE_PROBE_BYTES,
+            "the fixture must be UNDER the byte cap, or the byte guard — not the row guard — \
+             is what this test would be exercising ({} bytes)",
+            at_cap_body.len()
+        );
+        std::fs::write(&at_cap, &at_cap_body).expect("write at-cap fixture");
+        assert_eq!(
+            classify_cache("prices", Ok(at_cap), 1, "30d").state,
+            CacheState::Fresh,
+            "a cache at exactly the row cap is accepted by the reader and must classify Fresh"
+        );
+
+        let over = dir.path().join("over-cap.json");
+        let over_body = body(cap + 1);
+        assert!(
+            (over_body.len() as u64) < MAX_CACHE_PROBE_BYTES,
+            "the over-cap fixture must also be UNDER the byte cap ({} bytes)",
+            over_body.len()
+        );
+        std::fs::write(&over, &over_body).expect("write over-cap fixture");
+        let status = classify_cache("prices", Ok(over), 1, "30d");
+        assert_eq!(
+            status.state,
+            CacheState::Unparseable,
+            "a cache the typed reader discards must NOT be reported as healthy: {status:?}"
+        );
+        assert!(
+            status
+                .detail
+                .as_deref()
+                .is_some_and(|d| d.contains("rows") && d.contains("bundled")),
+            "the detail must say what actually happens to the render: {status:?}"
+        );
+
+        // The cap is the PRICE cache's alone; nothing else carries a row cap.
+        assert!(typed_reader_row_cap("models").is_none());
+        assert!(typed_reader_row_cap("usage").is_none());
     }
 
     #[test]

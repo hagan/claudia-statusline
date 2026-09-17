@@ -94,7 +94,11 @@ pub const PRICE_CACHE_SCHEMA_VERSION: u32 = 1;
 /// (RV-M1). So an over-cap or over-count file is REJECTED outright — and a
 /// rejection degrades the render to the always-present bundled table, never to a
 /// failed render (WR-03).
-const MAX_PRICE_CACHE_BYTES: u64 = 1024 * 1024;
+///
+/// `pub(crate)` so `crate::config_validation`'s cache probe can IMPORT it rather
+/// than mirror it. Plan 12-06 mirrored the number with a comment naming this
+/// constant and flagged the drift risk; importing removes the risk outright.
+pub(crate) const MAX_PRICE_CACHE_BYTES: u64 = 1024 * 1024;
 
 /// Hard upper bound on the number of price rows [`read_price_cache`] RETAINS.
 ///
@@ -102,7 +106,13 @@ const MAX_PRICE_CACHE_BYTES: u64 = 1024 * 1024;
 /// count exceeds this is discarded after deserialization, so this cap bounds the
 /// retained table and the lookup work over it — the parse itself is bounded by
 /// [`MAX_PRICE_CACHE_BYTES`] alone. See it for why both caps exist.
-const MAX_PRICE_CACHE_ENTRIES: usize = 4096;
+///
+/// `pub(crate)` so `crate::config_validation`'s cache probe can apply the SAME
+/// cap the reader applies. Without it a >4096-row cache under the byte cap
+/// classifies `Fresh` while [`read_price_cache`] rejects it and the render
+/// silently falls back to the bundled table — this phase's own silent-fallback
+/// class, inside the command written to end it.
+pub(crate) const MAX_PRICE_CACHE_ENTRIES: usize = 4096;
 
 /// Process-global count of [`read_price_cache`] ATTEMPTS (see
 /// [`price_cache_reads`]).
