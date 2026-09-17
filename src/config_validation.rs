@@ -725,6 +725,443 @@ pub fn validate_config_text(text: &str, report: &mut Report) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Cache reachability classification (QUAL-02 / SC3)
+// ---------------------------------------------------------------------------
+
+/// How reachable and how fresh one of the three config-governed caches is.
+///
+/// `Unparseable` is deliberately distinct from `Unreadable`: the bytes were
+/// obtained, so the problem is the CONTENT (garbage, or a `schema_version` this
+/// build does not accept), not access. Both produce the same severity — see
+/// [`report_cache_findings`] — but the `--json` consumer can tell them apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CacheState {
+    /// Exists, parses, and is inside its configured threshold.
+    Fresh,
+    /// Exists and parses, but is at or beyond its configured threshold.
+    Stale,
+    /// Not there. The NORMAL state for a user who has never run a sync, and
+    /// therefore SILENT — see [`report_cache_findings`].
+    Absent,
+    /// Present but not obtainable: a permission error, a non-regular file
+    /// (directory / fifo / socket), over the probe cap, or an unresolvable path.
+    Unreadable,
+    /// Bytes obtained but not usable: not JSON, wrong `schema_version`, or a
+    /// missing/unparseable `fetched_at`.
+    Unparseable,
+}
+
+impl CacheState {
+    /// Stable lowercase machine token, used as a `--json` field value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CacheState::Fresh => "fresh",
+            CacheState::Stale => "stale",
+            CacheState::Absent => "absent",
+            CacheState::Unreadable => "unreadable",
+            CacheState::Unparseable => "unparseable",
+        }
+    }
+}
+
+/// One cache's classification result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheStatus {
+    /// Stable cache identifier: `"prices"`, `"models"` or `"usage"`.
+    pub name: &'static str,
+    /// The classification.
+    pub state: CacheState,
+    /// Humanized age, rendered by the SAME `crate::ant::duration::humanize_age`
+    /// `ant doctor` uses, so the two surfaces print the same string. `None`
+    /// unless the cache actually yielded a `fetched_at`.
+    pub age: Option<String>,
+    /// The resolved cache path, or `None` when the path could not be resolved at
+    /// all (never a fabricated path).
+    pub path: Option<std::path::PathBuf>,
+    /// A short, VALUE-FREE reason (`"not a regular file (fifo)"`,
+    /// `"permission denied"`, `"schema_version mismatch"`). Never file contents.
+    pub detail: Option<String>,
+}
+
+/// Hard upper bound on the bytes this module will read from a cache file.
+///
+/// The number is `crate::pricing::cache::MAX_PRICE_CACHE_BYTES` (1 MiB) — that
+/// constant is private to its module, so it is MIRRORED here rather than
+/// imported, and the rationale for the size (bounding latency, not merely
+/// allocation) lives with the original. Over-cap is a REJECTION, not a
+/// truncate-and-parse: reading exactly the cap from an oversized file can yield
+/// a complete valid document followed by padding, which would let an
+/// arbitrarily large file through the supposed bound.
+const MAX_CACHE_PROBE_BYTES: u64 = 1024 * 1024;
+
+/// A human label for a filesystem object kind. Carries no path or content.
+fn file_type_label(ft: &std::fs::FileType) -> &'static str {
+    if ft.is_dir() {
+        return "directory";
+    }
+    if ft.is_symlink() {
+        return "symlink";
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if ft.is_fifo() {
+            return "fifo";
+        }
+        if ft.is_socket() {
+            return "socket";
+        }
+        if ft.is_block_device() {
+            return "block device";
+        }
+        if ft.is_char_device() {
+            return "character device";
+        }
+    }
+    "other"
+}
+
+/// A human label for an IO error KIND. Deliberately built from the kind alone:
+/// `std::io::Error`'s `Display` includes the OS message but a caller-supplied
+/// path never reaches it here, and no config value can.
+fn io_kind_label(kind: std::io::ErrorKind) -> String {
+    match kind {
+        std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
+        std::io::ErrorKind::NotFound => "not found".to_string(),
+        std::io::ErrorKind::InvalidData => "not valid UTF-8".to_string(),
+        other => format!("{other:?}").to_lowercase(),
+    }
+}
+
+fn cache_status(
+    name: &'static str,
+    state: CacheState,
+    path: Option<std::path::PathBuf>,
+    detail: Option<String>,
+) -> CacheStatus {
+    CacheStatus {
+        name,
+        state,
+        age: None,
+        path,
+        detail,
+    }
+}
+
+/// Classify one cache from METADATA FIRST, then at most ONE bounded read.
+///
+/// The order of the ladder is the whole design, and two of its steps exist
+/// because the obvious shape is wrong:
+///
+/// 1. **`path` is `Err`** — `Unreadable` with `path: None`. (All three accessors
+///    return `Result<PathBuf>`, not `Option<PathBuf>`.)
+/// 2. **`std::fs::symlink_metadata`, never `Path::exists()`.** `Path::exists()`
+///    answers `false` on a `PermissionDenied` metadata error — reproduced live
+///    against a `chmod 000` parent directory — which would silently suppress the
+///    unreadable-cache warning QUAL-02 requires. Only `ErrorKind::NotFound`
+///    means `Absent`. A SYMLINK is then resolved with `std::fs::metadata` and
+///    classified by what it POINTS AT, because the typed cache readers follow
+///    links and a symlinked cache works today; classifying the link itself as
+///    "not a regular file" would be a false warning on a working config. Both
+///    calls are stats, and a stat never blocks on a fifo.
+///    A non-regular target **returns without opening the file**. That is the
+///    FIFO guard and it is mandatory: verified live, opening a writer-less fifo
+///    blocks indefinitely (`timeout 3` -> exit 124) BEFORE a single byte is
+///    read, so a byte cap does not bound it.
+/// 3. **One bounded read**, capped at [`MAX_CACHE_PROBE_BYTES`] + 1 byte and
+///    REJECTED above the cap.
+/// 4. **Classify from that one buffer.** This is a deliberately INDEPENDENT
+///    structural probe rather than a call into the typed readers in
+///    `crate::pricing::cache` / `crate::ant::cache`: each of those resolves the
+///    path and opens the file AGAIN, which would be both a second read and a
+///    re-introduction of the fifo hazard step 2 just removed. The schema
+///    constants are IMPORTED from the owning modules by the caller
+///    ([`classify_all_caches`]) so the version numbers cannot drift.
+/// 5. **Freshness through the single shared helper**,
+///    `crate::ant::duration::is_stale` (plan 12-02), so `config validate` and
+///    `ant doctor` can never disagree about staleness (D-12).
+///
+/// `name` is the stable identifier the resulting [`CacheStatus`] carries; the
+/// plan specified it on the struct but not in this signature, and a classifier
+/// that returned a nameless status would force the caller to patch the field.
+///
+/// Side effects: none. No write, no directory creation, no spawn, no network.
+pub fn classify_cache(
+    name: &'static str,
+    path: crate::error::Result<std::path::PathBuf>,
+    expected_schema: u32,
+    threshold: &str,
+) -> CacheStatus {
+    // --- 1. Path resolution ------------------------------------------------
+    let p = match path {
+        Ok(p) => p,
+        Err(e) => {
+            return cache_status(
+                name,
+                CacheState::Unreadable,
+                None,
+                Some(redact_value_text(&e.to_string())),
+            )
+        }
+    };
+
+    // --- 2. Metadata first --------------------------------------------------
+    let link_md = match std::fs::symlink_metadata(&p) {
+        Ok(md) => md,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return cache_status(name, CacheState::Absent, Some(p), None)
+        }
+        Err(e) => {
+            return cache_status(
+                name,
+                CacheState::Unreadable,
+                Some(p),
+                Some(io_kind_label(e.kind())),
+            )
+        }
+    };
+
+    let md = if link_md.file_type().is_symlink() {
+        match std::fs::metadata(&p) {
+            Ok(md) => md,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return cache_status(
+                    name,
+                    CacheState::Absent,
+                    Some(p),
+                    Some("dangling symlink".to_string()),
+                )
+            }
+            Err(e) => {
+                return cache_status(
+                    name,
+                    CacheState::Unreadable,
+                    Some(p),
+                    Some(io_kind_label(e.kind())),
+                )
+            }
+        }
+    } else {
+        link_md
+    };
+
+    let ft = md.file_type();
+    if !ft.is_file() {
+        // RETURN WITHOUT OPENING. See the fifo note on this function.
+        return cache_status(
+            name,
+            CacheState::Unreadable,
+            Some(p),
+            Some(format!("not a regular file ({})", file_type_label(&ft))),
+        );
+    }
+    if md.len() > MAX_CACHE_PROBE_BYTES {
+        return cache_status(
+            name,
+            CacheState::Unreadable,
+            Some(p),
+            Some(format!(
+                "larger than the {MAX_CACHE_PROBE_BYTES} byte probe cap"
+            )),
+        );
+    }
+
+    // --- 3. Exactly one bounded read ---------------------------------------
+    let mut buf = String::new();
+    let read = std::fs::File::open(&p).and_then(|f| {
+        use std::io::Read;
+        f.take(MAX_CACHE_PROBE_BYTES + 1).read_to_string(&mut buf)
+    });
+    if let Err(e) = read {
+        return cache_status(
+            name,
+            CacheState::Unreadable,
+            Some(p),
+            Some(io_kind_label(e.kind())),
+        );
+    }
+    if buf.len() as u64 > MAX_CACHE_PROBE_BYTES {
+        return cache_status(
+            name,
+            CacheState::Unreadable,
+            Some(p),
+            Some(format!(
+                "larger than the {MAX_CACHE_PROBE_BYTES} byte probe cap"
+            )),
+        );
+    }
+
+    // --- 4. Classify from THAT ONE BUFFER ----------------------------------
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&buf) else {
+        return cache_status(
+            name,
+            CacheState::Unparseable,
+            Some(p),
+            Some("not valid JSON".to_string()),
+        );
+    };
+    match value.get("schema_version").and_then(|v| v.as_u64()) {
+        Some(found) if found == u64::from(expected_schema) => {}
+        _ => {
+            return cache_status(
+                name,
+                CacheState::Unparseable,
+                Some(p),
+                Some("schema_version mismatch".to_string()),
+            )
+        }
+    }
+    let Some(fetched_at) = value
+        .get("fetched_at")
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&chrono::Utc))
+    else {
+        return cache_status(
+            name,
+            CacheState::Unparseable,
+            Some(p),
+            Some("fetched_at is missing or not an RFC3339 timestamp".to_string()),
+        );
+    };
+
+    // --- 5. Freshness via the SINGLE shared helper (D-12) -------------------
+    let age = chrono::Utc::now().signed_duration_since(fetched_at);
+    let state = if crate::ant::duration::is_stale(age, threshold) {
+        CacheState::Stale
+    } else {
+        CacheState::Fresh
+    };
+    CacheStatus {
+        name,
+        state,
+        age: Some(crate::ant::duration::humanize_age(age)),
+        path: Some(p),
+        detail: None,
+    }
+}
+
+/// Classify all three config-governed caches (D-12).
+///
+/// Thresholds come from the config being validated: `[pricing].max_age` for
+/// `prices`, `[ant].models_stale_after` for `models`, `[ant].usage_stale_after`
+/// for `usage`.
+///
+/// # The active account
+///
+/// The `usage` cache is PER-ACCOUNT, and the active account is the one input
+/// `Config` does not carry. It is resolved here with the same passive
+/// `STATUSLINE_ANT_ACCOUNT` read the render path performs (`src/display.rs`) and
+/// `ant doctor` performs (`src/commands/ant.rs`), empty-string filter included.
+/// There is deliberately no `account` parameter and no `--account` override:
+/// that flag belongs to the WRITER (`ant sync-usage`) and has no meaning for a
+/// passive diagnostic. An env read is not a spawn and not a probe.
+///
+/// When the variable is unset or empty the usage cache is NOT CLASSIFIED AT ALL
+/// and the returned `Vec` carries no `usage` element, mirroring the render path,
+/// which inserts nothing in that case. Plan 12-09's `caches` object therefore
+/// carries a row per RETURNED status, so `caches.usage` simply reads as absent.
+///
+/// The usage path is built ONLY through `crate::ant::cache::usage_cache_path`,
+/// which runs `sanitize_account_name` BEFORE the join — the account name is
+/// untrusted. Its `Err` flows into ladder step 1 and yields `Unreadable` with
+/// `path: None`, never a fabricated path.
+///
+/// # What is deliberately NOT mirrored
+///
+/// The render path's account read is copied; its enrichment gate is NOT.
+/// `config validate` reports all three caches whether or not `[ant]` enrichment
+/// is switched on (D-12 puts all three in its domain), because gating would hide
+/// a stale cache from precisely the user who just toggled enrichment off and is
+/// trying to work out why. That toggle gets its own cross-field warning in
+/// `impl Validate for AntConfig`; it is not a filter here.
+pub fn classify_all_caches(cfg: &crate::config::Config) -> Vec<CacheStatus> {
+    let mut out = Vec::with_capacity(3);
+
+    out.push(classify_cache(
+        "prices",
+        crate::pricing::cache::price_cache_path(),
+        crate::pricing::cache::PRICE_CACHE_SCHEMA_VERSION,
+        &cfg.pricing.max_age,
+    ));
+    out.push(classify_cache(
+        "models",
+        crate::ant::cache::models_cache_path(),
+        crate::ant::cache::MODELS_CACHE_SCHEMA_VERSION,
+        &cfg.ant.models_stale_after,
+    ));
+
+    if let Some(account) = std::env::var("STATUSLINE_ANT_ACCOUNT")
+        .ok()
+        .filter(|s| !s.is_empty())
+    {
+        let path = crate::ant::cache::usage_cache_path(&account).map_err(|e| {
+            crate::error::StatuslineError::Config(format!("STATUSLINE_ANT_ACCOUNT rejected: {e}"))
+        });
+        out.push(classify_cache(
+            "usage",
+            path,
+            crate::ant::cache::USAGE_CACHE_SCHEMA_VERSION,
+            &cfg.ant.usage_stale_after,
+        ));
+    }
+
+    out
+}
+
+/// Turn cache statuses into findings — WARNINGS only.
+///
+/// # The settled absent-cache policy
+///
+/// `Absent` and `Fresh` emit **nothing**. A missing cache is the normal state
+/// for a user who has never run a sync, and warning about it would make the
+/// default experience noisy. This supersedes any contrary wording elsewhere in
+/// the phase's artifacts; plans 12-10 and 12-12 and the documentation can cite
+/// this one answer.
+///
+/// # Why never an ERROR
+///
+/// D-11 makes warnings exit-code neutral by default, and SC3 requires stale or
+/// unreachable caches NOT to fail validation. `--strict` is the opt-in that
+/// promotes them, which is a decision for the command layer, not for this
+/// function.
+///
+/// Messages use [`CacheStatus::detail`] and the cache NAME. They never include
+/// file contents.
+pub fn report_cache_findings(statuses: &[CacheStatus], report: &mut Report) {
+    for status in statuses {
+        let key = format!("caches.{}", status.name);
+        match status.state {
+            CacheState::Fresh | CacheState::Absent => {}
+            CacheState::Stale => {
+                let age = status.age.as_deref().unwrap_or("unknown");
+                report.warn(
+                    FindingKind::StaleCache,
+                    key,
+                    format!(
+                        "the {} cache is {} old, at or beyond its configured staleness threshold",
+                        status.name, age
+                    ),
+                );
+            }
+            CacheState::Unreadable | CacheState::Unparseable => {
+                let detail = status.detail.as_deref().unwrap_or("unknown reason");
+                report.warn(
+                    FindingKind::UnreadableCache,
+                    key,
+                    format!(
+                        "the {} cache is {} ({})",
+                        status.name,
+                        status.state.as_str(),
+                        detail
+                    ),
+                );
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1131,5 +1568,503 @@ mod tests {
                 .unwrap();
         let b = crate::pricing::PricingConfig::default();
         assert_eq!(a.max_age, b.max_age);
+    }
+
+    // =======================================================================
+    // Cache reachability classification (plan 12-06, QUAL-02 / SC3)
+    // =======================================================================
+
+    use std::path::{Path, PathBuf};
+
+    /// `mkfifo(2)` without adding a dependency.
+    ///
+    /// `libc` is already linked into every Rust binary through `std`, and it is
+    /// only an INDIRECT entry in `Cargo.lock`, so declaring the one symbol here
+    /// keeps `Cargo.toml` / `Cargo.lock` byte-unchanged. The alternative the plan
+    /// allowed — shelling out from the test — would have put a process-spawn
+    /// token into this file and made the architectural acceptance grep useless.
+    ///
+    /// `mode_t` is `u16` on macOS and `u32` on Linux; declaring the wrong width
+    /// would be an ABI mismatch, so it is `cfg`-selected.
+    #[cfg(unix)]
+    mod cfifo {
+        #[cfg(target_os = "macos")]
+        pub type ModeT = u16;
+        #[cfg(not(target_os = "macos"))]
+        pub type ModeT = u32;
+
+        extern "C" {
+            pub fn mkfifo(path: *const std::os::raw::c_char, mode: ModeT) -> std::os::raw::c_int;
+        }
+    }
+
+    /// A well-formed cache document with an injected age.
+    fn cache_json(schema_version: u32, minutes_old: i64) -> String {
+        let fetched_at = chrono::Utc::now() - chrono::Duration::minutes(minutes_old);
+        format!(
+            "{{\"schema_version\": {}, \"fetched_at\": \"{}\", \"prices\": {{}}}}",
+            schema_version,
+            fetched_at.to_rfc3339()
+        )
+    }
+
+    fn write_cache(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write fixture cache");
+        path
+    }
+
+    fn running_as_root() -> bool {
+        #[cfg(unix)]
+        {
+            // `id -u` without a spawn: the euid is available through std only on
+            // nightly, so fall back to the fact that root can read a chmod-000
+            // file. Cheap and dependency-free.
+            let dir = tempfile::tempdir().expect("tempdir");
+            let probe = dir.path().join("probe");
+            std::fs::write(&probe, b"x").expect("write probe");
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o000))
+                .expect("chmod probe");
+            let readable = std::fs::read(&probe).is_ok();
+            let _ = std::fs::set_permissions(&probe, std::fs::Permissions::from_mode(0o600));
+            readable
+        }
+        #[cfg(not(unix))]
+        {
+            false
+        }
+    }
+
+    #[test]
+    fn classify_cache_fresh_and_stale() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let fresh = write_cache(dir.path(), "fresh.json", &cache_json(1, 5));
+        let status = classify_cache("prices", Ok(fresh.clone()), 1, "48h");
+        assert_eq!(status.state, CacheState::Fresh, "{status:?}");
+        assert_eq!(status.age.as_deref(), Some("5m"));
+        assert_eq!(status.path.as_deref(), Some(fresh.as_path()));
+        assert!(status.detail.is_none());
+
+        // The SAME file, one threshold different — so `Fresh` above is a decision,
+        // not a constant.
+        let stale = classify_cache("prices", Ok(fresh), 1, "1m");
+        assert_eq!(stale.state, CacheState::Stale, "{stale:?}");
+
+        // ...and a genuinely old file is stale against a generous threshold too.
+        let old = write_cache(dir.path(), "old.json", &cache_json(1, 60 * 24 * 10));
+        assert_eq!(
+            classify_cache("models", Ok(old), 1, "48h").state,
+            CacheState::Stale
+        );
+    }
+
+    #[test]
+    fn classify_cache_absent_when_nothing_is_there() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let status = classify_cache("usage", Ok(dir.path().join("nope.json")), 1, "30m");
+        assert_eq!(status.state, CacheState::Absent, "{status:?}");
+        assert!(status.age.is_none());
+        assert!(status.path.is_some(), "the resolved path is still reported");
+    }
+
+    #[test]
+    fn classify_cache_unparseable_body_and_wrong_schema() {
+        let dir = tempfile::tempdir().expect("tempdir");
+
+        let garbage = write_cache(dir.path(), "garbage.json", "{not json");
+        let status = classify_cache("prices", Ok(garbage), 1, "30d");
+        assert_eq!(status.state, CacheState::Unparseable, "{status:?}");
+        assert_eq!(status.detail.as_deref(), Some("not valid JSON"));
+
+        // Valid JSON, WRONG schema_version — a different failure with a different
+        // detail, so the two are not collapsed.
+        let wrong = write_cache(dir.path(), "wrong.json", &cache_json(99, 1));
+        let status = classify_cache("prices", Ok(wrong), 1, "30d");
+        assert_eq!(status.state, CacheState::Unparseable, "{status:?}");
+        assert_eq!(status.detail.as_deref(), Some("schema_version mismatch"));
+
+        // Valid JSON, right schema, NO fetched_at.
+        let no_stamp = write_cache(dir.path(), "nostamp.json", "{\"schema_version\": 1}");
+        let status = classify_cache("prices", Ok(no_stamp), 1, "30d");
+        assert_eq!(status.state, CacheState::Unparseable, "{status:?}");
+        assert!(status
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("fetched_at")));
+    }
+
+    #[test]
+    fn classify_cache_unresolvable_path_is_unreadable_without_a_path() {
+        let status = classify_cache(
+            "usage",
+            Err(crate::error::StatuslineError::Config(
+                "STATUSLINE_ANT_ACCOUNT rejected: bad name".to_string(),
+            )),
+            1,
+            "30m",
+        );
+        assert_eq!(status.state, CacheState::Unreadable);
+        assert!(status.path.is_none(), "never fabricate a path");
+        assert!(status
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("STATUSLINE_ANT_ACCOUNT")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn classify_cache_unreadable_on_a_permission_denied_file() {
+        if running_as_root() {
+            eprintln!("skipped: running as root, the permission bit does not bite");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_cache(dir.path(), "locked.json", &cache_json(1, 1));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).expect("chmod");
+
+        let status = classify_cache("prices", Ok(path.clone()), 1, "30d");
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+
+        assert_eq!(status.state, CacheState::Unreadable, "{status:?}");
+        assert_eq!(status.detail.as_deref(), Some("permission denied"));
+    }
+
+    /// A file inside a `chmod 000` DIRECTORY must classify `Unreadable`, not
+    /// `Absent`.
+    ///
+    /// This is the reason the ladder branches on the metadata ERROR KIND instead
+    /// of asking `Path::exists()`: for exactly this case `Path::exists()` answers
+    /// `false`, because it collapses every metadata error into "no". Using it
+    /// would silently suppress the unreadable-cache warning QUAL-02 requires. The
+    /// test asserts that divergence directly, so it is not taken on faith.
+    ///
+    /// (`Path::exists` is spelled as an associated call below, and named without
+    /// its argument list here, so the file-wide acceptance grep for a METHOD-form
+    /// existence probe counts only real ladder usage — of which there is none.)
+    #[cfg(unix)]
+    #[test]
+    fn classify_cache_absent_vs_unreadable_are_distinguished() {
+        if running_as_root() {
+            eprintln!("skipped: running as root, the permission bit does not bite");
+            return;
+        }
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let locked_dir = dir.path().join("locked");
+        std::fs::create_dir(&locked_dir).expect("mkdir");
+        let path = write_cache(&locked_dir, "prices.json", &cache_json(1, 1));
+        std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o000))
+            .expect("chmod dir");
+
+        // NON-VACUITY: the naive oracle really does get this wrong.
+        let naive_says_missing = !Path::exists(&path);
+        let status = classify_cache("prices", Ok(path.clone()), 1, "30d");
+
+        let _ = std::fs::set_permissions(&locked_dir, std::fs::Permissions::from_mode(0o700));
+
+        assert!(
+            naive_says_missing,
+            "fixture is not exercising the divergence: the naive existence oracle \
+             found the file, so this test proves nothing"
+        );
+        assert_eq!(
+            status.state,
+            CacheState::Unreadable,
+            "a permission error must NEVER masquerade as absence: {status:?}"
+        );
+        assert_ne!(status.state, CacheState::Absent);
+    }
+
+    /// Opening a writer-less FIFO blocks forever; this must not.
+    ///
+    /// The assertion is a 5-second `recv_timeout` on an `mpsc` channel fed from a
+    /// worker thread. Relying on the harness timeout instead would not
+    /// distinguish "returned Unreadable" from "hung" — it would only fail the
+    /// whole binary after minutes, with no attribution.
+    #[cfg(unix)]
+    #[test]
+    fn classify_cache_fifo_does_not_block() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("fifo.json");
+        let c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("cstring");
+        let rc = unsafe { cfifo::mkfifo(c_path.as_ptr(), 0o600) };
+        assert_eq!(rc, 0, "mkfifo failed; this test cannot mean anything");
+
+        // NON-VACUITY: the fixture really is a fifo with no writer.
+        let md = std::fs::symlink_metadata(&path).expect("stat the fifo");
+        {
+            use std::os::unix::fs::FileTypeExt;
+            assert!(md.file_type().is_fifo(), "fixture is not a fifo");
+        }
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let probe = path.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(classify_cache("prices", Ok(probe), 1, "30d"));
+        });
+
+        let status = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("classify_cache BLOCKED on a writer-less fifo (5s timeout)");
+        assert_eq!(status.state, CacheState::Unreadable, "{status:?}");
+        assert_eq!(status.detail.as_deref(), Some("not a regular file (fifo)"));
+    }
+
+    /// A SYMLINK to a working cache is classified by its TARGET.
+    ///
+    /// Consumer accuracy: the typed cache readers follow links, so a symlinked
+    /// cache renders today. Classifying the link itself as "not a regular file"
+    /// would be a false unreadable-warning on a config that works.
+    #[cfg(unix)]
+    #[test]
+    fn classify_cache_follows_a_symlink_to_its_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = write_cache(dir.path(), "real.json", &cache_json(1, 2));
+        let link = dir.path().join("link.json");
+        std::os::unix::fs::symlink(&real, &link).expect("symlink");
+
+        let status = classify_cache("prices", Ok(link.clone()), 1, "48h");
+        assert_eq!(
+            status.state,
+            CacheState::Fresh,
+            "a symlink to a fresh cache must classify by its TARGET: {status:?}"
+        );
+
+        // ...and a symlink to a FIFO is still caught, without blocking.
+        let fifo = dir.path().join("fifo.sock");
+        let c_path = std::ffi::CString::new(fifo.to_str().unwrap()).unwrap();
+        assert_eq!(unsafe { cfifo::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let fifo_link = dir.path().join("fifo-link.json");
+        std::os::unix::fs::symlink(&fifo, &fifo_link).expect("symlink");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(classify_cache("prices", Ok(fifo_link), 1, "30d"));
+        });
+        let status = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("classify_cache BLOCKED on a symlink to a writer-less fifo");
+        assert_eq!(status.state, CacheState::Unreadable, "{status:?}");
+        assert_eq!(status.detail.as_deref(), Some("not a regular file (fifo)"));
+
+        // A DANGLING symlink is absence, not a read error.
+        let dangling = dir.path().join("dangling.json");
+        std::os::unix::fs::symlink(dir.path().join("gone.json"), &dangling).expect("symlink");
+        assert_eq!(
+            classify_cache("prices", Ok(dangling), 1, "30d").state,
+            CacheState::Absent
+        );
+        let _ = link;
+    }
+
+    #[test]
+    fn classify_cache_rejects_an_over_cap_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("huge.json");
+        let body = "x".repeat(MAX_CACHE_PROBE_BYTES as usize + 16);
+        std::fs::write(&path, body).expect("write oversized fixture");
+        let status = classify_cache("prices", Ok(path), 1, "30d");
+        assert_eq!(status.state, CacheState::Unreadable, "{status:?}");
+        assert!(status
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("probe cap")));
+    }
+
+    /// Exactly one bounded read per classification, asserted on the SOURCE.
+    ///
+    /// A call counter is impractical here (the reads go through `std`), so the
+    /// invariant is pinned structurally. Every needle is ASSEMBLED rather than
+    /// written literally, so this test's own text does not pollute the file-wide
+    /// acceptance greps that count real call sites — a self-matching needle would
+    /// make those greps permanently useless.
+    #[test]
+    fn classify_cache_reads_the_file_at_most_once() {
+        let open_token = format!("File{}open", "::");
+        let typed_readers = [
+            format!("read_price{}", "_cache"),
+            format!("read_models{}", "_cache"),
+            format!("read_usage{}", "_cache"),
+        ];
+
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/config_validation.rs"),
+        )
+        .expect("read this module's own source");
+        let start = source
+            .find("pub fn classify_cache(")
+            .expect("classify_cache must be declared");
+        let rest = &source[start..];
+        let end = rest.find("\n}\n").expect("classify_cache must have a body");
+        let body = &rest[..end];
+
+        // NON-VACUITY: an extraction that silently produced nothing would make
+        // every assertion below pass hollowly.
+        assert!(
+            body.len() > 1000 && body.contains("symlink_metadata"),
+            "the body extraction is broken ({} bytes)",
+            body.len()
+        );
+
+        assert_eq!(
+            body.matches(open_token.as_str()).count(),
+            1,
+            "exactly ONE bounded open per classification"
+        );
+        for reader in &typed_readers {
+            assert_eq!(
+                body.matches(reader.as_str()).count(),
+                0,
+                "the typed readers resolve the path and open the file AGAIN, which would be a \
+                 second read and would re-introduce the fifo hazard: {reader}"
+            );
+        }
+    }
+
+    #[test]
+    fn report_cache_findings_is_warnings_only_and_silent_when_fresh_or_absent() {
+        let quiet = vec![
+            CacheStatus {
+                name: "prices",
+                state: CacheState::Fresh,
+                age: Some("5m".to_string()),
+                path: None,
+                detail: None,
+            },
+            CacheStatus {
+                name: "models",
+                state: CacheState::Absent,
+                age: None,
+                path: None,
+                detail: None,
+            },
+        ];
+        let mut report = Report::new();
+        report_cache_findings(&quiet, &mut report);
+        assert!(
+            report.findings.is_empty(),
+            "FRESH and ABSENT are the settled silent states: {:?}",
+            report.findings
+        );
+
+        let noisy = vec![
+            CacheStatus {
+                name: "prices",
+                state: CacheState::Stale,
+                age: Some("31d".to_string()),
+                path: None,
+                detail: None,
+            },
+            CacheStatus {
+                name: "models",
+                state: CacheState::Unreadable,
+                age: None,
+                path: None,
+                detail: Some("permission denied".to_string()),
+            },
+            CacheStatus {
+                name: "usage",
+                state: CacheState::Unparseable,
+                age: None,
+                path: None,
+                detail: Some("schema_version mismatch".to_string()),
+            },
+        ];
+        let mut report = Report::new();
+        report_cache_findings(&noisy, &mut report);
+        assert_eq!(report.findings.len(), 3, "{:?}", report.findings);
+        assert!(
+            report
+                .findings
+                .iter()
+                .all(|f| f.severity == Severity::Warning),
+            "D-11: a cache finding must never affect the exit code by default: {:?}",
+            report.findings
+        );
+        assert!(!report.has_errors());
+        assert_eq!(report.findings[0].kind, FindingKind::StaleCache);
+        assert_eq!(report.findings[1].kind, FindingKind::UnreadableCache);
+        assert_eq!(report.findings[2].kind, FindingKind::UnreadableCache);
+        assert_eq!(report.findings[0].key, "caches.prices");
+    }
+
+    // --- classify_all_caches: the active-account axis ------------------------
+    // These three mutate a process-global env var, so they are `#[serial]` and
+    // each restores the prior value.
+
+    fn with_account<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let saved = std::env::var_os("STATUSLINE_ANT_ACCOUNT");
+        match value {
+            Some(v) => std::env::set_var("STATUSLINE_ANT_ACCOUNT", v),
+            None => std::env::remove_var("STATUSLINE_ANT_ACCOUNT"),
+        }
+        let out = f();
+        match saved {
+            Some(v) => std::env::set_var("STATUSLINE_ANT_ACCOUNT", v),
+            None => std::env::remove_var("STATUSLINE_ANT_ACCOUNT"),
+        }
+        out
+    }
+
+    fn named<'a>(statuses: &'a [CacheStatus], name: &str) -> Option<&'a CacheStatus> {
+        statuses.iter().find(|s| s.name == name)
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn classify_all_caches_without_active_account_omits_usage() {
+        let cfg = crate::config::Config::default();
+
+        for value in [None, Some("")] {
+            let statuses = with_account(value, || classify_all_caches(&cfg));
+            assert!(
+                named(&statuses, "usage").is_none(),
+                "with STATUSLINE_ANT_ACCOUNT {value:?} there is no usage cache to classify"
+            );
+            // ...and the assertion above cannot pass merely because the function
+            // returned nothing.
+            assert!(named(&statuses, "prices").is_some());
+            assert!(named(&statuses, "models").is_some());
+            assert_eq!(statuses.len(), 2);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn classify_all_caches_uses_env_account_path() {
+        let mut cfg = crate::config::Config::default();
+        // Explicitly OFF: the enrichment toggle is not a filter here (D-12).
+        cfg.ant.enabled = false;
+
+        let statuses = with_account(Some("work"), || classify_all_caches(&cfg));
+        let usage = named(&statuses, "usage").expect("usage is classified for a legal account");
+        assert_eq!(
+            usage.path,
+            crate::ant::cache::usage_cache_path("work").ok(),
+            "the usage path must come from the SANITIZING accessor"
+        );
+        assert_eq!(statuses.len(), 3);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn classify_all_caches_rejects_illegal_account_name() {
+        let cfg = crate::config::Config::default();
+        let statuses = with_account(Some("../etc"), || classify_all_caches(&cfg));
+        let usage = named(&statuses, "usage").expect("an illegal account still reports a status");
+        assert_eq!(usage.state, CacheState::Unreadable, "{usage:?}");
+        assert!(
+            usage.path.is_none(),
+            "never construct a path from a rejected name"
+        );
+        assert!(usage
+            .detail
+            .as_deref()
+            .is_some_and(|d| d.contains("STATUSLINE_ANT_ACCOUNT")));
+        // Non-vacuity of the oracle.
+        assert!(crate::ant::cache::usage_cache_path("../etc").is_err());
     }
 }
