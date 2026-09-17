@@ -2557,3 +2557,283 @@ fn stale_cache_warns_exit_zero() {
     assert_eq!(cache_findings(findings, "usage").len(), 1, "{report}");
     assert_eq!(report["counts"]["errors"], 0, "{report}");
 }
+
+// ===========================================================================
+// Plan 12-10 Task 3: cross-surface agreement, and the FIFO termination proof.
+// ===========================================================================
+
+/// `mkfifo(2)` without adding a dependency, and without a PATH-resolved utility.
+///
+/// Copied from the idiom `src/config_validation.rs` established for its own
+/// classifier tests: `libc` is already linked into every Rust binary through
+/// `std` and is only an INDIRECT entry in `Cargo.lock`, so declaring the one
+/// symbol keeps `Cargo.toml` / `Cargo.lock` byte-unchanged. The plan also
+/// allowed shelling out to the `mkfifo` utility; that would resolve against the
+/// DEVELOPER's PATH (the restricted PATH in [`ConfigEnv::env_block`] applies to
+/// the child under test, not to this process), which is exactly the class of
+/// PATH-dependent test setup this suite was rewritten to avoid.
+///
+/// `mode_t` is `u16` on macOS and `u32` on Linux; declaring the wrong width
+/// would be an ABI mismatch, so it is `cfg`-selected.
+mod cfifo {
+    #[cfg(target_os = "macos")]
+    pub type ModeT = u16;
+    #[cfg(not(target_os = "macos"))]
+    pub type ModeT = u32;
+
+    extern "C" {
+        pub fn mkfifo(path: *const std::os::raw::c_char, mode: ModeT) -> std::os::raw::c_int;
+    }
+}
+
+/// Create a FIFO at `path`, creating parents, and PROVE it is a FIFO.
+///
+/// The proof is not ceremony: if the node silently failed to be created as a
+/// FIFO the classifier would report `absent` and the termination budget below
+/// would be met trivially, by a run that never faced the hazard.
+fn make_fifo(path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    use std::os::unix::fs::FileTypeExt;
+
+    fs::create_dir_all(path.parent().expect("fifo path has a parent")).expect("create fifo parent");
+    let c_path = std::ffi::CString::new(path.as_os_str().as_bytes()).expect("path has no NUL");
+    let rc = unsafe { cfifo::mkfifo(c_path.as_ptr(), 0o644 as cfifo::ModeT) };
+    assert_eq!(
+        rc,
+        0,
+        "mkfifo({}) failed: {}",
+        path.display(),
+        std::io::Error::last_os_error()
+    );
+    let ft = fs::symlink_metadata(path)
+        .expect("stat the new fifo")
+        .file_type();
+    assert!(
+        ft.is_fifo(),
+        "the node at {} must really be a FIFO, or this test faces no hazard at all",
+        path.display()
+    );
+}
+
+/// `ant doctor` and `config validate` reach the SAME verdict on the SAME cache
+/// at a NON-DEFAULT threshold (D-12).
+///
+/// # What this establishes
+///
+/// That the two DIAGNOSTIC surfaces read the same configured threshold and
+/// decide staleness through the same helper, `crate::ant::duration::is_stale`.
+/// The threshold matters: at the defaults (`48h` for models, `30d` for prices)
+/// two surfaces with independently drifting logic would still agree about most
+/// ages by coincidence, so an agreement test at the defaults proves almost
+/// nothing. `5m` against those defaults puts a 10-minute-old cache on OPPOSITE
+/// sides of the default and configured answers, so reading the wrong threshold
+/// — or no threshold — is immediately visible. Both directions are asserted, so
+/// a surface that simply always says "stale" fails too.
+///
+/// # What this establishes about `crate::pricing::select_synced_at`: NOTHING
+///
+/// That function is deliberately NOT routed through `is_stale`. It is a price
+/// SOURCE-SELECTION decision, not a diagnostic one; plan 12-02 documented the
+/// divergence (they differ on a malformed threshold), pinned it with its own
+/// test, and declined to reroute it because doing so would change what the
+/// statusline RENDERS. This test must not be read as claiming otherwise.
+#[test]
+#[serial]
+fn doctor_and_validate_agree_on_staleness_at_a_non_default_threshold() {
+    // `5m` where the defaults are `48h` and `30d`.
+    let env = ConfigEnv::new(
+        "[pricing]\n\
+         source = \"auto\"\n\
+         max_age = \"5m\"\n\
+         \n\
+         [ant]\n\
+         enabled = false\n\
+         models_stale_after = \"5m\"\n",
+    );
+
+    let read_both = |minutes: i64| -> (serde_json::Value, serde_json::Value) {
+        env.clear_caches();
+        let prices_seeded =
+            env.seed_cache("ant/prices.json", &price_cache_body(minutes_ago(minutes)));
+        let models_seeded =
+            env.seed_cache("ant/models.json", &models_cache_body(minutes_ago(minutes)));
+
+        let (_, code, stdout, stderr) = env.run(&["ant", "doctor", "--json"]);
+        assert_eq!(
+            code,
+            Some(0),
+            "ant doctor --json must exit 0; stderr={stderr}"
+        );
+        let doctor = parse_exactly_one_json(&stdout, "ant doctor --json");
+
+        let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+        assert!(
+            ok,
+            "agreement must not cost the SC3 exit contract: a cache verdict is a WARNING and \
+             `config validate` must still exit 0; code={code:?} stderr={stderr}"
+        );
+        assert_eq!(code, Some(0), "stderr={stderr}");
+        let validate = parse_exactly_one_json(&stdout, "config validate --json");
+        validate_findings(&validate);
+
+        // Both surfaces must be looking at the file this test wrote.
+        assert_reported_path_is_seeded(&validate, "prices", &prices_seeded);
+        assert_reported_path_is_seeded(&validate, "models", &models_seeded);
+        for (name, seeded) in [("prices", &prices_seeded), ("models", &models_seeded)] {
+            let reported = doctor["caches"][name]["path"].as_str().unwrap_or_default();
+            assert!(
+                seeded.iter().any(|p| p.display().to_string() == reported),
+                "ant doctor must report a path this test seeded for `{name}`, or the two \
+                 surfaces are not being compared on the SAME cache: reported={reported:?} \
+                 seeded={seeded:?}"
+            );
+            assert_eq!(
+                doctor["caches"][name]["present"], true,
+                "ant doctor must see the seeded `{name}` cache: {doctor}"
+            );
+        }
+        (doctor, validate)
+    };
+
+    // -- 10 minutes old: FRESH under both defaults, STALE under both `5m`s --
+    let (doctor, validate) = read_both(10);
+    for name in ["models", "prices"] {
+        assert_eq!(
+            doctor["caches"][name]["stale"], true,
+            "ant doctor must read the CONFIGURED `{name}` threshold, not the default: {doctor}"
+        );
+        assert_eq!(
+            cache_row(&validate, name)["state"],
+            "stale",
+            "config validate must reach the same verdict for `{name}`: {validate}"
+        );
+    }
+    assert_eq!(
+        validate["exit_code"], 0,
+        "the stale run must still exit 0 (SC3): {validate}"
+    );
+    assert_eq!(validate["counts"]["errors"], 0, "{validate}");
+
+    // -- 1 minute old: FRESH under the configured `5m` too ------------------
+    // The other direction. Without it a surface hardwired to "stale" passes.
+    let (doctor, validate) = read_both(1);
+    for name in ["models", "prices"] {
+        assert_eq!(
+            doctor["caches"][name]["stale"], false,
+            "a 1-minute-old `{name}` cache is inside a `5m` threshold: {doctor}"
+        );
+        assert_eq!(
+            cache_row(&validate, name)["state"],
+            "fresh",
+            "config validate must reach the same verdict for `{name}`: {validate}"
+        );
+    }
+}
+
+/// `config validate` TERMINATES on a FIFO at a cache path — plan 12-06's
+/// metadata-first guard, proven through the shipped binary.
+///
+/// `std::fs::File::open` on a writer-less FIFO blocks indefinitely: reproduced
+/// at the shell against this very layout, where a 3-second `timeout` returned
+/// 124. A byte cap bounds how much is read, not how long the open waits, so the
+/// only defence is deciding from `symlink_metadata` and returning WITHOUT
+/// opening. This is therefore a TERMINATION proof, not a size proof.
+///
+/// The budget is explicit — a 5-second `try_wait` poll with a `kill()` on expiry
+/// — because relying on the harness timeout cannot distinguish "returned
+/// unreadable" from "hung": it would fail the whole test binary minutes later
+/// with no attribution.
+#[test]
+#[serial]
+fn validate_terminates_on_a_fifo_cache_path() {
+    use std::io::Read as _;
+
+    let env = ConfigEnv::new(&clean_config());
+    env.clear_caches();
+
+    let mut fifos: Vec<PathBuf> = Vec::new();
+    for root in ConfigEnv::cache_roots(&env) {
+        let path = root
+            .join("claudia-statusline")
+            .join("ant")
+            .join("prices.json");
+        make_fifo(&path);
+        fifos.push(path);
+    }
+
+    let mut cmd = Command::new(test_support::test_binary());
+    cmd.args(["config", "validate", "--json"]);
+    env.apply_env(&mut cmd);
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = cmd.spawn().expect("spawn statusline");
+
+    // The document is ~1 KiB, far below the pipe buffer, so leaving stdout
+    // unread while polling cannot itself deadlock the child.
+    let budget = std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + budget;
+    let status = loop {
+        match child.try_wait().expect("try_wait on the child") {
+            Some(status) => break status,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "`config validate` BLOCKED on a non-regular cache file: it did not exit \
+                         within {budget:?} with a writer-less FIFO at the prices cache path. \
+                         `File::open` on such a FIFO waits forever, so the classifier MUST decide \
+                         from metadata and return without opening."
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    };
+
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .read_to_end(&mut stdout)
+        .expect("read child stdout");
+
+    assert_eq!(
+        status.code(),
+        Some(0),
+        "an unreadable cache is a WARNING, so the run exits 0 (SC3); stdout={:?}",
+        String::from_utf8_lossy(&stdout)
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    let row = cache_row(&report, "prices");
+    assert_eq!(
+        row["state"], "unreadable",
+        "a FIFO is present but not obtainable: {report}"
+    );
+    let reported = row["path"].as_str().unwrap_or_default();
+    assert!(
+        fifos.iter().any(|p| p.display().to_string() == reported),
+        "the binary must have classified one of the FIFOs this test created: reported={reported:?} \
+         fifos={fifos:?}"
+    );
+    let detail = row["detail"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("fifo"),
+        "the detail must name the FILE TYPE, so a user can tell this apart from a permission \
+         problem: {detail:?}"
+    );
+
+    let hits = cache_findings(findings, "prices");
+    assert_eq!(hits.len(), 1, "{report}");
+    assert_eq!(hits[0]["kind"], "unreadable_cache", "{report}");
+    assert_eq!(hits[0]["severity"], "warning", "{report}");
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+
+    for path in &fifos {
+        let _ = fs::remove_file(path);
+    }
+}
