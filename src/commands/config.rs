@@ -621,8 +621,23 @@ fn run_validation(target: Option<std::path::PathBuf>) -> ValidationOutcome {
     // SC3: the caches this config governs. Driven off the sections that parsed,
     // so a broken `[display]` cannot suppress them.
     let cfg = cache_config_from_text(text.as_deref());
-    let caches = classify_all_caches(&cfg);
+    let mut caches = classify_all_caches(&cfg);
     report_cache_findings(&caches, &mut report);
+
+    // DETERMINISM IS A CONTRACT, NOT A NICETY — and this is the single place it
+    // is established, before EITHER renderer runs.
+    //
+    // Findings originate from `HashMap` iteration (`[pricing].aliases`,
+    // `[ant].accounts`) and from directory enumeration (theme and user-preset
+    // listings), neither of which has a stable order across processes. Any test
+    // asserting exact `findings` equality across runs — and any CI diff of the
+    // `--json` document — depends on this sort. Notices and cache rows are put
+    // in a total order for the same reason.
+    report.sort_findings();
+    report
+        .notices
+        .sort_by(|a, b| (a.code, &a.message).cmp(&(b.code, &b.message)));
+    caches.sort_by(|a, b| a.name.cmp(b.name));
 
     ValidationOutcome {
         report,
@@ -645,75 +660,250 @@ const CONFIG_IO_KEY: &str = "<file>";
 /// where it is sanitized with everything else.
 const MISPLACED_KEY: &str = "<misplaced-config>";
 
-/// Render the outcome and decide the exit code.
+// ---------------------------------------------------------------------------
+// Rendering (D-07) — one report, two renderers, one exit policy
+// ---------------------------------------------------------------------------
+
+/// The `--json` contract version, so a consumer can gate on the schema it knows.
 ///
-/// Plan 12-09 Task 2 replaces this with the deterministic dual-mode renderer
-/// (sorted findings, the full `--json` schema, the cache section). This first
-/// form exists so the engine drive of Task 1 is observable and committable.
+/// Bumped only for a BREAKING change to the document's shape; new optional
+/// fields do not bump it.
+const VALIDATE_SCHEMA_VERSION: u32 = 1;
+
+/// Render the outcome in the requested mode and decide the exit code.
+///
+/// Compute first, branch second — the shipped diagnostic idiom
+/// (`src/commands/health.rs:79`, `src/commands/ant.rs:139`). Here it also makes
+/// the two modes provably agree: they render the SAME already-sorted report, so
+/// a fact can never appear in one and not the other.
+///
+/// # This is the ONE sanitization boundary
+///
+/// Every key, message, notice, path, source token, cache state, age and detail
+/// that reaches stdout does so through `crate::utils::sanitize_for_terminal`,
+/// in BOTH branches. Config files are untrusted external input, and a key or
+/// value carrying ESC bytes reaching a TTY is the R5-CR-01 class (T-12-36).
+///
+/// Two properties of that helper drive how it is used here:
+///
+/// * it strips newlines and carriage returns deliberately (to prevent
+///   fake-output injection), so each PIECE is sanitized and the line is
+///   assembled afterwards — never the other way round, and never over a string
+///   that already carries this command's own formatting;
+/// * it PRESERVES every printable character, so it is an INJECTION mitigation
+///   and **not** a secret-redaction mitigation. Redaction already happened
+///   upstream: `crate::config_validation::redact_toml_error` strips every config
+///   byte out of a parser diagnostic before it can become a finding (T-12-39).
+///
+/// # Exit policy (SC1 + D-11)
+///
+/// Print the FULL report first, then decide. Exit 1 when there is any error, or
+/// when `--strict` is on and there is any warning; exit 0 otherwise — so a
+/// warnings-only config passes by default, which is the literal SC1/SC3
+/// contract. `--strict` changes the exit code and NOTHING else: not which
+/// findings are produced, not their severities, not the notices, and no JSON
+/// field but `strict` and `exit_code`. That separation is what makes
+/// `strict_promotes_warnings` a proof rather than a tautology.
+///
+/// The exit is taken with the process-exit call mirrored from
+/// `src/commands/maintenance.rs:101` — the only other one in `src/`. Returning
+/// `Err` instead would print `Error: Config("…")` Debug noise AFTER a clean
+/// report, because `fn main() -> Result<()>` uses Rust's `Termination` impl.
 fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: bool) -> Result<()> {
     use crate::utils::sanitize_for_terminal;
 
     let report = &outcome.report;
     let errors = report.error_count();
     let warnings = report.warning_count();
+    let valid = errors == 0;
+    let failed = errors > 0 || (strict && warnings > 0);
+    let exit_code = i32::from(failed);
+
+    let target_path = outcome
+        .target_path
+        .as_ref()
+        .map(|p| sanitize_for_terminal(&p.display().to_string()));
+    let target_source = outcome.target_source.as_deref().map(sanitize_for_terminal);
+    let active_path = outcome
+        .active_path
+        .as_ref()
+        .map(|p| sanitize_for_terminal(&p.display().to_string()));
+    let active_source = outcome.active_source.map(sanitize_for_terminal);
 
     if json_output {
-        let doc = serde_json::json!({
-            "valid": errors == 0,
-            "counts": { "errors": errors, "warnings": warnings },
-        });
-        println!("{}", serde_json::to_string(&doc)?);
-    } else {
-        match (outcome.target_path.as_ref(), outcome.target_source.as_deref()) {
-            (Some(p), Some(src)) => println!(
-                "Target: {} (source: {})",
-                sanitize_for_terminal(&p.display().to_string()),
-                sanitize_for_terminal(src)
-            ),
-            _ => println!("Target: none — validating built-in defaults"),
+        let notices: Vec<serde_json::Value> = report
+            .notices
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "code": sanitize_for_terminal(n.code),
+                    "message": sanitize_for_terminal(&n.message),
+                })
+            })
+            .collect();
+
+        let findings: Vec<serde_json::Value> = report
+            .findings
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "severity": f.severity.as_str(),
+                    "kind": f.kind.as_str(),
+                    "key": sanitize_for_terminal(&f.key),
+                    "message": sanitize_for_terminal(&f.message),
+                    "hint": f.hint.as_deref().map(sanitize_for_terminal),
+                })
+            })
+            .collect();
+
+        // One row per status `classify_all_caches` RETURNED — so `usage` is
+        // simply ABSENT (and reads as null to `jq` and `serde_json`) when
+        // `STATUSLINE_ANT_ACCOUNT` names no active account.
+        let mut caches = serde_json::Map::new();
+        for status in &outcome.caches {
+            caches.insert(
+                sanitize_for_terminal(status.name),
+                serde_json::json!({
+                    "state": status.state.as_str(),
+                    "age": status.age.as_deref().map(sanitize_for_terminal),
+                    "path": status.path.as_ref()
+                        .map(|p| sanitize_for_terminal(&p.display().to_string())),
+                    "detail": status.detail.as_deref().map(sanitize_for_terminal),
+                }),
+            );
         }
-        if outcome.active_path.as_ref() != outcome.target_path.as_ref() {
-            match (outcome.active_path.as_ref(), outcome.active_source) {
-                (Some(p), Some(src)) => println!(
-                    "Active: {} (source: {})",
-                    sanitize_for_terminal(&p.display().to_string()),
-                    sanitize_for_terminal(src)
-                ),
+
+        let document = serde_json::json!({
+            "schema_version": VALIDATE_SCHEMA_VERSION,
+            // `valid` is DEFINED as "no errors" and is INDEPENDENT of --strict.
+            // The gate and its result live in `strict` and `exit_code`, so a
+            // consumer never has to infer one from the other.
+            "valid": valid,
+            "strict": strict,
+            "exit_code": exit_code,
+            "target_path": target_path,
+            "target_source": target_source,
+            "active_path": active_path,
+            "active_source": active_source,
+            "counts": { "errors": errors, "warnings": warnings },
+            "notices": notices,
+            "findings": findings,
+            "caches": caches,
+        });
+        // Exactly one compact document, exactly one println — nothing else may
+        // reach stdout in this mode.
+        println!("{}", serde_json::to_string(&document)?);
+    } else {
+        println!("Claudia Statusline Config Validation");
+        println!("====================================");
+        println!();
+        match (&target_path, &target_source) {
+            (Some(p), Some(src)) => println!("Target: {} (source: {})", p, src),
+            _ => println!("Target: none found — validating built-in defaults"),
+        }
+        // Named only when it differs, so the common case stays quiet and the
+        // D-06 "both files" case is impossible to miss.
+        if outcome.target_path != outcome.active_path {
+            match (&active_path, &active_source) {
+                (Some(p), Some(src)) => println!("Active: {} (source: {})", p, src),
                 _ => println!("Active: none found — statusline is using built-in defaults"),
             }
         }
-        for status in &outcome.caches {
-            println!(
-                "cache {}: {}",
-                sanitize_for_terminal(status.name),
-                sanitize_for_terminal(status.state.as_str())
-            );
+
+        if !report.notices.is_empty() {
+            println!();
+            println!("Notices:");
+            for notice in &report.notices {
+                println!(
+                    "  - [{}] {}",
+                    sanitize_for_terminal(notice.code),
+                    sanitize_for_terminal(&notice.message)
+                );
+            }
         }
-        for notice in &report.notices {
-            println!(
-                "note [{}]: {}",
-                notice.code,
-                sanitize_for_terminal(&notice.message)
-            );
+
+        println!();
+        println!("Findings:");
+        if report.findings.is_empty() {
+            println!("  ✅ none");
+        } else {
+            for finding in &report.findings {
+                // The dotted KEY is the locator. Line/column numbers appear
+                // ONLY inside a whole-document syntax error's message, where
+                // `redact_toml_error` put them, and nowhere else.
+                println!(
+                    "  {} {:<7} {}: {}",
+                    marker(finding.severity),
+                    finding.severity.as_str(),
+                    sanitize_for_terminal(&finding.key),
+                    sanitize_for_terminal(&finding.message)
+                );
+            }
         }
-        for finding in &report.findings {
-            println!(
-                "{} {}: {}",
-                finding.severity.as_str(),
-                sanitize_for_terminal(&finding.key),
-                sanitize_for_terminal(&finding.message)
-            );
-        }
+
+        println!();
+        // The verdict reports `valid` (no ERRORS) and the exit code SEPARATELY,
+        // exactly as the `--json` document does — so a reader of either mode can
+        // see that `--strict` moved the exit code without moving the verdict.
         println!(
-            "{} — {} error(s), {} warning(s)",
-            if errors == 0 { "PASS" } else { "FAIL" },
+            "Result: {} — {} error(s), {} warning(s)",
+            if valid { "PASS" } else { "FAIL" },
             errors,
             warnings
         );
+        println!(
+            "Exit code: {}{}",
+            exit_code,
+            if strict && valid && warnings > 0 {
+                " (--strict promotes warnings to a non-zero exit)"
+            } else {
+                ""
+            }
+        );
+
+        println!();
+        println!("Caches:");
+        if outcome.caches.is_empty() {
+            println!("  (none)");
+        } else {
+            for status in &outcome.caches {
+                let age = status
+                    .age
+                    .as_deref()
+                    .map(sanitize_for_terminal)
+                    .unwrap_or_else(|| String::from("-"));
+                let path = status
+                    .path
+                    .as_ref()
+                    .map(|p| sanitize_for_terminal(&p.display().to_string()))
+                    .unwrap_or_else(|| String::from("(unresolved)"));
+                let detail = match status.detail.as_deref() {
+                    Some(d) => format!(" — {}", sanitize_for_terminal(d)),
+                    None => String::new(),
+                };
+                println!(
+                    "  {:<7} {:<12} age {:<6} {}{}",
+                    sanitize_for_terminal(status.name),
+                    sanitize_for_terminal(status.state.as_str()),
+                    age,
+                    path,
+                    detail
+                );
+            }
+        }
     }
 
-    if errors > 0 || (strict && warnings > 0) {
-        std::process::exit(1);
+    if failed {
+        std::process::exit(exit_code);
     }
     Ok(())
+}
+
+/// Severity marker for the human report. Errors lead, and the glyph is the
+/// at-a-glance discriminator the `severity` word then spells out.
+fn marker(severity: crate::config_validation::Severity) -> &'static str {
+    match severity {
+        crate::config_validation::Severity::Error => "❌",
+        crate::config_validation::Severity::Warning => "⚠️ ",
+    }
 }
