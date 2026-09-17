@@ -23,6 +23,11 @@ mod cache;
 pub mod config;
 mod roadmap;
 mod state;
+/// Structured, machine-readable project state for external consumers (D-19).
+///
+/// `pub` rather than private because `src/commands/gsd.rs` lives in a
+/// different module tree and is its consumer.
+pub mod summary;
 mod todos;
 mod update;
 

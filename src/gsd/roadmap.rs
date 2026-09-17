@@ -19,6 +19,59 @@ use std::sync::{Mutex, OnceLock};
 struct RoadmapData {
     completed_phases: u32,
     total_phases: u32,
+    /// A checkbox line embeds the literal `**Phase ` somewhere OTHER than
+    /// immediately after its checkbox -- a plan line whose DESCRIPTION quotes
+    /// the marker. [`parse_roadmap`] counts such a line as a phase entry and
+    /// [`count_plan_checkboxes`] treats it as the start of the next phase.
+    embedded_phase_marker: bool,
+    /// The file carries `### Phase N: ...` detail headings, i.e. the checkbox
+    /// list is a SUMMARY index and the per-phase plan checkboxes live under
+    /// those headings instead of directly under their summary entry.
+    /// [`count_plan_checkboxes`]'s contiguity assumption does not hold there.
+    phase_detail_headings: bool,
+}
+
+/// Known inaccuracies in THIS ROADMAP.md's layout, as observed by the same
+/// single cached parse that produces the progress numbers.
+///
+/// These do not change any published value -- they exist so plan 12-11's
+/// machine-readable document can say, in its own `warnings` array, that a
+/// number it is emitting is known to be unreliable on this file. Emitting a
+/// figure one knows to be wrong without saying so is the failure mode this
+/// guards against; the underlying counting defects are pre-existing and
+/// deliberately not changed here (they would move render-path values).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct LayoutCaveats {
+    /// See [`RoadmapData::embedded_phase_marker`]. Affects the PHASE counts.
+    pub(super) embedded_phase_marker: bool,
+    /// See [`RoadmapData::phase_detail_headings`]. Affects the PLAN counts.
+    pub(super) phase_detail_headings: bool,
+}
+
+/// Report [`LayoutCaveats`] for `planning_dir/ROADMAP.md`.
+///
+/// All-false when the file is missing or unreadable: there is then no number
+/// to caveat, and the caller already warns about the absence itself.
+pub(super) fn layout_caveats(planning_dir: &Path) -> LayoutCaveats {
+    let path = planning_dir.join("ROADMAP.md");
+    match cache::read_with_cache(&ROADMAP_CACHE, &path, |c| Some(parse_roadmap(c))) {
+        Some(data) => LayoutCaveats {
+            embedded_phase_marker: data.embedded_phase_marker,
+            phase_detail_headings: data.phase_detail_headings,
+        },
+        None => LayoutCaveats::default(),
+    }
+}
+
+/// The text of a checkbox line after its `- [x] ` / `- [ ] ` marker, or `None`
+/// when the line is not a checkbox.
+///
+/// Used to tell a genuine `- [ ] **Phase N: ...` header from a plan line that
+/// merely quotes `**Phase ` inside its description.
+fn checkbox_body(trimmed: &str) -> Option<&str> {
+    let rest = trimmed.strip_prefix("- [")?;
+    let close = rest.find(']')?;
+    Some(rest[close + 1..].trim_start())
 }
 
 /// Global cache for ROADMAP.md parse results, keyed by (path, mtime).
@@ -182,6 +235,8 @@ fn count_plan_checkboxes(content: &str, phase_number: &str) -> (u32, u32) {
 fn parse_roadmap(content: &str) -> RoadmapData {
     let mut completed = 0u32;
     let mut total = 0u32;
+    let mut embedded_phase_marker = false;
+    let mut phase_detail_headings = false;
 
     for line in content.lines() {
         let trimmed = line.trim();
@@ -192,12 +247,30 @@ fn parse_roadmap(content: &str) -> RoadmapData {
             if trimmed.starts_with("- [x]") {
                 completed += 1;
             }
+            // Observation only -- the COUNT above is deliberately unchanged.
+            // A genuine header carries the marker immediately after the
+            // checkbox; anything else is a description quoting it.
+            if !checkbox_body(trimmed).is_some_and(|body| body.starts_with("**Phase ")) {
+                embedded_phase_marker = true;
+            }
+        }
+
+        // `### Phase 12: Name` -- a per-phase DETAIL heading. `## Phase Details`
+        // and `## Phases` are not: the token after "Phase " must be a number.
+        if trimmed.starts_with('#') {
+            if let Some(rest) = trimmed.trim_start_matches('#').strip_prefix(" Phase ") {
+                if rest.starts_with(|c: char| c.is_ascii_digit()) {
+                    phase_detail_headings = true;
+                }
+            }
         }
     }
 
     RoadmapData {
         completed_phases: completed,
         total_phases: total,
+        embedded_phase_marker,
+        phase_detail_headings,
     }
 }
 
@@ -272,6 +345,8 @@ Plans:
         let data = RoadmapData {
             completed_phases: 3,
             total_phases: 6,
+            embedded_phase_marker: false,
+            phase_detail_headings: false,
         };
         if data.total_phases > 0 {
             vars.insert(
@@ -454,5 +529,75 @@ Plans:
         assert_eq!(vars.get("gsd_plan_fraction").unwrap(), "1/3");
         assert_eq!(vars.get("gsd_plan_completed").unwrap(), "1");
         assert_eq!(vars.get("gsd_plan_total").unwrap(), "3");
+    }
+
+    // -----------------------------------------------------------------
+    // Layout caveats (plan 12-11): observation of the KNOWN counting
+    // defects, so a machine-readable document never emits a number it
+    // knows to be unreliable without saying so.
+    // -----------------------------------------------------------------
+
+    /// The straightforward layout -- summary checkboxes immediately followed
+    /// by their own plans -- carries NO caveat. Without this arm the caveat
+    /// flags could be hardcoded `true` and the positive tests would still pass.
+    #[test]
+    fn clean_roadmap_layout_has_no_caveats() {
+        let content = "\
+- [x] **Phase 1: One** - done
+- [ ] **Phase 2: Two** - open
+- [x] 02-01-PLAN.md -- a plan
+";
+        let data = parse_roadmap(content);
+        assert_eq!(data.total_phases, 2, "the two headers are the only phases");
+        assert!(!data.embedded_phase_marker);
+        assert!(!data.phase_detail_headings);
+    }
+
+    /// A PLAN line whose description quotes the literal `**Phase ` is counted
+    /// as a phase entry by `parse_roadmap` (pre-existing) -- here the count
+    /// goes to 3 when only 2 phases exist. The caveat flag observes exactly
+    /// that.
+    #[test]
+    fn embedded_phase_marker_in_a_plan_description_is_reported() {
+        let content = "\
+- [x] **Phase 1: One** - done
+- [ ] **Phase 2: Two** - open
+- [x] 02-01-PLAN.md -- normalization so `Phase: 04` still finds `**Phase 4:`
+";
+        let data = parse_roadmap(content);
+        assert_eq!(
+            data.total_phases, 3,
+            "the plan line IS miscounted -- the caveat must not be vacuous"
+        );
+        assert!(
+            data.embedded_phase_marker,
+            "the mid-line `**Phase ` marker must be reported"
+        );
+    }
+
+    /// `### Phase N:` detail headings mean the checkbox list is a summary
+    /// INDEX, so the plan checkboxes that follow a summary entry may belong to
+    /// a different phase -- which is exactly how this repo's own ROADMAP reads
+    /// `21/21` for a phase with 12 plans.
+    #[test]
+    fn phase_detail_headings_are_reported() {
+        let content = "\
+## Phases
+
+- [x] **Phase 1: One** - done
+- [ ] **Phase 2: Two** - open
+
+## Phase Details
+
+### Phase 1: One
+
+- [x] 01-01-PLAN.md -- a plan
+";
+        let data = parse_roadmap(content);
+        assert!(data.phase_detail_headings);
+        assert!(!data.embedded_phase_marker);
+        // `## Phases` and `## Phase Details` must NOT be what triggered it.
+        let without_detail = parse_roadmap("## Phases\n\n## Phase Details\n");
+        assert!(!without_detail.phase_detail_headings);
     }
 }

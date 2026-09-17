@@ -66,7 +66,17 @@ struct StateData {
 #[derive(Clone)]
 struct StateParse {
     state: StateData,
+    /// The GATED frontmatter: `None` unless the major `gsd_state_version` is
+    /// one this build understands (D-15).
     frontmatter: Option<Frontmatter>,
+    /// The RAW `gsd_state_version` text, kept even when the gate REJECTS it.
+    ///
+    /// Plan 12-11's structured output reports the source contract's version in
+    /// `source.state_frontmatter_version` precisely so a consumer can see WHY
+    /// the milestone fields are null on a future GSD schema. Reading it from
+    /// `frontmatter` would be impossible: the gate has already collapsed that
+    /// to `None` by then.
+    frontmatter_version: Option<String>,
 }
 
 /// Global cache for STATE.md parse results, keyed by (path, mtime).
@@ -75,10 +85,17 @@ struct StateParse {
 static STATE_CACHE: OnceLock<Mutex<Option<CachedParse<StateParse>>>> = OnceLock::new();
 
 /// Run both scans over one read of STATE.md.
+///
+/// The frontmatter is taken twice from the SAME `&str`: [`parse_frontmatter`]
+/// for the gated values, and the ungated [`scan_frontmatter`] for the raw
+/// version text that survives a REJECTED gate. Both stop at the closing `---`
+/// a dozen lines in, and both run inside the one cached file read -- the
+/// (path, mtime) cache key and the single `read_to_string` are unchanged.
 fn parse_state_file(content: &str) -> StateParse {
     StateParse {
         state: parse_state(content),
         frontmatter: parse_frontmatter(content),
+        frontmatter_version: scan_frontmatter(content).and_then(|fm| fm.state_version),
     }
 }
 
@@ -92,10 +109,25 @@ fn parse_state_file(content: &str) -> StateParse {
 /// `gsd_state_version` is not `1.x` yields `None` here exactly as it does for
 /// the render path, so the two surfaces cannot disagree about whether the
 /// frontmatter was understood.
-#[allow(dead_code)] // Consumed by plan 12-11's structured output; exercised by tests today.
 pub(crate) fn frontmatter_for(planning_dir: &Path) -> Option<Frontmatter> {
     let path = planning_dir.join("STATE.md");
     cache::read_with_cache(&STATE_CACHE, &path, |c| Some(parse_state_file(c)))?.frontmatter
+}
+
+/// The RAW `gsd_state_version` text of `planning_dir/STATE.md`, gate or no gate.
+///
+/// Shares `STATE_CACHE` with [`fill_vars`] and [`frontmatter_for`], so this is
+/// still ONE read of STATE.md however many of the three are called.
+///
+/// Unlike [`frontmatter_for`] this does NOT apply the D-15 gate: a STATE.md
+/// declaring `gsd_state_version: 2.0` yields `Some("2.0")` here while
+/// [`frontmatter_for`] yields `None`. That asymmetry is the point -- plan
+/// 12-11's document reports the version it SAW next to the null milestone
+/// fields, so "unsupported schema" is distinguishable from "no frontmatter".
+/// It is NOT a second gate and never supplies a value.
+pub(crate) fn frontmatter_version_for(planning_dir: &Path) -> Option<String> {
+    let path = planning_dir.join("STATE.md");
+    cache::read_with_cache(&STATE_CACHE, &path, |c| Some(parse_state_file(c)))?.frontmatter_version
 }
 
 /// Populate GSD phase and milestone variables from STATE.md.
@@ -392,6 +424,15 @@ const SUPPORTED_STATE_VERSION_MAJOR: u32 = 1;
 /// no `unwrap`/`expect`/`panic!`, and no unbounded allocation, over Markdown
 /// that is untrusted input (T-12-26).
 pub(crate) fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
+    scan_frontmatter(content).and_then(gate_frontmatter)
+}
+
+/// The UNGATED half of [`parse_frontmatter`]: the line scan alone.
+///
+/// Returns the keys it found, including a `gsd_state_version` this build does
+/// not support. Only [`gate_frontmatter`] decides whether those values may be
+/// used; this function decides only whether a frontmatter block was THERE.
+fn scan_frontmatter(content: &str) -> Option<Frontmatter> {
     let mut lines = content.lines();
 
     // The opening fence must be the FIRST line.
@@ -435,12 +476,19 @@ pub(crate) fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
         return None;
     }
 
-    // D-15: gate on the MAJOR version only, so harmless minor bumps still parse.
+    Some(fm)
+}
+
+/// The D-15 MAJOR-version gate: pass `fm` through only when its
+/// `gsd_state_version` names a major version this build understands.
+///
+/// Gates on the MAJOR component alone, so harmless minor bumps still parse; a
+/// missing or non-numeric version is rejected outright.
+fn gate_frontmatter(fm: Frontmatter) -> Option<Frontmatter> {
     let major = fm.state_version.as_deref()?.split('.').next()?;
     if major.parse::<u32>().ok()? != SUPPORTED_STATE_VERSION_MAJOR {
         return None;
     }
-
     Some(fm)
 }
 
