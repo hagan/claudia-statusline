@@ -383,6 +383,120 @@ make clean-test
 
 See [README.md Development & Testing](../README.md#development--testing) for more testing strategies.
 
+## GSD project state
+
+`statusline gsd state [--json] [--dir PROJECT_DIR]` reports the current
+**milestone**, **phase** and **progress** of a GSD project (`.planning/`).
+
+With `--json` it emits **exactly one** JSON document on stdout. Statusline does
+the Markdown parsing once and hands you a structured result, so an external tool
+reads all three facts **without parsing prose itself**.
+
+```bash
+# Human-readable report for the project in the current directory
+statusline gsd state
+
+# One machine-readable document
+statusline gsd state --json
+
+# A project elsewhere -- PROJECT_DIR is the directory CONTAINING `.planning/`
+statusline gsd state --json --dir ~/projects/my-app
+```
+
+Statusline **never writes** `STATE.md` or any other planning file. This command
+is read-only.
+
+### Schema (`schema_version` 1)
+
+Every field except `schema_version` and `warnings` is **nullable**.
+
+| Key path | Type | Meaning |
+|----------|------|---------|
+| `schema_version` | integer | Always present. The stability gate — check it first. |
+| `source.planning_dir` | string \| null | The `.planning/` directory the facts were read from. |
+| `source.state_md` | string \| null | Path to `STATE.md`, when that file exists. |
+| `source.roadmap_md` | string \| null | Path to `ROADMAP.md`, when that file exists. |
+| `source.state_frontmatter_version` | string \| null | The RAW `gsd_state_version` of `STATE.md`, reported even when it is a version this build does not support. |
+| `milestone.id` | string \| null | Milestone identifier, e.g. `"v3.3.0"`. Never truncated. |
+| `milestone.name` | string \| null | Milestone name, e.g. `"Cost Accuracy & Honesty"`. |
+| `phase.id` | string \| null | Phase identifier. Equal to `phase.number` today; reserved for a future GSD that distinguishes a directory slug from a number. |
+| `phase.number` | **string** \| null | The phase token exactly as `STATE.md` writes it. |
+| `phase.name` | string \| null | Phase name, when `STATE.md` names one. |
+| `phase.display` | string \| null | `"P12: Name"`, or `"P12"` when there is no name. |
+| `progress.phases_completed` | integer \| null | Completed phase checkboxes in `ROADMAP.md`. |
+| `progress.phases_total` | integer \| null | Total phase checkboxes in `ROADMAP.md`. |
+| `progress.phases_percent` | integer \| null | Integer percentage of phases complete. |
+| `progress.plans_completed` | integer \| null | Completed plan checkboxes in the current phase's section. |
+| `progress.plans_total` | integer \| null | Total plan checkboxes in the current phase's section. |
+| `warnings` | array of strings | Always present, possibly empty. Why a fact is null, and which emitted numbers are known to be unreliable. |
+
+**`schema_version` is the stability contract.** Version `1` guarantees the key
+paths above with the types above. Adding a key is a **minor, non-breaking**
+change and does *not* bump the integer; removing a key, renaming one, or
+changing its type **does**. Check `schema_version` before trusting any other
+field, and treat an unrecognised value as "do not parse".
+
+### `phase.number` is a STRING
+
+It is the literal token written in `STATE.md`, never normalised — so it may be
+zero-padded (`"04"`) or decimal (`"999.1"`). Do **not** coerce it to an integer;
+compare it as a string, or normalise it yourself if you need to.
+
+### Exit codes
+
+| Code | When |
+|------|------|
+| `0` | A well-formed document was produced — **including** the case where every field is `null` and `warnings` explains why. "There is no GSD state here" is a valid answer, so do not use the exit code as the presence signal; check the fields. |
+| `1` | `--dir` names a path that is not a directory. This is a usage error: the message goes to **stderr** and **stdout is empty**, so a half-written document can never break the single-document contract. |
+
+An absent, unreadable, unparseable or future-versioned `STATE.md` all exit `0`
+with a well-formed document.
+
+### Progress is COMPUTED, not recorded
+
+`progress.*` is computed by counting the checkboxes in `ROADMAP.md`. The
+`progress:` block that GSD records inside `STATE.md`'s YAML frontmatter is
+**deliberately not used** — it drifts. In this repository at the time of
+writing, the recorded block says `percent: 33` while the computed value is `75`.
+One source per fact; the computed one wins.
+
+> **Known limitation.** The phase and plan counters make two layout
+> assumptions, and they can be wrong:
+>
+> - Any checkbox line containing the literal `**Phase ` is counted as a phase
+>   entry, so a *plan* line whose description quotes that text inflates
+>   `phases_total`.
+> - The plan counters assume a phase's checkboxes directly follow its
+>   `- [ ] **Phase N:` summary entry. In a roadmap that lists all phases first
+>   and then expands them under `### Phase N:` headings, the plans counted after
+>   a summary entry may belong to a different phase.
+>
+> When either applies, the command still emits the number — and adds a
+> `warnings` entry saying the number may be inaccurate. A number known to be
+> unreliable is never presented as plain fact. Check `warnings` before acting on
+> `progress.*`.
+
+### Reading all three facts with `jq`
+
+```bash
+statusline gsd state --json | jq -r '
+  if .schema_version == 1
+  then "milestone=\(.milestone.id // "?")  phase=\(.phase.number // "?")  progress=\(.progress.phases_completed // "?")/\(.progress.phases_total // "?") (\(.progress.phases_percent // "?")%)"
+  else "unsupported schema_version \(.schema_version)" end'
+```
+
+Run against this repository:
+
+```text
+milestone=v3.3.0  phase=12  progress=3/4 (75%)
+```
+
+Note that no part of that pipeline looks at `STATE.md` or `ROADMAP.md` — which
+is the whole point.
+
+The `STATE.md` frontmatter keys statusline consumes are documented in
+[CONFIGURATION.md](CONFIGURATION.md) under the STATE.md frontmatter contract.
+
 ## JSON Input Format
 
 The statusline accepts JSON via stdin with this format:
