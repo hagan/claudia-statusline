@@ -2180,3 +2180,380 @@ fn failed_section_suppresses_its_own_semantic_findings() {
         "three defects in one failed section still count ONCE: {report}"
     );
 }
+
+// ===========================================================================
+// Plan 12-10 Task 2: the `[ant]` threshold rows and SC3, through the binary.
+// ===========================================================================
+
+/// A `ModelsCache` document dated `fetched_at`. Field names from
+/// `src/ant/cache.rs::ModelsCache` / `ModelEntry`.
+fn models_cache_body(fetched_at: chrono::DateTime<chrono::Utc>) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "fetched_at": fetched_at.to_rfc3339(),
+        "models": { "claude-opus-4-8": { "max_input_tokens": 200_000 } }
+    })
+    .to_string()
+}
+
+/// A `UsageCache` document for `account`, dated `fetched_at`. Field names from
+/// `src/ant/cache.rs::UsageCache`; `schema_version` equals
+/// `USAGE_CACHE_SCHEMA_VERSION` (1).
+fn usage_cache_body(account: &str, fetched_at: chrono::DateTime<chrono::Utc>) -> String {
+    serde_json::json!({
+        "schema_version": 1,
+        "fetched_at": fetched_at.to_rfc3339(),
+        "account": account,
+        "today_usd": 1.25,
+        "mtd_usd": 42.5,
+        "tz": "UTC",
+        "tokens_by_model": {}
+    })
+    .to_string()
+}
+
+/// `chrono::Utc::now()` minus `minutes`.
+fn minutes_ago(minutes: i64) -> chrono::DateTime<chrono::Utc> {
+    chrono::Utc::now() - chrono::Duration::minutes(minutes)
+}
+
+/// The `caches.<name>` row of a `config validate --json` document.
+fn cache_row<'a>(report: &'a serde_json::Value, name: &str) -> &'a serde_json::Value {
+    report["caches"]
+        .get(name)
+        .filter(|v| !v.is_null())
+        .unwrap_or_else(|| panic!("`caches.{name}` must be reported: {report}"))
+}
+
+/// The findings keyed at `caches.<name>`.
+fn cache_findings<'a>(findings: &'a [serde_json::Value], name: &str) -> Vec<&'a serde_json::Value> {
+    findings_at(findings, &format!("caches.{name}"))
+}
+
+/// THE consumption proof, and the reason every seeded arm below calls it.
+///
+/// Asserts the path the binary REPORTED BACK equals one of the paths
+/// [`ConfigEnv::seed_cache`] actually wrote. Without this a mis-seed silently
+/// exercises the `absent` branch and the whole row passes vacuously — which is
+/// how the round-1 cache fixtures would have failed, and why a
+/// `starts_with(home)` or `contains("prices")` substring check is NOT an
+/// acceptable substitute: both survive writing to a directory nothing reads.
+fn assert_reported_path_is_seeded(report: &serde_json::Value, name: &str, seeded: &[PathBuf]) {
+    let reported = cache_row(report, name)["path"]
+        .as_str()
+        .unwrap_or_else(|| panic!("`caches.{name}.path` must be a string: {report}"));
+    let seeded_strings: Vec<String> = seeded.iter().map(|p| p.display().to_string()).collect();
+    assert!(
+        seeded_strings.iter().any(|s| s == reported),
+        "the binary must have read a path this test SEEDED — if it reports a path we never wrote, \
+         the arm is exercising the `absent` branch and proves nothing. reported={reported:?} \
+         seeded={seeded_strings:?}"
+    );
+}
+
+/// Both `[ant]` staleness thresholds round-trip `parse_max_age` through the CLI.
+///
+/// `"soon"` has no number at all; `"48"` is the subtler defect — a bare number
+/// with NO unit, which a permissive parser would happily read as seconds (or
+/// hours, or days) and silently mean something the user did not write.
+#[test]
+#[serial]
+fn ant_thresholds_validated() {
+    let env = ConfigEnv::new(
+        "[ant]\n\
+         enabled = true\n\
+         usage_stale_after = \"soon\"\n\
+         models_stale_after = \"48\"\n",
+    );
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(
+        !ok,
+        "an unparseable threshold is an ERROR; code={code:?} stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    for (key, bad) in [
+        ("ant.usage_stale_after", "soon"),
+        ("ant.models_stale_after", "48"),
+    ] {
+        let hits = findings_at(findings, key);
+        assert_eq!(
+            hits.len(),
+            1,
+            "exactly one finding at `{key}` — each threshold is judged on its own key, so a user \
+             with two defects is told about both: {report}"
+        );
+        assert_eq!(hits[0]["kind"], "invalid_value", "at `{key}`: {report}");
+        assert_eq!(hits[0]["severity"], "error", "at `{key}`: {report}");
+        let message = hits[0]["message"].as_str().unwrap_or_default();
+        assert!(
+            message.contains("s/m/h/d"),
+            "the message at `{key}` must name the grammar: {message:?}"
+        );
+        assert!(
+            !message.contains(&format!("\"{bad}\"")) && !message.contains(&format!("`{bad}`")),
+            "the message at `{key}` must not echo the user's value: {message:?}"
+        );
+    }
+    assert_eq!(report["counts"]["errors"], 2, "{report}");
+}
+
+/// SC3, through the shipped binary, across all FIVE cache states and all THREE
+/// caches.
+///
+/// **Stale, unreadable and unparseable WARN and still exit 0. Fresh and absent
+/// emit NOTHING.**
+///
+/// The absent-is-silent half is the SETTLED policy, and it supersedes the
+/// round-1 must-haves and documentation, which said absent caches warn — a
+/// missing cache is the normal state for a user who has never run a sync, so
+/// warning about it would make the default experience noisy. The resolution in
+/// favour of SILENCE is recorded at
+/// `src/config_validation.rs::report_cache_findings`.
+///
+/// Every SEEDED arm calls [`assert_reported_path_is_seeded`]. That assertion is
+/// the row's foundation, not decoration: a mis-seed would otherwise exercise the
+/// `absent` branch five times over and pass.
+#[test]
+#[serial]
+fn stale_cache_warns_exit_zero() {
+    let env = ConfigEnv::new(&clean_config());
+    let validate = &["config", "validate", "--json"];
+
+    // -- helper: run, require exit EXACTLY 0, and hand back the document ----
+    let run_expecting_zero = |outcome: RunOutcome, arm: &str| -> serde_json::Value {
+        let (ok, code, stdout, stderr) = outcome;
+        assert!(
+            ok,
+            "{arm}: a cache defect is a WARNING and must never fail validation (SC3/D-11); \
+             code={code:?} stderr={stderr}"
+        );
+        assert_eq!(
+            code,
+            Some(0),
+            "{arm}: exit code must be EXACTLY 0; stderr={stderr}"
+        );
+        parse_exactly_one_json(&stdout, "config validate --json")
+    };
+
+    // =================== PRICES: fresh ====================================
+    env.clear_caches();
+    let seeded = env.seed_cache("ant/prices.json", &price_cache_body(minutes_ago(1)));
+    let report = run_expecting_zero(env.run(validate), "prices/fresh");
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "prices", &seeded);
+    assert_eq!(cache_row(&report, "prices")["state"], "fresh", "{report}");
+    assert!(
+        cache_findings(findings, "prices").is_empty(),
+        "a FRESH cache is healthy and says nothing: {report}"
+    );
+
+    // =================== PRICES: stale ====================================
+    // 400 days, against `[pricing].max_age = "30d"`.
+    env.clear_caches();
+    let seeded = env.seed_cache(
+        "ant/prices.json",
+        &price_cache_body(chrono::Utc::now() - chrono::Duration::days(400)),
+    );
+    let report = run_expecting_zero(env.run(validate), "prices/stale");
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "prices", &seeded);
+    assert_eq!(cache_row(&report, "prices")["state"], "stale", "{report}");
+    let hits = cache_findings(findings, "prices");
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly one finding for a stale cache: {report}"
+    );
+    assert_eq!(hits[0]["kind"], "stale_cache", "{report}");
+    assert_eq!(hits[0]["severity"], "warning", "{report}");
+    assert_eq!(
+        report["counts"]["errors"], 0,
+        "a stale cache contributes NO errors: {report}"
+    );
+    assert_eq!(report["exit_code"], 0, "{report}");
+
+    // =================== PRICES: unparseable (not JSON) ===================
+    env.clear_caches();
+    let seeded = env.seed_cache("ant/prices.json", "{not json");
+    let report = run_expecting_zero(env.run(validate), "prices/unparseable");
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "prices", &seeded);
+    assert_eq!(
+        cache_row(&report, "prices")["state"],
+        "unparseable",
+        "{report}"
+    );
+    let hits = cache_findings(findings, "prices");
+    assert_eq!(hits.len(), 1, "{report}");
+    assert_eq!(hits[0]["kind"], "unreadable_cache", "{report}");
+    assert_eq!(hits[0]["severity"], "warning", "{report}");
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+
+    // =================== PRICES: unparseable BY SCHEMA ====================
+    // Valid JSON, wrong `schema_version`. This arm is what proves the
+    // classifier checks the VERSION and not merely JSON validity — the typed
+    // reader rejects this document, so reporting it healthy would be exactly
+    // the silent fallback this command exists to end.
+    env.clear_caches();
+    let mut wrong: serde_json::Value =
+        serde_json::from_str(&price_cache_body(minutes_ago(1))).expect("fixture is JSON");
+    wrong["schema_version"] = serde_json::json!(99);
+    let seeded = env.seed_cache("ant/prices.json", &wrong.to_string());
+    let report = run_expecting_zero(env.run(validate), "prices/schema-mismatch");
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "prices", &seeded);
+    assert_eq!(
+        cache_row(&report, "prices")["state"],
+        "unparseable",
+        "a schema_version this build does not accept is UNPARSEABLE, not fresh: {report}"
+    );
+    let hits = cache_findings(findings, "prices");
+    assert_eq!(hits.len(), 1, "{report}");
+    assert_eq!(hits[0]["kind"], "unreadable_cache", "{report}");
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+
+    // =================== PRICES: unreadable (permission) ==================
+    // Skipped as root, where the permission bit does not bite and the arm would
+    // silently pass by classifying the cache `fresh`.
+    if running_as_root() {
+        eprintln!("[stale_cache_warns_exit_zero] running as root: permission arm SKIPPED");
+    } else {
+        env.clear_caches();
+        let seeded = env.seed_cache("ant/prices.json", &price_cache_body(minutes_ago(1)));
+        for path in &seeded {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+        }
+        let report = run_expecting_zero(env.run(validate), "prices/unreadable");
+        let findings = validate_findings(&report);
+        assert_reported_path_is_seeded(&report, "prices", &seeded);
+        assert_eq!(
+            cache_row(&report, "prices")["state"],
+            "unreadable",
+            "{report}"
+        );
+        let hits = cache_findings(findings, "prices");
+        assert_eq!(hits.len(), 1, "{report}");
+        assert_eq!(hits[0]["kind"], "unreadable_cache", "{report}");
+        assert_eq!(hits[0]["severity"], "warning", "{report}");
+        assert_eq!(report["counts"]["errors"], 0, "{report}");
+        for path in &seeded {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("chmod back");
+        }
+    }
+
+    // =================== PRICES: absent ===================================
+    env.clear_caches();
+    let (ok, code, stdout, stderr) = env.run(validate);
+    assert!(ok, "code={code:?} stderr={stderr}");
+    assert_eq!(code, Some(0), "stderr={stderr}");
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    assert_eq!(cache_row(&report, "prices")["state"], "absent", "{report}");
+    assert!(
+        cache_findings(findings, "prices").is_empty(),
+        "an ABSENT cache emits NOTHING — not a stale_cache finding, not an unreadable_cache \
+         finding, nothing. This is the SETTLED policy (report_cache_findings): a missing cache \
+         is the normal state for a user who has never synced. Found: {:?} in {report}",
+        cache_findings(findings, "prices")
+    );
+    assert!(
+        findings.is_empty(),
+        "the clean fixture with no caches at all must produce an EMPTY findings array — which is \
+         also the negative control for every arm above: {report}"
+    );
+
+    // =================== MODELS: stale ====================================
+    // A separate cache with a separate threshold: `[ant].models_stale_after`
+    // is `48h` in the clean fixture, so 72 hours is beyond it.
+    env.clear_caches();
+    let seeded = env.seed_cache("ant/models.json", &models_cache_body(minutes_ago(72 * 60)));
+    let report = run_expecting_zero(env.run(validate), "models/stale");
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "models", &seeded);
+    assert_eq!(cache_row(&report, "models")["state"], "stale", "{report}");
+    let hits = cache_findings(findings, "models");
+    assert_eq!(hits.len(), 1, "{report}");
+    assert_eq!(hits[0]["kind"], "stale_cache", "{report}");
+    assert_eq!(hits[0]["severity"], "warning", "{report}");
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+    assert_eq!(
+        cache_row(&report, "prices")["state"],
+        "absent",
+        "the models arm must not be reading the prices cache: {report}"
+    );
+
+    // =================== USAGE: positive (account SET) ====================
+    // The per-account cache, which no `prices` arm can reach: `ConfigEnv::run`
+    // deliberately `env_remove`s STATUSLINE_ANT_ACCOUNT. 2 hours against the
+    // clean fixture's `usage_stale_after = "30m"`.
+    env.clear_caches();
+    let usage_seeded = env.seed_cache(
+        "ant/usage/work.json",
+        &usage_cache_body("work", minutes_ago(120)),
+    );
+    let report = run_expecting_zero(
+        env.run_with_account("work", validate),
+        "usage/stale (account set)",
+    );
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "usage", &usage_seeded);
+    assert_eq!(cache_row(&report, "usage")["state"], "stale", "{report}");
+    let hits = cache_findings(findings, "usage");
+    assert_eq!(hits.len(), 1, "{report}");
+    assert_eq!(hits[0]["kind"], "stale_cache", "{report}");
+    assert_eq!(hits[0]["severity"], "warning", "{report}");
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+    assert_eq!(report["exit_code"], 0, "{report}");
+
+    // =================== USAGE: negative (account UNSET) ==================
+    // The SAME file is still on disk. Without an active account there is no
+    // usage cache to speak of, so the row is simply absent — and this arm is
+    // what proves the positive arm above was driven by the env var rather than
+    // by a row the classifier reports unconditionally.
+    let (ok, code, stdout, stderr) = env.run(validate);
+    assert!(ok, "code={code:?} stderr={stderr}");
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    assert!(
+        report["caches"].get("usage").is_none_or(|v| v.is_null()),
+        "with no active account the usage cache is NOT CLASSIFIED AT ALL, mirroring the render \
+         path, which inserts nothing: {report}"
+    );
+    assert!(
+        cache_findings(findings, "usage").is_empty(),
+        "no usage finding without an active account: {report}"
+    );
+    assert!(
+        report["caches"].get("prices").is_some(),
+        "prices must STILL be reported — the missing row is specific to `usage`, not a collapsed \
+         caches object: {report}"
+    );
+
+    // =================== USAGE: `[ant].enabled` is not a filter ===========
+    // The clean fixture above runs with `enabled = false`, so the positive arm
+    // already proves the row is reported while enrichment is OFF. This arm is
+    // its other half: turning enrichment ON changes nothing about the row.
+    // Gating here would hide a stale cache from precisely the user who just
+    // toggled enrichment and is trying to work out why.
+    let enabled_on = ConfigEnv::new(&clean_config().replace("enabled = false", "enabled = true"));
+    let on_seeded = enabled_on.seed_cache(
+        "ant/usage/work.json",
+        &usage_cache_body("work", minutes_ago(120)),
+    );
+    let report = run_expecting_zero(
+        enabled_on.run_with_account("work", validate),
+        "usage/stale (enabled = true)",
+    );
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "usage", &on_seeded);
+    assert_eq!(
+        cache_row(&report, "usage")["state"],
+        "stale",
+        "the classifier gates on the ACCOUNT, never on `[ant].enabled`: {report}"
+    );
+    assert_eq!(cache_findings(findings, "usage").len(), 1, "{report}");
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+}
