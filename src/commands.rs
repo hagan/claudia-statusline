@@ -9,6 +9,7 @@
 //! match (e.g. `commands::migrate::run_schema_migrations()`).
 
 pub(crate) mod ant;
+pub(crate) mod config;
 pub(crate) mod context_learning;
 pub(crate) mod health;
 pub(crate) mod hooks;

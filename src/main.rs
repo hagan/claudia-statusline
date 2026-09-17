@@ -109,7 +109,12 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Generate example config file
+    /// DEPRECATED alias for `statusline config generate`.
+    ///
+    /// Hidden from `--help` but still dispatched verbatim so no existing script
+    /// breaks (D-05). It prints a one-shot deprecation note on stderr and then
+    /// runs exactly the same code as `config generate`.
+    #[command(hide = true)]
     GenerateConfig,
 
     /// Migration utilities for the SQLite database
@@ -206,6 +211,29 @@ enum Commands {
     Ant {
         #[command(subcommand)]
         action: AntAction,
+    },
+
+    /// Configuration file utilities (generate, path)
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+/// Actions of the `config` subcommand group (D-05).
+///
+/// `validate` is deliberately absent here — plan 12-09 adds it, which keeps this
+/// plan's diff free of a dead arm.
+#[derive(Subcommand)]
+pub(crate) enum ConfigAction {
+    /// Write an example config file to the default config path
+    Generate,
+
+    /// Show the active config file and the full search order
+    Path {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -354,49 +382,7 @@ fn main() -> Result<()> {
     if let Some(command) = cli.command {
         match command {
             Commands::GenerateConfig => {
-                let config_path = config::Config::default_config_path()?;
-                println!("Generating example config file at: {:?}", config_path);
-
-                // Create parent directories with secure permissions (0o700 on Unix)
-                if let Some(parent) = config_path.parent() {
-                    #[cfg(unix)]
-                    {
-                        use std::os::unix::fs::DirBuilderExt;
-                        std::fs::DirBuilder::new()
-                            .mode(0o700)
-                            .recursive(true)
-                            .create(parent)?;
-                    }
-
-                    #[cfg(not(unix))]
-                    {
-                        std::fs::create_dir_all(parent)?;
-                    }
-                }
-
-                // Write example config with secure permissions (0o600 on Unix)
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    let mut file = std::fs::OpenOptions::new()
-                        .write(true)
-                        .create(true)
-                        .truncate(true)
-                        .mode(0o600)
-                        .open(&config_path)?;
-                    std::io::Write::write_all(
-                        &mut file,
-                        config::Config::example_toml().as_bytes(),
-                    )?;
-                }
-
-                #[cfg(not(unix))]
-                {
-                    std::fs::write(&config_path, config::Config::example_toml())?;
-                }
-                println!("Config file generated successfully!");
-                println!("Edit {} to customize settings", config_path.display());
-                return Ok(());
+                return commands::config::handle_deprecated_generate_config();
             }
             Commands::Migrate {
                 finalize,
@@ -457,6 +443,10 @@ fn main() -> Result<()> {
 
             Commands::Ant { action } => {
                 return commands::ant::handle_ant_command(action);
+            }
+
+            Commands::Config { action } => {
+                return commands::config::handle_config_command(action);
             }
         }
     }
