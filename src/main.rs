@@ -213,7 +213,7 @@ enum Commands {
         action: AntAction,
     },
 
-    /// Configuration file utilities (generate, path)
+    /// Configuration file utilities (validate, generate, path)
     Config {
         #[command(subcommand)]
         action: ConfigAction,
@@ -221,9 +221,6 @@ enum Commands {
 }
 
 /// Actions of the `config` subcommand group (D-05).
-///
-/// `validate` is deliberately absent here — plan 12-09 adds it, which keeps this
-/// plan's diff free of a dead arm.
 #[derive(Subcommand)]
 pub(crate) enum ConfigAction {
     /// Write an example config file to the default config path
@@ -234,6 +231,26 @@ pub(crate) enum ConfigAction {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+    },
+
+    /// Check a config file for unknown keys, type errors and invalid values
+    ///
+    /// With no PATH this validates the config that would actually be loaded and
+    /// reports which file that was (D-06). Exits non-zero on any ERROR; stale or
+    /// unreachable caches are warnings and never affect the exit code unless
+    /// `--strict` is passed (D-11).
+    Validate {
+        /// Validate this file instead of the resolved active config
+        #[arg(value_name = "PATH")]
+        path: Option<std::path::PathBuf>,
+
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Exit non-zero when there are warnings but no errors
+        #[arg(long)]
+        strict: bool,
     },
 }
 

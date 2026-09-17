@@ -796,7 +796,12 @@ pub struct CacheStatus {
 const MAX_CACHE_PROBE_BYTES: u64 = 1024 * 1024;
 
 /// A human label for a filesystem object kind. Carries no path or content.
-fn file_type_label(ft: &std::fs::FileType) -> &'static str {
+///
+/// `pub` because `config validate`'s own target-file ladder (plan 12-09,
+/// `src/commands/config.rs`) must describe a non-regular target with exactly the
+/// same words this classifier uses; two spellings of one fact would eventually
+/// disagree.
+pub fn file_type_label(ft: &std::fs::FileType) -> &'static str {
     if ft.is_dir() {
         return "directory";
     }
@@ -825,7 +830,10 @@ fn file_type_label(ft: &std::fs::FileType) -> &'static str {
 /// A human label for an IO error KIND. Deliberately built from the kind alone:
 /// `std::io::Error`'s `Display` includes the OS message but a caller-supplied
 /// path never reaches it here, and no config value can.
-fn io_kind_label(kind: std::io::ErrorKind) -> String {
+///
+/// `pub` for the same reason as [`file_type_label`]: plan 12-09's target-file
+/// ladder reports IO failures with this vocabulary.
+pub fn io_kind_label(kind: std::io::ErrorKind) -> String {
     match kind {
         std::io::ErrorKind::PermissionDenied => "permission denied".to_string(),
         std::io::ErrorKind::NotFound => "not found".to_string(),

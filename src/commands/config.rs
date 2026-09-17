@@ -1,4 +1,5 @@
-//! `config` subcommand group handlers: `config generate` and `config path`.
+//! `config` subcommand group handlers: `config validate`, `config generate` and
+//! `config path`.
 //!
 //! This handler is deliberately **THIN** — argv in, one library call, print out.
 //! Every fact it reports is computed in `crate::config` (the diagnostic
@@ -31,6 +32,11 @@ pub(crate) fn handle_config_command(action: crate::ConfigAction) -> Result<()> {
     match action {
         crate::ConfigAction::Generate => generate(),
         crate::ConfigAction::Path { json } => path(json),
+        crate::ConfigAction::Validate {
+            path: target,
+            json,
+            strict,
+        } => validate(target, json, strict),
     }
 }
 
@@ -358,5 +364,356 @@ fn path(json_output: bool) -> Result<()> {
         }
     }
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// `config validate` (QUAL-01 / QUAL-02 / SC1)
+// ---------------------------------------------------------------------------
+
+/// Hard cap on the bytes `config validate` will read from its target file.
+///
+/// 1 MiB, the same number `src/pricing/cache.rs` caps a price cache at and the
+/// same number `src/config_validation.rs` caps a cache probe at. Over-cap is a
+/// REJECTION, never a truncate-and-parse: reading exactly the cap from an
+/// oversized file can yield a complete, valid TOML document followed by
+/// padding, which would let an arbitrarily large file through the supposed
+/// bound. That is the discipline `src/pricing/cache.rs:348-353` established.
+const MAX_CONFIG_BYTES: u64 = 1024 * 1024;
+
+/// What the target-file ladder produced: the text, or a value-free reason.
+type TargetRead = std::result::Result<String, String>;
+
+/// Read the TARGET config file, metadata first.
+///
+/// Every failure is a `String` the caller turns into ONE
+/// `FindingKind::ConfigIo` finding — never a panic, never a `?`-propagated
+/// error, because the report still has to render and the exit code still has to
+/// follow the SC1 contract.
+///
+/// The ladder mirrors `crate::config_validation::classify_cache`, including the
+/// two steps whose obvious shape is wrong:
+///
+/// * **`symlink_metadata` first, then follow.** A SYMLINK is resolved with
+///   `std::fs::metadata` and judged by its TARGET, because the consumer —
+///   the whole-file loader at `src/config.rs:1920` — uses
+///   `std::fs::read_to_string`, which follows links. A symlinked config is the
+///   normal dotfiles arrangement and works today; rejecting it as "not a regular
+///   file" would be a false failure on a working setup. A dangling link is
+///   reported as absent. Both calls are stats, and a stat never blocks.
+/// * **A non-regular target RETURNS WITHOUT OPENING.** This is mandatory, not
+///   stylistic: opening a writer-less FIFO blocks indefinitely before a single
+///   byte is read (verified live, `timeout 3` -> exit 124), so a byte cap does
+///   not bound it. `/dev/zero` is caught here too, as a character device.
+fn read_target_config(p: &std::path::Path) -> TargetRead {
+    use crate::config_validation::{file_type_label, io_kind_label};
+    use std::io::ErrorKind;
+
+    let link_md = match std::fs::symlink_metadata(p) {
+        Ok(md) => md,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err("no file exists at this path".to_string())
+        }
+        Err(e) => {
+            return Err(format!(
+                "the file could not be examined ({})",
+                io_kind_label(e.kind())
+            ))
+        }
+    };
+
+    let md = if link_md.file_type().is_symlink() {
+        match std::fs::metadata(p) {
+            Ok(md) => md,
+            Err(e) if e.kind() == ErrorKind::NotFound => {
+                return Err("dangling symlink — it points at nothing".to_string())
+            }
+            Err(e) => {
+                return Err(format!(
+                    "the symlink target could not be examined ({})",
+                    io_kind_label(e.kind())
+                ))
+            }
+        }
+    } else {
+        link_md
+    };
+
+    let ft = md.file_type();
+    if !ft.is_file() {
+        return Err(format!(
+            "not a regular file ({}) — a config file must be a regular file",
+            file_type_label(&ft)
+        ));
+    }
+    if md.len() > MAX_CONFIG_BYTES {
+        return Err(format!(
+            "larger than the {MAX_CONFIG_BYTES} byte config size cap"
+        ));
+    }
+
+    let mut buf = String::new();
+    let read = std::fs::File::open(p).and_then(|f| {
+        use std::io::Read;
+        f.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut buf)
+    });
+    if let Err(e) = read {
+        return Err(format!(
+            "the file could not be read ({})",
+            io_kind_label(e.kind())
+        ));
+    }
+    if buf.len() as u64 > MAX_CONFIG_BYTES {
+        return Err(format!(
+            "larger than the {MAX_CONFIG_BYTES} byte config size cap"
+        ));
+    }
+    Ok(buf)
+}
+
+/// Build the `Config` value the cache classifier needs, from the sections that
+/// PARSED.
+///
+/// Deliberately NOT the eager whole-config loader and NOT the process-global
+/// config accessor (the two names this module's acceptance grep forbids, and
+/// which the module doc above describes rather than spells). The first is
+/// all-or-nothing and would collapse a multi-defect report into one opaque
+/// error; the second additionally applies the `CLAUDE_*` environment overrides
+/// at `src/config.rs:1403-1445`, so a `CLAUDE_THEME`-set shell would mask an
+/// invalid `display.theme` in the file under validation (T-12-41).
+///
+/// Only `[pricing]` and `[ant]` are needed — they carry the three staleness
+/// thresholds D-12 puts in this command's domain. Each is deserialized
+/// leniently and INDEPENDENTLY from the same `toml::Value`, so a broken
+/// `[display]` cannot stop the cache checks from running.
+fn cache_config_from_text(text: Option<&str>) -> config::Config {
+    use serde::Deserialize;
+
+    let mut cfg = config::Config::default();
+    let Some(text) = text else {
+        return cfg;
+    };
+    let Ok(document) = toml::from_str::<toml::Value>(text) else {
+        return cfg;
+    };
+    if let Some(section) = document.get("pricing") {
+        if let Ok(parsed) = crate::pricing::PricingConfig::deserialize(section.clone()) {
+            cfg.pricing = parsed;
+        }
+    }
+    if let Some(section) = document.get("ant") {
+        if let Ok(parsed) = crate::ant::config::AntConfig::deserialize(section.clone()) {
+            cfg.ant = parsed;
+        }
+    }
+    cfg
+}
+
+/// Everything `validate` computes before it renders anything.
+///
+/// Computing first and branching second is the shipped diagnostic idiom
+/// (`src/commands/health.rs:79`), and here it is also what makes the two output
+/// modes provably agree: one report, two renderers.
+struct ValidationOutcome {
+    report: crate::config_validation::Report,
+    caches: Vec<crate::config_validation::CacheStatus>,
+    target_path: Option<std::path::PathBuf>,
+    target_source: Option<String>,
+    active_path: Option<std::path::PathBuf>,
+    active_source: Option<&'static str>,
+}
+
+/// `config validate`: resolve the target, read it, drive the engine, report.
+///
+/// Target resolution (D-06): with no positional `PATH` this validates the config
+/// that would ACTUALLY be loaded, via the DIAGNOSTIC resolver. A positional
+/// `PATH` WINS — it is the more specific request, and it validates that file
+/// without pretending the file is active. When the two differ the report carries
+/// a STRUCTURED notice naming both, never a bare line: in `--json` mode a stray
+/// line before the document would break the single-JSON-document contract, and a
+/// notice printed only in human mode would make the two modes disagree.
+///
+/// `--config <PATH>` reaches the same place by a different route (it sets
+/// `STATUSLINE_CONFIG_PATH`, candidate 1 of the search order), so both spellings
+/// work; only the notice distinguishes them.
+fn validate(target: Option<std::path::PathBuf>, json_output: bool, strict: bool) -> Result<()> {
+    let outcome = run_validation(target);
+    render_validation(&outcome, json_output, strict)
+}
+
+/// The whole computation, with no IO to stdout. Split out so both renderers —
+/// and any future one — consume one identical report.
+fn run_validation(target: Option<std::path::PathBuf>) -> ValidationOutcome {
+    use crate::config_validation::{
+        classify_all_caches, report_cache_findings, validate_config_text, FindingKind, Report,
+    };
+    use crate::utils::sanitize_for_terminal;
+
+    let mut report = Report::new();
+    let resolved = config::resolve_config_source();
+
+    let positional = target.is_some();
+    let target_path = target.clone().or_else(|| resolved.active.clone());
+    let target_source = if positional {
+        Some("positional".to_string())
+    } else {
+        resolved.active_source.map(|s| s.to_string())
+    };
+
+    // D-06: name BOTH files when the positional request is not the active one.
+    if let Some(ref chosen) = target {
+        if resolved.active.as_ref() != Some(chosen) {
+            let chosen_text = sanitize_for_terminal(&chosen.display().to_string());
+            let message = match resolved.active.as_ref() {
+                Some(active) => format!(
+                    "validating {} because it was given as an argument; the config statusline \
+                     would actually load is {}",
+                    chosen_text,
+                    sanitize_for_terminal(&active.display().to_string())
+                ),
+                None => format!(
+                    "validating {} because it was given as an argument; no config file is \
+                     active, so statusline is running on built-in defaults",
+                    chosen_text
+                ),
+            };
+            report.notice("positional_target_differs_from_active", message);
+        }
+    }
+
+    // D-10: a config sitting where the resolver never looks. Run only when this
+    // command is reporting on the ACTIVE config — for an explicit positional
+    // target the user is vetting one file, and the state of the environment
+    // around it is noise. The probe already excludes the active file and all
+    // four search candidates, so a hit here is always a file statusline cannot
+    // read. WARNINGS, so they cannot fail a validation on their own (D-11).
+    if !positional {
+        for misplaced in probe_misplaced_configs(&resolved) {
+            report.warn(
+                FindingKind::MisplacedConfig,
+                MISPLACED_KEY,
+                format!("{} — {}", misplaced.path, misplaced.reason),
+            );
+        }
+    }
+
+    let mut text: Option<String> = None;
+    match target_path.as_ref() {
+        // D-10: running on defaults is legitimate and common — a quiet PASS.
+        None => report.notice(
+            "no_config_found",
+            "no config file was found at any searched location; statusline is running on its \
+             built-in defaults",
+        ),
+        Some(path) => match read_target_config(path) {
+            Ok(body) => text = Some(body),
+            // Every one of the four IO failure modes is a FINDING of the
+            // dedicated `config_io` kind. `syntax_error` is NOT borrowed for
+            // them: it means "the bytes were read but are not TOML".
+            Err(detail) => report.error(FindingKind::ConfigIo, CONFIG_IO_KEY, detail),
+        },
+    }
+
+    if let Some(ref body) = text {
+        validate_config_text(body, &mut report);
+    }
+
+    // SC3: the caches this config governs. Driven off the sections that parsed,
+    // so a broken `[display]` cannot suppress them.
+    let cfg = cache_config_from_text(text.as_deref());
+    let caches = classify_all_caches(&cfg);
+    report_cache_findings(&caches, &mut report);
+
+    ValidationOutcome {
+        report,
+        caches,
+        target_path,
+        target_source,
+        active_path: resolved.active.clone(),
+        active_source: resolved.active_source,
+    }
+}
+
+/// Finding key for a target-file IO failure. There is no config KEY to blame —
+/// the file itself is the subject — so the pseudo-key matches the one
+/// `validate_config_text` already uses for a whole-document syntax error.
+const CONFIG_IO_KEY: &str = "<file>";
+
+/// Finding key for a D-10 misplacement. Deliberately NOT the misplaced path: a
+/// finding `key` is a dotted CONFIG path, and a filesystem path arriving from
+/// the environment does not belong in that field. The path lives in the message,
+/// where it is sanitized with everything else.
+const MISPLACED_KEY: &str = "<misplaced-config>";
+
+/// Render the outcome and decide the exit code.
+///
+/// Plan 12-09 Task 2 replaces this with the deterministic dual-mode renderer
+/// (sorted findings, the full `--json` schema, the cache section). This first
+/// form exists so the engine drive of Task 1 is observable and committable.
+fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: bool) -> Result<()> {
+    use crate::utils::sanitize_for_terminal;
+
+    let report = &outcome.report;
+    let errors = report.error_count();
+    let warnings = report.warning_count();
+
+    if json_output {
+        let doc = serde_json::json!({
+            "valid": errors == 0,
+            "counts": { "errors": errors, "warnings": warnings },
+        });
+        println!("{}", serde_json::to_string(&doc)?);
+    } else {
+        match (outcome.target_path.as_ref(), outcome.target_source.as_deref()) {
+            (Some(p), Some(src)) => println!(
+                "Target: {} (source: {})",
+                sanitize_for_terminal(&p.display().to_string()),
+                sanitize_for_terminal(src)
+            ),
+            _ => println!("Target: none — validating built-in defaults"),
+        }
+        if outcome.active_path.as_ref() != outcome.target_path.as_ref() {
+            match (outcome.active_path.as_ref(), outcome.active_source) {
+                (Some(p), Some(src)) => println!(
+                    "Active: {} (source: {})",
+                    sanitize_for_terminal(&p.display().to_string()),
+                    sanitize_for_terminal(src)
+                ),
+                _ => println!("Active: none found — statusline is using built-in defaults"),
+            }
+        }
+        for status in &outcome.caches {
+            println!(
+                "cache {}: {}",
+                sanitize_for_terminal(status.name),
+                sanitize_for_terminal(status.state.as_str())
+            );
+        }
+        for notice in &report.notices {
+            println!(
+                "note [{}]: {}",
+                notice.code,
+                sanitize_for_terminal(&notice.message)
+            );
+        }
+        for finding in &report.findings {
+            println!(
+                "{} {}: {}",
+                finding.severity.as_str(),
+                sanitize_for_terminal(&finding.key),
+                sanitize_for_terminal(&finding.message)
+            );
+        }
+        println!(
+            "{} — {} error(s), {} warning(s)",
+            if errors == 0 { "PASS" } else { "FAIL" },
+            errors,
+            warnings
+        );
+    }
+
+    if errors > 0 || (strict && warnings > 0) {
+        std::process::exit(1);
+    }
     Ok(())
 }
