@@ -156,13 +156,14 @@ impl ConfigEnv {
         }
     }
 
-    /// The single spawn implementation behind all four entry points.
+    /// The single spawn implementation behind all five entry points.
     fn spawn_binary(
         &self,
         args: &[&str],
         payload: Option<&str>,
         account: Option<&str>,
         unset_config: bool,
+        extra: &[(&str, &str)],
     ) -> RunOutcome {
         let mut cmd = Command::new(test_support::test_binary());
         cmd.args(args);
@@ -173,6 +174,11 @@ impl ConfigEnv {
         if unset_config {
             cmd.env_remove("STATUSLINE_CONFIG_PATH");
             cmd.env_remove("STATUSLINE_CONFIG");
+        }
+        // Layered LAST and always named at the call site, so the shared
+        // `env_block` stays the single source of truth for the baseline.
+        for (key, value) in extra {
+            cmd.env(key, value);
         }
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         match payload {
@@ -208,25 +214,37 @@ impl ConfigEnv {
 
     /// Run the binary with `args` and no stdin.
     fn run(&self, args: &[&str]) -> RunOutcome {
-        self.spawn_binary(args, None, None, false)
+        self.spawn_binary(args, None, None, false, &[])
     }
 
     /// Run the binary with `args`, writing `payload` to its stdin (the render
     /// path).
     fn run_with_stdin(&self, args: &[&str], payload: &str) -> RunOutcome {
-        self.spawn_binary(args, Some(payload), None, false)
+        self.spawn_binary(args, Some(payload), None, false, &[])
     }
 
     /// Like [`ConfigEnv::run`] but with `STATUSLINE_ANT_ACCOUNT` SET to
     /// `account` instead of removed.
     fn run_with_account(&self, account: &str, args: &[&str]) -> RunOutcome {
-        self.spawn_binary(args, None, Some(account), false)
+        self.spawn_binary(args, None, Some(account), false, &[])
     }
 
     /// Like [`ConfigEnv::run`] but with BOTH config-path env vars removed, so
     /// the binary exercises candidates 3 and 4 of its config search order.
     fn run_unset_config(&self, args: &[&str]) -> RunOutcome {
-        self.spawn_binary(args, None, None, true)
+        self.spawn_binary(args, None, None, true, &[])
+    }
+
+    /// Like [`ConfigEnv::run`] but with `extra` environment variables layered on
+    /// top of the shared block.
+    ///
+    /// Needed by plan 12-08 to make a PROBED misplacement path coincide with a
+    /// real, losing search CANDIDATE (`STATUSLINE_CONFIG`), which is the only
+    /// arrangement under which the probe's candidate-exclusion filter is
+    /// load-bearing. It still routes through [`ConfigEnv::apply_env`], so the
+    /// baseline isolation cannot drift away from the other entry points.
+    fn run_with_extra_env(&self, extra: &[(&str, &str)], args: &[&str]) -> RunOutcome {
+        self.spawn_binary(args, None, None, false, extra)
     }
 
     // -------------------------------------------------------------------
@@ -799,5 +817,508 @@ fn render_byte_comparison_can_detect_a_difference() {
          equal ({:?} vs {:?})",
         String::from_utf8_lossy(&here),
         String::from_utf8_lossy(&there),
+    );
+}
+
+// ===========================================================================
+// Plan 12-08: the `config` subcommand group, the hidden `generate-config`
+// alias, and the `config path` search-order / misplacement report.
+// ===========================================================================
+
+/// Detect root WITHOUT spawning `id -u`: the effective uid is not on stable
+/// std, so probe the only thing that matters here — whether a permission bit
+/// actually bites. Idiom copied verbatim from
+/// `src/config_validation.rs::tests::running_as_root` (plan 12-06), so the two
+/// permission-sensitive suites in this phase cannot disagree about what "root"
+/// means.
+fn running_as_root() -> bool {
+    let dir = TempDir::new().expect("root-probe temp dir");
+    let probe = dir.path().join("probe");
+    fs::write(&probe, b"x").expect("write root probe");
+    fs::set_permissions(&probe, fs::Permissions::from_mode(0o000)).expect("chmod root probe");
+    let readable = fs::read(&probe).is_ok();
+    let _ = fs::set_permissions(&probe, fs::Permissions::from_mode(0o600));
+    readable
+}
+
+/// The `source` token of every candidate, in the order reported.
+fn candidate_sources(report: &serde_json::Value) -> Vec<String> {
+    report["candidates"]
+        .as_array()
+        .expect("candidates must be an array")
+        .iter()
+        .map(|c| {
+            c["source"]
+                .as_str()
+                .expect("candidates[].source must be a string")
+                .to_string()
+        })
+        .collect()
+}
+
+/// The `path` of every reported misplaced config.
+fn misplaced_paths(report: &serde_json::Value) -> Vec<String> {
+    report["misplaced"]
+        .as_array()
+        .expect("misplaced must be an array")
+        .iter()
+        .map(|m| {
+            m["path"]
+                .as_str()
+                .expect("misplaced[].path must be a string")
+                .to_string()
+        })
+        .collect()
+}
+
+/// The `reason` reported for one misplaced path.
+fn misplaced_reason(report: &serde_json::Value, path: &str) -> String {
+    report["misplaced"]
+        .as_array()
+        .expect("misplaced must be an array")
+        .iter()
+        .find(|m| m["path"].as_str() == Some(path))
+        .map(|m| {
+            m["reason"]
+                .as_str()
+                .expect("misplaced[].reason must be a string")
+                .to_string()
+        })
+        .unwrap_or_else(|| panic!("{path} is not in the misplaced array: {report}"))
+}
+
+/// The XDG candidate the child resolves: `ConfigEnv` sets
+/// `XDG_CONFIG_HOME=<home>/config`, and `common::get_config_dir()` consults that
+/// FIRST, so this is both candidate 3 and `default_config_path()`.
+fn xdg_config_file(env: &ConfigEnv) -> PathBuf {
+    env.home_path()
+        .join("config")
+        .join("claudia-statusline")
+        .join("config.toml")
+}
+
+fn write_file(path: &Path, body: &str) {
+    fs::create_dir_all(path.parent().expect("path has a parent")).expect("create parent dir");
+    fs::write(path, body).expect("write file");
+}
+
+/// The `12-VALIDATION.md` contract row for `config path`: the ACTIVE file, the
+/// FULL search order in order with hit/miss, and the D-10 misplacement warning —
+/// in three arms that move the winner down the list.
+#[test]
+#[serial]
+fn config_path_reports_search_order() {
+    let env = ConfigEnv::new(&clean_config());
+
+    // --- Arm 1: STATUSLINE_CONFIG_PATH wins (candidate 1). ---
+    let (ok, code, stdout, stderr) = env.run(&["config", "path", "--json"]);
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json");
+
+    assert_eq!(
+        candidate_sources(&report),
+        vec![
+            "env_statusline_config_path",
+            "env_statusline_config",
+            "xdg_config_dir",
+            "home_dotfile",
+        ],
+        "the four candidates must be reported in SEARCH ORDER: {report}"
+    );
+    assert_eq!(
+        report["active_source"].as_str(),
+        Some("env_statusline_config_path"),
+        "{report}"
+    );
+    assert_eq!(
+        report["active"].as_str(),
+        Some(env.config_path.display().to_string().as_str()),
+        "{report}"
+    );
+    assert_eq!(report["candidates"][0]["exists"], serde_json::json!(true));
+    for i in 1..4 {
+        assert_eq!(
+            report["candidates"][i]["exists"],
+            serde_json::json!(false),
+            "candidate {i} must MISS while candidate 1 wins: {report}"
+        );
+    }
+
+    // --- Arm 2: with both env vars unset, the XDG dir wins (candidate 3). ---
+    let xdg = xdg_config_file(&env);
+    write_file(&xdg, &clean_config());
+
+    let (ok, code, stdout, stderr) = env.run_unset_config(&["config", "path", "--json"]);
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json (unset)");
+    assert_eq!(
+        report["active_source"].as_str(),
+        Some("xdg_config_dir"),
+        "{report}"
+    );
+    assert_eq!(
+        report["active"].as_str(),
+        Some(xdg.display().to_string().as_str()),
+        "{report}"
+    );
+
+    // --- Arm 3: a config at a NEVER-CONSULTED path is warned about, while the
+    // losing-but-consulted XDG candidate is NOT (it is a candidate, not a
+    // misplacement — this is the filter that keeps the warning meaningful). ---
+    let misplaced = env
+        .home_path()
+        .join(".config")
+        .join("claudia-statusline")
+        .join("config.toml");
+    write_file(&misplaced, &clean_config());
+
+    let (ok, code, stdout, stderr) = env.run(&["config", "path", "--json"]);
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json (misplaced)");
+    let names = misplaced_paths(&report);
+    assert!(
+        names.contains(&misplaced.display().to_string()),
+        "the D-10 probe must name the misplaced config {}: {report}",
+        misplaced.display()
+    );
+    // Exactly one warning, and no noise around it. (The candidate-EXCLUSION
+    // filter is NOT what this arm exercises: under this fixture no probed path
+    // ever coincides with a search candidate, so an assertion here that the XDG
+    // candidate is absent could never fail. It is proven instead by
+    // `config_path_never_warns_about_a_real_search_candidate`, which arranges
+    // that coincidence deliberately.)
+    assert_eq!(
+        names,
+        vec![misplaced.display().to_string()],
+        "exactly one misplacement was planted: {report}"
+    );
+    // The warning's value is the destination, not the noticing.
+    assert!(
+        misplaced_reason(&report, &misplaced.display().to_string())
+            .contains(&xdg.display().to_string()),
+        "the warning must name WHERE the file has to move: {report}"
+    );
+}
+
+/// `Path::exists()` and `symlink_metadata` disagree in exactly one direction
+/// that matters here, and the probe was built on the measured answer rather than
+/// the planned one.
+///
+/// A DANGLING SYMLINK at a misplaced path is a real, broken, silently-ignored
+/// config: `exists()` follows the link and reports `false`, so a probe written
+/// with it would go quiet on it. The POSITIVE CONTROL is the first arm — a plain
+/// regular file at the same class of path — which proves the report can name a
+/// misplacement at all before the symlink arm's naming counts as evidence.
+///
+/// The third arm covers T-12-58: a `PermissionDenied` stat is reported as
+/// UNVERIFIABLE rather than collapsed to "absent". It is guarded, because root
+/// traverses a `chmod 000` directory and would turn the assertion vacuous.
+#[test]
+#[serial]
+fn config_path_probe_is_not_fooled_by_exists_semantics() {
+    let env = ConfigEnv::new(&clean_config());
+
+    // --- POSITIVE CONTROL: a plain regular file at a never-consulted path. ---
+    let plain = env
+        .home_path()
+        .join(".config")
+        .join("statusline")
+        .join("config.toml");
+    write_file(&plain, &clean_config());
+
+    let (ok, code, stdout, stderr) = env.run(&["config", "path", "--json"]);
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json (positive control)");
+    assert!(
+        misplaced_paths(&report).contains(&plain.display().to_string()),
+        "POSITIVE CONTROL FAILED: the probe cannot name even a plain misplaced file, so every \
+         other arm of this test is vacuous: {report}"
+    );
+    fs::remove_file(&plain).expect("remove the positive-control file");
+
+    // --- ARM 2: a DANGLING SYMLINK, which `Path::exists()` calls absent. ---
+    let dangling = env
+        .home_path()
+        .join(".config")
+        .join("claudia-statusline")
+        .join("config.toml");
+    fs::create_dir_all(dangling.parent().expect("parent")).expect("create parent");
+    std::os::unix::fs::symlink(env.home_path().join("moved-away.toml"), &dangling)
+        .expect("create dangling symlink");
+    assert!(
+        !dangling.exists(),
+        "the fixture is wrong: this arm is only meaningful while `exists()` answers false"
+    );
+    assert!(
+        fs::symlink_metadata(&dangling).is_ok(),
+        "the fixture is wrong: symlink_metadata must still see the link itself"
+    );
+
+    let (ok, code, stdout, stderr) = env.run(&["config", "path", "--json"]);
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json (dangling)");
+    assert!(
+        misplaced_paths(&report).contains(&dangling.display().to_string()),
+        "a dangling symlink at a never-consulted path is still a misplaced config, and is \
+         precisely what `Path::exists()` would have missed: {report}"
+    );
+    fs::remove_file(&dangling).expect("remove the dangling symlink");
+
+    // --- ARM 3 (T-12-58): a stat refused by permissions is UNVERIFIABLE. ---
+    if running_as_root() {
+        eprintln!("skipped: running as root, the permission bit does not bite");
+        return;
+    }
+    let locked_dir = env.home_path().join(".claudia-statusline");
+    let locked = locked_dir.join("config.toml");
+    write_file(&locked, &clean_config());
+    fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o000)).expect("chmod 000");
+
+    let (ok, code, stdout, stderr) = env.run(&["config", "path", "--json"]);
+    fs::set_permissions(&locked_dir, fs::Permissions::from_mode(0o700)).expect("restore mode");
+
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json (permission denied)");
+    let locked_name = locked.display().to_string();
+    assert!(
+        misplaced_paths(&report).contains(&locked_name),
+        "a config the probe is REFUSED permission to stat must be reported as unverifiable, \
+         never collapsed into silence (T-12-58): {report}"
+    );
+    assert!(
+        misplaced_reason(&report, &locked_name).contains("permission denied"),
+        "the reason must say the check was refused rather than claim the file is there: {report}"
+    );
+}
+
+/// The hidden deprecated alias, exercised through the ALIAS PATH itself — a
+/// spawned `statusline generate-config`, not a shared inner function.
+///
+/// Three independent facts: it is gone from `--help`, it still does the work,
+/// and it announces itself exactly once on STDERR (never stdout, so a script
+/// piping its output keeps parsing what it always parsed). The final arm is the
+/// discriminator: `config generate` must NOT print the notice, without which
+/// "the notice is on stderr" could pass for a notice printed unconditionally.
+#[test]
+#[serial]
+fn generate_config_alias_is_hidden_but_works() {
+    const NOTICE: &str = "is deprecated; use `statusline config generate`";
+
+    let env = ConfigEnv::new_without_config();
+
+    let (ok, code, stdout, stderr) = env.run(&["--help"]);
+    assert!(ok, "--help must exit 0; code={code:?} stderr={stderr}");
+    let help = String::from_utf8_lossy(&stdout);
+    assert!(
+        !help.contains("generate-config"),
+        "the deprecated alias must be HIDDEN from --help: {help}"
+    );
+    assert!(
+        help.contains("config"),
+        "the `config` group must be listed in --help: {help}"
+    );
+
+    // ...hidden, but not removed: it still dispatches.
+    let (ok, code, stdout, stderr) = env.run(&["generate-config"]);
+    assert!(
+        ok,
+        "the hidden alias must still work; code={code:?} stderr={stderr}"
+    );
+    let written = xdg_config_file(&env);
+    assert!(
+        fs::symlink_metadata(&written).is_ok(),
+        "the alias must still write the config at {}",
+        written.display()
+    );
+
+    let out = String::from_utf8_lossy(&stdout);
+    assert_eq!(
+        stderr.matches(NOTICE).count(),
+        1,
+        "the deprecation notice must appear on stderr exactly ONCE: {stderr:?}"
+    );
+    assert!(
+        !out.contains(NOTICE) && !out.contains("deprecated"),
+        "the notice must never reach stdout: {out:?}"
+    );
+
+    // The discriminator: the SUPPORTED spelling stays quiet.
+    let (ok, code, _stdout, stderr) = env.run(&["config", "generate"]);
+    assert!(
+        ok,
+        "config generate must exit 0; code={code:?} stderr={stderr}"
+    );
+    assert!(
+        !stderr.contains("deprecated"),
+        "the notice belongs to the DEPRECATED path only, yet `config generate` printed it: \
+         {stderr:?}"
+    );
+}
+
+/// Pins the security property of the MOVED `generate` body (T-12-32) with exact
+/// numeric modes, so a future rewrite cannot quietly loosen them.
+#[test]
+#[serial]
+fn config_generate_writes_restrictive_permissions() {
+    let env = ConfigEnv::new_without_config();
+
+    let (ok, code, _stdout, stderr) = env.run(&["config", "generate"]);
+    assert!(
+        ok,
+        "config generate must exit 0; code={code:?} stderr={stderr}"
+    );
+
+    let written = xdg_config_file(&env);
+    let file_mode = fs::metadata(&written)
+        .unwrap_or_else(|e| panic!("config must exist at {}: {e}", written.display()))
+        .permissions()
+        .mode()
+        & 0o777;
+    let dir_mode = fs::metadata(written.parent().expect("parent"))
+        .expect("config dir metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+
+    assert_eq!(file_mode, 0o600, "the generated config must be 0600");
+    assert_eq!(dir_mode, 0o700, "the config directory must be 0700");
+}
+
+/// The root `--config <PATH>` OPTION and the `config` SUBCOMMAND coexist.
+///
+/// clap has to tell the two apart in one argv, and the flag is plumbed by
+/// SETTING `STATUSLINE_CONFIG_PATH` (`src/main.rs`), so a successful run must
+/// report the flag's file as active via candidate 1.
+#[test]
+#[serial]
+fn global_config_flag_coexists_with_config_subcommand() {
+    let env = ConfigEnv::new(&clean_config());
+    let flag_target = env.config_path.display().to_string();
+
+    let (ok, code, stdout, stderr) =
+        env.run_unset_config(&["--config", &flag_target, "config", "path", "--json"]);
+    assert!(
+        ok,
+        "`--config <PATH> config path` must be a legal invocation; code={code:?} stderr={stderr}"
+    );
+
+    let report = parse_json(&stdout, "--config <PATH> config path --json");
+    assert_eq!(
+        report["active_source"].as_str(),
+        Some("env_statusline_config_path"),
+        "the global flag is plumbed through candidate 1: {report}"
+    );
+    assert_eq!(
+        report["active"].as_str(),
+        Some(flag_target.as_str()),
+        "{report}"
+    );
+}
+
+/// `config path --json` is byte-reproducible.
+///
+/// Directory enumeration and map iteration are the usual sources of drift, so
+/// the misplaced array is sorted before serialization. The `>= 2` assertion is
+/// what keeps this from passing on two identical EMPTY arrays.
+#[test]
+#[serial]
+fn config_path_json_is_deterministic() {
+    let env = ConfigEnv::new(&clean_config());
+
+    for rel in [
+        ".config/claudia-statusline/config.toml",
+        ".config/statusline/config.toml",
+    ] {
+        write_file(&env.home_path().join(rel), &clean_config());
+    }
+
+    let (ok_a, code_a, first, err_a) = env.run(&["config", "path", "--json"]);
+    assert!(ok_a, "run 1 must exit 0; code={code_a:?} stderr={err_a}");
+    let (ok_b, code_b, second, err_b) = env.run(&["config", "path", "--json"]);
+    assert!(ok_b, "run 2 must exit 0; code={code_b:?} stderr={err_b}");
+
+    let report = parse_json(&first, "config path --json");
+    assert!(
+        misplaced_paths(&report).len() >= 2,
+        "both seeded misplacements must be reported, or this test compares two empty \
+         arrays and proves nothing: {report}"
+    );
+
+    assert_eq!(
+        first,
+        second,
+        "two runs in the same environment must be byte-identical: {:?} vs {:?}",
+        String::from_utf8_lossy(&first),
+        String::from_utf8_lossy(&second),
+    );
+}
+
+/// The probe must never warn about a path the resolver DOES consult.
+///
+/// This is the one arrangement under which that filter is load-bearing: a file
+/// that is simultaneously a PROBED misplacement location and a real, LOSING
+/// search candidate. `STATUSLINE_CONFIG` (candidate 2) is pointed at
+/// `~/.config/statusline/config.toml` — probe 3 — while candidate 1 still wins,
+/// so neither the active-file check nor mere absence can account for the
+/// exclusion.
+///
+/// The POSITIVE CONTROL is a second file at a different probed path: it must be
+/// reported in the SAME run, otherwise "the candidate is absent from the list"
+/// would be satisfied by a report that had simply gone silent.
+#[test]
+#[serial]
+fn config_path_never_warns_about_a_real_search_candidate() {
+    let env = ConfigEnv::new(&clean_config());
+
+    let as_candidate = env
+        .home_path()
+        .join(".config")
+        .join("statusline")
+        .join("config.toml");
+    write_file(&as_candidate, &clean_config());
+
+    let control = env
+        .home_path()
+        .join(".config")
+        .join("claudia-statusline")
+        .join("config.toml");
+    write_file(&control, &clean_config());
+
+    let (ok, code, stdout, stderr) = env.run_with_extra_env(
+        &[("STATUSLINE_CONFIG", &as_candidate.display().to_string())],
+        &["config", "path", "--json"],
+    );
+    assert!(ok, "config path must exit 0; code={code:?} stderr={stderr}");
+    let report = parse_json(&stdout, "config path --json (candidate coincidence)");
+
+    // The arrangement itself, asserted rather than assumed: candidate 2 IS the
+    // probed path, it exists, and it is NOT the active file.
+    assert_eq!(
+        report["candidates"][1]["path"].as_str(),
+        Some(as_candidate.display().to_string().as_str()),
+        "the fixture is wrong: candidate 2 must be the probed path: {report}"
+    );
+    assert_eq!(
+        report["candidates"][1]["exists"],
+        serde_json::json!(true),
+        "the fixture is wrong: that candidate must exist: {report}"
+    );
+    assert_eq!(
+        report["active_source"].as_str(),
+        Some("env_statusline_config_path"),
+        "the fixture is wrong: candidate 1 must still win, so the file under test is a \
+         LOSING candidate: {report}"
+    );
+
+    let names = misplaced_paths(&report);
+    assert!(
+        names.contains(&control.display().to_string()),
+        "POSITIVE CONTROL FAILED: the report went silent in this run, so the exclusion \
+         below proves nothing: {report}"
+    );
+    assert!(
+        !names.contains(&as_candidate.display().to_string()),
+        "a file the resolver DOES consult is a losing candidate, not a misplacement, and \
+         warning about it would make the warning noise: {report}"
     );
 }
