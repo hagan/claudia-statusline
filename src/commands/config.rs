@@ -125,7 +125,162 @@ fn candidate_label(source: &str) -> &'static str {
     }
 }
 
-/// `config path`: report the active config file and the full search order.
+/// One config file found at a location the resolver NEVER consults (D-10).
+///
+/// `path` and `reason` are both already sanitized for terminal output; the
+/// reason names where the file has to move to be read, because that specificity
+/// is the entire point of the probe.
+struct MisplacedConfig {
+    path: String,
+    reason: String,
+}
+
+/// What a single `symlink_metadata` probe could establish about a path.
+///
+/// `Unverifiable` exists because "the stat failed" and "the file is not there"
+/// are different facts, and silently merging them is the failure mode this whole
+/// report was written to end (T-12-58).
+enum ProbeVerdict {
+    /// The path is there (including as a dangling symlink).
+    Present,
+    /// The stat was refused — a config may or may not be sitting here.
+    Unverifiable,
+}
+
+/// The D-10 misplacement probe.
+///
+/// These are NOT "losing candidates" — the resolver never looks at any of them,
+/// so surfacing them requires deliberately probing a fixed list of known-wrong
+/// locations. The list is bounded at five (T-12-33) and grounded in
+/// `12-RESEARCH.md` §7.4, which reproduced two different `config.toml` files
+/// living in two different directories on one developer machine, with one env
+/// var deciding which was dead.
+///
+/// The general rule, which is what makes this robust rather than a hardcoded
+/// list: warn for any probed path that EXISTS, is not the active file, and is
+/// not one of the four search candidates.
+///
+/// Existence is tested with `std::fs::symlink_metadata`, never `Path::exists()`.
+/// The two differ in a way that was measured on this platform rather than
+/// assumed, because the plan's stated rationale turned out to be wrong:
+///
+/// | probed path | `exists()` | `symlink_metadata().is_ok()` |
+/// |---|---|---|
+/// | file under a `chmod 000` parent | false | **false** (`PermissionDenied`) |
+/// | DANGLING SYMLINK | false | **true** |
+/// | file with mode `000` | true | true |
+///
+/// So `symlink_metadata` does NOT by itself rescue a config inside a restrictive
+/// directory — both predicates lose that one, because stat-ing a child requires
+/// `+x` on the parent. What it does buy is the dangling-symlink row: a misplaced
+/// `config.toml` symlinked at a file that has since moved is a broken config the
+/// report must still name, and `exists()` follows the link and calls it absent.
+///
+/// T-12-58 (a misplaced config inside a restrictive directory going unreported)
+/// is therefore mitigated explicitly instead: a `PermissionDenied` verdict is
+/// REPORTED as unverifiable rather than collapsed to "absent", which is the only
+/// honest answer a stat can give there.
+///
+/// Nothing here reads, opens or canonicalizes a file, and `symlink_metadata`
+/// does not follow symlinks (T-12-33).
+fn probe_misplaced_configs(resolved: &config::ResolvedConfig) -> Vec<MisplacedConfig> {
+    use crate::utils::sanitize_for_terminal;
+    use std::path::PathBuf;
+
+    let home = dirs::home_dir();
+    let app_config_dir = crate::common::get_config_dir();
+
+    // Where a misplaced file has to move. Taken from the reported search order
+    // itself, so the advice cannot drift from the candidates printed above it.
+    let destination = resolved
+        .candidates
+        .iter()
+        .find(|c| c.source == "xdg_config_dir")
+        .and_then(|c| c.path.clone())
+        .unwrap_or_else(|| app_config_dir.join("config.toml"));
+    let destination = sanitize_for_terminal(&destination.display().to_string());
+
+    let probes: Vec<(Option<PathBuf>, &str)> = vec![
+        (
+            home.as_ref()
+                .map(|h| h.join(".config/claudia-statusline/config.toml")),
+            "~/.config is only searched when XDG_CONFIG_HOME points at it — on macOS \
+             the config dir is ~/Library/Application Support",
+        ),
+        (
+            dirs::config_dir().map(|d| d.join("claudia-statusline/config.toml")),
+            "the platform config directory is only searched when XDG_CONFIG_HOME is \
+             unset or points here",
+        ),
+        (
+            home.as_ref()
+                .map(|h| h.join(".config/statusline/config.toml")),
+            "wrong application directory name — it is `claudia-statusline`",
+        ),
+        (
+            Some(app_config_dir.join("statusline.toml")),
+            "wrong file name — the file in the config directory must be `config.toml`",
+        ),
+        (
+            home.as_ref()
+                .map(|h| h.join(".claudia-statusline/config.toml")),
+            "the home dotfile candidate is the FILE `~/.claudia-statusline.toml`, \
+             not a directory",
+        ),
+    ];
+
+    let mut found: Vec<(PathBuf, String)> = Vec::new();
+    for (candidate, why) in probes {
+        let Some(probed) = candidate else {
+            continue;
+        };
+        let verdict = match std::fs::symlink_metadata(&probed) {
+            Ok(_) => ProbeVerdict::Present,
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                ProbeVerdict::Unverifiable
+            }
+            Err(_) => continue,
+        };
+        if resolved.active.as_ref() == Some(&probed) {
+            continue;
+        }
+        if resolved
+            .candidates
+            .iter()
+            .any(|c| c.path.as_ref() == Some(&probed))
+        {
+            continue;
+        }
+        let reason = match verdict {
+            ProbeVerdict::Present => {
+                format!("{why}; statusline never reads it — move it to {destination}")
+            }
+            ProbeVerdict::Unverifiable => format!(
+                "permission denied while checking this path, so statusline cannot tell \
+                 whether a config is sitting here; {why}; anything found here must move \
+                 to {destination}"
+            ),
+        };
+        found.push((probed, reason));
+    }
+
+    // Sorted and de-duplicated so repeated runs are byte-identical, and so the
+    // two overlapping directory probes (identical wherever XDG_CONFIG_HOME is
+    // `~/.config`) report one file once.
+    found.sort_by(|a, b| a.0.cmp(&b.0));
+    found.dedup_by(|a, b| a.0 == b.0);
+
+    found
+        .into_iter()
+        .map(|(probed, reason)| MisplacedConfig {
+            path: sanitize_for_terminal(&probed.display().to_string()),
+            reason: sanitize_for_terminal(&reason),
+        })
+        .collect()
+}
+
+/// `config path`: report the active config file, the full search order, and any
+/// config file sitting at a location the resolver never consults.
 ///
 /// Always exits 0 — this is a reporting command, not a verdict (D-08/D-10).
 fn path(json_output: bool) -> Result<()> {
@@ -133,6 +288,7 @@ fn path(json_output: bool) -> Result<()> {
     use serde_json::json;
 
     let resolved = config::resolve_config_source();
+    let misplaced = probe_misplaced_configs(&resolved);
 
     let active = resolved
         .active
@@ -154,10 +310,16 @@ fn path(json_output: bool) -> Result<()> {
             })
             .collect();
 
+        let misplaced: Vec<serde_json::Value> = misplaced
+            .iter()
+            .map(|m| json!({ "path": m.path, "reason": m.reason }))
+            .collect();
+
         let report = json!({
             "active": active,
             "active_source": active_source,
             "candidates": candidates,
+            "misplaced": misplaced,
         });
         println!("{}", serde_json::to_string(&report)?);
     } else {
@@ -183,6 +345,16 @@ fn path(json_output: bool) -> Result<()> {
                 candidate_label(candidate.source),
                 rendered
             );
+        }
+        println!();
+        println!("Misplaced config files:");
+        if misplaced.is_empty() {
+            println!("  ✅ none found");
+        } else {
+            for m in &misplaced {
+                println!("  ⚠️  {}", m.path);
+                println!("      {}", m.reason);
+            }
         }
     }
 
