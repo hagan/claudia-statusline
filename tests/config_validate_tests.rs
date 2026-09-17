@@ -1845,3 +1845,338 @@ fn positional_path_reports_both_files() {
         "a positional target that is not the active config must say so: {report}"
     );
 }
+
+// ===========================================================================
+// Plan 12-10 Task 1: the QUAL-02 `[pricing]` contract, END TO END.
+//
+// The library-level tests in plans 12-04 through 12-06 prove the mechanics.
+// These prove the COMMAND: what a user actually sees when they run
+// `statusline config validate` against each shape of `[pricing]` defect.
+//
+// The fixtures are deliberately SPLIT. Plan 12-04 records exactly ONE
+// `type_error` for a section whose deserialization fails and deliberately SKIPS
+// that section's semantic pass, so a single fixture carrying an invalid `source`
+// AND a bad `max_age` AND a bad alias target can only ever produce ONE finding.
+// `failed_section_suppresses_its_own_semantic_findings` pins that rule rather
+// than contradicting it; `pricing_semantic_knobs_validated` covers the semantic
+// rules on a section that PARSES.
+// ===========================================================================
+
+/// `[pricing]` unknown keys reach the report — the `deserialize_lenient`
+/// blindness cannot regress (SC2 / QUAL-02).
+///
+/// `Config::pricing` is the ONE field carrying a custom lenient
+/// `deserialize_with` (`src/config.rs:61`), and that deserializer consumes the
+/// whole sub-table itself and silently returns the default on any error. A
+/// whole-`Config` `serde_ignored` pass therefore CANNOT SEE INSIDE `[pricing]` —
+/// the one section QUAL-02 names — which is why the engine walks sections.
+///
+/// The fixture carries a typo in BOTH `[display]` and `[pricing]` so the
+/// asymmetry is observable in ONE run. That matters: a test asserting only the
+/// `[display]` typo passes happily under the blind design, and "the same typo is
+/// reported in `[display]` and silent in `[pricing]`" is precisely the warning
+/// sign this row exists to raise.
+///
+/// MUTATION PROOF 1 of the phase, in its end-to-end form, is recorded against
+/// this test.
+#[test]
+#[serial]
+fn pricing_unknown_key_is_not_swallowed() {
+    let body = format!(
+        "{}\n{}",
+        config_with_unknown_key(),
+        config_with_pricing_typo()
+    );
+    let env = ConfigEnv::new(&body);
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(
+        !ok,
+        "an unknown key must exit NON-ZERO (D-09); code={code:?} stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    // The CONTROL arm: a section with an ordinary derived deserializer.
+    let control = findings_at(findings, "display.show_gti");
+    assert_eq!(
+        control.len(),
+        1,
+        "CONTROL: the `[display]` typo must be reported; if this arm fails the fixture is broken \
+         rather than the pricing pass: {report}"
+    );
+    assert_eq!(control[0]["kind"], "unknown_key", "{report}");
+
+    // The arm that only the per-section engine can satisfy.
+    let hits = findings_at(findings, "pricing.aliasess");
+    assert_eq!(
+        hits.len(),
+        1,
+        "the `[pricing]` typo must be reported TOO. A report where the `[display]` typo above IS \
+         present and this one is NOT is the `deserialize_lenient` blindness returning: a \
+         whole-`Config` `serde_ignored` pass never reaches inside the one section QUAL-02 \
+         names: {report}"
+    );
+    assert_eq!(hits[0]["kind"], "unknown_key", "{report}");
+    assert_eq!(
+        hits[0]["severity"], "error",
+        "D-09: an unknown key is an ERROR, not advice: {report}"
+    );
+}
+
+/// An invalid `[pricing].source` is EXACTLY ONE `type_error` keyed at the
+/// section — and it still names the legal set.
+///
+/// `source` is an enum with no semantic rule of its own, and a section whose
+/// deserialization fails never runs its semantic pass, so this one finding is
+/// the ONLY thing the user is ever told. The message must therefore be useful:
+/// it names `auto` / `bundled` / `synced` and never echoes the typo. See
+/// `src/config_validation.rs::legal_variants` for why naming the legal set does
+/// not weaken the redaction boundary.
+#[test]
+#[serial]
+fn pricing_source_typo_is_one_type_error() {
+    let env = ConfigEnv::new("[pricing]\nsource = \"bunlded\"\n");
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(
+        !ok,
+        "an unusable `[pricing]` section must exit NON-ZERO; code={code:?} stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    assert_eq!(
+        findings.len(),
+        1,
+        "a section whose deserialization FAILS yields EXACTLY ONE finding (D-02): {report}"
+    );
+    assert_eq!(
+        findings[0]["key"], "pricing",
+        "the finding is keyed at the SECTION, not at `pricing.source` — the section's typed value \
+         never existed, so no field-level key can be attributed: {report}"
+    );
+    assert_eq!(findings[0]["kind"], "type_error", "{report}");
+
+    let message = findings[0]["message"].as_str().unwrap_or_default();
+    for legal in ["auto", "bundled", "synced"] {
+        assert!(
+            message.contains(legal),
+            "this is the ONLY finding the user gets for a `source` typo, so it must name the \
+             legal value {legal:?}: {message:?}"
+        );
+    }
+    assert!(
+        !message.contains("bunlded"),
+        "the message must name the LEGAL set, never echo the user's value: {message:?}"
+    );
+}
+
+/// The semantic rules on a `[pricing]` section that PARSES.
+///
+/// `source = "bundled"` is chosen so the unresolvable alias is an ERROR rather
+/// than the conservative WARNING — see `pricing_alias_severity_follows_source`.
+/// It also makes `max_age` an ignored knob, which is a THIRD finding: the
+/// section carries both a malformed `max_age` (error) and a `max_age` that would
+/// be ignored even if it parsed (warning). The count is asserted exactly so the
+/// row cannot quietly acquire a fourth.
+#[test]
+#[serial]
+fn pricing_semantic_knobs_validated() {
+    let env = ConfigEnv::new(
+        "[pricing]\n\
+         source = \"bundled\"\n\
+         max_age = \"30x\"\n\
+         \n\
+         [pricing.aliases]\n\
+         \"my-model\" = \"not-a-real-model\"\n",
+    );
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(
+        !ok,
+        "a malformed duration is an ERROR, so the run must exit NON-ZERO; code={code:?} \
+         stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    assert_eq!(
+        findings.len(),
+        3,
+        "exactly three findings: the malformed `max_age`, the unresolvable alias, and the \
+         `max_age`-is-ignored-under-`bundled` advisory: {report}"
+    );
+    assert_eq!(report["counts"]["errors"], 2, "{report}");
+    assert_eq!(report["counts"]["warnings"], 1, "{report}");
+
+    // 1. The malformed duration, at its own key, naming the grammar.
+    let max_age = findings_at(findings, "pricing.max_age");
+    let errors: Vec<_> = max_age
+        .iter()
+        .filter(|f| f["severity"] == "error")
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "exactly one ERROR at `pricing.max_age`: {report}"
+    );
+    assert_eq!(errors[0]["kind"], "invalid_value", "{report}");
+    let message = errors[0]["message"].as_str().unwrap_or_default();
+    for unit in ["s", "m", "h", "d"] {
+        assert!(
+            message.contains(unit),
+            "the message must name the {unit:?} unit of the s/m/h/d grammar: {message:?}"
+        );
+    }
+    assert!(
+        message.contains("s/m/h/d"),
+        "the message must spell the grammar out: {message:?}"
+    );
+    assert!(
+        !message.contains("30x"),
+        "the message must never echo the user's value: {message:?}"
+    );
+
+    // 2. The unresolvable alias, at a DISTINCT key naming the offending source.
+    let alias = findings_at(findings, "pricing.aliases.my-model");
+    assert_eq!(
+        alias.len(),
+        1,
+        "exactly one finding at `pricing.aliases.my-model` — the key names WHICH alias is \
+         broken, which is the whole point of a per-alias key: {report}"
+    );
+    assert_eq!(alias[0]["kind"], "invalid_value", "{report}");
+    assert_eq!(
+        alias[0]["severity"], "error",
+        "under `source = bundled` the resolution union IS the bundled table, so the alias \
+         provably cannot resolve: {report}"
+    );
+
+    // 3. The advisory, which is a WARNING and therefore exit-neutral (D-11).
+    let advisory: Vec<_> = max_age
+        .iter()
+        .filter(|f| f["severity"] == "warning")
+        .collect();
+    assert_eq!(
+        advisory.len(),
+        1,
+        "`max_age` under `source = bundled` is ignored, and saying so is advice, not a defect: \
+         {report}"
+    );
+}
+
+/// The alias severity follows `[pricing].source` — and the run's exit code
+/// follows the severity.
+///
+/// `lookup_in` resolves an alias target against the UNION of the synced cache
+/// and the bundled table, so under `source = auto` the bundled table alone
+/// cannot prove the alias is broken: a `statusline ant sync-pricing` away, it
+/// may resolve perfectly. Plan 12-06 made that arm a conservative WARNING.
+/// Under `source = bundled` no cache is read at all, the union IS the bundled
+/// table, and the same alias is provably dead — an ERROR.
+///
+/// Both configs run HERE, in one test, so the difference is asserted rather
+/// than merely asserted-about across two test bodies.
+#[test]
+#[serial]
+fn pricing_alias_severity_follows_source() {
+    const ALIASES: &str = "\n[pricing.aliases]\n\"my-model\" = \"not-a-real-model\"\n";
+    const KEY: &str = "pricing.aliases.my-model";
+
+    let auto = ConfigEnv::new(&format!("[pricing]\nsource = \"auto\"\n{ALIASES}"));
+    let (ok, code, stdout, stderr) = auto.run(&["config", "validate", "--json"]);
+    assert!(
+        ok,
+        "a conservative alias WARNING must not fail validation (D-11); code={code:?} \
+         stderr={stderr}"
+    );
+    assert_eq!(code, Some(0), "stderr={stderr}");
+    let auto_report = parse_exactly_one_json(&stdout, "config validate --json");
+    let auto_findings = validate_findings(&auto_report);
+    let auto_hits = findings_at(auto_findings, KEY);
+    assert_eq!(
+        auto_hits.len(),
+        1,
+        "exactly one finding at `{KEY}` under `source = auto`: {auto_report}"
+    );
+    assert_eq!(
+        auto_hits[0]["severity"], "warning",
+        "the bundled table alone cannot prove the alias is broken under `auto`: {auto_report}"
+    );
+    assert_eq!(auto_report["counts"]["errors"], 0, "{auto_report}");
+
+    let bundled = ConfigEnv::new(&format!("[pricing]\nsource = \"bundled\"\n{ALIASES}"));
+    let (ok, code, stdout, stderr) = bundled.run(&["config", "validate", "--json"]);
+    assert!(
+        !ok,
+        "a provably dead alias is an ERROR and must fail validation; code={code:?} \
+         stderr={stderr}"
+    );
+    let bundled_report = parse_exactly_one_json(&stdout, "config validate --json");
+    let bundled_findings = validate_findings(&bundled_report);
+    let bundled_hits = findings_at(bundled_findings, KEY);
+    assert_eq!(bundled_hits.len(), 1, "{bundled_report}");
+
+    assert_ne!(
+        auto_hits[0]["severity"], bundled_hits[0]["severity"],
+        "the SAME alias target must be judged differently under the two sources — if these ever \
+         agree, the conservative-policy downgrade has collapsed and one of the two answers is \
+         wrong: auto={auto_hits:?} bundled={bundled_hits:?}"
+    );
+    assert_eq!(bundled_hits[0]["severity"], "error", "{bundled_report}");
+}
+
+/// A section whose deserialization FAILS reports exactly one finding and its
+/// semantic rules are SKIPPED — pinned END TO END, not only in the library.
+///
+/// This is D-02's deliberate behaviour, not a gap: the semantic pass takes the
+/// section's TYPED value as input, and for a failed section that value never
+/// existed. `src/config_validation.rs::failed_section_reports_exactly_one_finding`
+/// pins it at the library level; this row pins it through the shipped binary so
+/// no future acceptance test can demand three findings from one failed section.
+///
+/// The fixture below carries THREE defects — an invalid `source`, a malformed
+/// `max_age` and an unresolvable alias — and can only ever produce ONE finding.
+/// `pricing_semantic_knobs_validated` is the row that covers the semantic rules,
+/// on a section that parses.
+#[test]
+#[serial]
+fn failed_section_suppresses_its_own_semantic_findings() {
+    let env = ConfigEnv::new(
+        "[pricing]\n\
+         source = \"bunlded\"\n\
+         max_age = \"30x\"\n\
+         \n\
+         [pricing.aliases]\n\
+         \"my-model\" = \"not-a-real-model\"\n",
+    );
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(!ok, "code={code:?} stderr={stderr}");
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    let section = findings_at(findings, "pricing");
+    assert_eq!(
+        section.len(),
+        1,
+        "EXACTLY ONE finding for a failed section (D-02): {report}"
+    );
+    assert_eq!(section[0]["kind"], "type_error", "{report}");
+
+    let leaked: Vec<&str> = findings
+        .iter()
+        .filter_map(|f| f["key"].as_str())
+        .filter(|k| k.starts_with("pricing."))
+        .collect();
+    assert!(
+        leaked.is_empty(),
+        "a failed section's semantic pass is SKIPPED, so NO `pricing.*` key may appear — its \
+         typed input never existed. Found {leaked:?} in {report}"
+    );
+    assert_eq!(
+        report["counts"]["errors"], 1,
+        "three defects in one failed section still count ONCE: {report}"
+    );
+}
