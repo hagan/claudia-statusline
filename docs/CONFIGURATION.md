@@ -177,6 +177,100 @@ separator = " | "
 > **Note:** Token rate variables require `[token_rate] enabled = true` in config.
 > The `{token_rate}` variable respects both `display_mode` and `rate_display` settings.
 
+### GSD Project-Tracking Variables
+
+When the working directory is inside a project with a `.planning/` directory
+(one containing both `STATE.md` and `config.json`), the GSD provider produces a
+set of `gsd_*` variables. `statusline --list-vars` prints the full set with
+their current values; the two below are new.
+
+| Variable | Example | Description |
+|----------|---------|-------------|
+| `{gsd_milestone}` | `v3.3.0` | Current milestone identifier, read from STATE.md's YAML frontmatter |
+| `{gsd_milestone_name}` | `Cost Accuracy & Honesty` | Human-readable milestone name, same source |
+
+```console
+$ echo '{"workspace":{"current_dir":"'"$PWD"'"}}' | statusline --list-vars
+...
+  gsd_milestone = "v3.3.0"
+  gsd_milestone_name = "Cost Accuracy & Honesty"
+  gsd_phase = "P12: config-validation-machine-readable-state"
+```
+
+Both are empty strings when unavailable, so `{if gsd_milestone}...{endif}`
+behaves. `{gsd_milestone_name}` is truncated by the existing
+`[gsd] phase_max_width` setting — it deliberately does not add a config key of
+its own. Both are blanked by `[gsd] show_phase = false`, alongside the phase,
+progress and plan variables.
+
+> **Where these variables are actually consumed.** The `gsd_*` variables are
+> reported by `statusline --list-vars` and are available to library consumers
+> that run the provider themselves (`GsdProvider` / `ProviderOrchestrator`).
+> They are **not** wired into the statusline the binary prints: the render path
+> builds its variable map without the GSD provider, so putting
+> `{gsd_milestone}` in a `[layout] format` renders an empty string today. This
+> is a pre-existing gap, not a property of the milestone variables — every
+> `gsd_*` variable behaves the same way. It is tracked separately; wiring the
+> provider into the render path is a design change, not a documentation fix.
+
+#### The STATE.md frontmatter contract
+
+GSD writes a YAML frontmatter block at the top of `.planning/STATE.md`.
+Statusline reads **exactly four keys** from it with a small hand-rolled scanner
+(no YAML library is used, and none is a dependency of this binary):
+
+| Key | Used for |
+|-----|----------|
+| `gsd_state_version` | The version gate (see below) |
+| `milestone` | `{gsd_milestone}` |
+| `milestone_name` | `{gsd_milestone_name}` |
+| `last_activity` | The staleness date behind `{gsd_stale}` (internal; not a template variable) |
+
+Everything else in the block — `status`, `stopped_at`, `paused_at`,
+`last_updated`, and the whole nested `progress:` map — is **not read at all**.
+
+**Version gate.** Only a `gsd_state_version` whose MAJOR component is `1`
+(`1.0`, `1.7`, …) is parsed. A `2.x` version, a missing version, or a
+non-numeric one makes statusline ignore the block entirely and fall back to the
+prose patterns. A future GSD release that reshapes the schema therefore cannot
+be silently misread as wrong values.
+
+**Graceful degradation.** Absent, unfenced, unclosed or future-versioned
+frontmatter is never an error: the milestone variables stay empty, everything
+else is derived exactly as it was before, and the status line still renders.
+Nothing in this path can fail a render.
+
+Three things a reader would otherwise get wrong:
+
+1. **The frontmatter `progress:` block is deliberately NOT used.** The
+   `{gsd_progress_*}` variables are computed by counting phase checkboxes in
+   `.planning/ROADMAP.md`. The recorded block is a snapshot and goes stale, so
+   the two sources are known to disagree — on this repository at the time of
+   writing the frontmatter records `percent: 33` while the computed value is
+   `66`. There is one progress source, and it is the computed one.
+
+2. **The phase variables come from STATE.md PROSE, not from frontmatter.** GSD
+   emits its `current_phase*` keys only when the STATE.md body carries a
+   `Current Phase:` field, which its own body template does not write, so in
+   practice those keys are never present. The prose patterns are therefore the
+   phase source, and as of this release they accept more shapes than before:
+   `Phase: N` without ` of M`, decimal and zero-padded phase tokens (`999.1`,
+   `05.1`), and `—` / `–` / `--` as well as ` - ` in the `**Current focus:**`
+   line. **This is an intended output change:** a repository whose STATE.md did
+   not parse under the older, narrower patterns now reports a populated
+   `{gsd_phase}` where it previously reported an empty one, and any template
+   gated on `{if gsd_phase}` — including the bundled default template — gains
+   its GSD segment as a result. That is the fix, not a regression. (Per the
+   note above, that segment is visible through `--list-vars` and to library
+   consumers rather than in the line the binary currently prints.)
+
+3. **Do not parse STATE.md yourself.** An external tool that wants all three
+   facts — milestone, phase and progress — without parsing prose should consume
+   statusline's structured GSD state command, a versioned JSON document
+   documented in [`docs/USAGE.md`](USAGE.md), rather than reading `.planning/`
+   files directly. Statusline does the parsing once and emits a stable
+   contract; the file formats above are GSD's, and can change.
+
 ### API-Equivalent Cost Variables
 
 These variables price the session's token counts against a Claude price table
