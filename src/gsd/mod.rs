@@ -255,6 +255,8 @@ impl GsdProvider {
             vars.insert("gsd_phase".into(), String::new());
             vars.insert("gsd_phase_number".into(), String::new());
             vars.insert("gsd_phase_name".into(), String::new());
+            vars.insert("gsd_milestone".into(), String::new());
+            vars.insert("gsd_milestone_name".into(), String::new());
             vars.insert("gsd_progress_fraction".into(), String::new());
             vars.insert("gsd_progress_pct".into(), String::new());
             vars.insert("gsd_progress_completed".into(), String::new());
@@ -282,12 +284,19 @@ impl GsdProvider {
     /// values), not byte counts. Byte-index slicing previously panicked when
     /// a width fell inside a multi-byte UTF-8 sequence (F3 fix).
     fn apply_truncations(&self, vars: &mut HashMap<String, String>) {
-        // phase_max_width truncation on gsd_phase_name
+        // phase_max_width truncation on gsd_phase_name and gsd_milestone_name.
+        //
+        // The milestone name reuses the EXISTING knob deliberately: a new
+        // config key would be new validation surface for this very phase to
+        // validate. `gsd_milestone` itself is an identifier ("v3.3.0") and is
+        // never truncated.
         if self.phase_max_width > 0 {
-            if let Some(name) = vars.get("gsd_phase_name").cloned() {
-                if name.chars().count() > self.phase_max_width {
-                    let truncated = truncate_to_chars(&name, self.phase_max_width);
-                    vars.insert("gsd_phase_name".into(), format!("{}...", truncated));
+            for key in ["gsd_phase_name", "gsd_milestone_name"] {
+                if let Some(name) = vars.get(key).cloned() {
+                    if name.chars().count() > self.phase_max_width {
+                        let truncated = truncate_to_chars(&name, self.phase_max_width);
+                        vars.insert(key.into(), format!("{}...", truncated));
+                    }
                 }
             }
         }
@@ -351,6 +360,10 @@ fn init_empty_vars() -> HashMap<String, String> {
     vars.insert("gsd_phase".into(), String::new());
     vars.insert("gsd_phase_number".into(), String::new());
     vars.insert("gsd_phase_name".into(), String::new());
+    // Milestone info (GSD-V2-01) -- read from STATE.md's YAML frontmatter.
+    // The empty-string defaults are what make `{if gsd_milestone}` work.
+    vars.insert("gsd_milestone".into(), String::new());
+    vars.insert("gsd_milestone_name".into(), String::new());
     // Progress info (GSD-02)
     vars.insert("gsd_progress_fraction".into(), String::new());
     vars.insert("gsd_progress_pct".into(), String::new());

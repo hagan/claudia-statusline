@@ -118,15 +118,20 @@ fn provider_with_planning(planning_dir: PathBuf) -> GsdProvider {
 }
 
 /// Expected number of keys in the output HashMap.
-/// init_empty_vars() creates 21 keys, but gsd_last_activity is removed before
-/// returning, leaving 20 user-visible keys.
-const EXPECTED_KEY_COUNT: usize = 20;
+/// init_empty_vars() creates 23 keys, but gsd_last_activity is removed before
+/// returning, leaving 22 user-visible keys. Plan 12-07 added the two
+/// milestone keys (GSD-V2-01); the count is a deliberate pin, so adding a
+/// variable must be a conscious edit here.
+const EXPECTED_KEY_COUNT: usize = 22;
 
 /// All expected keys in the output HashMap.
 const EXPECTED_KEYS: &[&str] = &[
     "gsd_phase",
     "gsd_phase_number",
     "gsd_phase_name",
+    // New in plan 12-07 (GSD-V2-01): frontmatter-sourced milestone
+    "gsd_milestone",
+    "gsd_milestone_name",
     "gsd_progress_fraction",
     "gsd_progress_pct",
     "gsd_progress_completed",
@@ -1976,5 +1981,164 @@ fn widened_patterns_add_the_gsd_segment() {
     assert_ne!(
         rendered_a, rendered_b,
         "the widened patterns must change default output -- that IS the D-17 fix"
+    );
+}
+
+// ============================================================================
+// Plan 12-07 -- machine-readable MILESTONE from STATE.md frontmatter
+//
+// The scanner's own unit tests live in `src/gsd/state.rs`; these are at the
+// PROVIDER level, where the wiring (registration, the one-read merged parse,
+// the internal-only strip) is observable.
+// ============================================================================
+
+/// A STATE.md whose frontmatter is the live GSD schema, parameterised only by
+/// the `progress:` block so a test can make it disagree with ROADMAP.md.
+fn state_md_with_frontmatter(progress_block: &str) -> String {
+    format!(
+        "---\ngsd_state_version: 1.0\nmilestone: v3.3.0\nmilestone_name: Cost Accuracy & Honesty\nstatus: executing\nlast_updated: \"2026-09-14T20:07:49.464Z\"\nlast_activity: 2026-09-14 -- Phase 12 planning complete\n{}---\n\n# Project State\n\n## Current Position\n\nPhase: 12 (Config Validation)\n",
+        progress_block
+    )
+}
+
+/// MUTATION PROOF 5 (D-16): the frontmatter `progress:` block must NEVER
+/// become the progress source. Progress is computed from ROADMAP.md.
+///
+/// The fixture is built so the two sources CANNOT agree: the frontmatter
+/// records `percent: 33` over `2/6` phases while the ROADMAP checkboxes
+/// compute `2/3` and `66`. A test that read the recorded block would report
+/// 33; a test that could pass either way would be worthless here.
+///
+/// This test FAILS if the frontmatter percent is ever wired into the variable
+/// -- which is the only thing that makes its passing evidence.
+#[test]
+fn progress_stays_roadmap_derived() {
+    let state_md = state_md_with_frontmatter(
+        "progress:\n  total_phases: 6\n  completed_phases: 2\n  total_plans: 29\n  completed_plans: 19\n  percent: 33\n",
+    );
+    // Three phase checkboxes, two complete -> 2/3 -> 66%.
+    let roadmap_md = "## Phases\n\n- [x] **Phase 10: Done** - first\n- [x] **Phase 11: Done** - second\n- [ ] **Phase 12: Config Validation** - third\n";
+    let (_tmp, planning) = planning_fixture(&state_md, Some(roadmap_md));
+    let result = provider_with_planning(planning).collect().unwrap();
+
+    assert_eq!(
+        result.get("gsd_progress_pct").unwrap(),
+        "66",
+        "progress percent must be ROADMAP-computed (2/3), not the frontmatter's recorded 33"
+    );
+    assert_ne!(
+        result.get("gsd_progress_pct").unwrap(),
+        "33",
+        "the frontmatter `percent:` must never reach a variable (D-16)"
+    );
+    assert_eq!(
+        result.get("gsd_progress_fraction").unwrap(),
+        "2/3",
+        "the fraction must be the ROADMAP checkbox count, not the frontmatter's 2/6"
+    );
+    assert_eq!(
+        result.get("gsd_progress_total").unwrap(),
+        "3",
+        "the frontmatter's `total_phases: 6` must not be adopted"
+    );
+
+    // And the milestone -- the half that IS frontmatter-sourced -- still works
+    // from the very same block, so this is not passing by the frontmatter
+    // simply having failed to parse.
+    assert_eq!(
+        result.get("gsd_milestone").unwrap(),
+        "v3.3.0",
+        "the frontmatter DID parse -- the progress omission is deliberate, not incidental"
+    );
+}
+
+/// The two new variables are published from the frontmatter.
+#[test]
+fn milestone_vars_are_published() {
+    let (_tmp, planning) = planning_fixture(&state_md_with_frontmatter(""), None);
+    let result = provider_with_planning(planning).collect().unwrap();
+
+    assert_eq!(result.get("gsd_milestone").unwrap(), "v3.3.0");
+    assert_eq!(
+        result.get("gsd_milestone_name").unwrap(),
+        "Cost Accuracy & Honesty",
+        "the bare `&` is unquoted by GSD's emitter and must survive verbatim"
+    );
+
+    // A future MAJOR version falls back to prose: no milestone, but the phase
+    // (prose-derived) is untouched.
+    let v2 =
+        state_md_with_frontmatter("").replace("gsd_state_version: 1.0", "gsd_state_version: 2.0");
+    let (_tmp2, planning2) = planning_fixture(&v2, None);
+    let result2 = provider_with_planning(planning2).collect().unwrap();
+    assert_eq!(
+        result2.get("gsd_milestone").unwrap(),
+        "",
+        "a 2.x state version must not publish a milestone (D-15)"
+    );
+    assert_eq!(
+        result2.get("gsd_phase_number").unwrap(),
+        "12",
+        "the prose phase must survive a rejected frontmatter"
+    );
+}
+
+/// `gsd_last_activity` is populated FROM THE FRONTMATTER and then stripped.
+///
+/// Both halves are asserted: a strip test alone would pass even if the value
+/// were never populated, which is exactly the vacuous shape this phase bans.
+#[test]
+fn last_activity_is_stripped_from_the_returned_map() {
+    // The STATE.md body carries NO prose `Last activity:` line, so a populated
+    // value can only have come from the frontmatter key.
+    let state_md = state_md_with_frontmatter("");
+    assert!(
+        !state_md.contains("Last activity:"),
+        "fixture must have no prose activity line, or the source would be ambiguous"
+    );
+    let (_tmp, planning) = planning_fixture(&state_md, None);
+
+    // Half 1 -- population, at the `state::fill_vars` level.
+    let mut vars: HashMap<String, String> = HashMap::new();
+    crate::gsd::state::fill_vars(&planning, &mut vars);
+    assert_eq!(
+        vars.get("gsd_last_activity").map(String::as_str),
+        Some("2026-09-14"),
+        "the frontmatter `last_activity` date must populate the internal variable"
+    );
+
+    // Half 2 -- the strip, at the provider level.
+    let result = provider_with_planning(planning).collect().unwrap();
+    assert!(
+        !result.contains_key("gsd_last_activity"),
+        "gsd_last_activity is internal-only and must not be returned; got {:?}",
+        result.get("gsd_last_activity")
+    );
+}
+
+/// Graceful degradation: a STATE.md with NO frontmatter fence at all still
+/// publishes the prose-derived phase variables plan 12-03 fixed.
+#[test]
+fn frontmatter_absent_still_publishes_prose_phase() {
+    let state_md = "# Project State\n\n## Current Position\n\nPhase: 12 (Config Validation)\nLast activity: 2026-09-14 -- prose only\n";
+    let (_tmp, planning) = planning_fixture(state_md, None);
+    let result = provider_with_planning(planning.clone()).collect().unwrap();
+
+    assert_eq!(result.get("gsd_phase_number").unwrap(), "12");
+    assert_eq!(result.get("gsd_phase_name").unwrap(), "Config Validation");
+    assert_eq!(result.get("gsd_phase").unwrap(), "P12: Config Validation");
+    assert_eq!(
+        result.get("gsd_milestone").unwrap(),
+        "",
+        "no frontmatter means no milestone -- and no failure"
+    );
+
+    // The prose `Last activity:` fallback still populates the internal value.
+    let mut vars: HashMap<String, String> = HashMap::new();
+    crate::gsd::state::fill_vars(&planning, &mut vars);
+    assert_eq!(
+        vars.get("gsd_last_activity").map(String::as_str),
+        Some("2026-09-14"),
+        "the prose scan must still supply the activity date when frontmatter is absent"
     );
 }

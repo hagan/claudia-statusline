@@ -58,17 +58,65 @@ struct StateData {
     last_activity_date: Option<String>,
 }
 
-/// Global cache for STATE.md parse results, keyed by (path, mtime).
-static STATE_CACHE: OnceLock<Mutex<Option<CachedParse<StateData>>>> = OnceLock::new();
-
-/// Populate GSD phase variables from STATE.md.
+/// Everything one read of STATE.md yields: the prose scan AND the frontmatter
+/// scan, run over the SAME `&str` inside a single cached pass.
 ///
-/// Sets the following keys in `vars` when phase information is available:
+/// Widened (from a bare `StateData`) by plan 12-07 so the milestone did not
+/// cost a second file read. The `(path, mtime)` cache key is unchanged.
+#[derive(Clone)]
+struct StateParse {
+    state: StateData,
+    frontmatter: Option<Frontmatter>,
+}
+
+/// Global cache for STATE.md parse results, keyed by (path, mtime).
+///
+/// The ONLY cache for this file. Both entry points below go through it.
+static STATE_CACHE: OnceLock<Mutex<Option<CachedParse<StateParse>>>> = OnceLock::new();
+
+/// Run both scans over one read of STATE.md.
+fn parse_state_file(content: &str) -> StateParse {
+    StateParse {
+        state: parse_state(content),
+        frontmatter: parse_frontmatter(content),
+    }
+}
+
+/// The parsed frontmatter of `planning_dir/STATE.md`, or `None`.
+///
+/// Exists so plan 12-11's structured output can reuse THIS parse rather than
+/// adding a third reader of the same file: it shares `STATE_CACHE` and the
+/// same `(path, mtime)` key with [`fill_vars`], so calling both costs one read.
+///
+/// Inherits the D-15 MAJOR-version gate -- a STATE.md whose
+/// `gsd_state_version` is not `1.x` yields `None` here exactly as it does for
+/// the render path, so the two surfaces cannot disagree about whether the
+/// frontmatter was understood.
+#[allow(dead_code)] // Consumed by plan 12-11's structured output; exercised by tests today.
+pub(crate) fn frontmatter_for(planning_dir: &Path) -> Option<Frontmatter> {
+    let path = planning_dir.join("STATE.md");
+    cache::read_with_cache(&STATE_CACHE, &path, |c| Some(parse_state_file(c)))?.frontmatter
+}
+
+/// Populate GSD phase and milestone variables from STATE.md.
+///
+/// Sets the following keys in `vars` when the information is available:
 /// - `gsd_phase` -- formatted as "P{number}: {name}" (e.g., "P4: GSD Provider"),
 ///   or just "P{number}" (e.g., "P12") when STATE.md names no phase
 /// - `gsd_phase_number` -- the phase token verbatim (e.g., "4", "999.1", "05.1")
 /// - `gsd_phase_name` -- phase name (e.g., "GSD Provider"), only when one parsed
+/// - `gsd_milestone` -- the frontmatter `milestone` (e.g., "v3.3.0")
+/// - `gsd_milestone_name` -- the frontmatter `milestone_name`
 /// - `gsd_last_activity` -- date string (e.g., "2026-02-14") for staleness check
+///
+/// The PHASE variables stay prose-derived (D-17): no observed STATE.md carries
+/// a frontmatter phase key. Only the MILESTONE is frontmatter-sourced, and the
+/// frontmatter `progress:` block is never read at all -- progress is computed
+/// from ROADMAP.md by [`super::roadmap`] (D-16).
+///
+/// `gsd_last_activity` prefers the frontmatter `last_activity` key and falls
+/// back to the prose `Last activity:` scan. It is INTERNAL-ONLY: it feeds
+/// `gsd_stale` and is stripped from the map before the provider returns.
 ///
 /// The publication gate keys on the NUMBER ALONE (D-17): a STATE.md carrying
 /// only `Phase: 12` still publishes `gsd_phase`, because the default template
@@ -84,10 +132,12 @@ static STATE_CACHE: OnceLock<Mutex<Option<CachedParse<StateData>>>> = OnceLock::
 /// contains no recognizable phase patterns.
 pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
     let path = planning_dir.join("STATE.md");
-    let data = match cache::read_with_cache(&STATE_CACHE, &path, |c| Some(parse_state(c))) {
+    let parsed = match cache::read_with_cache(&STATE_CACHE, &path, |c| Some(parse_state_file(c))) {
         Some(d) => d,
         None => return,
     };
+    let data = &parsed.state;
+    let frontmatter = parsed.frontmatter.as_ref();
 
     if let Some(number) = data.phase_number.as_deref() {
         vars.insert("gsd_phase_number".into(), number.to_string());
@@ -102,9 +152,50 @@ pub fn fill_vars(planning_dir: &Path, vars: &mut HashMap<String, String>) {
         }
     }
 
-    if let Some(ref date) = data.last_activity_date {
-        vars.insert("gsd_last_activity".into(), date.clone());
+    // Milestone: frontmatter-sourced, the one fact prose could not supply.
+    if let Some(fm) = frontmatter {
+        if let Some(milestone) = fm.milestone.as_deref() {
+            vars.insert("gsd_milestone".into(), milestone.to_string());
+        }
+        if let Some(name) = fm.milestone_name.as_deref() {
+            vars.insert("gsd_milestone_name".into(), name.to_string());
+        }
     }
+
+    // Last activity: the frontmatter key when the frontmatter parsed, else the
+    // prose scan. Both go through the same date validation.
+    let activity = frontmatter
+        .and_then(|fm| fm.last_activity.as_deref())
+        .and_then(activity_date)
+        .or_else(|| data.last_activity_date.clone());
+    if let Some(date) = activity {
+        vars.insert("gsd_last_activity".into(), date);
+    }
+}
+
+/// The leading `YYYY-MM-DD` of a `last_activity` value, if it looks like one.
+///
+/// The frontmatter value is `"2026-09-14 -- Phase 12 planning complete"`,
+/// `"2026-09-14 \u{2014} desc"` or a bare date across the surveyed files, so
+/// the date is the first 10 CHARACTERS. Validated exactly as `parse_state`
+/// validates the prose form -- length 10 with dashes at positions 4 and 7 --
+/// via the shared [`is_date_like`].
+fn activity_date(raw: &str) -> Option<String> {
+    let date: String = raw.chars().take(10).collect();
+    if is_date_like(&date) {
+        Some(date)
+    } else {
+        None
+    }
+}
+
+/// Does `s` look like a `YYYY-MM-DD` date: exactly 10 characters with `-` at
+/// positions 4 and 7?
+///
+/// Shape-only, not a calendar check -- the value is only ever compared against
+/// `chrono`'s parser downstream, which rejects impossible dates itself.
+fn is_date_like(s: &str) -> bool {
+    s.chars().count() == 10 && s.chars().nth(4) == Some('-') && s.chars().nth(7) == Some('-')
 }
 
 /// Parse STATE.md content for phase number, name, and last activity date.
@@ -160,11 +251,9 @@ fn parse_state(content: &str) -> StateData {
             } else {
                 rest.split_whitespace().next().unwrap_or("")
             };
-            // Validate it looks like a date (YYYY-MM-DD)
-            if date_str.len() == 10
-                && date_str.chars().nth(4) == Some('-')
-                && date_str.chars().nth(7) == Some('-')
-            {
+            // Validate it looks like a date (YYYY-MM-DD) -- the same shape
+            // check the frontmatter value goes through.
+            if is_date_like(date_str) {
                 data.last_activity_date = Some(date_str.to_string());
             }
         }
@@ -260,10 +349,6 @@ fn is_phase_token(token: &str) -> bool {
 ///
 /// `pub(crate)` -- type and fields alike -- so plan 12-11's structured output
 /// can reuse this parse rather than adding a second reader of the same file.
-// Dead until Task 2 of this plan wires it into `fill_vars`; the attribute
-// is removed there. Kept so this commit builds warning-clean under
-// `clippy -D warnings`.
-#[allow(dead_code)]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Frontmatter {
     /// `milestone` -- the milestone identifier, e.g. `"v3.3.0"`.
@@ -283,7 +368,6 @@ pub(crate) struct Frontmatter {
 /// A future GSD 2.0 that reshapes the schema must fall back to prose rather
 /// than be silently misread as wrong values -- the same versioned-gate
 /// discipline the models, usage and price caches already use.
-#[allow(dead_code)]
 const SUPPORTED_STATE_VERSION_MAJOR: u32 = 1;
 
 /// Parse the leading YAML frontmatter block of STATE.md.
@@ -307,7 +391,6 @@ const SUPPORTED_STATE_VERSION_MAJOR: u32 = 1;
 /// Total by construction: a single forward line pass, no regex, no recursion,
 /// no `unwrap`/`expect`/`panic!`, and no unbounded allocation, over Markdown
 /// that is untrusted input (T-12-26).
-#[allow(dead_code)]
 pub(crate) fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
     let mut lines = content.lines();
 
@@ -365,7 +448,6 @@ pub(crate) fn parse_frontmatter(content: &str) -> Option<Frontmatter> {
 ///
 /// `"` is ASCII, so the byte slice always lands on a char boundary. A lone `"`
 /// is left alone by the length guard.
-#[allow(dead_code)]
 fn unquote(value: &str) -> &str {
     if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
         &value[1..value.len() - 1]
