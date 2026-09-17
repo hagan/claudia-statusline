@@ -1322,3 +1322,526 @@ fn config_path_never_warns_about_a_real_search_candidate() {
          warning about it would make the warning noise: {report}"
     );
 }
+
+// ===========================================================================
+// Plan 12-09: `config validate` — the QUAL-01 contract.
+// ===========================================================================
+
+/// Parse `stdout` as EXACTLY ONE JSON value.
+///
+/// `serde_json::from_slice` already rejects trailing non-whitespace, but the
+/// streaming count is what makes the claim explicit: the `--json` document is a
+/// SINGLE self-contained document, and a stray `println!` (the notice-as-a-line
+/// mistake this plan exists to avoid) would make this two values or zero.
+fn parse_exactly_one_json(stdout: &[u8], what: &str) -> serde_json::Value {
+    let stream = serde_json::Deserializer::from_slice(stdout).into_iter::<serde_json::Value>();
+    let values: Vec<serde_json::Value> = stream
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap_or_else(|e| {
+            panic!(
+                "{what} stdout must be exactly one JSON document ({e}): {:?}",
+                String::from_utf8_lossy(stdout)
+            )
+        });
+    assert_eq!(
+        values.len(),
+        1,
+        "{what} must print exactly ONE JSON value and nothing else — a stray line before or \
+         after the document breaks the single-document contract: {:?}",
+        String::from_utf8_lossy(stdout)
+    );
+    values.into_iter().next().expect("one value")
+}
+
+/// Every `findings[].kind` the `--json` contract allows. A consumer filters on
+/// this closed vocabulary instead of string-matching prose.
+const FINDING_KINDS: &[&str] = &[
+    "syntax_error",
+    "unknown_key",
+    "type_error",
+    "invalid_value",
+    "stale_cache",
+    "unreadable_cache",
+    "misplaced_config",
+    "config_io",
+];
+
+/// Assert the document's shape, then hand back the findings array.
+///
+/// Called by every test below so the schema is re-checked on every fixture
+/// rather than in one place a later change could route around.
+fn validate_findings(report: &serde_json::Value) -> &Vec<serde_json::Value> {
+    for field in [
+        "schema_version",
+        "valid",
+        "strict",
+        "exit_code",
+        "target_path",
+        "target_source",
+        "active_path",
+        "active_source",
+        "counts",
+        "notices",
+        "findings",
+        "caches",
+    ] {
+        assert!(
+            report.get(field).is_some(),
+            "`config validate --json` must carry `{field}`: {report}"
+        );
+    }
+    assert_eq!(report["schema_version"], 1, "schema_version: {report}");
+    assert!(
+        report["counts"]["errors"].is_u64(),
+        "counts.errors: {report}"
+    );
+    assert!(
+        report["counts"]["warnings"].is_u64(),
+        "counts.warnings: {report}"
+    );
+
+    let findings = report["findings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("`findings` must be an array: {report}"));
+    for finding in findings {
+        let kind = finding["kind"].as_str().unwrap_or("<missing>");
+        assert!(
+            FINDING_KINDS.contains(&kind),
+            "every finding kind must come from the closed vocabulary {FINDING_KINDS:?}, got \
+             {kind:?}: {report}"
+        );
+    }
+    // `valid` is DEFINED as "no errors" and is INDEPENDENT of `--strict`.
+    assert_eq!(
+        report["valid"].as_bool(),
+        Some(report["counts"]["errors"].as_u64() == Some(0)),
+        "`valid` must mean `counts.errors == 0`: {report}"
+    );
+    findings
+}
+
+/// The findings whose `key` is exactly `key`.
+fn findings_at<'a>(findings: &'a [serde_json::Value], key: &str) -> Vec<&'a serde_json::Value> {
+    findings
+        .iter()
+        .filter(|f| f["key"].as_str() == Some(key))
+        .collect()
+}
+
+/// The codes in the report's `notices` array.
+fn notice_codes(report: &serde_json::Value) -> Vec<String> {
+    report["notices"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|n| n["code"].as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A typo'd key is an ERROR (D-09) and it names the dotted path.
+///
+/// MUTATION PROOF 2 is recorded against this test: with the unknown-key pass
+/// removed from `src/config_validation.rs`, it fails.
+#[test]
+#[serial]
+fn unknown_key_is_error() {
+    let env = ConfigEnv::new(&config_with_unknown_key());
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(
+        !ok,
+        "an unknown key must exit NON-ZERO (D-09); code={code:?} stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    let hits = findings_at(findings, "display.show_gti");
+    assert_eq!(
+        hits.len(),
+        1,
+        "exactly one finding at `display.show_gti`: {report}"
+    );
+    assert_eq!(hits[0]["kind"], "unknown_key", "{report}");
+    assert_eq!(hits[0]["severity"], "error", "{report}");
+    assert_eq!(report["valid"], false, "{report}");
+}
+
+/// A type error in ONE section must not silence the next section's rules.
+///
+/// This is the whole point of D-02's per-section deserialization: a whole-file
+/// `Config::load()` aborts on the first type error, so a config with several
+/// distinct defects would report exactly one of them.
+///
+/// Deliberate contrast with `config_validation::tests::
+/// failed_section_reports_exactly_one_finding`: WITHIN one failed section a
+/// single finding is correct (its semantic pass never ran, because its input
+/// never existed). ACROSS sections, isolation is required. This test therefore
+/// asserts two findings in two DIFFERENT sections and never demands two from one.
+#[test]
+#[serial]
+fn type_error_isolated_per_section() {
+    let body = "[display]\nprogress_bar_width = \"wide\"\n\n[layout]\npreset = \"compakt\"\n";
+    let env = ConfigEnv::new(body);
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(!ok, "code={code:?} stderr={stderr}");
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    let display = findings_at(findings, "display");
+    assert_eq!(
+        display.len(),
+        1,
+        "the failed `[display]` section reports exactly one finding, keyed at the section: {report}"
+    );
+    assert_eq!(display[0]["kind"], "type_error", "{report}");
+
+    let preset = findings_at(findings, "layout.preset");
+    assert_eq!(
+        preset.len(),
+        1,
+        "`[layout]` parsed, so its semantic rules MUST still have run — a single finding for a \
+         config with defects in two different sections is the whole-document abort this design \
+         exists to avoid: {report}"
+    );
+    assert_eq!(preset[0]["kind"], "invalid_value", "{report}");
+
+    let kinds: std::collections::BTreeSet<&str> =
+        findings.iter().filter_map(|f| f["kind"].as_str()).collect();
+    assert!(
+        kinds.len() >= 2,
+        "at least two DIFFERENT finding kinds across the two sections: {report}"
+    );
+}
+
+/// Every unknown enum value names the LEGAL SET, never echoing the user's value.
+#[test]
+#[serial]
+fn invalid_enum_values() {
+    let body = "[layout]\n\
+                preset = \"compakt\"\n\n\
+                [layout.components.git]\n\
+                format = \"fancy\"\n\n\
+                [burn_rate]\n\
+                mode = \"wallclock\"\n";
+    let env = ConfigEnv::new(body);
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(!ok, "code={code:?} stderr={stderr}");
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    // Assert the message CONTAINS each legal value, not the exact prose — the
+    // wording is Claude's Discretion, the legal set is the contract.
+    for (key, legal) in [
+        (
+            "layout.preset",
+            vec!["default", "compact", "detailed", "minimal", "power"],
+        ),
+        (
+            "layout.components.git.format",
+            vec!["full", "branch", "status"],
+        ),
+        (
+            "burn_rate.mode",
+            vec!["wall_clock", "active_time", "auto_reset"],
+        ),
+    ] {
+        let hits = findings_at(findings, key);
+        assert_eq!(hits.len(), 1, "exactly one finding at `{key}`: {report}");
+        assert_eq!(hits[0]["kind"], "invalid_value", "at `{key}`: {report}");
+        let message = hits[0]["message"].as_str().unwrap_or_default();
+        for value in legal {
+            assert!(
+                message.contains(value),
+                "the message at `{key}` must name the legal value {value:?}: {message:?}"
+            );
+        }
+        assert!(
+            !message.contains("compakt")
+                && !message.contains("fancy")
+                && !message.contains("wallclock"),
+            "the message at `{key}` must name the LEGAL set, never echo the user's value: \
+             {message:?}"
+        );
+    }
+}
+
+/// The shared clean fixture passes with an EMPTY findings array and exit 0.
+#[test]
+#[serial]
+fn clean_config_exits_zero() {
+    let env = ConfigEnv::new(&clean_config());
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    assert!(
+        ok,
+        "a clean config must exit 0 (SC1); code={code:?} stdout={:?} stderr={stderr}",
+        String::from_utf8_lossy(&stdout)
+    );
+    assert_eq!(code, Some(0), "stderr={stderr}");
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    assert!(
+        findings.is_empty(),
+        "a clean config must produce NO findings at all — not even warnings: {report}"
+    );
+    assert_eq!(report["valid"], true, "{report}");
+    assert_eq!(report["exit_code"], 0, "{report}");
+    assert_eq!(report["strict"], false, "{report}");
+}
+
+/// The SHIPPED example config must satisfy the validator.
+///
+/// Cheap insurance against a future `Config::example_toml()` edit introducing a
+/// key or value the validator rejects — the two would otherwise drift silently
+/// and the first user to run `config generate && config validate` would find it.
+#[test]
+#[serial]
+fn generated_config_validates_clean() {
+    let env = ConfigEnv::new(&clean_config());
+
+    let (ok, code, stdout, stderr) = env.run(&["config", "generate"]);
+    assert!(
+        ok,
+        "config generate must succeed; code={code:?} stderr={stderr}"
+    );
+    let generated = env
+        .home_path()
+        .join("config")
+        .join("claudia-statusline")
+        .join("config.toml");
+    assert!(
+        fs::metadata(&generated).is_ok(),
+        "config generate must have written {generated:?}; stdout={:?}",
+        String::from_utf8_lossy(&stdout)
+    );
+
+    let target = generated.display().to_string();
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", &target, "--json"]);
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    validate_findings(&report);
+    assert!(
+        ok,
+        "the SHIPPED example config must validate clean; code={code:?} stderr={stderr} \
+         report={report}"
+    );
+    assert_eq!(report["valid"], true, "{report}");
+}
+
+/// `[sync]` is a recognized section in EVERY build.
+///
+/// It is `#[cfg(feature = "turso-sync")]` on `Config`, so a fourteen-element
+/// known-sections list that omitted it would fail a legitimate turso user's
+/// config in a default build. Must pass under BOTH feature sets.
+#[test]
+#[serial]
+fn sync_section_cfg_aware() {
+    let env = ConfigEnv::new(&config_with_sync_section());
+    let (_ok, _code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+
+    let sync_findings: Vec<&serde_json::Value> = findings
+        .iter()
+        .filter(|f| {
+            f["kind"] == "unknown_key"
+                && f["key"]
+                    .as_str()
+                    .map(|k| k == "sync" || k.starts_with("sync."))
+                    .unwrap_or(false)
+        })
+        .collect();
+    assert!(
+        sync_findings.is_empty(),
+        "`[sync]` must never be an unknown key, in either feature set: {report} stderr={stderr}"
+    );
+}
+
+/// MUTATION PROOF 4: `--strict` moves the EXIT CODE and nothing else (D-11).
+///
+/// The identical-`findings` half is what makes this prove the warning is REAL
+/// rather than cosmetic; the identical-`valid` half pins the semantics the
+/// renderer defines. Both runs must agree on both.
+#[test]
+#[serial]
+fn strict_promotes_warnings() {
+    // Warnings, no errors: `enabled = false` with an account staged, and a
+    // program that is not on the harness's replaced PATH.
+    let body = "[ant]\nenabled = false\n\n[ant.accounts.work]\n\
+                admin_key_command = [\"definitely-not-on-path\"]\n";
+    let env = ConfigEnv::new(body);
+
+    let (lax_ok, lax_code, lax_out, lax_err) = env.run(&["config", "validate", "--json"]);
+    let lax = parse_exactly_one_json(&lax_out, "config validate --json");
+    let lax_findings = validate_findings(&lax);
+
+    assert!(
+        !lax_findings.is_empty(),
+        "the fixture must actually PRODUCE warnings, or this proof is vacuous: {lax}"
+    );
+    assert_eq!(lax["counts"]["errors"], 0, "warnings only: {lax}");
+    assert!(
+        lax["counts"]["warnings"].as_u64().unwrap_or(0) > 0,
+        "warnings only: {lax}"
+    );
+    assert!(
+        lax_ok && lax_code == Some(0),
+        "warnings alone must NOT affect the exit code (D-11/SC3); code={lax_code:?} \
+         stderr={lax_err}"
+    );
+    assert_eq!(lax["exit_code"], 0, "{lax}");
+    assert_eq!(lax["strict"], false, "{lax}");
+
+    let (strict_ok, strict_code, strict_out, strict_err) =
+        env.run(&["config", "validate", "--json", "--strict"]);
+    let strict = parse_exactly_one_json(&strict_out, "config validate --json --strict");
+    validate_findings(&strict);
+
+    assert!(
+        !strict_ok && strict_code == Some(1),
+        "--strict must promote warnings to a non-zero exit; code={strict_code:?} \
+         stderr={strict_err}"
+    );
+    assert_eq!(strict["exit_code"], 1, "{strict}");
+    assert_eq!(strict["strict"], true, "{strict}");
+
+    // The three assertions that make this a proof rather than a tautology.
+    assert_eq!(
+        lax["findings"], strict["findings"],
+        "--strict must not change WHICH findings are produced or their severities"
+    );
+    assert_eq!(
+        lax["valid"], strict["valid"],
+        "`valid` means `counts.errors == 0` and is INDEPENDENT of --strict"
+    );
+    assert_eq!(lax["valid"], true, "no errors, so still valid: {lax}");
+    assert_eq!(
+        lax["counts"], strict["counts"],
+        "--strict must not change the counts"
+    );
+}
+
+/// The `--json` document is byte-identical across processes.
+///
+/// The fixture carries THREE `[pricing.aliases]` entries with bad targets and
+/// THREE `[ant.accounts.*]` tables with illegal names, so BOTH `HashMap`
+/// iteration orders are genuinely exercised. With fewer than three entries per
+/// map a two-element shuffle can come back in the original order and the test
+/// passes by luck.
+///
+/// NON-VACUITY, stated honestly: `impl Validate for PricingConfig` and
+/// `impl Validate for AntConfig` each ALREADY sort their map keys before
+/// emitting, and `toml::Table` is a `BTreeMap`, so on this code base the five
+/// raw outputs would match even without `Report::sort_findings`. What
+/// `sort_findings` uniquely guarantees is the TOTAL ORDER — errors before
+/// warnings, then by key — and that is asserted separately below, so removing
+/// the sort fails this test.
+#[test]
+#[serial]
+fn validate_json_is_deterministic_across_runs() {
+    let body = "[pricing]\n\
+                source = \"auto\"\n\n\
+                [pricing.aliases]\n\
+                alias-one = \"no-such-model-one\"\n\
+                alias-two = \"no-such-model-two\"\n\
+                alias-three = \"no-such-model-three\"\n\n\
+                [ant]\n\
+                enabled = true\n\n\
+                [ant.accounts.\"bad one\"]\n\
+                admin_key_command = [\"nope-one\"]\n\n\
+                [ant.accounts.\"bad+two\"]\n\
+                admin_key_command = [\"nope-two\"]\n\n\
+                [ant.accounts.\"bad:three\"]\n\
+                admin_key_command = [\"nope-three\"]\n";
+    let env = ConfigEnv::new(body);
+
+    let mut runs: Vec<Vec<u8>> = Vec::new();
+    for _ in 0..5 {
+        let (_ok, _code, stdout, _stderr) = env.run(&["config", "validate", "--json"]);
+        runs.push(stdout);
+    }
+    for (i, run) in runs.iter().enumerate().skip(1) {
+        assert_eq!(
+            run,
+            &runs[0],
+            "run {i} differed from run 0 at byte {:?}; the --json document must be \
+             byte-identical across processes (T-12-60)",
+            first_difference(run, &runs[0])
+        );
+    }
+
+    let report = parse_exactly_one_json(&runs[0], "config validate --json");
+    let findings = validate_findings(&report);
+    assert!(
+        findings.len() >= 6,
+        "the fixture must actually exercise both maps (3 aliases + 3 accounts): {report}"
+    );
+
+    // The property `Report::sort_findings` uniquely provides: a TOTAL order,
+    // errors first, then by key. Removing the sort leaves the findings in
+    // section-emission order, which interleaves the `[ant]` errors and warnings.
+    let order: Vec<(u8, String)> = findings
+        .iter()
+        .map(|f| {
+            let rank = match f["severity"].as_str() {
+                Some("error") => 0u8,
+                _ => 1u8,
+            };
+            (rank, f["key"].as_str().unwrap_or_default().to_string())
+        })
+        .collect();
+    let mut sorted = order.clone();
+    sorted.sort();
+    assert_eq!(
+        order, sorted,
+        "findings must be in `sort_findings`'s total order — errors first, then by key: {report}"
+    );
+}
+
+/// A positional PATH is validated, and BOTH files are named — as FIELDS.
+#[test]
+#[serial]
+fn positional_path_reports_both_files() {
+    let env = ConfigEnv::new(&clean_config());
+    let other = env.home_path().join("other-config.toml");
+    write_file(&other, &config_with_unknown_key());
+    let other_text = other.display().to_string();
+
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", &other_text, "--json"]);
+    assert!(
+        !ok && code == Some(1),
+        "the POSITIONAL file carries the unknown key, so it must decide the exit code; \
+         code={code:?} stderr={stderr}"
+    );
+
+    // The notice must live INSIDE the document. A stray stdout line would make
+    // this parse as two values (or none).
+    let report = parse_exactly_one_json(&stdout, "config validate <path> --json");
+    validate_findings(&report);
+
+    assert_eq!(
+        report["target_path"].as_str(),
+        Some(other_text.as_str()),
+        "the positional PATH wins: {report}"
+    );
+    assert_eq!(report["target_source"], "positional", "{report}");
+    assert_eq!(
+        report["active_path"].as_str(),
+        Some(env.config_path.display().to_string().as_str()),
+        "the resolver's answer must still be reported, so \"names both files\" is \
+         machine-readable: {report}"
+    );
+    assert!(
+        report["active_source"].is_string(),
+        "active_source must accompany active_path: {report}"
+    );
+    assert!(
+        notice_codes(&report).contains(&"positional_target_differs_from_active".to_string()),
+        "a positional target that is not the active config must say so: {report}"
+    );
+}
