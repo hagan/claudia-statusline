@@ -399,6 +399,83 @@ const MAX_MESSAGE_CHARS: usize = 200;
 /// Hard cap on one dotted segment of a key path.
 const MAX_KEY_SEGMENT_CHARS: usize = 64;
 
+/// Hard cap on how many legal enum variants [`legal_variants`] will recover.
+const MAX_LEGAL_VARIANTS: usize = 32;
+
+/// Hard cap on the length of ONE recovered legal enum variant.
+const MAX_VARIANT_CHARS: usize = 40;
+
+/// The marker serde puts in front of an enum's legal-variant list.
+const EXPECTED_ONE_OF: &str = "expected one of ";
+
+/// Recover the SCHEMA-derived legal-variant list out of a serde unknown-variant
+/// message, splitting it away from the user's own value.
+///
+/// # Why this exists
+///
+/// serde formats an unknown variant as
+/// ``unknown variant `bunlded`, expected one of `auto`, `bundled`, `synced` ``.
+/// The first backtick run is the USER's value; everything after
+/// [`EXPECTED_ONE_OF`] comes from the enum's compile-time `VARIANTS` constant —
+/// the SCHEMA, never the document. [`redact_quoted_runs`] cannot tell the two
+/// apart and removes both, which left `config validate` answering a
+/// `source = "bunlded"` typo with
+/// `unknown variant "<redacted>", expected one of "<redacted>", "<redacted>",
+/// "<redacted>"` — a diagnostic that names neither what is wrong nor what is
+/// legal, in the one command whose entire purpose is to say so. A section whose
+/// deserialization fails never runs its semantic pass, so for `[pricing].source`
+/// this message is the ONLY thing the user is ever told.
+///
+/// # Why it cannot leak
+///
+/// Three independent bounds, in the order they bite:
+///
+/// 1. the split is at the **LAST** occurrence of the marker, so a value that
+///    contains the marker text itself lands wholly in the discarded head;
+/// 2. the tail must parse as NOTHING BUT a comma-separated list of backtick
+///    runs — any stray character and the whole recovery is abandoned;
+/// 3. each run must match a conservative identifier allowlist (ASCII lowercase,
+///    digits, `_`, `-`), be non-empty and at most [`MAX_VARIANT_CHARS`] long,
+///    with at most [`MAX_LEGAL_VARIANTS`] of them.
+///
+/// The head — which is where the user's value lives — is returned UNREDACTED
+/// and is redacted by the caller exactly as before.
+///
+/// Returns `(head, variants)`, or `None` when this is not an unknown-variant
+/// message or the tail does not match the expected shape.
+fn legal_variants(first_line: &str) -> Option<(&str, Vec<String>)> {
+    let idx = first_line.rfind(EXPECTED_ONE_OF)?;
+    let head = &first_line[..idx];
+    let mut rest = first_line[idx + EXPECTED_ONE_OF.len()..].trim();
+
+    let mut variants: Vec<String> = Vec::new();
+    while !rest.is_empty() {
+        let after_open = rest.strip_prefix('`')?;
+        let close = after_open.find('`')?;
+        let token = &after_open[..close];
+        if token.is_empty()
+            || token.chars().count() > MAX_VARIANT_CHARS
+            || !token
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+        {
+            return None;
+        }
+        variants.push(token.to_string());
+        if variants.len() > MAX_LEGAL_VARIANTS {
+            return None;
+        }
+        rest = after_open[close + 1..].trim_start();
+        rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
+        rest = rest.strip_prefix("or ").unwrap_or(rest).trim_start();
+    }
+
+    if variants.is_empty() {
+        return None;
+    }
+    Some((head, variants))
+}
+
 /// Turn a `toml` parser diagnostic into a message that leaks nothing.
 ///
 /// # Contract
@@ -417,12 +494,15 @@ const MAX_KEY_SEGMENT_CHARS: usize = 64;
 ///
 /// 1. take the error's own message text and cut it at the first newline (kills
 ///    the gutter block);
-/// 2. replace every double-quoted, single-quoted and backtick-quoted run with
+/// 2. split off a SCHEMA-derived `expected one of …` clause, if present, so it
+///    survives step 3 — see [`legal_variants`] for why that is safe;
+/// 3. replace every double-quoted, single-quoted and backtick-quoted run with
 ///    the literal `"<redacted>"` (kills inline values — serde spells an unknown
 ///    enum variant with backticks, so all three delimiters must go);
-/// 3. append ` (line L, column C)` when the error carries a span — positions
+/// 4. re-attach the legal-variant list recovered in step 2, spelled out;
+/// 5. append ` (line L, column C)` when the error carries a span — positions
 ///    are not secret and are the locator the user needs;
-/// 4. cap the result at [`MAX_MESSAGE_CHARS`].
+/// 6. cap the result at [`MAX_MESSAGE_CHARS`].
 ///
 /// Note that `toml::de::Error::to_string()` is deliberately NOT used anywhere:
 /// its `Display` impl is precisely what renders the source-line echo.
@@ -431,10 +511,19 @@ pub fn redact_toml_error(source: &str, e: &toml::de::Error) -> String {
     let raw = e.message();
     let first_line = raw.split('\n').next().unwrap_or("").trim();
 
-    // Step 2: remove every quoted run, then any remaining control characters.
-    let mut redacted = redact_quoted_runs(first_line);
+    // Step 2: split the SCHEMA-derived legal-variant list (if any) away from the
+    // user's value, so step 3 can redact the value without also destroying the
+    // one piece of guidance the message carries. See `legal_variants`.
+    let (to_redact, legal) = match legal_variants(first_line) {
+        Some((head, variants)) => (head, Some(variants)),
+        None => (first_line, None),
+    };
+
+    // Step 3: remove every quoted run, then any remaining control characters.
+    let mut redacted = redact_quoted_runs(to_redact);
     redacted.retain(|c| c == '\t' || !c.is_control());
-    let redacted = redacted.trim().to_string();
+    // Removing the `expected one of …` clause leaves a dangling separator.
+    let redacted = redacted.trim().trim_end_matches(',').trim().to_string();
 
     let mut out = if redacted.is_empty() {
         "invalid TOML".to_string()
@@ -442,13 +531,24 @@ pub fn redact_toml_error(source: &str, e: &toml::de::Error) -> String {
         redacted
     };
 
-    // Step 3: a position, if the error carries one.
+    // Step 4: re-attach the legal set, spelled out. These names are the enum's,
+    // not the document's.
+    if let Some(variants) = legal {
+        let list = variants
+            .iter()
+            .map(|v| format!("`{v}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        out.push_str(&format!(" — the legal values are {list}"));
+    }
+
+    // Step 5: a position, if the error carries one.
     if let Some(span) = e.span() {
         let (line, column) = line_and_column(source, span.start);
         out.push_str(&format!(" (line {}, column {})", line, column));
     }
 
-    // Step 4: bound the result.
+    // Step 6: bound the result.
     cap_chars(&out, MAX_MESSAGE_CHARS)
 }
 
@@ -1283,6 +1383,103 @@ mod tests {
             redacted.contains("invalid type"),
             "redacted message must still name the failure: {redacted}"
         );
+    }
+
+    /// A failed section's ONE finding must still name the legal set.
+    ///
+    /// `[pricing]` has no semantic rule for `source`, and a section whose
+    /// deserialization fails never runs its semantic pass, so this message is
+    /// the ONLY thing the user is ever told about a `source` typo. Before
+    /// [`legal_variants`] it read `unknown variant "<redacted>", expected one of
+    /// "<redacted>", "<redacted>", "<redacted>"` — the redaction boundary could
+    /// not distinguish the user's value from the enum's own `VARIANTS`.
+    #[test]
+    fn unknown_variant_message_names_the_legal_set_without_echoing_the_value() {
+        // Deserialized as the SECTION, which is what the engine does.
+        // `Config`'s own `pricing` field is `deserialize_lenient` and swallows
+        // this error entirely — that blindness is the whole reason the engine
+        // walks sections instead of the document.
+        const BODY: &str = "source = \"bunlded\"\n";
+        let err = toml::from_str::<crate::pricing::PricingConfig>(BODY)
+            .expect_err("an unknown enum variant must fail to deserialize");
+
+        // Non-vacuity: the RAW diagnostic carries BOTH the user's value and the
+        // legal set, which is exactly why they must be separated.
+        let raw = format!("{}", err);
+        assert!(
+            raw.contains("bunlded") && raw.contains("bundled"),
+            "fixture is not exercising the split; raw error was: {raw}"
+        );
+
+        let redacted = redact_toml_error(BODY, &err);
+        for legal in ["auto", "bundled", "synced"] {
+            assert!(
+                redacted.contains(&format!("`{legal}`")),
+                "the message must name the legal value `{legal}`: {redacted}"
+            );
+        }
+        assert!(
+            !redacted.contains("bunlded"),
+            "the message must never echo the user's value: {redacted}"
+        );
+        assert!(
+            redacted.contains("unknown variant"),
+            "the message must still name the failure: {redacted}"
+        );
+    }
+
+    /// The recovery is a narrow, shape-checked reader — not a general
+    /// un-redactor. Each row here is a way a hostile value could try to ride the
+    /// `expected one of` clause out of the redaction boundary.
+    #[test]
+    fn legal_variant_recovery_rejects_everything_but_a_clean_variant_list() {
+        // The real shape serde emits.
+        let (head, variants) =
+            legal_variants("unknown variant `x`, expected one of `auto`, `bundled`, `synced`")
+                .expect("serde's own shape must be recognized");
+        assert_eq!(head, "unknown variant `x`, ");
+        assert_eq!(variants, vec!["auto", "bundled", "synced"]);
+
+        // A value containing the marker cannot steer the split: `rfind` takes
+        // the LAST marker, which is always the schema-generated one.
+        let (head, variants) = legal_variants(
+            "unknown variant `expected one of `sk-ant-LEAK``, expected one of `auto`, `bundled`",
+        )
+        .expect("the trailing schema clause is still the one that is taken");
+        assert!(
+            head.contains("sk-ant-LEAK"),
+            "the hostile value must land in the head, where the caller redacts it: {head}"
+        );
+        assert_eq!(variants, vec!["auto", "bundled"]);
+
+        for hostile in [
+            // Not an unknown-variant message at all.
+            "invalid type: string \"sk-ant-LEAK\", expected a sequence",
+            // Tail is not a pure backtick list.
+            "expected one of `auto` and maybe `sk-ant-LEAK`",
+            // A token outside the identifier allowlist.
+            "expected one of `auto`, `sk-ant-LEAK!`",
+            "expected one of `AUTO`",
+            // Unterminated run.
+            "expected one of `auto",
+            // Empty token, and an empty list.
+            "expected one of ``",
+            "expected one of ",
+        ] {
+            assert!(
+                legal_variants(hostile).is_none(),
+                "recovery must be abandoned for {hostile:?}"
+            );
+        }
+
+        // Over-long and over-many are both refused.
+        let long = "a".repeat(MAX_VARIANT_CHARS + 1);
+        assert!(legal_variants(&format!("expected one of `{long}`")).is_none());
+        let many = (0..=MAX_LEGAL_VARIANTS)
+            .map(|i| format!("`v{i}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(legal_variants(&format!("expected one of {many}")).is_none());
     }
 
     #[test]
