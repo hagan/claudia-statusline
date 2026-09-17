@@ -218,6 +218,36 @@ enum Commands {
         #[command(subcommand)]
         action: ConfigAction,
     },
+
+    /// GSD project tracking (`.planning/`) -- read-only
+    Gsd {
+        #[command(subcommand)]
+        action: GsdAction,
+    },
+}
+
+/// Actions of the `gsd` subcommand group (D-05, D-19).
+#[derive(Subcommand)]
+pub(crate) enum GsdAction {
+    /// Report the current milestone, phase and progress
+    ///
+    /// With `--json` this emits ONE structured document on stdout carrying all
+    /// three facts, so an external tool never parses `STATE.md` prose itself
+    /// (D-19). Statusline only READS `.planning/` -- it never writes STATE.md
+    /// (D-13).
+    ///
+    /// Exits 0 whenever a well-formed document was produced, including when
+    /// there is no GSD state to report; only a bad `--dir` exits non-zero.
+    State {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+
+        /// Read `<PROJECT_DIR>/.planning/` instead of detecting from the
+        /// current directory
+        #[arg(long, value_name = "PROJECT_DIR")]
+        dir: Option<PathBuf>,
+    },
 }
 
 /// Actions of the `config` subcommand group (D-05).
@@ -464,6 +494,10 @@ fn main() -> Result<()> {
 
             Commands::Config { action } => {
                 return commands::config::handle_config_command(action);
+            }
+
+            Commands::Gsd { action } => {
+                return commands::gsd::handle_gsd_command(action);
             }
         }
     }

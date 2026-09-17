@@ -11,6 +11,7 @@
 pub(crate) mod ant;
 pub(crate) mod config;
 pub(crate) mod context_learning;
+pub(crate) mod gsd;
 pub(crate) mod health;
 pub(crate) mod hooks;
 pub(crate) mod list_vars;
