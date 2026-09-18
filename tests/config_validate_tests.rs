@@ -140,6 +140,12 @@ impl ConfigEnv {
             ("NO_COLOR".to_string(), Some(OsString::from("1"))),
             ("ANTHROPIC_API_KEY".to_string(), None),
             ("STATUSLINE_ANT_ACCOUNT".to_string(), None),
+            // REMOVED, never set: plan 12-12's render-path leak regression must
+            // observe the DEFAULT log level (`warn`, `src/main.rs:383`), which
+            // is the level the shipped leak was reachable at. A `RUST_LOG`
+            // inherited from the developer's shell would silently move that
+            // test to a different level and make it prove something else.
+            ("RUST_LOG".to_string(), None),
         ]
     }
 
@@ -368,6 +374,86 @@ impl ConfigEnv {
             String::from_utf8_lossy(&out.stderr),
         );
         self.clear_marker();
+    }
+
+    // -------------------------------------------------------------------
+    // The PATH-resolved-invocation log instrument (plan 12-12).
+    // -------------------------------------------------------------------
+
+    /// Path of the shared invocation log written by
+    /// [`ConfigEnv::install_logging_fakes`].
+    fn invocation_log(&self) -> PathBuf {
+        self.home.path().join("invocations.log")
+    }
+
+    /// Install one fake executable per name into the controlled bin dir. Each
+    /// APPENDS its own name to [`ConfigEnv::invocation_log`] if it is run.
+    ///
+    /// Like [`ConfigEnv::install_fake_admin_key`] the body uses only shell
+    /// BUILTINS — `printf` and `>>` — because the harness REPLACES PATH with
+    /// the bin dir alone, so an external utility such as `touch` or `tee` would
+    /// not resolve and the instrument could never fire.
+    fn install_logging_fakes(&self, names: &[&str]) {
+        let log = self.invocation_log();
+        for name in names {
+            let exe = self.bin.path().join(name);
+            let body = format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' {name} >> \"{log}\"\n\
+                 exit 0\n",
+                name = name,
+                log = log.display(),
+            );
+            fs::write(&exe, body).expect("write fake logging program");
+            let mut perms = fs::metadata(&exe).expect("metadata").permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&exe, perms).expect("chmod +x");
+        }
+    }
+
+    /// The names recorded in the invocation log, in order. An absent log is an
+    /// empty list — the log file is created by the first append, not up front.
+    fn invocations(&self) -> Vec<String> {
+        match fs::read_to_string(self.invocation_log()) {
+            Ok(body) => body
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn clear_invocations(&self) {
+        let _ = fs::remove_file(self.invocation_log());
+    }
+
+    /// POSITIVE CONTROL for the invocation-log instrument, mirroring
+    /// [`ConfigEnv::assert_marker_can_fire`].
+    ///
+    /// Runs the installed fake DIRECTLY under the identical environment and
+    /// asserts its name lands in the log. Without this, "the invocation log is
+    /// empty" is satisfied just as well by a program that cannot write.
+    fn assert_logger_can_fire(&self, name: &str) {
+        self.clear_invocations();
+        let mut cmd = Command::new(self.bin.path().join(name));
+        self.apply_env(&mut cmd);
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let out = cmd.output().expect("spawn the fake logging program");
+        assert_eq!(
+            self.invocations(),
+            vec![name.to_string()],
+            "POSITIVE CONTROL FAILED: the fake program {name:?} ran but wrote NO line to the \
+             invocation log, so an EMPTY log proves nothing and the no-network-tool assertion \
+             would be VACUOUS. status={:?} stdout={:?} stderr={:?}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+        self.clear_invocations();
     }
 }
 
@@ -2835,5 +2921,575 @@ fn validate_terminates_on_a_fifo_cache_path() {
 
     for path in &fifos {
         let _ = fs::remove_file(path);
+    }
+}
+
+// ===========================================================================
+// Plan 12-12 Task 1: the phase's SECURITY proofs.
+//
+// Every instrument below is paired with a control that proves it can OBSERVE
+// the event it denies, and every test name is scoped to what its mechanism
+// actually establishes. A security test that cannot fail certifies a guarantee
+// nobody checked, which is worse than no test at all — this phase has six live
+// examples of exactly that, including the `touch`-based marker this file's
+// fixture replaced.
+// ===========================================================================
+
+/// ESC, the lead byte of every ANSI control sequence.
+const ESC_BYTE: u8 = 0x1b;
+/// BEL, the other byte an injected config value uses to reach the terminal.
+const BEL_BYTE: u8 = 0x07;
+
+/// Count non-overlapping-safe occurrences of `needle` in raw `haystack` bytes.
+///
+/// Counts EVERY occurrence, not just the first: the TOML deserialization path
+/// leaks its value TWICE in an unredacted binary (once in the echoed source
+/// line, once in `invalid type: string "…"`), and an assertion that stopped at
+/// the first hit would still pass against a half-fixed redaction.
+fn occurrences(haystack: &[u8], needle: &str) -> usize {
+    let n = needle.as_bytes();
+    if n.is_empty() || haystack.len() < n.len() {
+        return 0;
+    }
+    haystack.windows(n.len()).filter(|w| *w == n).count()
+}
+
+/// Assert `sentinel` (and the generic `sk-ant-` prefix) appear ZERO times in
+/// both streams, naming the count and the offending stream on failure.
+fn assert_no_sentinel(what: &str, sentinel: &str, stdout: &[u8], stderr: &[u8]) {
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        let hits = occurrences(bytes, sentinel);
+        assert_eq!(
+            hits,
+            0,
+            "{what}: the secret sentinel {sentinel:?} appeared {hits} time(s) on {stream}: {:?}",
+            String::from_utf8_lossy(bytes)
+        );
+        let prefix_hits = occurrences(bytes, "sk-ant-");
+        assert_eq!(
+            prefix_hits,
+            0,
+            "{what}: a secret-shaped `sk-ant-` substring appeared {prefix_hits} time(s) on \
+             {stream}: {:?}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+}
+
+/// An `[ant]` config with TWO accounts: `on_path` names a program installed in
+/// the controlled bin dir, `off_path` names one that is deliberately absent.
+///
+/// The second account is what makes the no-spawn proof NON-VACUOUS from the
+/// other direction: its `admin_key_command` produces a finding, which is only
+/// possible if the validator walked the accounts table and INSPECTED the argv
+/// it must never execute.
+fn ant_config_with_two_accounts(on_path: &str, off_path: &str) -> String {
+    format!(
+        "[ant]\nenabled = true\n\n\
+         [ant.accounts.work]\nadmin_key_command = [\"{on_path}\"]\n\n\
+         [ant.accounts.other]\nadmin_key_command = [\"{off_path}\"]\n"
+    )
+}
+
+/// An `admin_key_command` in the real `security find-generic-password -w <key>`
+/// shape, with the SECRET at index 3.
+fn config_with_secret_in_argv(sentinel: &str) -> String {
+    format!(
+        "[ant]\nenabled = true\n\n[ant.accounts.work]\n\
+         admin_key_command = [\"security\", \"find-generic-password\", \"-w\", \"{sentinel}\"]\n"
+    )
+}
+
+/// A config whose KEY and whose VALUE both carry ESC and BEL.
+///
+/// The control bytes are written as TOML `\u` escapes on purpose. A RAW ESC
+/// inside a TOML basic string is a SYNTAX error (`invalid basic string`,
+/// verified live), so a fixture carrying raw bytes never reaches key or value
+/// validation at all and the escapes could not possibly reach stdout — the test
+/// would pass for the wrong reason.
+///
+/// Both halves are echoed by the shipped report, which is what makes the
+/// positive arms below possible:
+///
+/// * the unknown KEY is echoed as the finding's `key`;
+/// * the `admin_key_command` program NAME is echoed inside the finding's
+///   message (`` `admin_key_command` starts with `…` ``).
+fn config_with_terminal_escapes() -> String {
+    concat!(
+        "[display]\n",
+        "\"bad\\u001B[31mkey\" = 1\n",
+        "\n",
+        "[ant]\n",
+        "enabled = true\n",
+        "\n",
+        "[ant.accounts.\"ev\\u001Bil\"]\n",
+        "admin_key_command = [\"NOPE\\u001B[31mPROG\\u0007\"]\n",
+    )
+    .to_string()
+}
+
+/// Spawn the binary and return `(exit code, RAW stdout, RAW stderr)`.
+///
+/// `ConfigEnv::run` hands stderr back as a lossy `String`, which would silently
+/// rewrite exactly the bytes the escape proof is looking for. `color = true`
+/// REMOVES `NO_COLOR` from the otherwise identical block.
+fn run_raw(
+    env: &ConfigEnv,
+    args: &[&str],
+    payload: Option<&str>,
+    color: bool,
+) -> (Option<i32>, Vec<u8>, Vec<u8>) {
+    let mut cmd = Command::new(test_support::test_binary());
+    cmd.args(args);
+    env.apply_env(&mut cmd);
+    if color {
+        cmd.env_remove("NO_COLOR");
+    }
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let out = match payload {
+        Some(body) => {
+            cmd.stdin(Stdio::piped());
+            let mut child = cmd.spawn().expect("spawn statusline");
+            child
+                .stdin
+                .as_mut()
+                .expect("child stdin")
+                .write_all(body.as_bytes())
+                .expect("write payload");
+            child.wait_with_output().expect("wait for statusline")
+        }
+        None => {
+            cmd.stdin(Stdio::null());
+            cmd.output().expect("spawn statusline")
+        }
+    };
+    (out.status.code(), out.stdout, out.stderr)
+}
+
+/// T-12-45: `config validate` never EXECUTES an `admin_key_command`.
+///
+/// Both halves are mandatory and both are here:
+///
+/// 1. **Positive control.** [`ConfigEnv::assert_marker_can_fire`] runs the fake
+///    credential program directly under the IDENTICAL environment block and
+///    asserts the marker appears. The instrument this replaces — the shipped
+///    `tests/ant_doctor_tests.rs` fake, built on the external `touch` — could
+///    never fire under a REPLACED PATH (`/bin/sh` reports
+///    `touch: command not found`, exits 0, no marker), so every no-spawn
+///    assertion resting on it was vacuous. Plan 12-01 repaired the mechanism
+///    with builtin redirection; plan 12-02 rewired the doctor test.
+/// 2. **The negative assertion.** After `config validate` in both output modes
+///    the marker is still absent.
+///
+/// A third arm bounds the other direction: a SECOND account names a program
+/// that is NOT on PATH, and the report must carry a finding about it. That
+/// proves the validator walked the accounts table and READ the argv — so
+/// "no marker" means "inspected without executing", not "never looked".
+#[test]
+#[serial]
+fn validate_never_execs_credential_command() {
+    let env = ConfigEnv::new(&ant_config_with_two_accounts(
+        "fake-admin-key",
+        "definitely-not-on-path-12-12",
+    ));
+    env.install_fake_admin_key("fake-admin-key");
+
+    // 1. POSITIVE CONTROL — before anything else.
+    env.assert_marker_can_fire("fake-admin-key");
+
+    // 2. The negative assertion, in both output modes.
+    let (_, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+    assert!(
+        !env.marker_fired(),
+        "`config validate --json` EXECUTED admin_key_command (marker present). \
+         code={code:?} stderr={stderr}"
+    );
+    let (_, code_h, stdout_h, stderr_h) = env.run(&["config", "validate"]);
+    assert!(
+        !env.marker_fired(),
+        "`config validate` EXECUTED admin_key_command (marker present). \
+         code={code_h:?} stderr={stderr_h}"
+    );
+
+    // 3. NON-VACUITY from the other direction: the accounts table really was
+    //    traversed and the argv really was inspected.
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    let hits = findings_at(findings, "ant.accounts.other.admin_key_command");
+    assert_eq!(
+        hits.len(),
+        1,
+        "the validator must INSPECT every account's `admin_key_command` — without a finding for \
+         the off-PATH account, `marker absent` could simply mean the accounts table was never \
+         reached: {report}"
+    );
+    assert_eq!(hits[0]["severity"], "warning", "{report}");
+    assert!(
+        String::from_utf8_lossy(&stdout_h).contains("definitely-not-on-path-12-12"),
+        "the human report must name the off-PATH program too: {:?}",
+        String::from_utf8_lossy(&stdout_h)
+    );
+}
+
+/// T-12-46: `config validate` invokes NO PATH-RESOLVED network tool.
+///
+/// # What this establishes — and what it does NOT
+///
+/// It establishes that no PATH-resolved `curl` and no PATH-resolved `ant` was
+/// invoked during a full `config validate --json` run: both names are the FIRST
+/// (and, under this fixture, ONLY) entries on the child's PATH, each appends
+/// its own name to a shared log through shell builtins, and the log is empty.
+///
+/// It does **not** establish that zero sockets were opened — a fake-`curl`
+/// invocation log cannot observe a socket. It would **not** detect a program
+/// executed by ABSOLUTE path, which bypasses PATH resolution entirely. The
+/// round-1 name for this test, `validate_opens_no_socket`, claimed both of
+/// those and is deliberately not used.
+///
+/// The complementary evidence that actually bounds network use is structural
+/// and lives in this phase's earlier plans: plan 12-06 greps
+/// `src/config_validation.rs` and plan 12-09 greps `src/commands/config.rs` for
+/// `reqwest`, `TcpStream`, `UdpSocket`, `Command::new` and `.spawn(`, and both
+/// require — and record — zero hits. Process-level network tracing is
+/// deliberately out of scope for this phase; it is not cross-platform and would
+/// not run under this suite's macOS gate.
+#[test]
+#[serial]
+fn validate_invokes_no_path_resolved_network_tool() {
+    let env = ConfigEnv::new(&clean_config());
+    env.clear_caches();
+    env.install_logging_fakes(&["curl", "ant"]);
+
+    // POSITIVE CONTROL, both programs: an empty log must mean "not invoked",
+    // never "could not write".
+    env.assert_logger_can_fire("curl");
+    env.assert_logger_can_fire("ant");
+
+    let (_, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "a clean config with absent caches must exit 0; stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let _ = validate_findings(&report);
+    // The run really did classify the caches it would have had to fetch.
+    assert_eq!(
+        cache_row(&report, "prices")["state"],
+        "absent",
+        "the caches must have been classified — otherwise the command did nothing and could \
+         hardly have invoked a fetch tool: {report}"
+    );
+
+    assert_eq!(
+        env.invocations(),
+        Vec::<String>::new(),
+        "`config validate --json` invoked a PATH-resolved network tool: {:?}",
+        env.invocations()
+    );
+}
+
+/// T-12-47 (argv arm): a secret carried in an `admin_key_command` ARGUMENT
+/// never reaches stdout or stderr, in either output mode.
+///
+/// The program NAME (`security`) MAY appear and does — that is the actionable
+/// half of the diagnostic, and asserting its presence is what stops a validator
+/// that simply printed nothing from passing this test.
+#[test]
+#[serial]
+fn report_leaks_no_secret_material() {
+    const SENTINEL: &str = "sk-ant-SENTINEL-GGG";
+    let env = ConfigEnv::new(&config_with_secret_in_argv(SENTINEL));
+
+    for args in [
+        vec!["config", "validate"],
+        vec!["config", "validate", "--json"],
+    ] {
+        let label = args.join(" ");
+        let (code, stdout, stderr) = run_raw(&env, &args, None, false);
+        assert_eq!(
+            code,
+            Some(0),
+            "{label}: an unavailable credential program is a WARNING, so the run exits 0; \
+             stdout={:?} stderr={:?}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr),
+        );
+        assert_no_sentinel(&label, SENTINEL, &stdout, &stderr);
+        assert!(
+            occurrences(&stdout, "security") >= 1,
+            "{label}: the program NAME must still be reported — it is the useful diagnostic, and \
+             a report that printed nothing would pass the redaction assertion vacuously: {:?}",
+            String::from_utf8_lossy(&stdout),
+        );
+        assert!(
+            occurrences(&stdout, "admin_key_command") >= 1,
+            "{label}: the finding must name the field: {:?}",
+            String::from_utf8_lossy(&stdout),
+        );
+    }
+}
+
+/// T-12-47 (parser arms): NEITHER TOML failure path leaks the config value,
+/// while BOTH still report the failure.
+///
+/// Two arms, both required:
+///
+/// * **A — syntax.** An unclosed `admin_key_command` array. The unfixed binary
+///   echoes the offending source line verbatim: ONE occurrence.
+/// * **B — deserialization.** `admin_key_command` as a bare STRING. The unfixed
+///   binary leaks TWICE — the source-line echo PLUS
+///   `invalid type: string "sk-ant-…", expected a sequence`.
+///
+/// Arm B is the correction to this phase's round-1 grading, which was told the
+/// type path leaked nothing. That disproof used a fixture placing
+/// `admin_key_command` at `[ant]` level, where it is an ignored unknown key that
+/// never reaches the deserializer. At `[ant.accounts.<name>]` — the only level
+/// at which it is a real field — it leaks, twice. [`occurrences`] counts EVERY
+/// hit for that reason.
+#[test]
+#[serial]
+fn parser_diagnostics_leak_no_secret_material() {
+    let arms: [(&str, String, &str); 2] = [
+        (
+            "sk-ant-SENTINEL-HHH",
+            config_with_secret_in_syntax_error("sk-ant-SENTINEL-HHH"),
+            "syntax_error",
+        ),
+        (
+            "sk-ant-SENTINEL-III",
+            config_with_secret_in_type_error("sk-ant-SENTINEL-III"),
+            "type_error",
+        ),
+    ];
+
+    for (sentinel, body, expected_kind) in arms {
+        let env = ConfigEnv::new(&body);
+
+        // Human mode.
+        let (code, stdout, stderr) = run_raw(&env, &["config", "validate"], None, false);
+        let label = format!("config validate [{expected_kind}]");
+        assert_eq!(
+            code,
+            Some(1),
+            "{label}: a malformed config is an ERROR, so the run exits 1; stdout={:?}",
+            String::from_utf8_lossy(&stdout),
+        );
+        assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+        assert!(
+            occurrences(&stdout, "1 error(s)") >= 1,
+            "{label}: the failure must still be REPORTED — a command that printed nothing would \
+             satisfy the redaction assertion vacuously: {:?}",
+            String::from_utf8_lossy(&stdout),
+        );
+
+        // JSON mode.
+        let (code, stdout, stderr) = run_raw(&env, &["config", "validate", "--json"], None, false);
+        let label = format!("config validate --json [{expected_kind}]");
+        assert_eq!(code, Some(1), "{label}: exit 1");
+        assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+        let report = parse_exactly_one_json(&stdout, &label);
+        let findings = validate_findings(&report);
+        assert!(
+            findings
+                .iter()
+                .any(|f| f["kind"].as_str() == Some(expected_kind)),
+            "{label}: the report must carry a `{expected_kind}` finding, so redaction cannot be \
+             confused with suppression: {report}"
+        );
+    }
+}
+
+/// T-12-71: the PRE-EXISTING RENDER-PATH credential leak stays closed.
+///
+/// This is not a leak this phase introduced — it was live on the SHIPPED binary
+/// at the DEFAULT log level. `Config::load_from_file`'s parse error flowed into
+/// `build_config`'s `warn!`, so merely rendering a status line with a malformed
+/// config printed the offending TOML source line, secret and all, to stderr.
+/// Plan 12-04 routed that error through
+/// `crate::config_validation::redact_toml_error`; this test fails if that
+/// rewiring is ever reverted.
+///
+/// Pre-fix stderr, reproduced live during plan 12-04 (deserialization arm):
+///
+/// ```text
+/// invalid type: string "sk-ant-SENTINEL-BBB", expected a sequence
+/// ```
+///
+/// Post-fix, verified against the shipped binary:
+///
+/// ```text
+/// [... WARN statusline::config] Failed to load config: Configuration error:
+/// Failed to parse config file: invalid type: string "<redacted>", expected a
+/// sequence (line 5, column 21). Using defaults.
+/// ```
+///
+/// `RUST_LOG` is REMOVED by `ConfigEnv::env_block`, so this runs at the default
+/// `warn` level — the level the leak was reachable at. `sanitize_for_terminal`
+/// is NOT a mitigation here: it strips control bytes and PRESERVES every
+/// printable character, so a printable API key passes straight through it.
+#[test]
+#[serial]
+fn render_path_toml_error_leaks_no_secret_material() {
+    let arms: [(&str, String, &str); 2] = [
+        (
+            "sk-ant-SENTINEL-DDD",
+            config_with_secret_in_syntax_error("sk-ant-SENTINEL-DDD"),
+            "syntax",
+        ),
+        (
+            "sk-ant-SENTINEL-CCC",
+            config_with_secret_in_type_error("sk-ant-SENTINEL-CCC"),
+            "deserialization",
+        ),
+    ];
+
+    for (sentinel, body, arm) in arms {
+        let env = ConfigEnv::new(&body);
+        let payload = render_payload(env.home_path());
+        let (code, stdout, stderr) = run_raw(&env, &[], Some(&payload), false);
+        let label = format!("render [{arm}]");
+
+        assert_eq!(
+            code,
+            Some(0),
+            "{label}: a malformed config must never fail the render; stderr={:?}",
+            String::from_utf8_lossy(&stderr),
+        );
+        assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+
+        // Redacted, NOT suppressed: the user is still told the config failed.
+        let err = String::from_utf8_lossy(&stderr);
+        assert!(
+            err.contains("Failed to load config"),
+            "{label}: the render must still REPORT the config failure at the default log level, \
+             otherwise this test would also pass against a binary that silently swallowed it: \
+             {err:?}"
+        );
+        assert!(
+            err.contains("<redacted>") || err.contains("invalid array"),
+            "{label}: the diagnostic must survive redaction with its shape intact: {err:?}"
+        );
+        assert!(
+            !stdout.is_empty(),
+            "{label}: the status line must still render on built-in defaults"
+        );
+    }
+}
+
+/// T-12-48: no terminal escape byte reaches stdout or stderr from a config KEY
+/// or VALUE — asserted on the RAW bytes of a spawned process.
+///
+/// Deliberately NOT written the way `test_sanitized_output` was: that unit test
+/// called `sanitize_for_terminal` itself and compared the result to its own
+/// output, a tautology that missed R5-CR-01 for five review rounds and was
+/// DELETED rather than supplemented. This file never CALLS
+/// `sanitize_for_terminal` — the only occurrences of that identifier anywhere in
+/// it are inside doc comments such as this one, which plan 12-12 requires in
+/// order to record why the tautology is avoided and (in
+/// [`render_path_toml_error_leaks_no_secret_material`]) why the helper is not a
+/// leak mitigation. `grep -n 'sanitize_for_terminal' tests/config_validate_tests.rs`
+/// therefore shows prose lines and NO call site; the plan's literal
+/// "`grep -c` returns 0" acceptance criterion is unsatisfiable alongside the
+/// prose the same plan mandates, and the CALL-SITE reading is the one that
+/// carries the guarantee.
+///
+/// # Defense in depth, and what a single-layer mutation proves
+///
+/// Two independent layers strip control bytes before stdout, verified by
+/// mutation during plan 12-12:
+///
+/// * UPSTREAM — `config_validation::redact_key_path` and `ant::config::program_label`
+///   drop `char::is_control()` bytes while KEEPING the printable remainder, so
+///   `bad<ESC>[31mkey` becomes `bad[31mkey`;
+/// * AT THE PRINT SITE — `commands::config`'s `sanitize_for_terminal`, which
+///   removes the WHOLE SGR sequence, so the same key would become `badkey`.
+///
+/// Removing EITHER layer alone therefore leaves no ESC byte on stdout, and this
+/// test's escape assertion does not fire. That is a real property of the code,
+/// not a vacuous test: removing the print-site layer alone leaves the test
+/// green, removing the upstream layer alone trips the POSITIVE ARM below
+/// (`[31mkey` no longer survives), and removing BOTH trips the escape assertion
+/// itself. All three outcomes are recorded in this plan's SUMMARY.
+///
+/// Three controls keep this from passing vacuously:
+///
+/// 1. **The byte instrument is shown able to SEE an ESC.** A plain render with
+///    `NO_COLOR` removed emits the status line's own SGR sequences, and this
+///    test asserts they are present — the same `Command::output()` byte path
+///    that reports zero escapes for `config validate`. This is also the
+///    legitimate-color-survives half: sanitizing the COMPOSED coloured string
+///    instead of the untrusted inner value would ship a colourless status line,
+///    which a bare "no ESC anywhere" assertion would score as a PASS.
+/// 2. **The printable remnants are asserted present.** `display.bad<ESC>[31mkey`
+///    must still be reported as `display.bad[31mkey`, and the injected program
+///    name as `NOPE[31mPROG` — so a validator that printed nothing fails.
+/// 3. **Both colour modes are exercised.** `config validate` emits no colour at
+///    all (verified live: zero ESC bytes even with `NO_COLOR` unset), so the
+///    absence of escapes is a property of the report, not an artifact of the
+///    fixture setting `NO_COLOR=1`.
+#[test]
+#[serial]
+fn report_does_not_emit_terminal_escapes() {
+    let env = ConfigEnv::new(&config_with_terminal_escapes());
+
+    // --- CONTROL 1: the byte instrument can observe an ESC, and the status
+    //     line's own colours survive the sanitization boundary. ------------
+    let payload = render_payload(env.home_path());
+    let (code, coloured, _) = run_raw(&env, &[], Some(&payload), true);
+    assert_eq!(code, Some(0), "the control render must exit 0");
+    assert!(
+        coloured.contains(&ESC_BYTE),
+        "CONTROL FAILED: a coloured render emitted NO ESC byte, so this test's byte instrument \
+         cannot observe an escape and every assertion below is vacuous: {:?}",
+        String::from_utf8_lossy(&coloured)
+    );
+    assert!(
+        occurrences(&coloured, "\u{1b}[0m") >= 1,
+        "CONTROL FAILED: the renderer's own colour RESET is missing, so legitimate colour did \
+         not survive sanitization: {:?}",
+        String::from_utf8_lossy(&coloured)
+    );
+
+    // --- The proof, in both output modes and both colour modes. ----------
+    for args in [
+        vec!["config", "validate"],
+        vec!["config", "validate", "--json"],
+    ] {
+        for colour in [false, true] {
+            let label = format!("{} (colour={colour})", args.join(" "));
+            let (code, stdout, stderr) = run_raw(&env, &args, None, colour);
+            assert_eq!(
+                code,
+                Some(1),
+                "{label}: the fixture carries unknown-key and invalid-value ERRORS, so the run \
+                 exits 1; stdout={:?}",
+                String::from_utf8_lossy(&stdout)
+            );
+
+            for (stream, bytes) in [("stdout", &stdout), ("stderr", &stderr)] {
+                assert!(
+                    !bytes.contains(&ESC_BYTE),
+                    "{label}: an ESC byte reached {stream}: {:?}",
+                    String::from_utf8_lossy(bytes)
+                );
+                assert!(
+                    !bytes.contains(&BEL_BYTE),
+                    "{label}: a BEL byte reached {stream}: {:?}",
+                    String::from_utf8_lossy(bytes)
+                );
+            }
+
+            // POSITIVE ARM: the untrusted text really did reach the report,
+            // minus its control bytes.
+            for needle in ["display.bad", "[31mkey", "NOPE", "[31mPROG"] {
+                assert!(
+                    occurrences(&stdout, needle) >= 1,
+                    "{label}: the printable remainder {needle:?} must survive — without this a \
+                     report that printed nothing would pass: {:?}",
+                    String::from_utf8_lossy(&stdout)
+                );
+            }
+        }
     }
 }
