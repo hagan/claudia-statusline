@@ -7,9 +7,19 @@ Complete guide to configuring Claudia Statusline with all available options.
 ### Locations
 
 - **Claude Code Settings**: `~/.claude/settings.json` or `~/.claude/settings.local.json`
-- **Statusline Config**: `~/.config/claudia-statusline/config.toml`
+- **Statusline Config**: platform-dependent — `~/Library/Application Support/claudia-statusline/config.toml`
+  on macOS, `~/.config/claudia-statusline/config.toml` on Linux. Run `statusline config path`
+  for the authoritative answer on your machine, and see
+  [Where your config actually lives](#config-file-location).
 - **Database**: `~/.local/share/claudia-statusline/stats.db`
 - **Debug Logs** (if enabled): `~/.cache/statusline-debug.log`
+
+> **Shorthand used in this document.** Later sections write the config directory as
+> `~/.config/claudia-statusline/` for brevity. Read that as *your* config directory:
+> `~/Library/Application Support/claudia-statusline/` on macOS without `XDG_CONFIG_HOME`,
+> `$XDG_CONFIG_HOME/claudia-statusline/` when that variable is set, and
+> `~/.config/claudia-statusline/` on Linux. `statusline config path` prints the real one.
+> This applies to `presets/` and custom theme files too, which live in the same directory.
 
 ### Settings Priority
 
@@ -59,7 +69,54 @@ jq '. + {"statusLine": {"type": "command", "command": "~/.local/bin/statusline",
 
 ### Config File Location
 
-Create `~/.config/claudia-statusline/config.toml` with your preferences.
+**Where your config actually lives depends on your platform.** The single most common
+setup problem is creating `~/.config/claudia-statusline/config.toml` on macOS, where
+statusline never reads it.
+
+Statusline searches these locations in order and uses the FIRST one that exists:
+
+1. `$STATUSLINE_CONFIG_PATH` — an explicit path, if set
+2. `$STATUSLINE_CONFIG` — an explicit path, if set
+3. The platform config directory:
+   - if `$XDG_CONFIG_HOME` is set: `$XDG_CONFIG_HOME/claudia-statusline/config.toml`
+   - otherwise on **macOS**: `~/Library/Application Support/claudia-statusline/config.toml`
+   - otherwise on **Linux**: `~/.config/claudia-statusline/config.toml`
+4. `~/.claudia-statusline.toml`
+
+The top-level `--config <PATH>` flag overrides all of these for a single run.
+
+So on macOS, unless you have exported `XDG_CONFIG_HOME`, create your config at:
+
+```bash
+mkdir -p ~/Library/Application\ Support/claudia-statusline
+$EDITOR ~/Library/Application\ Support/claudia-statusline/config.toml
+```
+
+and on Linux at:
+
+```bash
+mkdir -p ~/.config/claudia-statusline
+$EDITOR ~/.config/claudia-statusline/config.toml
+```
+
+Rather than guessing, ask the binary:
+
+```bash
+statusline config path
+```
+
+It prints the active file and every candidate in order, marking each as found or not
+found. It also flags **misplaced** config files. `statusline config validate` issues a
+`misplaced_config` warning for the same situation, for example:
+
+```text
+⚠️  warning <misplaced-config>: /Users/you/.config/claudia-statusline/config.toml —
+    ~/.config is only searched when XDG_CONFIG_HOME points at it — on macOS the config
+    dir is ~/Library/Application Support; statusline never reads it — move it to
+    /Users/you/Library/Application Support/claudia-statusline/config.toml
+```
+
+See [The `config` Command](#the-config-command) for the full reference.
 
 ### Complete Example
 
@@ -115,6 +172,175 @@ Most users don't need a config file - defaults work great! But if you want to cu
 [database]
 retention_days_sessions = 90
 ```
+
+## The `config` Command
+
+`statusline config` groups three configuration-file utilities:
+
+| Command | Purpose |
+|---------|---------|
+| `statusline config validate [PATH] [--json] [--strict]` | Check a config file for unknown keys, type errors, invalid values and unreachable caches |
+| `statusline config generate` | Write an example config file to the default config path |
+| `statusline config path [--json]` | Show the active config file and the full search order |
+
+### `config validate`
+
+```bash
+# Validate the config that would actually be loaded
+statusline config validate
+
+# Validate a specific file
+statusline config validate ~/some/other-config.toml
+
+# Machine-readable output
+statusline config validate --json
+
+# Fail CI on warnings too
+statusline config validate --strict
+```
+
+`PATH` is a **positional** argument, not a flag. The top-level `--config <PATH>`
+option selects a config file for *rendering* a status line; it is not accepted by
+`config validate`. Pass the path positionally instead.
+
+With no `PATH`, `config validate` checks the config that would actually be loaded and
+reports which file that was. If no config file is found anywhere it validates the
+built-in defaults, emits a `no_config_found` notice and exits 0.
+
+#### What is an error and what is a warning
+
+**Errors** — these make the exit code non-zero:
+
+- **unknown keys** — a setting statusline does not recognize (usually a typo)
+- **type mismatches** — a string where a number or array is expected, and similar
+- **invalid values** — an unknown enum variant, an out-of-range number, an unparseable
+  duration
+- **config IO failures** — no file exists at the path, the file is unreadable, the path
+  is a directory, the path is not a regular file, or the file is larger than the
+  1 MiB (1048576 byte) config size cap
+
+**Warnings** — these do not affect the exit code unless `--strict` is passed:
+
+- a cache that is **stale**, **unreadable** or **unparseable**
+- informational cross-field advice (for example `[ant] enabled = false` while
+  `[ant.accounts.*]` tables are configured)
+- a config file found at a location statusline **never consults** — see
+  [Where your config actually lives](#config-file-location)
+
+#### Absent caches produce no finding
+
+**An absent cache produces no finding at all — not an error, and not even a warning.**
+A missing cache is the normal state for anyone who has never run a sync, so warning
+about it would make the default experience noisy for no reason. `config validate --json`
+still *reports* absence as `caches.<name>.state == "absent"`, so a script that wants to
+act on a missing cache can do so without every default user seeing a warning.
+
+#### Exit codes
+
+| Situation | Without `--strict` | With `--strict` |
+|-----------|--------------------|-----------------|
+| Clean config | `0` | `0` |
+| Warnings only | `0` | `1` |
+| Any error | `1` | `1` |
+
+`--strict` exists so CI can enforce a typo-free config with fresh caches without that
+becoming everyone's default.
+
+In `--json` output these three facts are **separate fields**, so a consumer never has to
+infer one from another:
+
+- `valid` means `counts.errors == 0`. It is **independent of `--strict`**: a
+  warnings-only run reports `"valid": true` even when `--strict` made it exit 1.
+- `strict` reports whether the flag was passed.
+- `exit_code` reports the process exit code that was actually used.
+
+#### `--json` schema
+
+Top-level keys:
+
+`schema_version`, `valid`, `strict`, `exit_code`, `target_path`, `target_source`,
+`active_path`, `active_source`, `counts`, `notices`, `findings`, `caches`.
+
+Each entry in `findings` carries `severity` (`error` or `warning`), `key`, `kind`,
+`message` and `hint`. The `kind` vocabulary is **closed** — a scripted consumer can
+filter on it:
+
+| `kind` | Meaning |
+|--------|---------|
+| `syntax_error` | The file is not valid TOML |
+| `unknown_key` | Not a recognized setting |
+| `type_error` | A section failed to deserialize |
+| `invalid_value` | Right type, unacceptable value; also cross-field advice |
+| `stale_cache` | Cache is at or beyond its staleness threshold |
+| `unreadable_cache` | Cache is unreadable **or** unparseable — both states map to this one kind |
+| `misplaced_config` | A config file exists at a location statusline never reads |
+| `config_io` | The target file could not be read (missing, unreadable, a directory, not a regular file, over the size cap) |
+
+`findings` is sorted into a total, process-independent order by
+`(severity, key, kind, message)`, so diffing two runs in CI is meaningful.
+
+`caches` carries one entry per classified cache, each with `state`
+(`fresh` / `stale` / `absent` / `unreadable` / `unparseable`), `age`, `path` and
+`detail`. `caches.models` and `caches.prices` are always present. **`caches.usage` is
+present only when `STATUSLINE_ANT_ACCOUNT` names an active account** — the usage cache is
+per-account, so with no active account there is nothing to classify and the key is
+omitted entirely rather than reported as absent.
+
+Example, a warnings-only run under `--strict`:
+
+```json
+{
+  "schema_version": 1,
+  "valid": true,
+  "strict": true,
+  "exit_code": 1,
+  "counts": { "errors": 0, "warnings": 1 },
+  "findings": [
+    {
+      "severity": "warning",
+      "key": "ant.enabled",
+      "kind": "invalid_value",
+      "message": "`enabled` is false while 1 `[ant.accounts.*]` table(s) are configured, ...",
+      "hint": null
+    }
+  ],
+  "caches": {
+    "models": { "state": "absent", "age": null, "path": "...", "detail": null },
+    "prices": { "state": "absent", "age": null, "path": "...", "detail": null }
+  }
+}
+```
+
+### `config generate`
+
+Writes an example config file to the default config path (see
+[Where your config actually lives](#config-file-location)).
+
+```bash
+statusline config generate
+```
+
+`statusline generate-config` still works but is **deprecated** in favour of
+`statusline config generate`; it prints a deprecation note on stderr.
+
+### `config path`
+
+Shows which config file is active and the full search order, marking each candidate as
+found or not found. This is the authoritative answer for your machine.
+
+```bash
+statusline config path
+statusline config path --json
+```
+
+It also lists **misplaced** config files — files that exist at a location statusline
+never reads on this platform.
+
+### See also
+
+For machine-readable project-state facts (`.planning/` milestone, phase and progress),
+see the [GSD project state](USAGE.md#gsd-project-state) section of USAGE.md; its schema
+is documented there and is not duplicated here.
 
 ## Layout Customization
 
@@ -553,7 +779,9 @@ Component colors accept:
 
 ### Custom User Presets
 
-Create custom presets in `~/.config/claudia-statusline/presets/`:
+Create custom presets in your config directory's `presets/` subdirectory — on macOS
+that is `~/Library/Application Support/claudia-statusline/presets/`, on Linux
+`~/.config/claudia-statusline/presets/`. Run `statusline config path` if unsure:
 
 ```bash
 mkdir -p ~/.config/claudia-statusline/presets
@@ -810,7 +1038,9 @@ statusline --theme solarized
 
 ### Creating Custom Themes
 
-Create `~/.config/claudia-statusline/mytheme.toml`:
+Create `mytheme.toml` in your config directory (`statusline config path` names it;
+`~/Library/Application Support/claudia-statusline/` on macOS,
+`~/.config/claudia-statusline/` on Linux):
 
 ```toml
 name = "mytheme"
@@ -1653,15 +1883,22 @@ export XDG_CACHE_HOME=~/my-cache
 ### Check Current Configuration
 
 ```bash
-# Show where config would be loaded from
-statusline health --json | jq '.config_path'
+# Show the active config file and the full search order (authoritative)
+statusline config path
 
-# Check if config file exists
-ls -la ~/.config/claudia-statusline/config.toml
+# Same, machine-readable
+statusline config path --json | jq '.active'
 
-# Validate config syntax
-# (no built-in validator yet, check for TOML syntax errors manually)
+# Validate the config that would actually be loaded
+statusline config validate
+
+# Machine-readable, and fail on warnings too (useful in CI)
+statusline config validate --json --strict
 ```
+
+`config validate` reports unknown keys, type errors, invalid values and unreachable
+caches. It exits 0 on a clean or warnings-only config and non-zero on any error; see
+[Exit codes](#exit-codes).
 
 ### Test Configuration
 
@@ -1679,9 +1916,13 @@ statusline --config /path/to/test-config.toml <<< '{"workspace":{"current_dir":"
 ### Common Issues
 
 **Config not being loaded:**
-- Check file path: `~/.config/claudia-statusline/config.toml`
-- Check TOML syntax (no syntax validator built-in)
-- Check permissions: `chmod 644 ~/.config/claudia-statusline/config.toml`
+- Run `statusline config path` — it names the active file and every candidate that was
+  searched, and flags a config sitting at a path this platform never reads. On macOS the
+  config dir is `~/Library/Application Support/claudia-statusline/`, NOT `~/.config/`
+  (see [Config File Location](#config-file-location))
+- Run `statusline config validate` — it reports TOML syntax errors, unknown keys and
+  type errors directly
+- Check permissions: `chmod 644 "$(statusline config path --json | jq -r '.active')"`
 
 **Settings.json changes not applied:**
 - Restart Claude Code after any settings changes
