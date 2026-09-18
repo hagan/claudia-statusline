@@ -2653,3 +2653,233 @@ fn known_limitation_a_200k_exceeding_session_prices_at_the_standard_rate() {
          silently deleted."
     );
 }
+
+// ===========================================================================
+// Plan 12-12 Task 2: bound the validation engine's DIRECT call sites.
+// ===========================================================================
+
+/// Assemble the validation-engine call tokens at RUNTIME so this guard's own
+/// source does not literally contain the tokens it searches for. Mirrors
+/// [`resolution_tokens`] and `keyless_forbidden_tokens`.
+///
+/// Returns, in order: the text-validation entry, the cache-classification
+/// entry, the cache-finding entry, and the report CONSTRUCTOR. The first three
+/// are the engine's doors; the fourth is the only way to obtain the `&mut
+/// Report` they all require, so forbidding it closes the "assemble a report
+/// here, hand it to a helper there" route that a doors-only scan would miss.
+fn validation_engine_tokens() -> Vec<String> {
+    vec![
+        format!("validate_config{}(", "_text"),
+        format!("classify_all{}(", "_caches"),
+        format!("report_cache{}(", "_findings"),
+        format!("Report::{}(", "new"),
+    ]
+}
+
+/// The PRODUCTION portion of a source file: everything before its trailing
+/// `#[cfg(test)] mod tests { … }` block, or the whole file if it has none.
+///
+/// Colocated unit tests legitimately construct a `Report` and drive the engine
+/// — that is how `src/config.rs`, `src/pricing/mod.rs`, `src/ant/config.rs` and
+/// `src/gsd/config.rs` exercise their own `impl Validate` blocks. A guard that
+/// scanned those blocks would fail on the architecture D-03 mandates, which is
+/// the round-1 mistake this plan exists to avoid repeating.
+///
+/// The boundary rule is deliberately the narrowest one that is exact for this
+/// repo rather than a brace-depth parse (braces inside string literals make
+/// that fragile, and a fragile boundary is how a guard goes quietly vacuous):
+/// the cut is a line that is EXACTLY `mod tests {` at column zero whose
+/// preceding line is EXACTLY `#[cfg(test)]`. Such a module runs to end of file
+/// in every file in this tree, and [`assert_test_module_runs_to_eof`] fails
+/// loudly if that ever stops being true rather than silently under-scanning.
+///
+/// Note this does NOT skip `#[cfg(test)]` on an individual item — e.g.
+/// `src/display.rs:176`'s `set_color_override` — which therefore stays in the
+/// scanned portion. That is the conservative direction.
+fn production_portion(rel: &str, source: &str) -> (String, bool) {
+    let lines: Vec<&str> = source.lines().collect();
+    let cut = lines
+        .iter()
+        .enumerate()
+        .find(|(i, l)| **l == "mod tests {" && *i > 0 && lines[i - 1].trim() == "#[cfg(test)]")
+        .map(|(i, _)| i);
+    match cut {
+        Some(i) => {
+            assert_test_module_runs_to_eof(rel, &lines);
+            (lines[..i].join("\n"), true)
+        }
+        None => (source.to_string(), false),
+    }
+}
+
+/// The trailing test module must close at the LAST line of the file, so that
+/// truncating at its opening brace cannot hide production code below it.
+fn assert_test_module_runs_to_eof(rel: &str, lines: &[&str]) {
+    let last = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .map(|i| lines[i])
+        .unwrap_or("");
+    assert_eq!(
+        last, "}",
+        "{rel}: the trailing `#[cfg(test)] mod tests` block does not close at the last \
+         non-empty line of the file, so truncating there could hide PRODUCTION code below \
+         it and make the validation-engine guard under-scan"
+    );
+}
+
+/// The validation engine is called from exactly two files, and the colocated
+/// `impl Validate` architecture it must permit is still in place.
+///
+/// # SCOPE — what this establishes, and what it does not
+///
+/// This is a **source-token scan** bounding DIRECT call sites. It is **not** a
+/// call-graph reachability proof. An INDIRECT call — a helper defined inside
+/// one of the two allowed files and invoked from elsewhere — would not be
+/// detected, and neither would a call assembled through a trait object or a
+/// function pointer. The `ALLOWED` set is deliberately only TWO files, one of
+/// which (`src/commands/config.rs`) is outside the library's module graph
+/// entirely (`mod commands;` is declared in `src/main.rs` and NOT in
+/// `src/lib.rs` — asserted below), and it is that smallness that keeps the
+/// indirect-call surface narrow enough for a token scan to mean something.
+///
+/// The scan covers the PRODUCTION portion of every `.rs` file under `src/`;
+/// see [`production_portion`] for why colocated `#[cfg(test)] mod tests`
+/// blocks are excluded and how that exclusion is kept honest.
+///
+/// # Why CALLS and not the report TYPE
+///
+/// The round-1 guard would have scanned for references to `Report` with the
+/// same two-file allowlist. Plan 12-04's D-03 architecture places `impl
+/// Validate` blocks COLOCATED with the config structs they validate, in
+/// `src/config.rs`, `src/pricing/mod.rs`, `src/ant/config.rs` and
+/// `src/gsd/config.rs`; every one of them names `&mut Report` in its
+/// signature, and `src/config.rs` is itself on the render path. A type-name
+/// scan would therefore have REJECTED the required code. Narrowing the scan to
+/// a hardcoded list of render files instead is the opposite failure — a call
+/// added anywhere else escapes.
+///
+/// The COMPATIBILITY assertion below is what makes the guard honest rather
+/// than merely tolerant: it requires `&mut Report` to be PRESENT in all four
+/// colocated-impl files. If a future refactor centralizes the impls, this
+/// fails loudly and the guard gets re-decided deliberately instead of drifting
+/// into a prohibition nobody chose.
+///
+/// # FAILURE MODE
+///
+/// Adding any engine call anywhere under `src/` outside the two allowed files
+/// fails this guard, naming the offending `file:line`.
+#[test]
+fn structural_guard_validation_engine_call_sites_are_bounded() {
+    const ALLOWED: &[&str] = &["src/config_validation.rs", "src/commands/config.rs"];
+    /// The colocated `impl Validate` sites D-03 mandates. The guard must
+    /// PERMIT these and is asserted to.
+    const COLOCATED: &[&str] = &[
+        "src/config.rs",
+        "src/pricing/mod.rs",
+        "src/ant/config.rs",
+        "src/gsd/config.rs",
+    ];
+
+    let tokens = validation_engine_tokens();
+    let files = walk_rs_files("src");
+    assert!(
+        files.len() >= 20,
+        "the recursive walk of `src/` recovered only {} .rs file(s) — the walk is broken, \
+         and a broken walk would make this guard pass VACUOUSLY",
+        files.len()
+    );
+
+    let mut violations: Vec<String> = Vec::new();
+    let mut scanned_lines = 0usize;
+    let mut truncated_files = 0usize;
+
+    for rel in &files {
+        let source = read_src(rel);
+        let (production, truncated) = production_portion(rel, &source);
+        if truncated {
+            truncated_files += 1;
+        }
+        scanned_lines += production.lines().count();
+        if ALLOWED.contains(&rel.as_str()) {
+            continue;
+        }
+        for (i, line) in production.lines().enumerate() {
+            // `code_portion` strips `//` comments, so prose DESCRIBING the
+            // prohibition neither trips this guard nor satisfies it.
+            let code = code_portion(line);
+            for tok in &tokens {
+                if code.contains(tok.as_str()) {
+                    violations.push(format!("{}:{}: {}", rel, i + 1, line.trim()));
+                }
+            }
+        }
+    }
+
+    // Non-vacuity of the PRODUCTION-PORTION filter itself. Without these, a
+    // truncation bug that blanked every file would make the scan pass with
+    // nothing examined — the precise failure mode this phase keeps finding.
+    assert!(
+        scanned_lines >= 20_000,
+        "only {scanned_lines} production line(s) were scanned across {} file(s); the \
+         `#[cfg(test)] mod tests` truncation has eaten the tree and this guard is VACUOUS",
+        files.len()
+    );
+    assert!(
+        truncated_files >= 10,
+        "only {truncated_files} file(s) were truncated at a trailing test module, but this \
+         tree colocates unit tests almost everywhere — the truncation rule has stopped \
+         matching, so the scan is no longer excluding what its doc says it excludes"
+    );
+
+    assert!(
+        violations.is_empty(),
+        "the config-validation engine must be called from {ALLOWED:?} and nowhere else — a \
+         call on the render path turns a diagnostic into render work and re-opens the \
+         validation/render coupling this phase exists to prevent (T-12-49). Found:\n{}",
+        violations.join("\n")
+    );
+
+    // --- COMPATIBILITY: the colocated impls D-03 mandates are PRESENT ------
+    for rel in COLOCATED {
+        let source = read_src(rel);
+        let (production, _) = production_portion(rel, &source);
+        let has_impl = production
+            .lines()
+            .any(|l| code_portion(l).contains("&mut Report"));
+        assert!(
+            has_impl,
+            "{rel} no longer contains a `&mut Report` signature. D-03 places the `impl \
+             Validate` blocks COLOCATED with the config structs, and this guard is written \
+             to PERMIT that. If the impls moved, this guard's ALLOWED set must be \
+             re-decided deliberately — not left silently forbidding an architecture that \
+             no longer exists"
+        );
+    }
+
+    // --- MODULE GRAPH: the command handler is binary-only ------------------
+    // A structural fact, not a token heuristic: `src/commands/config.rs` holds
+    // the handler and its `process::exit`, and it is unreachable from the
+    // library crate and therefore from every `tests/` binary that links it.
+    let lib = read_src("src/lib.rs");
+    let declares_commands = lib
+        .lines()
+        .map(code_portion)
+        .any(|c| c.contains("mod commands"));
+    assert!(
+        !declares_commands,
+        "`src/lib.rs` now declares `mod commands`, so `src/commands/config.rs` — the command \
+         handler and its `process::exit` — has entered the LIBRARY module graph. The second \
+         entry in this guard's ALLOWED set was justified by being binary-only; that \
+         justification is gone and the guard must be re-decided"
+    );
+    let main = read_src("src/main.rs");
+    assert!(
+        main.lines()
+            .map(code_portion)
+            .any(|c| c.contains("mod commands")),
+        "`src/main.rs` no longer declares `mod commands` — the module-graph assertion above \
+         would then hold for a trivial reason (the module does not exist at all) rather \
+         than the intended one, so it must not be allowed to pass silently"
+    );
+}
