@@ -74,6 +74,7 @@ pub mod stats;
 pub mod sync;
 /// Theme system for customizable statusline colors
 pub mod theme;
+pub mod user_file;
 pub mod utils;
 pub mod version;
 

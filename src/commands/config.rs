@@ -398,8 +398,12 @@ type TargetRead = std::result::Result<String, String>;
 /// error, because the report still has to render and the exit code still has to
 /// follow the SC1 contract.
 ///
-/// The ladder mirrors `crate::config_validation::classify_cache`, including the
-/// two steps whose obvious shape is wrong:
+/// The ladder itself now lives in [`crate::user_file::read_regular_file_capped`]
+/// (quick-260922-i1y), shared with the user preset and theme loaders so the
+/// repo keeps ONE copy of it; this function only LABELS the result, and every
+/// message below is byte-identical to the pre-refactor text. The ladder still
+/// mirrors `crate::config_validation::classify_cache`, including the two steps
+/// whose obvious shape is wrong:
 ///
 /// * **`symlink_metadata` first, then follow.** A SYMLINK is resolved with
 ///   `std::fs::metadata` and judged by its TARGET, because the consumer —
@@ -414,68 +418,29 @@ type TargetRead = std::result::Result<String, String>;
 ///   not bound it. `/dev/zero` is caught here too, as a character device.
 fn read_target_config(p: &std::path::Path) -> TargetRead {
     use crate::config_validation::{file_type_label, io_kind_label};
-    use std::io::ErrorKind;
+    use crate::user_file::{read_regular_file_capped, CappedReadError};
 
-    let link_md = match std::fs::symlink_metadata(p) {
-        Ok(md) => md,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err("no file exists at this path".to_string())
+    read_regular_file_capped(p, MAX_CONFIG_BYTES).map_err(|e| match e {
+        CappedReadError::NotFound => "no file exists at this path".to_string(),
+        CappedReadError::Stat(k) => {
+            format!("the file could not be examined ({})", io_kind_label(k))
         }
-        Err(e) => {
-            return Err(format!(
-                "the file could not be examined ({})",
-                io_kind_label(e.kind())
-            ))
-        }
-    };
-
-    let md = if link_md.file_type().is_symlink() {
-        match std::fs::metadata(p) {
-            Ok(md) => md,
-            Err(e) if e.kind() == ErrorKind::NotFound => {
-                return Err("dangling symlink — it points at nothing".to_string())
-            }
-            Err(e) => {
-                return Err(format!(
-                    "the symlink target could not be examined ({})",
-                    io_kind_label(e.kind())
-                ))
-            }
-        }
-    } else {
-        link_md
-    };
-
-    let ft = md.file_type();
-    if !ft.is_file() {
-        return Err(format!(
+        CappedReadError::DanglingSymlink => "dangling symlink — it points at nothing".to_string(),
+        CappedReadError::TargetStat(k) => format!(
+            "the symlink target could not be examined ({})",
+            io_kind_label(k)
+        ),
+        CappedReadError::NotRegular(ft) => format!(
             "not a regular file ({}) — a config file must be a regular file",
             file_type_label(&ft)
-        ));
-    }
-    if md.len() > MAX_CONFIG_BYTES {
-        return Err(format!(
-            "larger than the {MAX_CONFIG_BYTES} byte config size cap"
-        ));
-    }
-
-    let mut buf = String::new();
-    let read = std::fs::File::open(p).and_then(|f| {
-        use std::io::Read;
-        f.take(MAX_CONFIG_BYTES + 1).read_to_string(&mut buf)
-    });
-    if let Err(e) = read {
-        return Err(format!(
-            "the file could not be read ({})",
-            io_kind_label(e.kind())
-        ));
-    }
-    if buf.len() as u64 > MAX_CONFIG_BYTES {
-        return Err(format!(
-            "larger than the {MAX_CONFIG_BYTES} byte config size cap"
-        ));
-    }
-    Ok(buf)
+        ),
+        CappedReadError::TooLarge => {
+            format!("larger than the {MAX_CONFIG_BYTES} byte config size cap")
+        }
+        CappedReadError::Read(k) => {
+            format!("the file could not be read ({})", io_kind_label(k))
+        }
+    })
 }
 
 /// Build the `Config` value the cache classifier needs, from the sections that

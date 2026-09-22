@@ -58,6 +58,7 @@ mod stats;
 #[cfg(feature = "turso-sync")]
 mod sync;
 mod theme;
+mod user_file;
 mod utils;
 mod version;
 
