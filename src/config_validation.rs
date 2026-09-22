@@ -738,6 +738,20 @@ pub fn redact_toml_error(source: &str, e: &toml::de::Error) -> String {
     cap_chars(&out, MAX_MESSAGE_CHARS)
 }
 
+/// [`redact_toml_error`] for a caller that holds a deserialization error but
+/// NOT the source text it came from.
+///
+/// `crate::pricing::deserialize_lenient` is the case: it buffers the `[pricing]`
+/// subtree through a `toml::Value` and retries `PricingConfig::deserialize`
+/// against it, so there is no document left to resolve a span in — but its
+/// `warn!` is emitted on the RENDER path at the DEFAULT log level, which is
+/// exactly where a value echo must not reach. Passing an empty `source`
+/// disables only [`expected_prose`]'s absent-from-source check, which then
+/// holds trivially; every other bound is unchanged.
+pub fn redact_error_message(raw: &str) -> String {
+    cap_chars(&redact_message_body(raw, ""), MAX_MESSAGE_CHARS)
+}
+
 /// Steps 1-5 of [`redact_toml_error`], uncapped so the caller can append a
 /// position before the single final [`cap_chars`].
 fn redact_message_body(raw: &str, source: &str) -> String {

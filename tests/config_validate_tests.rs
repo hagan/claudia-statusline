@@ -3526,6 +3526,78 @@ fn render_path_toml_error_leaks_no_secret_material() {
     }
 }
 
+/// The OTHER render-path credential leak: `[pricing]`'s LENIENT deserializer.
+///
+/// `crate::pricing::deserialize_lenient` buffers the `[pricing]` subtree through
+/// a `toml::Value` so a bad `[pricing]` cannot abort the whole document, then
+/// `warn!`s about the failure. It interpolated serde's RAW message, which quotes
+/// the offending value back:
+///
+/// ```text
+/// [pricing] source = "sk-ant-PLAINSECRET-999"
+///   → [WARN statusline::pricing] Invalid [pricing] config: unknown variant
+///     `sk-ant-PLAINSECRET-999`, expected one of `auto`, `bundled`, `synced`
+///     in `source`. Using pricing defaults (rest of config kept).
+/// ```
+///
+/// That is a WHOLE-value leak, not a split one, so it is not CR-01 and it is
+/// not observed by [`render_path_toml_error_leaks_no_secret_material`] either:
+/// this path never reaches `Config::load_from_file`'s error, which is the only
+/// render-path error that test drives. It was found while reproducing CR-01 and
+/// is strictly worse than CR-01 — no delimiter in the value is required.
+///
+/// Both arms below fail against the pre-fix `deserialize_lenient`; the first
+/// needs no delimiter at all.
+#[test]
+#[serial]
+fn render_path_lenient_pricing_error_leaks_no_secret_material() {
+    let arms: [(&str, &[&str], String); 2] = [
+        (
+            "sk-ant-SENTINEL-NNN",
+            &["SENTINEL-NNN"],
+            config_with_secret_in_enum_error("sk-ant-SENTINEL-NNN"),
+        ),
+        (
+            "sk-ant-SEN`TINEL-OOO",
+            &["TINEL-OOO", "sk-ant-SEN"],
+            config_with_secret_in_enum_error("sk-ant-SEN`TINEL-OOO"),
+        ),
+    ];
+
+    for (sentinel, fragments, body) in arms {
+        let env = ConfigEnv::new(&body);
+        let payload = render_payload(env.home_path());
+        let (code, stdout, stderr) = run_raw(&env, &[], Some(&payload), false);
+        let label = format!("render [lenient pricing: {sentinel}]");
+
+        assert_eq!(
+            code,
+            Some(0),
+            "{label}: a bad [pricing] must never fail the render; stderr={:?}",
+            String::from_utf8_lossy(&stderr),
+        );
+        assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+        assert_no_fragments(&label, fragments, &stdout, &stderr);
+
+        // Redacted, NOT suppressed. Without this the test would also pass
+        // against a binary that simply stopped warning.
+        let err = String::from_utf8_lossy(&stderr);
+        assert!(
+            err.contains("Invalid [pricing] config"),
+            "{label}: the render must still REPORT the bad section at the default log level: \
+             {err:?}"
+        );
+        assert!(
+            err.contains("<redacted>"),
+            "{label}: the diagnostic must survive redaction with its shape intact: {err:?}"
+        );
+        assert!(
+            !stdout.is_empty(),
+            "{label}: the status line must still render on pricing defaults"
+        );
+    }
+}
+
 /// T-12-48: no terminal escape byte reaches stdout or stderr from a config KEY
 /// or VALUE — asserted on the RAW bytes of a spawned process.
 ///

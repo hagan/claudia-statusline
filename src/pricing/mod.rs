@@ -511,13 +511,15 @@ where
         // something untrue about which table priced their session.
         Ok(cfg) => Ok(cfg),
         Err(e) => {
-            // `toml` errors are multi-line (message + source span); flatten so
-            // the warning stays one readable line.
-            let detail = e
-                .to_string()
-                .split_whitespace()
-                .collect::<Vec<_>>()
-                .join(" ");
+            // This `warn!` is emitted on the RENDER path at the DEFAULT log
+            // level, and serde's message QUOTES the offending config value back
+            // (``unknown variant `sk-ant-…` ``). Flattening whitespace, which is
+            // all this did, is not redaction: a `[pricing].source` carrying a
+            // credential was printed verbatim to stderr on every render. It goes
+            // through the same boundary as `Config::load_from_file`'s error —
+            // which also cuts the multi-line source-span block at the first
+            // newline, so the flattening is subsumed.
+            let detail = crate::config_validation::redact_error_message(&e.to_string());
             log::warn!(
                 "Invalid [pricing] config: {detail}. Using pricing defaults (rest of config kept)."
             );
