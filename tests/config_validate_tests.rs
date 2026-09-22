@@ -601,9 +601,32 @@ fn config_with_secret_in_syntax_error(sentinel: &str) -> String {
 
 /// A config whose `admin_key_command` is a bare STRING equal to `sentinel`,
 /// so the parser fails at the TYPE level (it expects a sequence).
+///
+/// `sentinel` is interpolated into a TOML BASIC string, so a caller passing a
+/// value that contains a `"` must pass it already TOML-escaped (`\\"`) while
+/// asserting against the UNESCAPED form — that is exactly the CR-01 fixture.
 #[allow(dead_code)]
 fn config_with_secret_in_type_error(sentinel: &str) -> String {
     format!("[ant]\nenabled = true\n\n[ant.accounts.work]\nadmin_key_command = \"{sentinel}\"\n")
+}
+
+/// A config whose `[pricing].source` is an unknown enum variant equal to
+/// `sentinel`, so serde fails with ``unknown variant `<value>` `` — the one
+/// place the offending value is echoed with BACKTICKS and NO escaping, which is
+/// the delimiter `redact_quoted_runs` could not survive (CR-01, vector 2).
+#[allow(dead_code)]
+fn config_with_secret_in_enum_error(sentinel: &str) -> String {
+    format!("[pricing]\nsource = \"{sentinel}\"\n")
+}
+
+/// A config whose `[pricing].max_age` is an unparseable duration equal to
+/// `sentinel`. This one does NOT fail deserialization: it reaches the SEMANTIC
+/// rule, whose parser (`ant::duration::parse_max_age`) was written for a CLI
+/// flag and quotes the input back with `'…'` — CR-01 vector 3, the only one
+/// that travels through `redact_value_text` rather than `redact_toml_error`.
+#[allow(dead_code)]
+fn config_with_secret_in_duration_error(sentinel: &str) -> String {
+    format!("[pricing]\nmax_age = \"{sentinel}\"\n")
 }
 
 // ---------------------------------------------------------------------------
@@ -2954,6 +2977,29 @@ fn occurrences(haystack: &[u8], needle: &str) -> usize {
     haystack.windows(n.len()).filter(|w| *w == n).count()
 }
 
+/// Assert that NO `fragment` appears in either stream.
+///
+/// WR-02: [`assert_no_sentinel`] looks for the WHOLE sentinel and for the
+/// `sk-ant-` prefix, and a DELIMITER-SPLIT leak carries neither — the pre-fix
+/// `redact_quoted_runs` cut `sk-ant-SEN"TINEL-JJJ` at the interior quote and
+/// printed only the tail, `TINEL-JJJ`. A sentinel is only observable through
+/// its fragments once it carries the delimiter its diagnostic renders it with,
+/// so every delimiter-bearing arm asserts on fragments as well.
+fn assert_no_fragments(what: &str, fragments: &[&str], stdout: &[u8], stderr: &[u8]) {
+    for (stream, bytes) in [("stdout", stdout), ("stderr", stderr)] {
+        for fragment in fragments {
+            let hits = occurrences(bytes, fragment);
+            assert_eq!(
+                hits,
+                0,
+                "{what}: the secret FRAGMENT {fragment:?} appeared {hits} time(s) on {stream}: \
+                 {:?}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+    }
+}
+
 /// Assert `sentinel` (and the generic `sk-ant-` prefix) appear ZERO times in
 /// both streams, naming the count and the offending stream on failure.
 fn assert_no_sentinel(what: &str, sentinel: &str, stdout: &[u8], stderr: &[u8]) {
@@ -3250,20 +3296,42 @@ fn report_leaks_no_secret_material() {
 #[test]
 #[serial]
 fn parser_diagnostics_leak_no_secret_material() {
-    let arms: [(&str, String, &str); 2] = [
+    let arms: [(&str, &[&str], String, &str); 4] = [
         (
             "sk-ant-SENTINEL-HHH",
+            &["SENTINEL-HHH"],
             config_with_secret_in_syntax_error("sk-ant-SENTINEL-HHH"),
             "syntax_error",
         ),
         (
             "sk-ant-SENTINEL-III",
+            &["SENTINEL-III"],
             config_with_secret_in_type_error("sk-ant-SENTINEL-III"),
+            "type_error",
+        ),
+        // WR-02, delimiter arm 1 — DOUBLE QUOTE. The TOML value is
+        // `sk-ant-SEN"TINEL-JJJ`, so the fixture body carries `\"` while the
+        // assertions use the unescaped form. serde renders it with `{:?}`,
+        // escaping the interior quote; the pre-fix scanner closed its run there
+        // and printed `TINEL-JJJ` in the clear.
+        (
+            "sk-ant-SEN\"TINEL-JJJ",
+            &["TINEL-JJJ", "sk-ant-SEN"],
+            config_with_secret_in_type_error("sk-ant-SEN\\\"TINEL-JJJ"),
+            "type_error",
+        ),
+        // WR-02, delimiter arm 2 — BACKTICK, which serde does NOT escape at all
+        // in an unknown-variant message, so no escape-aware scanner could have
+        // closed this one either.
+        (
+            "sk-ant-SEN`TINEL-KKK",
+            &["TINEL-KKK", "sk-ant-SEN"],
+            config_with_secret_in_enum_error("sk-ant-SEN`TINEL-KKK"),
             "type_error",
         ),
     ];
 
-    for (sentinel, body, expected_kind) in arms {
+    for (sentinel, fragments, body, expected_kind) in arms {
         let env = ConfigEnv::new(&body);
 
         // Human mode.
@@ -3276,6 +3344,7 @@ fn parser_diagnostics_leak_no_secret_material() {
             String::from_utf8_lossy(&stdout),
         );
         assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+        assert_no_fragments(&label, fragments, &stdout, &stderr);
         assert!(
             occurrences(&stdout, "1 error(s)") >= 1,
             "{label}: the failure must still be REPORTED — a command that printed nothing would \
@@ -3288,6 +3357,7 @@ fn parser_diagnostics_leak_no_secret_material() {
         let label = format!("config validate --json [{expected_kind}]");
         assert_eq!(code, Some(1), "{label}: exit 1");
         assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+        assert_no_fragments(&label, fragments, &stdout, &stderr);
         let report = parse_exactly_one_json(&stdout, &label);
         let findings = validate_findings(&report);
         assert!(
@@ -3297,6 +3367,67 @@ fn parser_diagnostics_leak_no_secret_material() {
             "{label}: the report must carry a `{expected_kind}` finding, so redaction cannot be \
              confused with suppression: {report}"
         );
+    }
+}
+
+/// WR-02 / CR-01 vector 3: the SINGLE-QUOTE delimiter, which reaches output
+/// through `redact_value_text` rather than `redact_toml_error`.
+///
+/// `[pricing].max_age` does NOT fail deserialization — it is a `String` — so it
+/// reaches the SEMANTIC rule, whose parser (`ant::duration::parse_max_age`) was
+/// written for a CLI flag and quotes the offending input back with `'…'`. A
+/// value carrying a `'` therefore split the pre-fix pairing scanner exactly as
+/// the other two delimiters did, on a DIFFERENT helper:
+///
+/// ```text
+/// max_age = "a'LEAKED_MAXAGE'b"
+///   → invalid --max-age number in "<redacted>"LEAKED_MAXAGE"<redacted>"
+/// ```
+///
+/// No sentinel anywhere else in this phase contains a `'`, so this axis was
+/// unobservable.
+#[test]
+#[serial]
+fn semantic_rule_diagnostics_leak_no_fragment_of_a_quote_bearing_value() {
+    const SENTINEL: &str = "sk-ant-SEN'TINEL-LLL";
+    let fragments = ["TINEL-LLL", "sk-ant-SEN"];
+    let env = ConfigEnv::new(&config_with_secret_in_duration_error(SENTINEL));
+
+    for json in [false, true] {
+        let args: &[&str] = if json {
+            &["config", "validate", "--json"]
+        } else {
+            &["config", "validate"]
+        };
+        let (code, stdout, stderr) = run_raw(&env, args, None, false);
+        let label = format!(
+            "config validate{} [duration_error]",
+            if json { " --json" } else { "" }
+        );
+
+        assert_eq!(
+            code,
+            Some(1),
+            "{label}: an unparseable duration is an ERROR, so the run exits 1; stdout={:?}",
+            String::from_utf8_lossy(&stdout),
+        );
+        assert_no_sentinel(&label, SENTINEL, &stdout, &stderr);
+        assert_no_fragments(&label, &fragments, &stdout, &stderr);
+
+        if json {
+            // Non-vacuity: redaction must not be confused with suppression —
+            // the rule really did fire, on the key it was supposed to fire on.
+            let report = parse_exactly_one_json(&stdout, &label);
+            let findings = validate_findings(&report);
+            assert!(
+                findings.iter().any(|f| {
+                    f["key"].as_str() == Some("pricing.max_age")
+                        && f["kind"].as_str() == Some("invalid_value")
+                }),
+                "{label}: the report must carry an `invalid_value` finding at \
+                 `pricing.max_age`: {report}"
+            );
+        }
     }
 }
 
@@ -3331,20 +3462,37 @@ fn parser_diagnostics_leak_no_secret_material() {
 #[test]
 #[serial]
 fn render_path_toml_error_leaks_no_secret_material() {
-    let arms: [(&str, String, &str); 2] = [
+    let arms: [(&str, &[&str], String, &str); 3] = [
         (
             "sk-ant-SENTINEL-DDD",
+            &["SENTINEL-DDD"],
             config_with_secret_in_syntax_error("sk-ant-SENTINEL-DDD"),
             "syntax",
         ),
         (
             "sk-ant-SENTINEL-CCC",
+            &["SENTINEL-CCC"],
             config_with_secret_in_type_error("sk-ant-SENTINEL-CCC"),
             "deserialization",
         ),
+        // WR-02 / CR-01: the SAME leak, on the SAME render path, from a value
+        // that carries the delimiter its diagnostic renders it with. The
+        // pre-fix binary printed `TINEL-MMM` here at the DEFAULT log level.
+        // Double quote is the only one of CR-01's three delimiters reachable on
+        // this path: `Config::load_from_file` fails on a whole-document
+        // deserialization, where serde renders strings with `{:?}`. The
+        // backtick vector is `[pricing]`, whose field is `deserialize_lenient`
+        // and never aborts the document load; the single-quote vector belongs
+        // to a SEMANTIC rule that only `config validate` runs.
+        (
+            "sk-ant-SEN\"TINEL-MMM",
+            &["TINEL-MMM", "sk-ant-SEN"],
+            config_with_secret_in_type_error("sk-ant-SEN\\\"TINEL-MMM"),
+            "deserialization, delimiter-bearing",
+        ),
     ];
 
-    for (sentinel, body, arm) in arms {
+    for (sentinel, fragments, body, arm) in arms {
         let env = ConfigEnv::new(&body);
         let payload = render_payload(env.home_path());
         let (code, stdout, stderr) = run_raw(&env, &[], Some(&payload), false);
@@ -3357,6 +3505,7 @@ fn render_path_toml_error_leaks_no_secret_material() {
             String::from_utf8_lossy(&stderr),
         );
         assert_no_sentinel(&label, sentinel, &stdout, &stderr);
+        assert_no_fragments(&label, fragments, &stdout, &stderr);
 
         // Redacted, NOT suppressed: the user is still told the config failed.
         let err = String::from_utf8_lossy(&stderr);
