@@ -417,8 +417,8 @@ const EXPECTED_ONE_OF: &str = "expected one of ";
 /// ``unknown variant `bunlded`, expected one of `auto`, `bundled`, `synced` ``.
 /// The first backtick run is the USER's value; everything after
 /// [`EXPECTED_ONE_OF`] comes from the enum's compile-time `VARIANTS` constant —
-/// the SCHEMA, never the document. [`redact_quoted_runs`] cannot tell the two
-/// apart and removes both, which left `config validate` answering a
+/// the SCHEMA, never the document. [`redact_after_first_delimiter`] cannot
+/// tell the two apart and removes both, which left `config validate` answering a
 /// `source = "bunlded"` typo with
 /// `unknown variant "<redacted>", expected one of "<redacted>", "<redacted>",
 /// "<redacted>"` — a diagnostic that names neither what is wrong nor what is
@@ -476,6 +476,10 @@ fn legal_variants(first_line: &str) -> Option<(&str, Vec<String>)> {
     Some((head, variants))
 }
 
+/// The literal that stands in for everything [`redact_after_first_delimiter`]
+/// removes.
+const REDACTED: &str = "\"<redacted>\"";
+
 /// Turn a `toml` parser diagnostic into a message that leaks nothing.
 ///
 /// # Contract
@@ -496,33 +500,56 @@ fn legal_variants(first_line: &str) -> Option<(&str, Vec<String>)> {
 ///    the gutter block);
 /// 2. split off a SCHEMA-derived `expected one of …` clause, if present, so it
 ///    survives step 3 — see [`legal_variants`] for why that is safe;
-/// 3. replace every double-quoted, single-quoted and backtick-quoted run with
-///    the literal `"<redacted>"` (kills inline values — serde spells an unknown
-///    enum variant with backticks, so all three delimiters must go);
+/// 3. redact the head from its FIRST quoting delimiter to its end
+///    ([`redact_after_first_delimiter`]), then drop any remaining control
+///    characters;
 /// 4. re-attach the legal-variant list recovered in step 2, spelled out;
 /// 5. append ` (line L, column C)` when the error carries a span — positions
 ///    are not secret and are the locator the user needs;
 /// 6. cap the result at [`MAX_MESSAGE_CHARS`].
 ///
+/// The un-redactor runs in step 2 — that is, BEFORE redaction and on the raw
+/// line — and is a narrow shape reader with explicit bounds. Nothing is ever
+/// added back after step 3.
+///
 /// Note that `toml::de::Error::to_string()` is deliberately NOT used anywhere:
 /// its `Display` impl is precisely what renders the source-line echo.
 pub fn redact_toml_error(source: &str, e: &toml::de::Error) -> String {
+    // Steps 1-4.
+    let mut out = redact_message_body(e.message());
+
+    // Step 5: a position, if the error carries one.
+    if let Some(span) = e.span() {
+        let (line, column) = line_and_column(source, span.start);
+        out.push_str(&format!(" (line {}, column {})", line, column));
+    }
+
+    // Step 6: bound the result.
+    cap_chars(&out, MAX_MESSAGE_CHARS)
+}
+
+/// Steps 1-4 of [`redact_toml_error`], uncapped so the caller can append a
+/// position before the single final [`cap_chars`].
+fn redact_message_body(raw: &str) -> String {
     // Step 1: first line of the error's own message only.
-    let raw = e.message();
     let first_line = raw.split('\n').next().unwrap_or("").trim();
 
     // Step 2: split the SCHEMA-derived legal-variant list (if any) away from the
     // user's value, so step 3 can redact the value without also destroying the
     // one piece of guidance the message carries. See `legal_variants`.
-    let (to_redact, legal) = match legal_variants(first_line) {
-        Some((head, variants)) => (head, Some(variants)),
-        None => (first_line, None),
+    let (to_redact, tail) = match legal_variants(first_line) {
+        Some((head, variants)) => {
+            let list = backtick_list(variants.iter().map(String::as_str));
+            (head, format!(" — the legal values are {list}"))
+        }
+        None => (first_line, String::new()),
     };
 
-    // Step 3: remove every quoted run, then any remaining control characters.
-    let mut redacted = redact_quoted_runs(to_redact);
+    // Step 3: redact from the first delimiter to the end of the head, then drop
+    // any remaining control characters.
+    let mut redacted = redact_after_first_delimiter(to_redact);
     redacted.retain(|c| c == '\t' || !c.is_control());
-    // Removing the `expected one of …` clause leaves a dangling separator.
+    // Removing a trailing schema clause leaves a dangling separator.
     let redacted = redacted.trim().trim_end_matches(',').trim().to_string();
 
     let mut out = if redacted.is_empty() {
@@ -533,23 +560,16 @@ pub fn redact_toml_error(source: &str, e: &toml::de::Error) -> String {
 
     // Step 4: re-attach the legal set, spelled out. These names are the enum's,
     // not the document's.
-    if let Some(variants) = legal {
-        let list = variants
-            .iter()
-            .map(|v| format!("`{v}`"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        out.push_str(&format!(" — the legal values are {list}"));
-    }
+    out.push_str(&tail);
+    out
+}
 
-    // Step 5: a position, if the error carries one.
-    if let Some(span) = e.span() {
-        let (line, column) = line_and_column(source, span.start);
-        out.push_str(&format!(" (line {}, column {})", line, column));
-    }
-
-    // Step 6: bound the result.
-    cap_chars(&out, MAX_MESSAGE_CHARS)
+/// Render a token list as `` `a`, `b`, `c` ``.
+fn backtick_list<'a>(tokens: impl Iterator<Item = &'a str>) -> String {
+    tokens
+        .map(|t| format!("`{t}`"))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Sanitize a key path for inclusion in a finding.
@@ -579,39 +599,72 @@ pub fn redact_key_path(raw: &str) -> String {
 /// messages — and they are worth reusing, they name the grammar — must pass it
 /// through here first.
 ///
-/// Same construction as [`redact_toml_error`]'s step 2-4 and deliberately
-/// sharing its [`redact_quoted_runs`] helper: every double-, single- and
-/// backtick-quoted run becomes the literal `"<redacted>"`, control characters
-/// are dropped, and the result is capped at [`MAX_MESSAGE_CHARS`]. An
-/// UNTERMINATED run redacts to end of input, so the failure mode is "too much
+/// Same boundary as [`redact_toml_error`]'s step 3 and deliberately sharing its
+/// [`redact_after_first_delimiter`] helper: everything from the first quoting
+/// delimiter onwards is replaced by the literal `"<redacted>"`, control
+/// characters are dropped, and the result is capped at [`MAX_MESSAGE_CHARS`].
+/// Redaction ALWAYS runs to end of input, so the failure mode is "too much
 /// removed", never "a value survived" — which is why callers append any legal-
 /// set or grammar text of their own AFTER this call rather than before it.
 pub fn redact_value_text(raw: &str) -> String {
-    let mut redacted = redact_quoted_runs(raw);
+    let mut redacted = redact_after_first_delimiter(raw);
     redacted.retain(|c| c == '\t' || !c.is_control());
     cap_chars(redacted.trim(), MAX_MESSAGE_CHARS)
 }
 
-/// Replace every `"…"`, `'…'` and `` `…` `` run with the literal `"<redacted>"`.
+/// Replace everything from the FIRST `"`, `'` or `` ` `` to the end of `input`
+/// with the literal `"<redacted>"`.
 ///
-/// An unterminated run redacts to end of input — the failure mode must be "too
-/// much removed", never "a value survived".
-fn redact_quoted_runs(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut chars = input.chars();
-    while let Some(c) = chars.next() {
-        if c == '"' || c == '\'' || c == '`' {
-            for d in chars.by_ref() {
-                if d == c {
-                    break;
-                }
-            }
-            out.push_str("\"<redacted>\"");
-        } else {
-            out.push(c);
+/// # Why this shape (CR-01)
+///
+/// The previous implementation PAIRED delimiters: on seeing `"`, `'` or `` ` ``
+/// it consumed to the next occurrence of that same character and emitted
+/// `"<redacted>"`, then resumed copying. It had no notion of escaping and no
+/// notion of "this whole span is one value", so any value that itself contained
+/// the delimiter the diagnostic rendered it with was split into alternating
+/// redacted and **un-redacted** runs — and the un-redacted runs were printed
+/// verbatim, on `config validate`'s stdout and on the render path's default-
+/// level `warn!`:
+///
+/// ```text
+/// admin_key_command = "security -w sk-ant-adm\"01-REALKEYTAIL"
+///   →  invalid type: string "<redacted>"01-REALKEYTAIL"<redacted>"
+/// ```
+///
+/// # Why it cannot be split-leaked
+///
+/// There is no pairing and no state machine here, so there is nothing for an
+/// embedded delimiter to desynchronize. The output is exactly
+/// `input[..i] ++ REDACTED`, where `i` is the index of the FIRST delimiter in
+/// `input` — or the whole of `input` when it contains none. Two facts follow
+/// immediately:
+///
+/// * `input[..i]` contains no `"`, `'` or `` ` ``, by the definition of `i`;
+/// * `toml` and `serde` render EVERY echoed document value delimiter-wrapped —
+///   `{:?}` for strings, `` ` `` for enum variants and keys, `'…'` for this
+///   project's own validating parsers — so an echoed value begins at some index
+///   `≥ i` and therefore lies wholly inside the discarded suffix.
+///
+/// Whatever the value contains — one delimiter, a hundred of them, an escaped
+/// one, or a mismatched pair — the suffix goes in a single piece. Escape
+/// handling is irrelevant because no CLOSING delimiter is ever sought: the
+/// function never has to decide where a run ends, only where the first one
+/// begins. Exactly one `"<redacted>"` is emitted per call.
+///
+/// The cost is that genuinely SCHEMA-derived text positioned after the value is
+/// discarded too. What this module can recover is recovered BEFORE this
+/// function runs, by the shape-checked reader above ([`legal_variants`]) —
+/// never after.
+fn redact_after_first_delimiter(input: &str) -> String {
+    match input.find(['"', '\'', '`']) {
+        Some(i) => {
+            let mut out = String::with_capacity(i + REDACTED.len());
+            out.push_str(&input[..i]);
+            out.push_str(REDACTED);
+            out
         }
+        None => input.to_string(),
     }
-    out
 }
 
 /// 1-based line and column for a byte offset into `source`.
@@ -1480,6 +1533,148 @@ mod tests {
             .collect::<Vec<_>>()
             .join(", ");
         assert!(legal_variants(&format!("expected one of {many}")).is_none());
+    }
+
+    /// CR-01: a value that CARRIES the delimiter its diagnostic renders it with
+    /// must not be split into alternating redacted and un-redacted runs.
+    ///
+    /// # Why the phase's existing sentinels cannot see this
+    ///
+    /// Every sentinel elsewhere in this phase is of the form
+    /// `sk-ant-SENTINEL-XXX`, which contains no `"`, `'` or `` ` ``. The old
+    /// delimiter-PAIRING scanner therefore always saw such a value as one
+    /// well-formed run and redacted it whole. The fixtures below put the
+    /// delimiter INSIDE the value, which is what desynchronized the pairing:
+    ///
+    /// ```text
+    /// admin_key_command = "security -w sk-ant-SEN\"TINEL-JJJ"
+    ///   → invalid type: string "<redacted>"TINEL-JJJ"<redacted>"
+    /// ```
+    ///
+    /// # Non-vacuity
+    ///
+    /// Each arm asserts the RAW diagnostic really does carry the fragment
+    /// before asserting the redacted one does not, so a future `toml`/`serde`
+    /// release that stops echoing values cannot make this pass hollowly. Run
+    /// against the pre-fix pairing scanner, every arm FAILS on its fragment
+    /// assertion.
+    #[test]
+    fn a_delimiter_inside_the_value_cannot_split_the_redaction_boundary() {
+        // --- Arm 1: DOUBLE QUOTE, through serde's `{:?}` escaping ------------
+        // The TOML value is `security -w sk-ant-SEN"TINEL-JJJ`; serde escapes
+        // the interior quote as `\"`, and the old scanner closed its run there.
+        const DQ: &str =
+            "[ant.accounts.work]\nadmin_key_command = \"security -w sk-ant-SEN\\\"TINEL-JJJ\"\n";
+        let err = toml::from_str::<crate::config::Config>(DQ)
+            .expect_err("a string where a sequence is expected must fail");
+        let raw = format!("{err}");
+        assert!(
+            raw.contains("TINEL-JJJ"),
+            "fixture is not exercising the leak; raw error was: {raw}"
+        );
+        let redacted = redact_toml_error(DQ, &err);
+        assert!(
+            !redacted.contains("TINEL-JJJ"),
+            "double quote: a FRAGMENT of the value survived redaction: {redacted}"
+        );
+        assert!(
+            !redacted.contains("sk-ant-"),
+            "double quote: a secret-shaped prefix survived redaction: {redacted}"
+        );
+        assert!(
+            redacted.contains("invalid type"),
+            "double quote: the failure must still be named: {redacted}"
+        );
+
+        // --- Arm 2: BACKTICK, through serde's UNESCAPED enum-variant echo ----
+        // This arm is also the `legal_variants` non-regression: the enum's own
+        // names must still be spelled out in the clear.
+        const BT: &str = "source = \"sk-ant-SEN`TINEL-KKK\"\n";
+        let err = toml::from_str::<crate::pricing::PricingConfig>(BT)
+            .expect_err("an unknown enum variant must fail to deserialize");
+        let raw = format!("{err}");
+        assert!(
+            raw.contains("TINEL-KKK"),
+            "fixture is not exercising the leak; raw error was: {raw}"
+        );
+        let redacted = redact_toml_error(BT, &err);
+        assert!(
+            !redacted.contains("TINEL-KKK"),
+            "backtick: a FRAGMENT of the value survived redaction: {redacted}"
+        );
+        assert!(
+            !redacted.contains("sk-ant-"),
+            "backtick: a secret-shaped prefix survived redaction: {redacted}"
+        );
+        for legal in ["auto", "bundled", "synced"] {
+            assert!(
+                redacted.contains(&format!("`{legal}`")),
+                "backtick: the legal set must survive the CR-01 fix: {redacted}"
+            );
+        }
+
+        // --- Arm 3: SINGLE QUOTE, through `redact_value_text` ----------------
+        // `parse_max_age` quotes its input back with `'…'` because it was
+        // written for a CLI flag; the old scanner paired on the interior quotes.
+        let err = crate::ant::duration::parse_max_age("a'SENTINEL-LLL'b")
+            .expect_err("a non-numeric duration must fail");
+        let raw = err.to_string();
+        assert!(
+            raw.contains("SENTINEL-LLL"),
+            "fixture is not exercising the leak; raw error was: {raw}"
+        );
+        let redacted = redact_value_text(&raw);
+        assert!(
+            !redacted.contains("SENTINEL-LLL"),
+            "single quote: a FRAGMENT of the value survived redaction: {redacted}"
+        );
+        assert!(
+            redacted.contains("--max-age"),
+            "single quote: the failure must still be named: {redacted}"
+        );
+    }
+
+    /// The structural invariant the CR-01 argument rests on: the output is
+    /// `input[..first_delimiter]` followed by ONE `"<redacted>"` and nothing
+    /// else, for every input.
+    ///
+    /// This is the property that makes escaping irrelevant — the function never
+    /// looks for a CLOSING delimiter, so there is no pairing to desynchronize.
+    /// The old scanner fails the "exactly one" arm on every row below.
+    #[test]
+    fn redaction_emits_one_trailing_marker_and_never_resumes_copying() {
+        for input in [
+            "invalid type: string \"a\\\"b\", expected a sequence",
+            "unknown variant `a`b`, expected one of `auto`",
+            "invalid --max-age number in 'a'b'c'",
+            "prefix \"one\" middle \"two\" tail",
+            "`\"'`\"'",
+            "unterminated \"run",
+            "no delimiters at all",
+            "",
+        ] {
+            let out = redact_after_first_delimiter(input);
+            match input.find(['"', '\'', '`']) {
+                None => assert_eq!(out, input, "a delimiter-free input must pass through"),
+                Some(i) => {
+                    assert_eq!(
+                        out.matches(REDACTED).count(),
+                        1,
+                        "exactly one marker must be emitted for {input:?}: {out}"
+                    );
+                    assert!(
+                        out.ends_with(REDACTED),
+                        "the marker must be the TAIL — nothing may follow it — for \
+                         {input:?}: {out}"
+                    );
+                    assert_eq!(
+                        &out[..out.len() - REDACTED.len()],
+                        &input[..i],
+                        "only the delimiter-free head may survive for {input:?}: {out}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
