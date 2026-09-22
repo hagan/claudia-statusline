@@ -457,8 +457,8 @@ with a well-formed document.
 `progress.*` is computed by counting the checkboxes in `ROADMAP.md`. The
 `progress:` block that GSD records inside `STATE.md`'s YAML frontmatter is
 **deliberately not used** — it drifts. In this repository at the time of
-writing, the recorded block says `percent: 33` while the computed value is `75`.
-One source per fact; the computed one wins.
+writing, the recorded block says `percent: 33` while the computed value is
+`100`. One source per fact; the computed one wins.
 
 > **Known limitation.** The phase and plan counters make two layout
 > assumptions, and they can be wrong:
@@ -485,11 +485,19 @@ statusline gsd state --json | jq -r '
   else "unsupported schema_version \(.schema_version)" end'
 ```
 
-Run against this repository:
+Run against this repository, as a SNAPSHOT — these are measured values, not a
+contract, and they move every time a `ROADMAP.md` checkbox is ticked. Read the
+block for its SHAPE; re-run the pipeline for the numbers:
 
 ```text
-milestone=v3.3.0  phase=12  progress=3/4 (75%)
+milestone=v3.3.0  phase=12  progress=4/4 (100%)
 ```
+
+That `100%` is one of the caveated numbers described just above: this
+repository's `ROADMAP.md` triggers BOTH layout assumptions, so the same document
+carries two `warnings` entries saying the phase and plan counts may be
+inaccurate. It is a live illustration of why `warnings` must be checked before
+`progress.*` is acted on — `4/4` here does not mean the milestone is finished.
 
 Note that no part of that pipeline looks at `STATE.md` or `ROADMAP.md` — which
 is the whole point.
