@@ -3714,3 +3714,276 @@ fn report_does_not_emit_terminal_escapes() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// T-12-17: a FIFO reached through a config NAME (`layout.preset`,
+// `display.theme`) must never block `config validate` or the render path.
+// ---------------------------------------------------------------------------
+
+/// Spawn the binary with `args` under `env`, and PROVE it exits within `budget`.
+///
+/// Mirrors the poll loop of [`validate_terminates_on_a_fifo_cache_path`]: a
+/// `try_wait` poll every 25 ms against an explicit deadline, then `kill()` +
+/// `wait()` + a panic that names the arm. Relying on the harness timeout would
+/// not distinguish "refused" from "hung" and would stall the whole test binary.
+/// stdout is read only AFTER exit; every document here is far below the pipe
+/// buffer, so leaving it unread while polling cannot itself deadlock the child.
+fn spawn_with_budget(
+    env: &ConfigEnv,
+    args: &[&str],
+    stdin_payload: Option<&str>,
+    budget: std::time::Duration,
+    what: &str,
+) -> (std::process::ExitStatus, Vec<u8>) {
+    use std::io::Read as _;
+
+    let mut cmd = Command::new(test_support::test_binary());
+    cmd.args(args);
+    env.apply_env(&mut cmd);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    match stdin_payload {
+        Some(_) => {
+            cmd.stdin(Stdio::piped());
+        }
+        None => {
+            cmd.stdin(Stdio::null());
+        }
+    }
+    let mut child = cmd.spawn().expect("spawn statusline");
+    if let Some(body) = stdin_payload {
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        // A write error (EPIPE) just means the child already exited; the
+        // budget loop below is the verdict either way.
+        let _ = stdin.write_all(body.as_bytes());
+        drop(stdin);
+    }
+
+    let deadline = std::time::Instant::now() + budget;
+    let status = loop {
+        match child.try_wait().expect("try_wait on the child") {
+            Some(status) => break status,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "{what}: the binary did not exit within {budget:?} — it BLOCKED on a \
+                         writer-less FIFO. T-12-17: a user file resolved from a config NAME must \
+                         be refused from metadata, never opened."
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    };
+
+    let mut stdout = Vec::new();
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .read_to_end(&mut stdout)
+        .expect("read child stdout");
+    (status, stdout)
+}
+
+/// Both roots a user preset/theme directory can resolve to under this harness.
+///
+/// * `home/Library/Application Support` — where `dirs::config_dir()` points on
+///   macOS, which IGNORES `XDG_CONFIG_HOME` (the preset loader uses
+///   `dirs::config_dir()`), so only the isolated HOME redirects it;
+/// * `home/config` — the harness's `XDG_CONFIG_HOME`, which is what
+///   `dirs::config_dir()` returns on Linux AND what `common::get_config_dir()`
+///   (the theme manager's root) honours first on every OS.
+///
+/// Same reasoning as [`ConfigEnv::cache_roots`]: planting a hazard under only
+/// one root would make the test vacuous on the other platform.
+///
+/// The traversal these tests use is RELATIVE (`../evil`), never an absolute
+/// temp path: the preset loader LOWERCASES names before building the path, and
+/// temp paths carry uppercase characters (`/var/folders/.../T/...`), so an
+/// absolute name would silently resolve somewhere else. For the same reason
+/// every fixture name here is lowercase ASCII.
+fn user_config_roots(env: &ConfigEnv) -> Vec<PathBuf> {
+    vec![
+        env.home_path().join("Library").join("Application Support"),
+        env.home_path().join("config"),
+    ]
+}
+
+/// Plant a FIFO at `<root>/claudia-statusline/<rel>` under EVERY user config
+/// root and return the paths.
+///
+/// The `presets/` and `themes/` directories are created too, as they exist for
+/// any user who has a custom preset or theme. This is load-bearing, not
+/// decoration: the kernel resolves `presets/../evil.toml` component by
+/// component, so when `presets/` is ABSENT the traversal fails with ENOENT and
+/// the loader never reaches the FIFO. Without these directories arms A, C and D
+/// passed at HEAD vacuously (observed while writing this test).
+fn plant_user_fifos(env: &ConfigEnv, rel: &[&str]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for root in user_config_roots(env) {
+        let app = root.join("claudia-statusline");
+        fs::create_dir_all(app.join("presets")).expect("create presets dir");
+        fs::create_dir_all(app.join("themes")).expect("create themes dir");
+        let mut p = app;
+        for part in rel {
+            p = p.join(part);
+        }
+        make_fifo(&p);
+        out.push(p);
+    }
+    out
+}
+
+/// Non-vacuity: every FIFO must STILL be a FIFO after the run — the binary
+/// faced the hazard, it did not remove or replace it.
+fn assert_still_fifos(fifos: &[PathBuf]) {
+    use std::os::unix::fs::FileTypeExt;
+    for p in fifos {
+        let ft = fs::symlink_metadata(p)
+            .unwrap_or_else(|e| panic!("stat {} after the run: {e}", p.display()))
+            .file_type();
+        assert!(ft.is_fifo(), "{} is no longer a FIFO", p.display());
+    }
+}
+
+fn replaced(base: &str, from: &str, to: &str) -> String {
+    let out = base.replace(from, to);
+    assert_ne!(
+        out, base,
+        "fixture replace of {from:?} must change the config"
+    );
+    out
+}
+
+fn fifo_budget() -> std::time::Duration {
+    std::time::Duration::from_secs(5)
+}
+
+/// ARM A (layer 1, preset traversal): `[layout] preset = "../evil"` resolves to
+/// `<root>/claudia-statusline/evil.toml`, a writer-less FIFO.
+///
+/// # Why this can fail
+///
+/// At HEAD 00af87a `load_user_preset` interpolated the name verbatim, probed
+/// with `.exists()` (true for a FIFO) and called `read_to_string`, whose
+/// `File::open` blocks forever on a writer-less FIFO — 12-SECURITY.md T-12-17
+/// reproduced it as `timeout 8` exit 124. Observed RED at HEAD on the budget
+/// panic.
+#[test]
+#[serial]
+fn validate_terminates_on_a_fifo_reached_through_preset_name() {
+    let body = replaced(
+        &clean_config(),
+        "preset = \"default\"",
+        "preset = \"../evil\"",
+    );
+    let env = ConfigEnv::new(&body);
+    let fifos = plant_user_fifos(&env, &["evil.toml"]);
+
+    let (status, stdout) = spawn_with_budget(
+        &env,
+        &["config", "validate", "--json"],
+        None,
+        fifo_budget(),
+        "ARM A (config validate, preset = \"../evil\")",
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    assert!(
+        !findings_at(findings, "layout.preset").is_empty(),
+        "an illegal preset name must be reported at layout.preset: {report}"
+    );
+    assert!(!status.success(), "an illegal preset is an ERROR: {report}");
+    assert_still_fifos(&fifos);
+}
+
+/// ARM B (layer 2 alone): a LEGAL bare name, `preset = "fifo"`, whose file
+/// `presets/fifo.toml` is itself a FIFO. Name validation passes, so only the
+/// metadata-first read can refuse it. RED at HEAD for the same reason as ARM A.
+#[test]
+#[serial]
+fn validate_terminates_on_a_fifo_reached_through_preset_name_legal_stem() {
+    let body = replaced(&clean_config(), "preset = \"default\"", "preset = \"fifo\"");
+    let env = ConfigEnv::new(&body);
+    let fifos = plant_user_fifos(&env, &["presets", "fifo.toml"]);
+
+    let (_status, stdout) = spawn_with_budget(
+        &env,
+        &["config", "validate", "--json"],
+        None,
+        fifo_budget(),
+        "ARM B (config validate, preset = \"fifo\" naming a FIFO)",
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    assert!(
+        !findings_at(findings, "layout.preset").is_empty(),
+        "a FIFO preset file is not a usable preset: {report}"
+    );
+    assert_still_fifos(&fifos);
+}
+
+/// ARM C (theme via `check_color`): `display.theme = "../evil"` plus a
+/// component colour that is not a built-in name, so `check_color` calls
+/// `ThemeManager::load_theme("../evil")`, which at HEAD joined the name into
+/// `<themes_dir>/../evil.toml` = `<root>/claudia-statusline/evil.toml` — the
+/// FIFO — and blocked in `read_to_string`. RED at HEAD on the budget panic.
+#[test]
+#[serial]
+fn validate_terminates_on_a_fifo_reached_through_theme_name() {
+    let body = replaced(
+        &clean_config(),
+        "[display]\n",
+        "[display]\ntheme = \"../evil\"\n",
+    );
+    let body = format!("{body}\n[layout.components.directory]\ncolor = \"notacolor\"\n");
+    let env = ConfigEnv::new(&body);
+    let fifos = plant_user_fifos(&env, &["evil.toml"]);
+
+    let (_status, stdout) = spawn_with_budget(
+        &env,
+        &["config", "validate", "--json"],
+        None,
+        fifo_budget(),
+        "ARM C (config validate, display.theme = \"../evil\" via check_color)",
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    assert!(
+        !findings_at(findings, "display.theme").is_empty(),
+        "an illegal theme name must be reported at display.theme: {report}"
+    );
+    assert_still_fifos(&fifos);
+}
+
+/// ARM D (render path): ARM A's fixture, no subcommand, a session payload on
+/// stdin. The render path must always print SOMETHING and must exit promptly.
+/// RED at HEAD: `get_preset_format` -> `load_user_preset` blocks on the FIFO.
+#[test]
+#[serial]
+fn render_terminates_on_a_fifo_reached_through_preset_name() {
+    let body = replaced(
+        &clean_config(),
+        "preset = \"default\"",
+        "preset = \"../evil\"",
+    );
+    let env = ConfigEnv::new(&body);
+    let fifos = plant_user_fifos(&env, &["evil.toml"]);
+
+    let payload =
+        r#"{"workspace":{"current_dir":"/tmp"},"model":{"display_name":"Claude 3.5 Sonnet"}}"#;
+    let (_status, stdout) = spawn_with_budget(
+        &env,
+        &[],
+        Some(payload),
+        fifo_budget(),
+        "ARM D (render path, preset = \"../evil\")",
+    );
+    assert!(
+        !String::from_utf8_lossy(&stdout).trim().is_empty(),
+        "the render path must print a non-empty status line"
+    );
+    assert_still_fifos(&fifos);
+}
