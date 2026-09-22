@@ -476,17 +476,221 @@ fn legal_variants(first_line: &str) -> Option<(&str, Vec<String>)> {
     Some((head, variants))
 }
 
+/// The marker serde puts in front of the free-prose `expected …` clause it
+/// appends to a type / value / unknown-field error.
+const EXPECTED_CLAUSE: &str = ", expected ";
+
+/// Hard cap on the length of a recovered free-prose `expected …` clause.
+const MAX_EXPECTED_PROSE_CHARS: usize = 64;
+
+/// The opening of the closed `duplicate key` shape.
+const DUPLICATE_KEY_OPEN: &str = "duplicate key `";
+
+/// The separator between the duplicated key and its table in that shape.
+const IN_TABLE: &str = "` in table `";
+
+/// Hard cap on how many grammar tokens [`expected_grammar_tokens`] recovers.
+const MAX_GRAMMAR_TOKENS: usize = 8;
+
 /// The literal that stands in for everything [`redact_after_first_delimiter`]
 /// removes.
 const REDACTED: &str = "\"<redacted>\"";
+
+/// The closed set of grammar tokens `toml`'s parser names in an `expected …`
+/// syntax diagnostic.
+///
+/// This is a compile-time table and [`expected_grammar_tokens`] emits an
+/// ELEMENT OF THE TABLE, never the matched input. That is what makes that
+/// recovery leak-proof by construction rather than by allowlist: every byte it
+/// returns is a `&'static str`, so no byte of it can have come from the
+/// document. An unrecognized token aborts the whole recovery.
+const TOML_GRAMMAR_TOKENS: &[&str] = &[
+    ".",
+    "=",
+    ",",
+    "#",
+    "[",
+    "[[",
+    "]",
+    "]]",
+    "{",
+    "}",
+    "\"",
+    "'",
+    "newline",
+    "whitespace",
+    "key",
+    "value",
+    "string",
+    "basic string",
+    "literal string",
+    "boolean",
+    "integer",
+    "float",
+    "array",
+    "inline table",
+    "table header",
+];
+
+/// Recover the SCHEMA-derived free-prose `expected …` clause serde appends to a
+/// type, value or unknown-field error, splitting it away from the user's value.
+///
+/// # Why this exists
+///
+/// serde's formats END with the expectation — `invalid type: {unexp}, expected
+/// {exp}` — where `{exp}` is the `Visitor::expecting` prose ("a sequence", "a
+/// string"), compile-time text and the only actionable half of the message.
+/// [`redact_after_first_delimiter`] necessarily discards it, because the user's
+/// value comes first; recovering it here is what keeps `invalid type: string
+/// "<redacted>", expected a sequence` from collapsing to `invalid type: string
+/// "<redacted>"`.
+///
+/// # Why it cannot leak
+///
+/// Four independent bounds, in the order they bite:
+///
+/// 1. the split is at the **LAST** occurrence of [`EXPECTED_CLAUSE`], and
+///    serde's own clause is by construction the last thing in the message, so a
+///    value that contains the marker text lands wholly in the discarded head;
+/// 2. the tail must contain **no delimiter at all** and nothing outside a
+///    conservative prose allowlist (ASCII alphanumerics, space, `,`, `.`, `-`,
+///    `_`), so it can neither re-open a quoted run nor smuggle a control byte;
+/// 3. the tail is at most [`MAX_EXPECTED_PROSE_CHARS`] characters;
+/// 4. **decisive:** the tail is rejected outright if it occurs ANYWHERE in the
+///    config source. Whatever survives that check provably is not a byte
+///    sequence taken from the user's document — which is exactly the contract
+///    [`redact_toml_error`] states. The cost of a false positive is a less
+///    helpful message, never a leak.
+fn expected_prose<'a>(first_line: &'a str, source: &str) -> Option<(&'a str, &'a str)> {
+    let idx = first_line.rfind(EXPECTED_CLAUSE)?;
+    let head = &first_line[..idx];
+    let tail = first_line[idx + EXPECTED_CLAUSE.len()..].trim();
+    if tail.is_empty()
+        || tail.chars().count() > MAX_EXPECTED_PROSE_CHARS
+        || !tail
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, ' ' | ',' | '.' | '-' | '_'))
+        || source.contains(tail)
+    {
+        return None;
+    }
+    Some((head, tail))
+}
+
+/// Recover the TOML GRAMMAR token list out of a syntax diagnostic whose WHOLE
+/// first line is of the shape ``expected `.`, `=` ``.
+///
+/// # Why this exists
+///
+/// `toml`'s parser names what it wanted in backticks, and those names come from
+/// the GRAMMAR, never the document. Redacting them left
+/// `expected "<redacted>", "<redacted>"`, a diagnostic that says nothing at all.
+///
+/// # Why it cannot leak
+///
+/// 1. the shape is anchored at the START of the line, so no user value can
+///    precede the marker and ride out on a mis-split;
+/// 2. the remainder must parse as NOTHING BUT a comma/`or`-separated list of
+///    backtick runs — any stray character abandons the recovery;
+/// 3. every token must be an element of [`TOML_GRAMMAR_TOKENS`], and the
+///    `&'static str` FROM THE TABLE is what is emitted. The matched input is
+///    used only as a lookup key and is then dropped, so the returned bytes are
+///    compile-time constants by construction.
+fn expected_grammar_tokens(first_line: &str) -> Option<Vec<&'static str>> {
+    let mut rest = first_line.strip_prefix("expected ")?.trim();
+    let mut tokens: Vec<&'static str> = Vec::new();
+    while !rest.is_empty() {
+        if tokens.len() == MAX_GRAMMAR_TOKENS {
+            return None;
+        }
+        let after_open = rest.strip_prefix('`')?;
+        let close = after_open.find('`')?;
+        let known = TOML_GRAMMAR_TOKENS
+            .iter()
+            .find(|candidate| **candidate == &after_open[..close])?;
+        tokens.push(known);
+        rest = after_open[close + 1..].trim_start();
+        rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
+        rest = rest.strip_prefix("or ").unwrap_or(rest).trim_start();
+    }
+    if tokens.is_empty() {
+        return None;
+    }
+    Some(tokens)
+}
+
+/// A bare, unquoted TOML key token: non-empty, bounded, and built only from the
+/// characters a bare key may contain plus the `.` of a dotted path.
+fn is_plain_key_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.chars().count() <= MAX_KEY_SEGMENT_CHARS
+        && token
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+}
+
+/// Rebuild the closed `duplicate key` shape with its two locators intact.
+///
+/// # Why this exists
+///
+/// A duplicate key is reported with the pseudo-key `<file>`, so the MESSAGE is
+/// the only locator the user gets, and blanket redaction reduced it to
+/// `duplicate key "<redacted>" in table "<redacted>"` — "some key is duplicated
+/// somewhere", from the one command whose purpose is to say which.
+///
+/// # Why it cannot leak a VALUE
+///
+/// 1. the shape is anchored at BOTH ends — the line must START with
+///    [`DUPLICATE_KEY_OPEN`] and END with a backtick — so no free text rides
+///    along;
+/// 2. the key/table split is at the LAST [`IN_TABLE`] marker and BOTH halves
+///    must then satisfy [`is_plain_key_token`]; a half containing a delimiter,
+///    a space or any other punctuation abandons the whole recovery, which is
+///    what catches the mis-split a hostile QUOTED key would otherwise cause;
+/// 3. both halves are emitted through [`redact_key_path`] — the module's
+///    sanctioned channel for key text — so they are control-stripped and capped
+///    exactly as every `unknown key` finding's key already is;
+/// 4. a TOML *key* is not a *value*. `toml` names only the duplicated KEY and
+///    its TABLE in this clause; the duplicated value never appears in it. Key
+///    paths are permitted output by this module's doctrine (see
+///    [`redact_key_path`] and [`Finding::key`]), so this opens no channel that
+///    `unknown key` findings do not already open by design.
+fn duplicate_key_clause(first_line: &str) -> Option<String> {
+    let inner = first_line
+        .strip_prefix(DUPLICATE_KEY_OPEN)?
+        .strip_suffix('`')?;
+    match inner.rfind(IN_TABLE) {
+        Some(idx) => {
+            let key = &inner[..idx];
+            let table = &inner[idx + IN_TABLE.len()..];
+            if !is_plain_key_token(key) || !is_plain_key_token(table) {
+                return None;
+            }
+            Some(format!(
+                "duplicate key `{}` in table `{}`",
+                redact_key_path(key),
+                redact_key_path(table)
+            ))
+        }
+        None => {
+            if !is_plain_key_token(inner) {
+                return None;
+            }
+            Some(format!("duplicate key `{}`", redact_key_path(inner)))
+        }
+    }
+}
 
 /// Turn a `toml` parser diagnostic into a message that leaks nothing.
 ///
 /// # Contract
 ///
 /// **The returned string contains no byte sequence taken from `source` other
-/// than a line/column number.** This is pinned by sentinel tests covering BOTH
-/// parser paths, because both leak:
+/// than a line/column number and — for the one closed `duplicate key` shape —
+/// a config KEY PATH, which this module's doctrine explicitly permits in output
+/// (see [`redact_key_path`] and [`Finding::key`]). A config VALUE never
+/// appears.** This is pinned by sentinel tests covering BOTH parser paths,
+/// because both leak:
 ///
 /// * the **syntax** path echoes the offending source line verbatim in a gutter
 ///   block (`3 | admin_key_command = ["security", "-w", "sk-ant-…"`);
@@ -498,54 +702,69 @@ const REDACTED: &str = "\"<redacted>\"";
 ///
 /// 1. take the error's own message text and cut it at the first newline (kills
 ///    the gutter block);
-/// 2. split off a SCHEMA-derived `expected one of …` clause, if present, so it
-///    survives step 3 — see [`legal_variants`] for why that is safe;
-/// 3. redact the head from its FIRST quoting delimiter to its end
+/// 2. if the line is a fully-recognized CLOSED shape — [`duplicate_key_clause`]
+///    or [`expected_grammar_tokens`] — rebuild it whole from shape-checked
+///    pieces and skip redaction entirely, because nothing of the user's VALUE
+///    can appear in those shapes;
+/// 3. otherwise split a SCHEMA-derived tail off the head, if one is present and
+///    passes its reader's bounds — [`legal_variants`] for an enum's legal set,
+///    [`expected_prose`] for serde's `expecting` text — so that the tail
+///    survives step 4;
+/// 4. redact the head from its FIRST quoting delimiter to its end
 ///    ([`redact_after_first_delimiter`]), then drop any remaining control
 ///    characters;
-/// 4. re-attach the legal-variant list recovered in step 2, spelled out;
-/// 5. append ` (line L, column C)` when the error carries a span — positions
+/// 5. re-attach the schema text recovered in step 3, spelled out;
+/// 6. append ` (line L, column C)` when the error carries a span — positions
 ///    are not secret and are the locator the user needs;
-/// 6. cap the result at [`MAX_MESSAGE_CHARS`].
+/// 7. cap the result at [`MAX_MESSAGE_CHARS`].
 ///
-/// The un-redactor runs in step 2 — that is, BEFORE redaction and on the raw
-/// line — and is a narrow shape reader with explicit bounds. Nothing is ever
-/// added back after step 3.
+/// Every un-redactor runs in step 2 or 3 — that is, BEFORE redaction and on the
+/// raw line — and each is a narrow shape reader with explicit bounds. Nothing
+/// is ever added back after step 4.
 ///
 /// Note that `toml::de::Error::to_string()` is deliberately NOT used anywhere:
 /// its `Display` impl is precisely what renders the source-line echo.
 pub fn redact_toml_error(source: &str, e: &toml::de::Error) -> String {
-    // Steps 1-4.
-    let mut out = redact_message_body(e.message());
+    // Steps 1-5.
+    let mut out = redact_message_body(e.message(), source);
 
-    // Step 5: a position, if the error carries one.
+    // Step 6: a position, if the error carries one.
     if let Some(span) = e.span() {
         let (line, column) = line_and_column(source, span.start);
         out.push_str(&format!(" (line {}, column {})", line, column));
     }
 
-    // Step 6: bound the result.
+    // Step 7: bound the result.
     cap_chars(&out, MAX_MESSAGE_CHARS)
 }
 
-/// Steps 1-4 of [`redact_toml_error`], uncapped so the caller can append a
+/// Steps 1-5 of [`redact_toml_error`], uncapped so the caller can append a
 /// position before the single final [`cap_chars`].
-fn redact_message_body(raw: &str) -> String {
+fn redact_message_body(raw: &str, source: &str) -> String {
     // Step 1: first line of the error's own message only.
     let first_line = raw.split('\n').next().unwrap_or("").trim();
 
-    // Step 2: split the SCHEMA-derived legal-variant list (if any) away from the
-    // user's value, so step 3 can redact the value without also destroying the
-    // one piece of guidance the message carries. See `legal_variants`.
-    let (to_redact, tail) = match legal_variants(first_line) {
-        Some((head, variants)) => {
-            let list = backtick_list(variants.iter().map(String::as_str));
-            (head, format!(" — the legal values are {list}"))
-        }
-        None => (first_line, String::new()),
+    // Step 2: fully-recognized CLOSED shapes are rebuilt whole.
+    if let Some(rebuilt) = duplicate_key_clause(first_line) {
+        return rebuilt;
+    }
+    if let Some(tokens) = expected_grammar_tokens(first_line) {
+        return format!("expected {}", backtick_list(tokens.iter().copied()));
+    }
+
+    // Step 3: split the SCHEMA-derived tail (if any) away from the user's value,
+    // so step 4 can redact the value without also destroying the one piece of
+    // guidance the message carries.
+    let (to_redact, tail) = if let Some((head, variants)) = legal_variants(first_line) {
+        let list = backtick_list(variants.iter().map(String::as_str));
+        (head, format!(" — the legal values are {list}"))
+    } else if let Some((head, prose)) = expected_prose(first_line, source) {
+        (head, format!(", expected {prose}"))
+    } else {
+        (first_line, String::new())
     };
 
-    // Step 3: redact from the first delimiter to the end of the head, then drop
+    // Step 4: redact from the first delimiter to the end of the head, then drop
     // any remaining control characters.
     let mut redacted = redact_after_first_delimiter(to_redact);
     redacted.retain(|c| c == '\t' || !c.is_control());
@@ -558,8 +777,8 @@ fn redact_message_body(raw: &str) -> String {
         redacted
     };
 
-    // Step 4: re-attach the legal set, spelled out. These names are the enum's,
-    // not the document's.
+    // Step 5: re-attach the schema text. These names are the schema's, not the
+    // document's.
     out.push_str(&tail);
     out
 }
@@ -599,7 +818,7 @@ pub fn redact_key_path(raw: &str) -> String {
 /// messages — and they are worth reusing, they name the grammar — must pass it
 /// through here first.
 ///
-/// Same boundary as [`redact_toml_error`]'s step 3 and deliberately sharing its
+/// Same boundary as [`redact_toml_error`]'s step 4 and deliberately sharing its
 /// [`redact_after_first_delimiter`] helper: everything from the first quoting
 /// delimiter onwards is replaced by the literal `"<redacted>"`, control
 /// characters are dropped, and the result is capped at [`MAX_MESSAGE_CHARS`].
@@ -652,9 +871,9 @@ pub fn redact_value_text(raw: &str) -> String {
 /// begins. Exactly one `"<redacted>"` is emitted per call.
 ///
 /// The cost is that genuinely SCHEMA-derived text positioned after the value is
-/// discarded too. What this module can recover is recovered BEFORE this
-/// function runs, by the shape-checked reader above ([`legal_variants`]) —
-/// never after.
+/// discarded too. That is recovered BEFORE this function runs, by the
+/// shape-checked readers above ([`legal_variants`], [`expected_prose`],
+/// [`expected_grammar_tokens`], [`duplicate_key_clause`]) — never after.
 fn redact_after_first_delimiter(input: &str) -> String {
     match input.find(['"', '\'', '`']) {
         Some(i) => {
@@ -1675,6 +1894,185 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// WR-01: the CR-01 boundary must not turn SCHEMA text into collateral
+    /// damage.
+    ///
+    /// Redacting from the first delimiter to end of line necessarily discards
+    /// anything the diagnostic put AFTER the user's value. For three closed
+    /// shapes that text is the whole point of the message, so it is recovered
+    /// BEFORE redaction, on the raw line, by narrow shape readers. This test
+    /// drives all three through the REAL parser and asserts the recovered text
+    /// end to end.
+    #[test]
+    fn schema_text_survives_the_redaction_boundary_end_to_end() {
+        // 1. `duplicate key `K` in table `T`` — the worst case, because the
+        //    finding's key is the pseudo-key `<file>` and the message is the
+        //    only other locator.
+        const DUP: &str = "[display]\ntheme = \"a\"\ntheme = \"b\"\n";
+        let err = toml::from_str::<toml::Value>(DUP).expect_err("a duplicate key must fail");
+        let redacted = redact_toml_error(DUP, &err);
+        assert!(
+            redacted.contains("duplicate key `theme` in table `display`"),
+            "the duplicated KEY and its TABLE must both be named: {redacted}"
+        );
+        assert!(
+            redacted.contains("line 3"),
+            "the position locator must survive: {redacted}"
+        );
+
+        // 2. `expected `.`, `=`` — TOML GRAMMAR tokens, from the table.
+        const BAD: &str = "just a string\n";
+        let err = toml::from_str::<toml::Value>(BAD).expect_err("a bare string must fail");
+        let redacted = redact_toml_error(BAD, &err);
+        assert!(
+            redacted.contains("`.`") && redacted.contains("`=`"),
+            "the grammar tokens the parser wanted must be named: {redacted}"
+        );
+
+        // 3. serde's trailing `, expected <prose>` clause.
+        let err = toml::from_str::<crate::config::Config>(SENTINEL_TYPE)
+            .expect_err("a string where a sequence is expected must fail");
+        let redacted = redact_toml_error(SENTINEL_TYPE, &err);
+        assert!(
+            redacted.contains(", expected a sequence"),
+            "serde's own `expecting` prose must survive: {redacted}"
+        );
+        assert!(
+            !redacted.contains("SENTINEL"),
+            "and it must not drag the value out with it: {redacted}"
+        );
+    }
+
+    /// Each schema recovery is a narrow, shape-checked reader — not a general
+    /// un-redactor. Every row is a way a hostile value could try to ride one of
+    /// them out of the redaction boundary.
+    #[test]
+    fn schema_recovery_rejects_everything_but_its_own_closed_shape() {
+        // --- `duplicate key` ------------------------------------------------
+        assert_eq!(
+            duplicate_key_clause("duplicate key `theme` in table `display`").as_deref(),
+            Some("duplicate key `theme` in table `display`")
+        );
+        assert_eq!(
+            duplicate_key_clause("duplicate key `theme`").as_deref(),
+            Some("duplicate key `theme`")
+        );
+        for hostile in [
+            // A delimiter in either half — this is the mis-split a hostile
+            // QUOTED key would cause, and it aborts the whole recovery.
+            "duplicate key `sk-ant\"LEAK` in table `display`",
+            "duplicate key `theme` in table `sk-ant`LEAK`",
+            // Marker injection: `rfind` mis-splits, and the allowlist catches it.
+            "duplicate key `k` in table `x` in table `y`",
+            // Not anchored at both ends.
+            "in some context, duplicate key `theme` in table `display`",
+            "duplicate key `theme` in table `display` and also sk-ant-LEAK",
+            // Not the shape at all.
+            "invalid type: string \"sk-ant-LEAK\", expected a sequence",
+            // Empty, and over-long.
+            "duplicate key ``",
+        ] {
+            assert!(
+                duplicate_key_clause(hostile).is_none(),
+                "recovery must be abandoned for {hostile:?}"
+            );
+        }
+        let long = "a".repeat(MAX_KEY_SEGMENT_CHARS + 1);
+        assert!(duplicate_key_clause(&format!("duplicate key `{long}`")).is_none());
+
+        // --- TOML grammar tokens --------------------------------------------
+        let tokens = expected_grammar_tokens("expected `.`, `=`")
+            .expect("the parser's own shape must be recognized");
+        assert_eq!(tokens, vec![".", "="]);
+        // The decisive bound is enforced by the TYPE, not by this assertion:
+        // `expected_grammar_tokens` returns `Vec<&'static str>`, and a slice
+        // borrowed from the (non-`'static`) input line cannot satisfy that
+        // lifetime — so the compiler rejects any version of the function that
+        // returns the matched input rather than the table element. What is
+        // checked here is the weaker, run-time half: every token is a member of
+        // the table.
+        for token in &tokens {
+            assert!(
+                TOML_GRAMMAR_TOKENS.contains(token),
+                "a recovered token must be a table element: {token:?}"
+            );
+        }
+        for hostile in [
+            // Not in the table.
+            "expected `sk-ant-LEAK`",
+            "expected `.`, `sk-ant-LEAK`",
+            // Not anchored at the start of the line.
+            "unknown variant `sk-ant-LEAK`, expected `.`",
+            // Stray text in the list.
+            "expected `.` and `=`",
+            "expected `.`, `=` trailing",
+            // Unterminated, empty, and no list at all.
+            "expected `.",
+            "expected ``",
+            "expected ",
+        ] {
+            assert!(
+                expected_grammar_tokens(hostile).is_none(),
+                "recovery must be abandoned for {hostile:?}"
+            );
+        }
+        let many = (0..=MAX_GRAMMAR_TOKENS)
+            .map(|_| "`.`".to_string())
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(expected_grammar_tokens(&format!("expected {many}")).is_none());
+
+        // --- serde's `, expected <prose>` clause ----------------------------
+        let (head, prose) = expected_prose("invalid type: string \"x\", expected a sequence", "")
+            .expect("serde's own shape must be recognized");
+        assert_eq!(head, "invalid type: string \"x\"");
+        assert_eq!(prose, "a sequence");
+
+        // A value containing the marker cannot steer the split: `rfind` takes
+        // the LAST marker, and serde's own clause is always last.
+        let (head, prose) = expected_prose(
+            "invalid type: string \"a, expected sk-ant-LEAK\", expected a sequence",
+            "",
+        )
+        .expect("the trailing schema clause is still the one that is taken");
+        assert!(
+            head.contains("sk-ant-LEAK"),
+            "the hostile value must land in the head, where it is redacted: {head}"
+        );
+        assert_eq!(prose, "a sequence");
+
+        // The DECISIVE bound: a tail that occurs anywhere in the config source
+        // is refused, so the recovered text provably is not document-derived.
+        assert!(
+            expected_prose(
+                "invalid type: string \"x\", expected a sequence",
+                "note = \"a sequence\"\n"
+            )
+            .is_none(),
+            "a tail present in the source must abandon the recovery"
+        );
+
+        for hostile in [
+            // A delimiter in the tail would re-open a quoted run.
+            "unknown variant `x`, expected one of `auto`",
+            "invalid type, expected \"sk-ant-LEAK\"",
+            "invalid type, expected 'sk-ant-LEAK'",
+            // Outside the prose allowlist.
+            "invalid type, expected sk-ant-LEAK!",
+            "invalid type, expected a\u{1b}[31m sequence",
+            // No marker, and an empty tail.
+            "invalid type: string \"x\"",
+            "invalid type: string \"x\", expected ",
+        ] {
+            assert!(
+                expected_prose(hostile, "").is_none(),
+                "recovery must be abandoned for {hostile:?}"
+            );
+        }
+        let long = "a".repeat(MAX_EXPECTED_PROSE_CHARS + 1);
+        assert!(expected_prose(&format!("invalid type, expected {long}"), "").is_none());
     }
 
     #[test]
