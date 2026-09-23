@@ -242,6 +242,21 @@ fn test_version_flag() {
     );
 }
 
+/// D-01 drift guard: `build.rs` silently prefers the `VERSION` file over
+/// `CARGO_PKG_VERSION`, so a Cargo.toml/VERSION mismatch would otherwise ship
+/// unnoticed (the binary reports one version, the crate metadata another).
+#[test]
+fn version_file_matches_cargo_pkg_version() {
+    let cargo_version = env!("CARGO_PKG_VERSION");
+    let file_version = include_str!("../VERSION").trim();
+    assert_eq!(
+        cargo_version, file_version,
+        "Cargo.toml package version ({}) and VERSION file ({}) disagree; \
+         build.rs prefers VERSION, so bump both together",
+        cargo_version, file_version
+    );
+}
+
 #[test]
 fn test_version_full_flag() {
     let _guard = test_support::init();
