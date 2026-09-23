@@ -27,6 +27,11 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
 // Embedded theme files compiled into binary
+/// Byte cap for a user theme file (T-12-17). Themes carry a palette and
+/// colours, so they are larger than presets, but the embedded ones are a few
+/// KiB; 256 KiB bounds a hostile or runaway file with ample headroom.
+pub const MAX_USER_THEME_BYTES: u64 = 256 * 1024;
+
 const EMBEDDED_DARK_THEME: &str = include_str!("../themes/dark.toml");
 const EMBEDDED_LIGHT_THEME: &str = include_str!("../themes/light.toml");
 const EMBEDDED_MONOKAI_THEME: &str = include_str!("../themes/monokai.toml");
@@ -240,15 +245,28 @@ impl ThemeManager {
     /// Loads a theme from user themes directory.
     ///
     /// Searches for `~/.config/claudia-statusline/themes/{name}.toml`
+    ///
+    /// T-12-17: `name` comes from `display.theme` in the config file, so it must
+    /// be a bare file stem before it is joined into a path, and the file is read
+    /// through [`crate::user_file::read_regular_file_capped`] — a FIFO or device
+    /// is refused from metadata without being opened, and the read is bounded to
+    /// [`MAX_USER_THEME_BYTES`]. Error messages echo neither the name nor the
+    /// path.
     fn load_from_file(&self, name: &str) -> Result<Theme, String> {
+        use crate::user_file::{is_safe_file_stem, read_regular_file_capped, CappedReadError};
+
+        if !is_safe_file_stem(name) {
+            return Err("Invalid theme name".to_string());
+        }
         let theme_path = self.themes_dir.join(format!("{}.toml", name));
 
-        if !theme_path.exists() {
-            return Err(format!("Theme file not found: {}", theme_path.display()));
-        }
-
-        let content = fs::read_to_string(&theme_path)
-            .map_err(|e| format!("Failed to read theme file: {}", e))?;
+        let content =
+            read_regular_file_capped(&theme_path, MAX_USER_THEME_BYTES).map_err(|e| match e {
+                CappedReadError::NotFound | CappedReadError::DanglingSymlink => {
+                    "Theme file not found".to_string()
+                }
+                _ => "Failed to read theme file".to_string(),
+            })?;
 
         Theme::from_toml(&content).map_err(|e| format!("Failed to parse theme '{}': {}", name, e))
     }
@@ -597,6 +615,82 @@ impl Default for ThemeColors {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ===== T-12-17: user theme file reads are name-gated and bounded =====
+
+    fn temp_manager(dir: &tempfile::TempDir) -> ThemeManager {
+        ThemeManager {
+            themes_dir: dir.path().join("themes"),
+            cache: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    /// Run `f` on a worker thread; FAIL (not hang) if it takes over 5 s.
+    fn within_budget<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("{what} BLOCKED: T-12-17 regression"))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn theme_traversal_name_is_refused_without_reading() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("themes")).unwrap();
+        // `themes/../evil.toml` resolves here; reading it would block.
+        crate::user_file::test_fifo::make_fifo(&dir.path().join("evil.toml"));
+        let manager = temp_manager(&dir);
+
+        let err = within_budget("load_theme(../evil)", move || {
+            manager.load_theme("../evil").map(|_| ())
+        });
+        assert!(err.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn theme_fifo_file_is_refused_promptly() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("themes")).unwrap();
+        crate::user_file::test_fifo::make_fifo(&dir.path().join("themes").join("fifo.toml"));
+        let manager = temp_manager(&dir);
+
+        let err = within_budget("load_theme(fifo)", move || {
+            manager.load_theme("fifo").map(|_| ())
+        });
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn theme_embedded_and_user_themes_still_load() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        let body = EMBEDDED_DARK_THEME.replacen("name = \"dark\"", "name = \"mytheme\"", 1);
+        assert_ne!(body, EMBEDDED_DARK_THEME);
+        std::fs::write(themes.join("mytheme.toml"), body).unwrap();
+        let manager = temp_manager(&dir);
+
+        assert_eq!(manager.load_theme("dark").unwrap().name, "dark");
+        assert_eq!(manager.load_theme("mytheme").unwrap().name, "mytheme");
+    }
+
+    #[test]
+    fn theme_over_the_cap_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let themes = dir.path().join("themes");
+        std::fs::create_dir_all(&themes).unwrap();
+        let mut body = EMBEDDED_DARK_THEME.replacen("name = \"dark\"", "name = \"huge\"", 1);
+        body.push('#');
+        body.push_str(&"x".repeat(MAX_USER_THEME_BYTES as usize));
+        std::fs::write(themes.join("huge.toml"), body).unwrap();
+        let manager = temp_manager(&dir);
+
+        assert!(manager.load_theme("huge").is_err());
+    }
 
     // ===== ThemeManager Tests =====
 

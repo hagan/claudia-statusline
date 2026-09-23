@@ -30,18 +30,32 @@ pub fn get_preset_format(preset: &str) -> String {
     }
 }
 
+/// Byte cap for a user preset file (T-12-17). A preset holds one format
+/// string and a separator — a few hundred bytes — so 64 KiB is orders of
+/// magnitude of headroom while still bounding a hostile or runaway file.
+pub const MAX_USER_PRESET_BYTES: u64 = 64 * 1024;
+
 /// Load a user-defined preset from the config directory
+///
+/// Two layers close T-12-17 (a config NAME reaching a FIFO or `/dev/zero`):
+/// the lowercased name must be a bare file stem (no separator, `..`, `:` or
+/// NUL), and the file is read through
+/// [`crate::user_file::read_regular_file_capped`], which refuses a non-regular
+/// node from metadata without opening it and bounds the read to
+/// [`MAX_USER_PRESET_BYTES`]. There is deliberately no `.exists()` probe: it
+/// follows symlinks and is true for a FIFO.
 fn load_user_preset(name: &str) -> Option<String> {
+    let lower = name.to_lowercase();
+    if !crate::user_file::is_safe_file_stem(&lower) {
+        return None;
+    }
     let preset_dir = dirs::config_dir()?
         .join("claudia-statusline")
         .join("presets");
-    let preset_path = preset_dir.join(format!("{}.toml", name.to_lowercase()));
+    let preset_path = preset_dir.join(format!("{lower}.toml"));
 
-    if !preset_path.exists() {
-        return None;
-    }
-
-    let content = std::fs::read_to_string(&preset_path).ok()?;
+    let content =
+        crate::user_file::read_regular_file_capped(&preset_path, MAX_USER_PRESET_BYTES).ok()?;
 
     // Parse TOML to extract format string
     #[derive(serde::Deserialize)]
@@ -71,7 +85,10 @@ fn load_user_preset(name: &str) -> Option<String> {
 ///   silently even though the file exists and is listed.
 ///
 /// Delegating to `load_user_preset` adds no new path-interpolation site of its
-/// own: the path probed here is the one the render path already builds.
+/// own: the path probed here is the one the render path already builds. That
+/// site is NOT harmless by itself — the name comes from the config file — so
+/// `load_user_preset` validates it as a bare stem and reads the file through
+/// the bounded, metadata-first ladder (T-12-17).
 pub fn user_preset_is_usable(name: &str) -> bool {
     load_user_preset(name).is_some()
 }

@@ -19,6 +19,9 @@ mod tests;
 // (plan 12-05); `presets` is a private module, so it must be re-exported here.
 pub use presets::{get_preset_format, list_available_presets, user_preset_is_usable};
 #[allow(unused_imports)]
-pub use presets::{PRESET_COMPACT, PRESET_DEFAULT, PRESET_DETAILED, PRESET_MINIMAL, PRESET_POWER};
+pub use presets::{
+    MAX_USER_PRESET_BYTES, PRESET_COMPACT, PRESET_DEFAULT, PRESET_DETAILED, PRESET_MINIMAL,
+    PRESET_POWER,
+};
 pub use template::LayoutRenderer;
 pub use variables::{ApiEquivTokens, VariableBuilder};

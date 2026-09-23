@@ -993,9 +993,17 @@ impl Validate for LayoutConfig {
         // matching, so `preset = "Compact"` WORKS today and must not be
         // rejected; and a user preset is legal only if it actually LOADS.
         let lowercased = self.preset.to_lowercase();
-        if !BUILTIN_PRESETS.contains(&lowercased.as_str())
-            && !crate::layout::user_preset_is_usable(&self.preset)
-        {
+        let is_builtin = BUILTIN_PRESETS.contains(&lowercased.as_str());
+        if !is_builtin && !crate::user_file::is_safe_file_stem(&lowercased) {
+            // T-12-17: a name that is not a bare stem could escape the preset
+            // directory. ONE finding (the "unknown" error below is skipped), and
+            // the message never echoes the value (T-12-18/T-12-39 posture).
+            report.error(
+                FindingKind::InvalidValue,
+                cx.key("preset"),
+                "layout preset must be a bare name (a built-in, or the stem of a .toml file in the preset directory); path separators, `..`, `:` and NUL are not allowed",
+            );
+        } else if !is_builtin && !crate::layout::user_preset_is_usable(&self.preset) {
             // Suggestions ONLY. `list_available_presets()` enumerates directory
             // stems — including non-`.toml` files that can never load — so it is
             // not a legality oracle. Sorted so the message is process-independent.
@@ -3879,6 +3887,102 @@ mod tests {
             report.findings
         );
         assert_eq!(crate::layout::get_preset_format("mine"), "{directory}");
+    }
+
+    /// Run `f` on a worker thread and FAIL (not hang) if it does not return in
+    /// 5 s. A blocked worker is leaked; the test process still exits.
+    fn within_budget<T: Send + 'static>(what: &str, f: impl FnOnce() -> T + Send + 'static) -> T {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(f());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap_or_else(|_| panic!("{what} BLOCKED: T-12-17 regression"))
+    }
+
+    /// T-12-17 layer 1: a traversal NAME is refused before any path is built.
+    /// A FIFO sits where `presets/../evil.toml` resolves, so a read would block.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn preset_traversal_name_is_refused_without_reading() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        crate::user_file::test_fifo::make_fifo(&preset_dir.parent().unwrap().join("evil.toml"));
+
+        assert!(!within_budget("user_preset_is_usable(../evil)", || {
+            crate::layout::user_preset_is_usable("../evil")
+        }));
+        assert_eq!(
+            within_budget("get_preset_format(../evil)", || {
+                crate::layout::get_preset_format("../evil")
+            }),
+            crate::layout::PRESET_DEFAULT
+        );
+
+        let report = within_budget("validate preset ../evil", || preset_report("../evil"));
+        let found = findings_for(&report, "layout.preset");
+        assert_eq!(found.len(), 1, "exactly ONE finding: {:?}", report.findings);
+        assert_eq!(found[0].severity, Severity::Error);
+        assert_eq!(found[0].kind, FindingKind::InvalidValue);
+        assert!(
+            found[0].message.contains("bare name"),
+            "{}",
+            found[0].message
+        );
+        assert!(
+            !found[0].message.contains("evil"),
+            "the message must not echo the rejected value: {}",
+            found[0].message
+        );
+    }
+
+    /// T-12-17 layer 2: a LEGAL stem whose file is a FIFO is refused from
+    /// metadata, promptly.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn preset_fifo_file_is_not_usable() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        crate::user_file::test_fifo::make_fifo(&preset_dir.join("fifo.toml"));
+
+        assert!(!within_budget("user_preset_is_usable(fifo)", || {
+            crate::layout::user_preset_is_usable("fifo")
+        }));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn preset_over_the_cap_is_not_usable() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        let mut body = String::from("format = \"{directory}\"\n#");
+        body.push_str(&"x".repeat(crate::layout::MAX_USER_PRESET_BYTES as usize));
+        std::fs::write(preset_dir.join("huge.toml"), body).unwrap();
+
+        assert!(!crate::layout::user_preset_is_usable("huge"));
+    }
+
+    /// A symlink to a regular file INSIDE the preset dir still loads (the
+    /// stow/chezmoi arrangement).
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn preset_symlink_to_regular_file_still_loads() {
+        let guard = ResolverEnvGuard::new();
+        let dir = TempDir::new().unwrap();
+        let preset_dir = isolated_preset_dir(&guard, &dir);
+        std::fs::write(preset_dir.join("mine.toml"), "format = \"{model}\"\n").unwrap();
+        std::os::unix::fs::symlink(preset_dir.join("mine.toml"), preset_dir.join("linked.toml"))
+            .unwrap();
+
+        assert_eq!(crate::layout::get_preset_format("mine"), "{model}");
+        assert_eq!(crate::layout::get_preset_format("linked"), "{model}");
+        assert!(preset_report("linked").findings.is_empty());
     }
 
     #[test]
