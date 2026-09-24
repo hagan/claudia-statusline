@@ -1028,9 +1028,10 @@ impl Validate for LayoutConfig {
             );
         }
 
-        // `format` deliberately has NO rule: template-variable checking is out of
-        // scope for this phase because there is no static variable registry —
-        // `list_vars` produces variables by RUNNING the providers.
+        // `format` deliberately has NO rule: template-variable checking remains
+        // out of scope. A static catalog of render variables now exists
+        // (`crate::layout::RENDER_VARIABLES`) and could back such a rule in a
+        // future change, but none is added here.
 
         self.components.validate(&cx.child("components"), report);
     }
@@ -2189,6 +2190,53 @@ cache_metrics = true
 # Default: true (recommended for consistency)
 inherit_duration_mode = true
 
+# Layout configuration
+# With preset = "default" and no `format`, the built-in statusline is used --
+# identical to having no [layout] section at all.
+# Built-in presets: default, compact, detailed, minimal, power
+[layout]
+preset = "default"
+
+# Custom template (overrides the preset when set). List every variable a
+# template can use with:
+#   echo '{"workspace":{"current_dir":"'"$PWD"'"}}' | statusline --list-vars
+# format = "{directory}{sep}{git}{sep}{model}{sep}{cost}"
+
+# Separator substituted for {sep}; inserted literally (never expanded)
+# separator = " • "
+
+# Pricing configuration (notional API-equivalent cost)
+# Opt-in: nothing renders unless a [layout] format references an
+# api_equiv_cost* variable.
+# Sources:
+# - "auto": synced price cache while fresh, bundled table otherwise
+# - "bundled": always the price table shipped with the binary
+# - "synced": always the synced price cache (`statusline ant sync-pricing`)
+[pricing]
+source = "auto"
+
+# Maximum age of the synced price cache (only used with source = "auto")
+# max_age = "30d"
+
+# Map non-canonical model ids onto a priced model id
+# [pricing.aliases]
+# "my-proxy-model" = "claude-opus-4-8"
+
+# Anthropic API enrichment (opt-in)
+# Fetching is out-of-band and never happens during a render:
+#   statusline ant sync-models | sync-usage | sync-pricing
+[ant]
+enabled = false
+
+# profile = ""
+# usage_stale_after = "30m"
+# models_stale_after = "48h"
+#
+# Admin key is obtained by running a command (argv form, no shell); the key
+# itself is never stored in this file.
+# [ant.accounts.work]
+# admin_key_command = ["security", "find-generic-password", "-s", "anthropic-admin", "-w"]
+
 # Optional cloud sync configuration
 # Requires building with --features turso-sync
 # [sync]
@@ -2420,6 +2468,33 @@ mod tests {
         assert!(example.contains("Claudia Statusline Configuration"));
         assert!(example.contains("progress_bar_width"));
         assert!(example.contains("window_size"));
+    }
+
+    #[test]
+    fn test_example_config_new_sections() {
+        // D-06: `config generate` must surface the sections `config validate`
+        // polices, as live (uncommitted) headers at column 0.
+        let example = Config::example_toml();
+        for header in ["[layout]", "[pricing]", "[ant]"] {
+            assert!(
+                example.lines().any(|l| l == header),
+                "example_toml() is missing a live `{header}` line"
+            );
+        }
+        assert!(
+            example.contains("--list-vars"),
+            "example_toml() should point users at the variable catalog"
+        );
+
+        let cfg: Config =
+            toml::from_str(example).expect("example_toml() must deserialize into Config");
+        assert_eq!(cfg.layout.preset, "default");
+        assert!(cfg.layout.format.is_empty());
+        assert_eq!(cfg.layout.separator, LayoutConfig::default().separator);
+        assert_eq!(cfg.pricing.source, crate::pricing::PricingSource::Auto);
+        assert!(cfg.pricing.aliases.is_empty());
+        assert!(!cfg.ant.enabled);
+        assert!(cfg.ant.accounts.is_empty());
     }
 
     #[test]
