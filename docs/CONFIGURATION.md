@@ -350,9 +350,9 @@ Statusline supports customizable layouts through presets and template-based form
 
 | Preset | Description | Example Output |
 |--------|-------------|----------------|
-| `default` | Standard layout with all components | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50` |
+| `default` | Standard layout with all components | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50 ($3.50/hr)` |
 | `compact` | Minimal space-efficient layout | `project main S4.5 $12` |
-| `detailed` | Two-line detailed view | `~/project • main +2`<br>`75% [======>---] • S4.5 • 5m • $12.50` |
+| `detailed` | Two-line detailed view | `~/project • main +2`<br>`75% [======>---] • S4.5 • 5m • $12.50 ($3.50/hr)` |
 | `minimal` | Just directory and model | `~/project S4.5` |
 | `power` | Multi-line power user view | (see below) |
 
@@ -384,7 +384,7 @@ separator = " | "
 | `{model}` | `S4.5` | Abbreviated model |
 | `{model_full}` | `Claude Sonnet 4.5` | Full model name |
 | `{duration}` | `5m` | Session duration |
-| `{cost}` | `$12.50` | Session cost |
+| `{cost}` | `$12.50 ($3.50/hr)` | Session cost; with the default `[layout.components.cost] format = "full"` the burn rate is appended once the session is older than `burn_rate.min_duration_seconds` (see the cost `format` options) |
 | `{cost_short}` | `$12` | Rounded cost |
 | `{burn_rate}` | `$3.50/hr` | Cost per hour |
 | `{daily_total}` | `$45.00` | Today's total |
@@ -789,7 +789,7 @@ mkdir -p ~/.config/claudia-statusline/presets
 
 **File**: `~/.config/claudia-statusline/presets/mypreset.toml`
 ```toml
-format = "{dir_short} [{git_branch}] {model} ${cost_short}"
+format = "{dir_short} [{git_branch}] {model} {cost_short}"
 ```
 
 Use with:
@@ -815,7 +815,7 @@ show_when = "dirty"  # Only show when there are changes
 format = "{directory} • {model}\n{cost} ({burn_rate}) | Day: {daily_total}"
 
 [layout.components.cost]
-format = "full"
+format = "cost_only"  # {cost} is just $X.XX; ({burn_rate}) shows the rate once
 color = "#FFD700"  # Gold
 ```
 

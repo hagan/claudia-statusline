@@ -94,7 +94,7 @@ vim ~/.config/claudia-statusline/config.toml
 
 | Preset | Output |
 |--------|--------|
-| `default` | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50` |
+| `default` | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50 ($3.50/hr)` |
 | `compact` | `project main S4.5 $12` |
 | `detailed` | Two-line with context on second line |
 | `minimal` | `~/project S4.5` |
