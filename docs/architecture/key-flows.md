@@ -23,12 +23,18 @@ Entry: `fn main() -> Result<()>` in `src/main.rs`.
    - `--config` → `STATUSLINE_CONFIG_PATH`.
    - `--test-mode` → `STATUSLINE_TEST_MODE=1` and a redirected `XDG_DATA_HOME`
      (`~/.local/share-test`) so the run uses an isolated database.
-3. **Early-return modes** (no stdin read):
-   - `--version-full` → prints `version_string()` and returns.
-   - `--list-vars` → `handle_list_vars(&cli)` (runs all providers, prints variables by source).
+3. **Early-return modes** (return before the render flow):
+   - `--version-full` → prints `version_string()` and returns (no stdin read).
+   - `--list-vars` → `handle_list_vars(&cli)` (reads stdin leniently; prints the effective
+     layout, the static render-variable catalog `layout::RENDER_VARIABLES`, and the
+     provider-only `gsd_*` section from `GsdProvider`; no `ProviderOrchestrator`).
 4. **Subcommand dispatch** — `match cli.command`:
-   - `Commands::GenerateConfig` → writes `config::Config::example_toml()` to
+   - `Commands::Config { action }` → `commands::config::handle_config_command(action)`;
+     `config generate` writes `config::Config::example_toml()` to
      `Config::default_config_path()` (dir `0o700`, file `0o600` on Unix).
+   - `Commands::GenerateConfig` (hidden, deprecated `generate-config` alias) →
+     `handle_deprecated_generate_config()`: stderr deprecation note, then the same
+     `example_toml()` write.
    - `Commands::Migrate { .. }` → `dump_database_schema()` / `run_schema_migrations()` /
      `finalize_migration(delete_json)` / `show_migration_roadmap()`.
    - `Commands::DbMaintain { .. }` → `perform_database_maintenance(...)`.

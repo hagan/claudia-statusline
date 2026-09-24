@@ -320,6 +320,12 @@ Writes an example config file to the default config path (see
 statusline config generate
 ```
 
+The generated file includes the `[layout]`, `[pricing]` and `[ant]` sections with their
+defaults; opt-in knobs such as `[pricing] max_age`, `[pricing.aliases]` and
+`[ant.accounts]` are present but commented out. As a result,
+`statusline config validate` on a freshly generated file reports no findings, and the
+statusline renders exactly as it does with no config file at all.
+
 `statusline generate-config` still works but is **deprecated** in favour of
 `statusline config generate`; it prints a deprecation note on stderr.
 
@@ -400,6 +406,14 @@ separator = " | "
 | `{token_daily_total}` | `day: 2.5M` | Daily token total |
 | `{sep}` | ` • ` | Configured separator |
 
+The table above lists the common variables. `statusline --list-vars` prints the
+complete catalog of every variable the layout renderer can substitute — including the
+`{api_equiv_cost*}` pricing variables, the `{api_*}` `[ant]` usage variables,
+`{rate_limit_*}`, `{effort}`, `{cc_version}` and `{repo}` — each with an example and a
+description, plus the effective layout (preset and template) for your current config.
+Template variables only apply when `[layout] format` is set or `preset` is not
+`default`; the default preset uses the built-in positional renderer.
+
 > **Note:** Token rate variables require `[token_rate] enabled = true` in config.
 > The `{token_rate}` variable respects both `display_mode` and `rate_display` settings.
 
@@ -407,8 +421,10 @@ separator = " | "
 
 When the working directory is inside a project with a `.planning/` directory
 (one containing both `STATE.md` and `config.json`), the GSD provider produces a
-set of `gsd_*` variables. `statusline --list-vars` prints the full set with
-their current values; the two below are new.
+set of `gsd_*` variables. `statusline --list-vars` prints them, with their current
+values, in their own trailing section headed as not available in the statusline
+render; the supported machine interface for this data is `statusline gsd state --json`.
+The two below are new.
 
 | Variable | Example | Description |
 |----------|---------|-------------|
@@ -418,9 +434,12 @@ their current values; the two below are new.
 ```console
 $ echo '{"workspace":{"current_dir":"'"$PWD"'"}}' | statusline --list-vars
 ...
+=== gsd (provider-only: not available in the statusline render; see `statusline gsd state --json`) ===
+  gsd_icon = "\u{f0ae2}"
   gsd_milestone = "v3.3.0"
   gsd_milestone_name = "Cost Accuracy & Honesty"
-  gsd_phase = "P12: config-validation-machine-readable-state"
+  gsd_phase = "P13: address-tech-debt-release-housekeeping-discoverability"
+...
 ```
 
 Both are empty strings when unavailable, so `{if gsd_milestone}...{endif}`
@@ -430,8 +449,10 @@ its own. Both are blanked by `[gsd] show_phase = false`, alongside the phase,
 progress and plan variables.
 
 > **Where these variables are actually consumed.** The `gsd_*` variables are
-> reported by `statusline --list-vars` and are available to library consumers
-> that run the provider themselves (`GsdProvider` / `ProviderOrchestrator`).
+> shown by `statusline --list-vars` in a section explicitly labeled not available
+> in the statusline render, are exposed as structured data by
+> `statusline gsd state --json`, and are available to library consumers that run
+> the provider themselves (`GsdProvider` / `ProviderOrchestrator`).
 > They are **not** wired into the statusline the binary prints: the render path
 > builds its variable map without the GSD provider, so putting
 > `{gsd_milestone}` in a `[layout] format` renders an empty string today. This
@@ -487,8 +508,9 @@ Three things a reader would otherwise get wrong:
    `{gsd_phase}` where it previously reported an empty one, and any template
    gated on `{if gsd_phase}` — including the bundled default template — gains
    its GSD segment as a result. That is the fix, not a regression. (Per the
-   note above, that segment is visible through `--list-vars` and to library
-   consumers rather than in the line the binary currently prints.)
+   note above, that segment is visible in `--list-vars`'s provider-only gsd
+   section, through `statusline gsd state --json`, and to library consumers —
+   not in the line the binary currently prints.)
 
 3. **Do not parse STATE.md yourself.** An external tool that wants all three
    facts — milestone, phase and progress — without parsing prose should consume
