@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-09-23
+
+> **Minor release**: the "Cost Accuracy & Honesty" milestone. A bundled, offline Claude price table powers new opt-in API-equivalent cost variables, an optional out-of-band `statusline ant sync-pricing` keeps prices current without touching the render path, `statusline config validate` checks your config before it silently misbehaves, and `statusline gsd state --json` exposes GSD project state as machine-readable JSON. The render path stays offline and never fails. Fully backward-compatible; no breaking changes.
+
+### Added
+
+- **Bundled offline Claude price table.** A CI-vendored subset of the LiteLLM price data (every current Claude model id) ships inside the binary and is the default price source — no network access at render time. `make vendor-pricing` regenerates it. (PRICE-01)
+- **Opt-in API-equivalent cost variables.** Seven new template variables: `{api_equiv_cost}`, `{api_equiv_cost_labeled}`, `{api_equiv_cost_input}`, `{api_equiv_cost_output}`, `{api_equiv_cost_cache_write}`, `{api_equiv_cost_cache_read}` and `{api_equiv_cost_by_model}`. They price the session's tokens at public API list rates, including cache writes and cache reads at their own rates. The figure is **notional, not billed spend** — on a Pro/Max subscription you pay nothing per token; use `{api_equiv_cost_labeled}` (`~$X API-equiv`) where the distinction matters. The above-200k long-context price tier is not modeled. (PRICE-02, PRICE-03)
+- **Honest model matching.** Price lookup is exact-match only: an unrecognized model renders `unknown` rather than borrowing a neighbour's price, and `[pricing.aliases]` maps custom ids onto a priced one. When only part of the token basis can be priced, the headline gets a trailing `+` to mark it as a lower bound. (PRICE-03, PRICE-05)
+- **Optional price refresh: `statusline ant sync-pricing`.** Fetches current prices out-of-band (keyless) into a versioned, atomically written cache. `[pricing] source = "auto" | "bundled" | "synced"` chooses the source and `max_age` (default `30d`) bounds how long a synced cache is trusted under `auto`. Synced prices are merged with the bundled table per model id and per price dimension, so a partial upstream row never erases a known rate. The render path still only reads local files. (PRICE-04)
+- **`statusline config` command group.** `statusline config validate [PATH] [--json] [--strict]` checks every config section for unknown keys, wrong types and invalid values, reports cache health (prices/models/usage) as warnings that never affect rendering, and detects a config file sitting in a directory statusline does not read. `statusline config generate` writes an example config; `statusline config path [--json]` shows which file is active and the full search order. `statusline ant doctor` gains a prices-cache row. (QUAL-01, QUAL-02)
+- **Machine-readable GSD state: `statusline gsd state --json`.** One versioned, sanitized JSON document with the milestone, phase and progress of a GSD project, for tools that should not parse `STATE.md` themselves. New `{gsd_milestone}` / `{gsd_milestone_name}` variables, and wider `STATE.md` parsing (`Phase: N` without ` of M`, decimal and zero-padded phase numbers, more dash styles). The `gsd_*` variables are not substituted by the statusline render itself; `statusline gsd state --json` is the supported interface. (GSD-V2-01)
+
+### Changed
+
+- **`statusline generate-config` is deprecated** in favour of `statusline config generate`. The old name still works as a hidden alias and prints a deprecation note on stderr.
+- **Single-pass layout render.** Templates are now rendered in one left-to-right pass, so substituted values are never re-scanned. The `[layout] separator` text is never expanded as a template: a `{variable}` placeholder inside it renders nothing.
+- **Wider GSD phase parsing can newly populate `{gsd_phase}`.** A repository whose `STATE.md` did not match the older, narrower patterns now reports its phase. This is intended.
+- **`--list-vars` shows what the renderer can actually substitute.** It now prints the effective layout (preset and template) followed by a static catalog of every render variable with an example and description; the `gsd_*` values appear in a separate trailing section labeled as not available in the statusline render, pointing to `statusline gsd state --json`.
+
+### Fixed
+
+- **`claude-opus-4-8` priced from its own row.** It was previously given the Opus 4.0 rates, overstating every price dimension exactly 3x. (PRICE-01)
+- **1-hour cache-write pricing and `$0.00` leaks.** 1-hour cache writes were priced at the 5-minute rate and are now priced at their own; a missing token count no longer renders as a misleading `$0.00` (the variable is simply absent). (PRICE-02)
+- **`--list-vars` completeness and honesty.** It lists all 49 render variables, including the seven `{api_equiv_cost*}` variables it previously omitted, and no longer advertises `stats_*` variables that were always empty or a `template.tmpl` override the renderer never read.
+- **`config generate` covers the newer sections.** The generated file now includes `[layout]`, `[pricing]` and `[ant]` with their defaults (opt-in knobs commented out), validates with no findings, and renders exactly like having no config.
+- **Documentation cost examples match the real render.** `{cost}` and the default/detailed preset examples show `$12.50 ($3.50/hr)` (cost plus burn rate), the custom-preset example no longer renders `$$12`, and the "Cost-Focused Power User" example shows its burn rate once. A test now renders the documented examples through the binary so they cannot drift again.
+
+### Security
+
+- **Terminal-escape sanitization at the variable builder.** Untrusted values (directory, git branch, model id and other payload fields) are sanitized before any colour is applied, so control sequences cannot reach your terminal through a template.
+- **No variable injection through substituted values.** Because the render is a single pass, a directory or branch name containing `{...}` is emitted as plain text and can no longer inject other statusline variables.
+- **Config-validation redaction boundary.** `config validate` diagnostics never echo config values, so secrets in a config file are not printed; the `[ant] admin_key_command` is never executed by `validate`.
+- **Preset and theme names are validated, and user preset/theme files are read with a size bound and only if they are regular files**, closing a path-traversal / FIFO hang via a crafted `preset` or `theme` name.
+
 ## [3.2.0] - 2026-06-15
 
 > **Minor release**: optional, default-OFF `[ant]` enrichment that lets the statusline surface authoritative Claude API data (model context windows; per-account org-wide usage/cost) it can't get from the stdin payload. The render path stays **offline, auth-free, sub-few-ms, and byte-identical to v3.1.0** when `[ant]` is disabled — all network/auth/subprocess work is out-of-band in a new `statusline ant` subcommand. Strictly opt-in, lean-dependency (shells out to `ant`/`curl`, no new mandatory deps), and degrades silently everywhere. Fully backward-compatible; no breaking changes.
