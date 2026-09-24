@@ -3,6 +3,9 @@
 //! This module provides template-based rendering of the statusline,
 //! allowing users to customize the format and order of components.
 
+// Temporary: the binary consumes the catalog once `--list-vars` is rewritten.
+#[allow(dead_code)]
+mod catalog;
 mod format;
 mod presets;
 mod template;
@@ -23,5 +26,9 @@ pub use presets::{
     MAX_USER_PRESET_BYTES, PRESET_COMPACT, PRESET_DEFAULT, PRESET_DETAILED, PRESET_MINIMAL,
     PRESET_POWER,
 };
+// The static render-variable catalog: `--list-vars` (binary) and library
+// consumers read it.
+#[allow(unused_imports)]
+pub use catalog::{RenderVar, RENDER_VARIABLES};
 pub use template::LayoutRenderer;
 pub use variables::{ApiEquivTokens, VariableBuilder};
