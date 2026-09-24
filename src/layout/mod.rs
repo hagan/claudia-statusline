@@ -3,8 +3,6 @@
 //! This module provides template-based rendering of the statusline,
 //! allowing users to customize the format and order of components.
 
-// Temporary: the binary consumes the catalog once `--list-vars` is rewritten.
-#[allow(dead_code)]
 mod catalog;
 mod format;
 mod presets;
