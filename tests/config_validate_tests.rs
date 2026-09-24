@@ -1729,6 +1729,16 @@ fn generated_config_validates_clean() {
         String::from_utf8_lossy(&stdout)
     );
 
+    // D-06: the generated file must SURFACE the sections validate polices, as
+    // live headers (a commented `# [layout]` must not satisfy this).
+    let text = fs::read_to_string(&generated).expect("read generated config");
+    for header in ["[layout]", "[pricing]", "[ant]"] {
+        assert!(
+            text.lines().any(|l| l.trim() == header),
+            "generated config must contain a live `{header}` line"
+        );
+    }
+
     let target = generated.display().to_string();
     let (ok, code, stdout, stderr) = env.run(&["config", "validate", &target, "--json"]);
     let report = parse_exactly_one_json(&stdout, "config validate --json");
@@ -1739,6 +1749,127 @@ fn generated_config_validates_clean() {
          report={report}"
     );
     assert_eq!(report["valid"], true, "{report}");
+    // Finding-free, not merely error-free: a warning here would greet every
+    // user who runs `config generate && config validate`.
+    assert_eq!(report["counts"]["errors"], 0, "{report}");
+    assert_eq!(report["counts"]["warnings"], 0, "{report}");
+    let findings = report["findings"].as_array();
+    assert!(
+        findings.is_some_and(|f| f.is_empty()),
+        "generated config must produce NO findings; report={report}"
+    );
+}
+
+/// Path `config generate` writes to under a [`ConfigEnv`] (XDG_CONFIG_HOME is
+/// `home/config`).
+fn generated_config_path(env: &ConfigEnv) -> PathBuf {
+    env.home_path()
+        .join("config")
+        .join("claudia-statusline")
+        .join("config.toml")
+}
+
+/// D-06: both spellings — `config generate` and the hidden deprecated
+/// `generate-config` alias — write exactly `Config::example_toml()`.
+#[test]
+#[serial]
+fn generate_config_alias_writes_identical_bytes() {
+    let env = ConfigEnv::new(&clean_config());
+    let generated = generated_config_path(&env);
+
+    let (ok, code, _stdout, stderr) = env.run(&["config", "generate"]);
+    assert!(
+        ok,
+        "config generate must succeed; code={code:?} stderr={stderr}"
+    );
+    let a = fs::read(&generated).expect("read `config generate` output");
+    fs::remove_file(&generated).expect("remove generated config");
+
+    let (ok, code, _stdout, stderr) = env.run(&["generate-config"]);
+    assert!(
+        ok,
+        "generate-config alias must succeed; code={code:?} stderr={stderr}"
+    );
+    let b = fs::read(&generated).expect("read `generate-config` output");
+
+    assert_eq!(
+        first_difference(&a, &b),
+        None,
+        "`config generate` and `generate-config` must write identical bytes"
+    );
+    assert_eq!(
+        first_difference(&a, statusline::config::Config::example_toml().as_bytes()),
+        None,
+        "generated file must be exactly Config::example_toml()"
+    );
+}
+
+/// D-06 + "default render unchanged": rendering with the generated config is
+/// byte-identical to rendering with NO config, and a positive control proves
+/// the config file is actually consumed (so the identity is not vacuous).
+#[test]
+#[serial]
+fn generated_config_render_is_byte_identical() {
+    let env = ConfigEnv::new_without_config();
+    let payload = render_payload(env.home_path());
+
+    // Baseline FIRST, before any config file exists under the temp HOME.
+    let (ok, code, baseline, stderr) = env.run_with_stdin(&[], &payload);
+    assert!(
+        ok,
+        "baseline render must exit 0; code={code:?} stderr={stderr}"
+    );
+
+    let (ok, code, _stdout, stderr) = env.run(&["config", "generate"]);
+    assert!(
+        ok,
+        "config generate must succeed; code={code:?} stderr={stderr}"
+    );
+    let generated = generated_config_path(&env);
+    let generated_str = generated.display().to_string();
+
+    let (ok, code, rendered, stderr) = env.spawn_binary(
+        &[],
+        Some(&payload),
+        None,
+        false,
+        &[("STATUSLINE_CONFIG_PATH", &generated_str)],
+    );
+    assert!(
+        ok,
+        "render with generated config must exit 0; code={code:?} stderr={stderr}"
+    );
+    let diff = first_difference(&baseline, &rendered);
+    assert!(
+        diff.is_none(),
+        "render with the generated config differs from the no-config render at byte \
+         {diff:?}\n  baseline:  {:?}\n  generated: {:?}",
+        String::from_utf8_lossy(&baseline),
+        String::from_utf8_lossy(&rendered)
+    );
+
+    // POSITIVE CONTROL: a config that changes the preset MUST change the output.
+    let compact = env.home_path().join("compact.toml");
+    fs::write(&compact, "[layout]\npreset = \"compact\"\n").expect("write compact config");
+    let compact_str = compact.display().to_string();
+    let (ok, code, compact_render, stderr) = env.spawn_binary(
+        &[],
+        Some(&payload),
+        None,
+        false,
+        &[("STATUSLINE_CONFIG_PATH", &compact_str)],
+    );
+    assert!(
+        ok,
+        "render with compact config must exit 0; code={code:?} stderr={stderr}"
+    );
+    assert!(
+        first_difference(&baseline, &compact_render).is_some(),
+        "positive control failed: a `preset = \"compact\"` config rendered identically to \
+         the no-config baseline, so the config file was not consumed and the identity \
+         assertion above is vacuous. output={:?}",
+        String::from_utf8_lossy(&compact_render)
+    );
 }
 
 /// `[sync]` is a recognized section in EVERY build.
