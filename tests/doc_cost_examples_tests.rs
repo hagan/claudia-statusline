@@ -155,6 +155,20 @@ fn power_user_example_renders_burn_rate_once() {
     );
 }
 
+/// The built-in `power` preset must show the burn rate once: under the default
+/// `[layout.components.cost] format = "full"`, `{cost}` already carries
+/// `($X.XX/hr)`, so a trailing `({burn_rate})` would duplicate it (CR-01).
+#[test]
+#[serial]
+fn power_preset_renders_burn_rate_once() {
+    let rendered = RenderEnv::new("[layout]\npreset = \"power\"\n").render();
+    assert_eq!(
+        rendered.matches("/hr").count(),
+        1,
+        "built-in power preset must show the burn rate exactly once; rendered {rendered:?}"
+    );
+}
+
 #[test]
 fn docs_have_no_stale_cost_examples() {
     for rel in ["docs/CONFIGURATION.md", "README.md"] {

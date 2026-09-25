@@ -950,7 +950,9 @@ fn test_preset_power_format() {
     assert!(format.contains("{duration}"));
     assert!(format.contains("{lines}"));
     assert!(format.contains("{cost}"));
-    assert!(format.contains("{burn_rate}"));
+    // {cost} carries the burn rate under the default format; a separate
+    // {burn_rate} would render it twice (CR-01).
+    assert!(!format.contains("{burn_rate}"));
     assert!(format.contains('\n')); // Multi-line
 }
 

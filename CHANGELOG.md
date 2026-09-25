@@ -34,6 +34,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`--list-vars` completeness and honesty.** It lists all 49 render variables, including the seven `{api_equiv_cost*}` variables it previously omitted, and no longer advertises `stats_*` variables that were always empty or a `template.tmpl` override the renderer never read.
 - **`config generate` covers the newer sections.** The generated file now includes `[layout]`, `[pricing]` and `[ant]` with their defaults (opt-in knobs commented out), validates with no findings, and renders exactly like having no config.
 - **Documentation cost examples match the real render.** `{cost}` and the default/detailed preset examples show `$12.50 ($3.50/hr)` (cost plus burn rate), the custom-preset example no longer renders `$$12`, and the "Cost-Focused Power User" example shows its burn rate once. A test now renders the documented examples through the binary so they cannot drift again.
+- **The built-in `power` preset shows the burn rate once.** It rendered `$12.50 ($3.50/hr) ($3.50/hr)` because `{cost}` already carries the burn rate; the redundant `({burn_rate})` was dropped from the preset.
 
 ### Security
 

@@ -6,8 +6,10 @@ pub const PRESET_COMPACT: &str = "{dir_short} {git_branch} {model} {cost_short}"
 pub const PRESET_DETAILED: &str =
     "{directory}{sep}{git}\n{context}{sep}{model}{sep}{duration}{sep}{cost}";
 pub const PRESET_MINIMAL: &str = "{directory} {model}";
+// `{cost}` already appends `($X.XX/hr)` under the default
+// `[layout.components.cost] format = "full"`, so no separate `{burn_rate}`.
 pub const PRESET_POWER: &str =
-    "{directory}{sep}{git}{sep}{context}\n{model}{sep}{duration}{sep}{lines}{sep}{cost} ({burn_rate})";
+    "{directory}{sep}{git}{sep}{context}\n{model}{sep}{duration}{sep}{lines}{sep}{cost}";
 
 /// Get the format string for a preset name
 ///
