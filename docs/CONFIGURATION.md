@@ -521,13 +521,17 @@ Three things a reader would otherwise get wrong:
 
 ### API-Equivalent Cost Variables
 
-These variables price the session's token counts against a Claude price table
-compiled into the binary. **They are opt-in** — none appears unless you reference
+These variables price the token counts of the **last API call**
+(`context_window.current_usage` in the Claude Code payload) against a Claude price
+table compiled into the binary. They are **not a session total**: each render
+reflects only the most recent call, and the variables are empty before the first
+call of a session and right after `/compact`, when Claude Code reports no
+per-call usage. **They are opt-in** — none appears unless you reference
 it in your layout format, and the default statusline is unchanged.
 
 | Variable | Example | Description |
 |----------|---------|-------------|
-| `{api_equiv_cost}` | `$0.97` | Notional API-equivalent session cost |
+| `{api_equiv_cost}` | `$0.97` | Notional API-equivalent cost of the last API call |
 | `{api_equiv_cost_labeled}` | `~$0.97 API-equiv` | Same figure, explicitly labeled |
 | `{api_equiv_cost_input}` | `$0.50` | Uncached input tokens |
 | `{api_equiv_cost_output}` | `$0.25` | Output tokens |
@@ -561,21 +565,22 @@ it in your layout format, and the default statusline is unchanged.
   cost dimensions, so the figure is a *lower bound*: the real API-equivalent cost
   is at least that much. An absent dimension cannot be distinguished from genuine
   zero usage, so it is disclosed rather than silently treated as zero.
-- **A missing variable** — the payload carried no token counts at all. The
-  variables are omitted entirely rather than rendering `$0.00`.
+- **A missing variable** — the payload carried no token counts at all (before the
+  first API call of a session, and right after `/compact`). The variables are
+  omitted entirely rather than rendering `$0.00`.
 - `{api_equiv_cost_by_model}` reflects the **organization-wide month-to-date**
-  usage cache, not this session, so it can legitimately differ in scale from the
-  session headline beside it.
+  usage cache, not the last API call, so it can legitimately differ in scale from
+  the headline beside it.
 
 **Known limitation — long-context sessions are understated.** Some models charge
 a higher rate once a request exceeds 200k tokens (for Sonnet 4/4.5, roughly 2x
 input and 1.5x output). The bundled price table records only standard-tier rates,
-so a session past that threshold is priced low — around 39% low in the worst case
+so a call past that threshold is priced low — around 39% low in the worst case
 — and this is **not** currently flagged with `unknown` or a trailing `+`. Treat
-the figure as a floor for long-context sessions on those models. Likewise, the
-session headline prices cache-creation tokens at the 5-minute rate because the
-payload does not break them down by TTL; a session using 1-hour caching is
-understated on that component.
+the figure as a floor for long-context calls on those models. Likewise, the
+headline prices cache-creation tokens at the 5-minute rate because the payload
+does not break them down by TTL; a call using 1-hour caching is understated on
+that component.
 
 ### `[pricing]` Configuration
 

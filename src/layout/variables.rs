@@ -1219,8 +1219,10 @@ impl VariableBuilder {
     ///
     /// Emits, when the payload carries usable token data:
     /// - `{api_equiv_cost}` — the clean bare `$X.XX` notional API-equivalent
-    ///   session cost (the intentional CLEAN value; its companion carries the
-    ///   label — review MEDIUM-5).
+    ///   cost of the LAST API CALL's tokens (`context_window.current_usage`; not
+    ///   a session total, and absent before the first call and right after
+    ///   `/compact`, when that field is null). The intentional CLEAN value; its
+    ///   companion carries the label — review MEDIUM-5.
     /// - `{api_equiv_cost_labeled}` — the ONLY pre-labeled variant, carrying an
     ///   unmistakable `API-equiv` marker so a Max user never reads it as real
     ///   spend (D-06).

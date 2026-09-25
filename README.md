@@ -237,8 +237,10 @@ See [Usage Guide](docs/USAGE.md#database-maintenance) for details.
 <details>
 <summary><b>API-Equivalent Cost (Optional)</b></summary>
 
-Opt-in template variables that price your session's tokens against public Claude API list
-prices, using a price table compiled into the binary (no network at render):
+Opt-in template variables that price the **last API call's** tokens against public Claude
+API list prices, using a price table compiled into the binary (no network at render). The
+figure is per call, not a session total, and is empty before the first call and right after
+`/compact`:
 
 ```toml
 [layout]

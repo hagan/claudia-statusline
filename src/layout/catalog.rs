@@ -305,7 +305,7 @@ pub const RENDER_VARIABLES: &[RenderVar] = &[
         name: "api_equiv_cost",
         group: API_EQUIV,
         example: "$18.53",
-        description: "Session tokens priced at API rates; a trailing + marks a partial-basis lower bound, and unknown is shown for an unpriced model",
+        description: "The last API call's tokens priced at API rates (not a session total; empty before the first call and right after /compact); a trailing + marks a partial-basis lower bound, and unknown is shown for an unpriced model",
     },
     RenderVar {
         name: "api_equiv_cost_labeled",
@@ -317,25 +317,25 @@ pub const RENDER_VARIABLES: &[RenderVar] = &[
         name: "api_equiv_cost_input",
         group: API_EQUIV,
         example: "$2.10",
-        description: "API-equivalent cost of uncached input tokens",
+        description: "API-equivalent cost of the last API call's uncached input tokens",
     },
     RenderVar {
         name: "api_equiv_cost_output",
         group: API_EQUIV,
         example: "$9.75",
-        description: "API-equivalent cost of output tokens",
+        description: "API-equivalent cost of the last API call's output tokens",
     },
     RenderVar {
         name: "api_equiv_cost_cache_write",
         group: API_EQUIV,
         example: "$4.18",
-        description: "API-equivalent cost of cache-write tokens",
+        description: "API-equivalent cost of the last API call's cache-write tokens",
     },
     RenderVar {
         name: "api_equiv_cost_cache_read",
         group: API_EQUIV,
         example: "$2.50",
-        description: "API-equivalent cost of cache-read tokens (priced at the cache-read rate)",
+        description: "API-equivalent cost of the last API call's cache-read tokens (priced at the cache-read rate)",
     },
     RenderVar {
         name: "api_equiv_cost_by_model",
