@@ -834,10 +834,10 @@ show_when = "dirty"  # Only show when there are changes
 #### Cost-Focused Power User
 ```toml
 [layout]
-format = "{directory} • {model}\n{cost} ({burn_rate}) | Day: {daily_total}"
+format = "{directory} • {model}\n{cost} • {burn_rate}"
 
 [layout.components.cost]
-format = "cost_only"  # {cost} is just $X.XX; ({burn_rate}) shows the rate once
+format = "with_daily"  # {cost} is $X.XX, plus day:$Y.YY once another session ran today; {burn_rate} shows the rate once
 color = "#FFD700"  # Gold
 ```
 

@@ -159,6 +159,12 @@ fn power_user_example_renders_burn_rate_once() {
         !rendered.contains('\x1b'),
         "Power User example leaked an ANSI escape under NO_COLOR; rendered {rendered:?}"
     );
+    // With no other session today `{daily_total}` is absent; the example must
+    // not leave a dangling label behind (WR-06).
+    assert!(
+        !rendered.trim_end().ends_with(':'),
+        "Power User example renders a dangling label; rendered {rendered:?}"
+    );
 }
 
 /// The built-in `power` preset must show the burn rate once: under the default
