@@ -393,7 +393,7 @@ separator = " | "
 | `{cost}` | `$12.50 ($3.50/hr)` | Session cost; with the default `[layout.components.cost] format = "full"` the burn rate is appended once the session is older than `burn_rate.min_duration_seconds` (see the cost `format` options) |
 | `{cost_short}` | `$12` | Rounded cost |
 | `{burn_rate}` | `$3.50/hr` | Cost per hour |
-| `{daily_total}` | `$45.00` | Today's total |
+| `{daily_total}` | `$45.00` | Today's total across sessions; shown only once it exceeds the current session's cost |
 | `{lines}` | `+50 -10` | Lines changed |
 | `{token_rate}` | `12.5 tok/s • 150K` | Token rate (combined, respects `rate_display`) |
 | `{token_rate_only}` | `12.5 tok/s` | Total token rate only |

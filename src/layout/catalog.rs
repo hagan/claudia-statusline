@@ -166,7 +166,7 @@ pub const RENDER_VARIABLES: &[RenderVar] = &[
         name: "daily_total",
         group: COST,
         example: "$45.00",
-        description: "Today's total cost across sessions; absent when zero",
+        description: "Today's total cost across sessions; present only once it exceeds the current session's cost (another session ran today)",
     },
     // --- token_rate ---
     RenderVar {
