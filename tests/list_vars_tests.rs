@@ -276,7 +276,14 @@ impl ListVarsEnv {
         )
     }
 
-    fn run(&self, payload: &str) -> (Option<i32>, Vec<u8>, String) {
+    fn run(&self, payload: impl AsRef<[u8]>) -> (Option<i32>, Vec<u8>, String) {
+        self.run_inner(payload.as_ref(), false)
+    }
+
+    /// Spawn `--list-vars`; when `close_stdout` is set, the read end of the
+    /// child's stdout is dropped before stdin is written, so every write the
+    /// child makes hits a broken pipe (the `--list-vars | head` case).
+    fn run_inner(&self, payload: &[u8], close_stdout: bool) -> (Option<i32>, Vec<u8>, String) {
         let mut cmd = Command::new(test_support::test_binary());
         cmd.arg("--list-vars");
         let home = self.home.path();
@@ -302,11 +309,14 @@ impl ListVarsEnv {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         let mut child = cmd.spawn().expect("spawn statusline");
+        if close_stdout {
+            drop(child.stdout.take());
+        }
         child
             .stdin
             .as_mut()
             .expect("child stdin")
-            .write_all(payload.as_bytes())
+            .write_all(payload)
             .expect("write payload");
         let out = child.wait_with_output().expect("wait for statusline");
         (
@@ -417,6 +427,20 @@ fn list_vars_survives_malformed_stdin() {
     assert!(
         out.contains("api_equiv_cost_by_model"),
         "catalog must still print on malformed stdin\nstdout:\n{out}"
+    );
+}
+
+/// WR-01: non-UTF-8 stdin is optional context only; it must not fail the command.
+#[test]
+#[serial]
+fn list_vars_survives_non_utf8_stdin() {
+    let env = ListVarsEnv::new();
+    let (code, stdout, stderr) = env.run(b"\xff\xfe not utf-8");
+    let out = String::from_utf8_lossy(&stdout);
+    assert_eq!(code, Some(0), "stdout:\n{out}\nstderr:\n{stderr}");
+    assert!(
+        out.contains("api_equiv_cost_by_model"),
+        "catalog must still print on non-UTF-8 stdin\nstdout:\n{out}"
     );
 }
 

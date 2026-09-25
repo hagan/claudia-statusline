@@ -23,9 +23,12 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
     use crate::provider::DataProvider;
     use std::collections::BTreeMap;
 
-    // Read JSON from stdin (only the cwd is used, for the gsd section)
-    let mut buffer = String::new();
-    io::stdin().read_to_string(&mut buffer)?;
+    // Read JSON from stdin (only the cwd is used, for the gsd section). Stdin is
+    // optional context: a read error or non-UTF-8 bytes fall back to defaults
+    // rather than failing the command.
+    let mut raw = Vec::new();
+    let _ = io::stdin().read_to_end(&mut raw);
+    let buffer = String::from_utf8_lossy(&raw);
 
     let input: StatuslineInput = serde_json::from_str(&buffer).unwrap_or_default();
 
