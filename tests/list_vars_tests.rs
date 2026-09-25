@@ -416,7 +416,7 @@ impl ListVarsEnv {
 
 fn run_default() -> (Option<i32>, String) {
     let env = ListVarsEnv::new();
-    let (code, stdout, stderr) = env.run(&env.payload());
+    let (code, stdout, stderr) = env.run(env.payload());
     let text = String::from_utf8_lossy(&stdout).into_owned();
     assert_eq!(
         code,
@@ -564,7 +564,7 @@ fn list_vars_shows_effective_layout() {
     );
 
     let env = ListVarsEnv::with_config("[layout]\npreset = \"compact\"\n");
-    let (code, stdout, stderr) = env.run(&env.payload());
+    let (code, stdout, stderr) = env.run(env.payload());
     let out = String::from_utf8_lossy(&stdout);
     assert_eq!(code, Some(0), "stdout:\n{out}\nstderr:\n{stderr}");
     let want = format!("{:?}", statusline::layout::PRESET_COMPACT);
@@ -579,7 +579,7 @@ fn list_vars_shows_effective_layout() {
 #[serial]
 fn list_vars_escapes_control_bytes_in_layout_format() {
     let env = ListVarsEnv::with_config("[layout]\nformat = \"\\u001b[31m{cost}\"\n");
-    let (code, stdout, stderr) = env.run(&env.payload());
+    let (code, stdout, stderr) = env.run(env.payload());
     let text = String::from_utf8_lossy(&stdout);
     assert_eq!(code, Some(0), "stdout:\n{text}\nstderr:\n{stderr}");
     assert!(
