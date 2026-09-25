@@ -6,9 +6,12 @@
 //!
 //! Drift contract: this list is drift-guarded in BOTH directions by
 //! `tests/list_vars_tests.rs`, which scans the production slice of
-//! `src/layout/variables.rs`. Do not add a row the builder cannot emit (it would
-//! advertise a variable that always renders empty), and do not add a builder
-//! key without a row here (`--list-vars` would hide it). The provider-only
+//! `src/layout/variables.rs`. Every row must be inserted by a builder method
+//! that `src/display.rs` actually calls on the render path (or by a
+//! `builder.set(..)` there) — a row emitted only by an uncalled method would
+//! advertise a variable that always renders empty. Every key any builder
+//! method can insert must have a row here (`--list-vars` would hide it
+//! otherwise). The provider-only
 //! `gsd_*` variables are deliberately NOT listed: they are not available in the
 //! statusline render (D-08).
 //!

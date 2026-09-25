@@ -9,9 +9,11 @@
 //!    names `VariableBuilder` can actually insert, recovered by scanning the
 //!    PRODUCTION slice of `src/layout/variables.rs` (everything before its first
 //!    `#[cfg(test)]`). A builder key with no catalog row fails
-//!    `builder_keys_are_all_in_catalog`; a catalog row the builder cannot emit
-//!    (the D-05 class: advertising a variable that always renders empty) fails
-//!    `catalog_names_are_all_emitted_by_builder`. `sep` is the one allowed
+//!    `builder_keys_are_all_in_catalog`. The reverse direction is stricter: a
+//!    catalog row must be inserted by a builder method that `src/display.rs`
+//!    actually calls (or set via `builder.set(..)` there), otherwise it would
+//!    always render empty (the D-05 class) and
+//!    `catalog_names_are_all_emitted_by_builder` fails. `sep` is the one allowed
 //!    exception — it is resolved by the renderer from `[layout] separator`, not
 //!    inserted by the builder.
 //!
@@ -77,27 +79,111 @@ fn builder_variable_names() -> Vec<String> {
     };
     let mut names: Vec<String> = Vec::new();
     for line in production.lines() {
-        let code = code_portion(line);
+        collect_names_from_line(code_portion(line), &mut names);
+    }
+    names.sort();
+    names
+}
 
-        // (a) "<ident>".to_string()
-        let suffix = "\".to_string()";
-        let mut from = 0usize;
-        while let Some(rel) = code[from..].find(suffix) {
-            let close = from + rel; // index of the closing quote
-            if let Some(open) = code[..close].rfind('"') {
-                let name = &code[open + 1..close];
-                if is_ident(name) && !names.iter().any(|n| n == name) {
-                    names.push(name.to_string());
-                }
+/// Collect the variable names inserted on one (comment-stripped) source line:
+/// (a) `"<ident>".to_string()` and (b) any `"api_equiv_cost…"` literal.
+fn collect_names_from_line(code: &str, names: &mut Vec<String>) {
+    // (a) "<ident>".to_string()
+    let suffix = "\".to_string()";
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(suffix) {
+        let close = from + rel; // index of the closing quote
+        if let Some(open) = code[..close].rfind('"') {
+            let name = &code[open + 1..close];
+            if is_ident(name) && !names.iter().any(|n| n == name) {
+                names.push(name.to_string());
             }
-            from = close + suffix.len();
         }
+        from = close + suffix.len();
+    }
 
-        // (b) "api_equiv_cost…"
-        let needle = "\"api_equiv_cost";
+    // (b) "api_equiv_cost…"
+    let needle = "\"api_equiv_cost";
+    let mut from = 0usize;
+    while let Some(rel) = code[from..].find(needle) {
+        let open = from + rel + 1;
+        let Some(close_rel) = code[open..].find('"') else {
+            break;
+        };
+        let name = &code[open..open + close_rel];
+        if is_ident(name) && !names.iter().any(|n| n == name) {
+            names.push(name.to_string());
+        }
+        from = open + close_rel + 1;
+    }
+}
+
+/// Slice of a source file before its first `#[cfg(test)] mod` block.
+fn production_slice(source: &str) -> &str {
+    match source.find("#[cfg(test)]\nmod ") {
+        Some(idx) => &source[..idx],
+        None => source,
+    }
+}
+
+/// Variable names the RENDER PATH can actually insert: only the bodies of the
+/// `VariableBuilder` methods that `src/display.rs` (production slice) calls,
+/// plus any `builder.set("<key>", ..)` keys in `display.rs`.
+///
+/// This is narrower than [`builder_variable_names`] on purpose: a variable
+/// inserted only by a builder method the render never calls (e.g. the legacy
+/// non-`_with_config` variants) would always render empty — the D-05 class —
+/// and must not count as emittable.
+fn render_reachable_variable_names() -> Vec<String> {
+    let variables = read_src("src/layout/variables.rs");
+    let variables = production_slice(&variables);
+    let display = read_src("src/display.rs");
+    let display = production_slice(&display);
+
+    // Split the builder source into method bodies keyed by method name. Methods
+    // sit at exactly four spaces of indentation inside `impl` blocks; a `}` in
+    // column 0 closes the impl.
+    let mut methods: Vec<(String, Vec<&str>)> = Vec::new();
+    let mut current: Option<usize> = None;
+    for line in variables.lines() {
+        let decl = line
+            .strip_prefix("    pub fn ")
+            .or_else(|| line.strip_prefix("    pub(crate) fn "))
+            .or_else(|| line.strip_prefix("    fn "));
+        if let Some(rest) = decl {
+            let name: String = rest
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            methods.push((name, Vec::new()));
+            current = Some(methods.len() - 1);
+            continue;
+        }
+        if line.starts_with('}') {
+            current = None;
+            continue;
+        }
+        if let Some(i) = current {
+            methods[i].1.push(line);
+        }
+    }
+
+    let mut names: Vec<String> = Vec::new();
+    for (method, body) in &methods {
+        if !display.contains(&format!(".{method}(")) {
+            continue;
+        }
+        for line in body {
+            collect_names_from_line(code_portion(line), &mut names);
+        }
+    }
+
+    // Keys set directly through `VariableBuilder::set` on the render path.
+    for line in display.lines() {
+        let code = code_portion(line);
         let mut from = 0usize;
-        while let Some(rel) = code[from..].find(needle) {
-            let open = from + rel + 1;
+        while let Some(rel) = code[from..].find(".set(\"") {
+            let open = from + rel + ".set(\"".len();
             let Some(close_rel) = code[open..].find('"') else {
                 break;
             };
@@ -155,7 +241,7 @@ fn builder_keys_are_all_in_catalog() {
 /// produce (the D-05 class — e.g. the old always-empty `stats_*` vars).
 #[test]
 fn catalog_names_are_all_emitted_by_builder() {
-    let names = builder_variable_names();
+    let names = render_reachable_variable_names();
     assert!(
         names.len() >= 48,
         "builder scan broken (only {} names) — guard would be vacuous",
@@ -168,8 +254,9 @@ fn catalog_names_are_all_emitted_by_builder() {
         .collect();
     assert!(
         phantom.is_empty(),
-        "src/layout/catalog.rs lists variables that VariableBuilder never inserts \
-         (they would always render empty): {phantom:?}\nScanned builder names: {names:?}"
+        "src/layout/catalog.rs lists variables that no VariableBuilder method called \
+         by src/display.rs inserts (they would always render empty): {phantom:?}\n\
+         Render-reachable names: {names:?}"
     );
 }
 
