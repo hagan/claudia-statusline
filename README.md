@@ -10,7 +10,7 @@ A high-performance statusline for [Claude Code](https://docs.anthropic.com/en/do
 
 **Example output:**
 ```
-~/myproject [main +2 ~1 ?3] • 45% [====------] Sonnet • 1h 23m • +150 -42 • $3.50 ($2.54/h)
+~/myproject [main +2 ~1 ?3] • 45% [=====>----] Sonnet • 1h 23m • +150 -42 • $3.50 ($2.54/h)
 ```
 
 ## Quick Install
@@ -27,11 +27,11 @@ curl -fsSL https://raw.githubusercontent.com/hagan/claudia-statusline/main/scrip
 
 - **Current directory** with `~` shorthand
 - **Git branch and changes** (+2 added, ~1 modified, ?3 untracked)
-- **Context usage** with progress bar (45% [====------])
+- **Context usage** with progress bar (45% [=====>----])
 - **Real-time compaction detection** (experimental) - instant feedback via hooks (~600x faster)
   - Normal: `79% [========>-] ⚠` (warning when approaching limit)
   - In Progress: `Compacting... ⠋` (hook-based, <1ms detection)
-  - Completed: `35% [===>------] ✓` (checkmark after successful compact)
+  - Completed: `35% [====>-----] ✓` (checkmark after successful compact)
 - **Claude model** (O4.5/S4.5/H4.5 - consistent version display)
 - **Session duration** (1h 23m)
 - **Cost tracking** ($3.50 session, $2.54/hour burn rate)
@@ -94,7 +94,7 @@ vim ~/.config/claudia-statusline/config.toml
 
 | Preset | Output |
 |--------|--------|
-| `default` | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50 ($3.50/hr)` |
+| `default` | `~/project • main +2 • 75% [========>-] ⚠ • S4.5 • $12.50 ($3.50/hr)` |
 | `compact` | `project main S4.5 $12` |
 | `detailed` | Two-line with context on second line |
 | `minimal` | `~/project S4.5` |
@@ -248,7 +248,7 @@ format = "{directory} {git} {model} {api_equiv_cost_labeled}"
 ```
 
 ```
-~/projects/app  main +2  O4.8  ~$0.97 API-equiv
+~/projects/app main +2 O4.8 ~$0.10 API-equiv
 ```
 
 **This is not what you are billed.** On a Pro/Max subscription you pay your plan price

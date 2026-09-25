@@ -356,9 +356,9 @@ Statusline supports customizable layouts through presets and template-based form
 
 | Preset | Description | Example Output |
 |--------|-------------|----------------|
-| `default` | Standard layout with all components | `~/project • main +2 • 75% [======>---] • S4.5 • $12.50 ($3.50/hr)` |
+| `default` | Standard layout with all components | `~/project • main +2 • 75% [========>-] ⚠ • S4.5 • $12.50 ($3.50/hr)` |
 | `compact` | Minimal space-efficient layout | `project main S4.5 $12` |
-| `detailed` | Two-line detailed view | `~/project • main +2`<br>`75% [======>---] • S4.5 • 5m • $12.50 ($3.50/hr)` |
+| `detailed` | Two-line detailed view | `~/project • main +2`<br>`75% [========>-] 150k/200k • S4.5 • 5m • $12.50 ($3.50/hr)` |
 | `minimal` | Just directory and model | `~/project S4.5` |
 | `power` | Multi-line power user view | (see below) |
 
@@ -392,7 +392,7 @@ separator = " | "
 | `{dir_short}` | `app` | Directory basename only |
 | `{git}` | `main +2 ~1` | Full git info |
 | `{git_branch}` | `main` | Branch name only |
-| `{context}` | `75% [======>---]` | Full context bar |
+| `{context}` | `75% [========>-] 150k/200k` | Percentage, bar and token counts (see [Context Format Options](#context-format-options)) |
 | `{context_pct}` | `75` | Percentage number |
 | `{context_tokens}` | `150k/200k` | Token counts |
 | `{model}` | `S4.5` | Abbreviated model |
@@ -774,7 +774,7 @@ color = "green"
 
 [layout.components.context]
 format = "full"       # Options: full (default), bar, percent, tokens
-show_tokens = false   # Show token counts in full format (e.g., "75% [======>---] 150k/200k")
+show_tokens = false   # Show token counts in full format (default: true; e.g., "75% [========>-] 150k/200k")
 bar_width = 10        # Optional: override progress bar width
 
 [layout.components.model]
@@ -790,9 +790,9 @@ color = ""
 
 | Format | Example Output | Description |
 |--------|---------------|-------------|
-| `full` | `75% [======>---]` | Percentage + progress bar (default) |
-| `full` + `show_tokens` | `75% [======>---] 150k/200k` | With token counts |
-| `bar` | `[======>---]` | Progress bar only |
+| `full` | `75% [========>-] 150k/200k` | Percentage + progress bar + token counts (default; `show_tokens = true`) |
+| `full` + `show_tokens = false` | `75% [========>-]` | Without token counts |
+| `bar` | `[========>-]` | Progress bar only |
 | `percent` | `75%` | Percentage only |
 | `tokens` | `150k/200k` | Token counts only |
 
@@ -1207,7 +1207,7 @@ show_lines_changed = true
 show_cost = false
 ```
 
-**Output:** `~/projects/myapp • main +2 ~1 • [====------] 42% • +123/-45`
+**Output:** `~/projects/myapp • main +2 ~1 • 42% [====>-----] • +123 -45`
 
 #### Cost Tracking (Model + Duration + Cost)
 

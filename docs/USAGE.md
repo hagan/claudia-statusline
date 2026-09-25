@@ -19,7 +19,7 @@ The statusline updates every 300ms showing:
 
 **Example output:**
 ```
-~/myproject [main +2 ~1 ?3] • 45% [====------] Sonnet • 1h 23m • +150 -42 • $3.50 ($2.54/h)
+~/myproject [main +2 ~1 ?3] • 45% [=====>----] Sonnet • 1h 23m • +150 -42 • $3.50 ($2.54/h)
 ```
 
 ### Standalone Usage
@@ -541,7 +541,7 @@ The statusline accepts JSON via stdin with this format:
 ### Format Breakdown
 
 ```
-~/myproject [main +2 ~1 ?3] • 45% [====------] Sonnet • 1h 23m • +150 -42 • $3.50 ($2.54/h)
+~/myproject [main +2 ~1 ?3] • 45% [=====>----] Sonnet • 1h 23m • +150 -42 • $3.50 ($2.54/h)
 ```
 
 - `~/myproject` - Current directory (with ~ substitution)
@@ -551,7 +551,7 @@ The statusline accepts JSON via stdin with this format:
   - `~1` - 1 file modified
   - `?3` - 3 files untracked
 - `45%` - Context usage percentage
-- `[====------]` - Visual progress bar (10 chars)
+- `[=====>----]` - Visual progress bar (10 chars)
 - `Sonnet` - Claude model (abbreviated: Opus/S3.5/S4.5/Haiku)
 - `1h 23m` - Session duration
 - `+150 -42` - Lines added/removed in session
