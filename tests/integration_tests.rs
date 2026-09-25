@@ -257,6 +257,115 @@ fn version_file_matches_cargo_pkg_version() {
     );
 }
 
+/// D-02 drift guard: CHANGELOG.md must keep a `## [Unreleased]` heading
+/// at the top, followed by a release heading for the current `VERSION` dated
+/// `YYYY-MM-DD`, with subsequent release headings in strictly descending
+/// semver order. This is read at compile time so it re-checks on every build,
+/// and it is deliberately version-agnostic: it must keep passing after every
+/// future release without being hand-edited.
+#[test]
+fn changelog_has_unreleased_then_current_version_in_descending_order() {
+    let changelog = include_str!("../CHANGELOG.md");
+    let current_version = include_str!("../VERSION").trim();
+
+    // Collect every `## [...]` heading line, in file order.
+    let heading_re = regex::Regex::new(r"^## \[([^\]]+)\](?: - (.+))?$").unwrap();
+    let headings: Vec<(String, Option<String>)> = changelog
+        .lines()
+        .filter_map(|line| {
+            heading_re.captures(line).map(|caps| {
+                let label = caps.get(1).unwrap().as_str().to_string();
+                let rest = caps.get(2).map(|m| m.as_str().to_string());
+                (label, rest)
+            })
+        })
+        .collect();
+
+    assert!(
+        !headings.is_empty(),
+        "CHANGELOG.md has no `## [...]` headings at all"
+    );
+
+    // 1. The very first heading must be the untouched `## [Unreleased]` marker.
+    let (first_label, first_rest) = &headings[0];
+    assert_eq!(
+        (first_label.as_str(), first_rest.as_deref()),
+        ("Unreleased", None),
+        "The first `## [` heading in CHANGELOG.md must be exactly \
+         `## [Unreleased]` (found `## [{}]{}`); it must be kept above every \
+         release entry",
+        first_label,
+        first_rest
+            .as_deref()
+            .map(|d| format!(" - {}", d))
+            .unwrap_or_default()
+    );
+
+    // 2. The first release heading after [Unreleased] must document VERSION,
+    //    dated YYYY-MM-DD (any valid date - this is a format check, not a
+    //    specific-date check).
+    assert!(
+        headings.len() >= 2,
+        "CHANGELOG.md has an [Unreleased] heading but no release heading \
+         beneath it"
+    );
+    let (release_label, release_date) = &headings[1];
+    assert_eq!(
+        release_label, current_version,
+        "The first release heading in CHANGELOG.md is `[{}]`, but VERSION \
+         is `{}` — CHANGELOG.md must document the current release directly \
+         below [Unreleased]",
+        release_label, current_version
+    );
+    let date_re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").unwrap();
+    let release_date = release_date.as_deref().unwrap_or("");
+    assert!(
+        date_re.is_match(release_date),
+        "The `[{}]` heading in CHANGELOG.md must be dated `YYYY-MM-DD` \
+         (found `{:?}`)",
+        release_label,
+        release_date
+    );
+
+    // 3. Release headings (everything after [Unreleased]) must be in strictly
+    //    descending semver order. Parse numerically, not lexically, so
+    //    "3.10.0" correctly sorts above "3.9.0".
+    fn parse_semver(label: &str) -> Option<(u64, u64, u64)> {
+        let mut parts = label.split('.');
+        let major = parts.next()?.parse().ok()?;
+        let minor = parts.next()?.parse().ok()?;
+        let patch = parts.next()?.parse().ok()?;
+        Some((major, minor, patch))
+    }
+
+    let release_versions: Vec<(u64, u64, u64)> = headings[1..]
+        .iter()
+        .filter_map(|(label, _)| parse_semver(label))
+        .collect();
+
+    assert!(
+        release_versions.len() >= 2,
+        "CHANGELOG.md must have at least two parsable release headings to \
+         verify descending order (found {})",
+        release_versions.len()
+    );
+
+    for pair in release_versions.windows(2) {
+        let (newer, older) = (pair[0], pair[1]);
+        assert!(
+            newer > older,
+            "CHANGELOG.md release headings are not in strictly descending \
+             semver order: [{}.{}.{}] must be greater than [{}.{}.{}]",
+            newer.0,
+            newer.1,
+            newer.2,
+            older.0,
+            older.1,
+            older.2
+        );
+    }
+}
+
 #[test]
 fn test_version_full_flag() {
     let _guard = test_support::init();
