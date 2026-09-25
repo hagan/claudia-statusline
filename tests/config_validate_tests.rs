@@ -4162,3 +4162,34 @@ fn invalid_price_max_age_classifies_cache_with_render_fallback_window() {
         "the malformed `max_age` must still be reported as its own error: {report}"
     );
 }
+
+/// `ant doctor` reads the same fallback window as the render and `config
+/// validate` when `[pricing].max_age` is malformed, so a 60-day-old cache is
+/// stale on all three surfaces.
+#[test]
+fn doctor_classifies_price_cache_with_render_fallback_window_on_invalid_max_age() {
+    let env = ConfigEnv::new("[pricing]\nsource = \"auto\"\nmax_age = \"banana\"\n");
+    let seeded = env.seed_cache(
+        "ant/prices.json",
+        &price_cache_body(chrono::Utc::now() - chrono::Duration::days(60)),
+    );
+    let (_, code, stdout, stderr) = env.run(&["ant", "doctor", "--json"]);
+    assert_eq!(
+        code,
+        Some(0),
+        "ant doctor --json must exit 0; stderr={stderr}"
+    );
+    let doctor = parse_exactly_one_json(&stdout, "ant doctor --json");
+
+    let reported = doctor["caches"]["prices"]["path"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        seeded.iter().any(|p| p.display().to_string() == reported),
+        "ant doctor must report the seeded price cache: reported={reported:?} seeded={seeded:?}"
+    );
+    assert_eq!(
+        doctor["caches"]["prices"]["stale"], true,
+        "a 60-day-old price cache is stale under the render's fallback 30d window: {doctor}"
+    );
+}

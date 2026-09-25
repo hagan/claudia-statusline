@@ -84,12 +84,19 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
     // is read from the ALREADY-loaded `config` rather than re-loading. The reader
     // is TOTAL and byte-capped before parse, so a missing, corrupt, oversized or
     // wrong-schema cache simply reports "absent" — this row can never fail the
-    // report, and it never spawns, networks or creates a directory.
+    // report, and it never spawns, networks or creates a directory. A malformed
+    // `max_age` falls back to the render's window (`effective_max_age`), so
+    // doctor, `config validate` and the render agree on staleness.
     let prices = read_price_cache();
     let prices_age = prices.as_ref().map(|p| humanize_age(p.age()));
     let prices_stale = prices
         .as_ref()
-        .map(|p| crate::ant::duration::is_stale(p.age(), &config.pricing.max_age))
+        .map(|p| {
+            crate::ant::duration::is_stale(
+                p.age(),
+                crate::pricing::effective_max_age(&config.pricing.max_age),
+            )
+        })
         .unwrap_or(false);
 
     // Resolve cache paths for the report (path math only; never creates a dir).
