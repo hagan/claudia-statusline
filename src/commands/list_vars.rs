@@ -103,7 +103,9 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
         let var = format!("{{{}}}", row.name);
         outln!(
             "  {:<30} e.g. {:<24} — {}",
-            var, row.example, row.description
+            var,
+            row.example,
+            row.description
         );
     }
 
@@ -117,9 +119,7 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
         Ok(vars) => {
             let vars: BTreeMap<String, String> = vars.into_iter().collect();
             if !gsd.is_available() {
-                outln!(
-                    "  (no GSD project detected for this directory, or [gsd] enabled = false)"
-                );
+                outln!("  (no GSD project detected for this directory, or [gsd] enabled = false)");
                 for key in vars.keys() {
                     outln!("  {} = (empty)", key);
                 }
@@ -141,7 +141,10 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
     outln!();
 
     let mut stdout = io::stdout().lock();
-    match stdout.write_all(out.as_bytes()).and_then(|()| stdout.flush()) {
+    match stdout
+        .write_all(out.as_bytes())
+        .and_then(|()| stdout.flush())
+    {
         Ok(()) => Ok(()),
         // The reader went away (e.g. `| head`): nothing left to deliver.
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
