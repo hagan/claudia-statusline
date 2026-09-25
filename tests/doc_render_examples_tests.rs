@@ -159,7 +159,10 @@ fn default_preset_row_shows_the_warning_marker() {
 fn context_variable_rows_match_render() {
     let full = RenderEnv::new("[layout]\nformat = \"{context}\"\n").render_context(75);
     assert_eq!(full, "75% [========>-] 150k/200k");
-    assert_doc_contains("docs/CONFIGURATION.md", &format!("| `{{context}}` | `{full}` |"));
+    assert_doc_contains(
+        "docs/CONFIGURATION.md",
+        &format!("| `{{context}}` | `{full}` |"),
+    );
     assert_doc_contains("docs/CONFIGURATION.md", &format!("| `full` | `{full}` |"));
 
     let detailed = RenderEnv::new("[layout]\npreset = \"detailed\"\n").render_context(75);
