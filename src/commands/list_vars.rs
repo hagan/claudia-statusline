@@ -3,7 +3,8 @@
 //! provider-only gsd variables.
 
 use std::env;
-use std::io::{self, Read};
+use std::fmt::Write as _;
+use std::io::{self, Read, Write};
 
 use crate::error::Result;
 use crate::models::StatuslineInput;
@@ -46,12 +47,22 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
 
     let full_config = crate::config::get_config();
 
-    println!("Template Variables");
-    println!("==================");
-    if cli.no_color {
-        println!("(Colors disabled)");
+    // Output is buffered and written once at the end so a closed stdout
+    // (`--list-vars | head`) is a clean exit rather than a `println!` panic,
+    // which aborts under the release profile's `panic = "abort"`.
+    let mut out = String::new();
+    macro_rules! outln {
+        ($($arg:tt)*) => {
+            let _ = writeln!(out, $($arg)*);
+        };
     }
-    println!();
+
+    outln!("Template Variables");
+    outln!("==================");
+    if cli.no_color {
+        outln!("(Colors disabled)");
+    }
+    outln!();
 
     // --- Effective layout ---
     // Deliberately mirrors src/display.rs (effective template at ~:700-704,
@@ -67,14 +78,14 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
     let use_layout_system = !full_config.layout.format.is_empty()
         || full_config.layout.preset.to_lowercase() != "default";
 
-    println!("=== effective layout ===");
+    outln!("=== effective layout ===");
     // Debug formatting: user-authored strings must not inject terminal escapes.
-    println!("  preset = {:?}", layout_config.preset);
-    println!("  template = {:?}", effective_template);
+    outln!("  preset = {:?}", layout_config.preset);
+    outln!("  template = {:?}", effective_template);
     if use_layout_system {
-        println!("  The variables below are substituted into this template.");
+        outln!("  The variables below are substituted into this template.");
     } else {
-        println!(
+        outln!(
             "  Template variables are not used: the built-in statusline renders because \
              [layout] format is empty and preset is \"default\". Set [layout] format or \
              another preset to use them."
@@ -85,20 +96,20 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
     let mut current_group: Option<&str> = None;
     for row in crate::layout::RENDER_VARIABLES {
         if current_group != Some(row.group) {
-            println!();
-            println!("=== {} ===", row.group);
+            outln!();
+            outln!("=== {} ===", row.group);
             current_group = Some(row.group);
         }
         let var = format!("{{{}}}", row.name);
-        println!(
+        outln!(
             "  {:<30} e.g. {:<24} — {}",
             var, row.example, row.description
         );
     }
 
     // --- Provider-only gsd variables (last) ---
-    println!();
-    println!(
+    outln!();
+    outln!(
         "=== gsd (provider-only: not available in the statusline render; see `statusline gsd state --json`) ==="
     );
     let gsd = crate::gsd::GsdProvider::new(&full_config.gsd, std::path::Path::new(&current_dir));
@@ -106,28 +117,34 @@ pub(crate) fn handle_list_vars(cli: &Cli) -> Result<()> {
         Ok(vars) => {
             let vars: BTreeMap<String, String> = vars.into_iter().collect();
             if !gsd.is_available() {
-                println!(
+                outln!(
                     "  (no GSD project detected for this directory, or [gsd] enabled = false)"
                 );
                 for key in vars.keys() {
-                    println!("  {} = (empty)", key);
+                    outln!("  {} = (empty)", key);
                 }
             } else {
                 for (key, value) in &vars {
                     if value.is_empty() {
-                        println!("  {} = (empty)", key);
+                        outln!("  {} = (empty)", key);
                     } else {
                         // Debug: escapes control bytes from repo-controlled files (T-12-36).
-                        println!("  {} = {:?}", key, value);
+                        outln!("  {} = {:?}", key, value);
                     }
                 }
             }
         }
         Err(e) => {
-            println!("  (gsd provider error: {:?})", e.to_string());
+            outln!("  (gsd provider error: {:?})", e.to_string());
         }
     }
-    println!();
+    outln!();
 
-    Ok(())
+    let mut stdout = io::stdout().lock();
+    match stdout.write_all(out.as_bytes()).and_then(|()| stdout.flush()) {
+        Ok(()) => Ok(()),
+        // The reader went away (e.g. `| head`): nothing left to deliver.
+        Err(e) if e.kind() == io::ErrorKind::BrokenPipe => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }

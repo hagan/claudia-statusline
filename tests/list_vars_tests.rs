@@ -444,6 +444,23 @@ fn list_vars_survives_non_utf8_stdin() {
     );
 }
 
+/// WR-02: `statusline --list-vars | head` must not panic/abort on EPIPE.
+#[test]
+#[serial]
+fn list_vars_exits_cleanly_on_broken_pipe() {
+    let env = ListVarsEnv::new();
+    let (code, _stdout, stderr) = env.run_inner(env.payload().as_bytes(), true);
+    assert_eq!(
+        code,
+        Some(0),
+        "--list-vars must exit 0 when stdout is closed early\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("Broken pipe") && !stderr.contains("panicked"),
+        "no broken-pipe panic expected\nstderr:\n{stderr}"
+    );
+}
+
 /// The effective layout is shown, and whether template variables are in use.
 #[test]
 #[serial]
