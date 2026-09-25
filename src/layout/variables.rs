@@ -115,6 +115,20 @@ pub struct VariableBuilder {
     variables: HashMap<String, String>,
 }
 
+/// Pick a component's color: the default when no override is configured, the
+/// resolved override otherwise — but nothing when colors are disabled (the
+/// caller passes an empty `reset`), since an override opened there would never
+/// be closed (WR-05).
+fn component_color(override_color: &str, default_color: &str, reset: &str) -> String {
+    if override_color.is_empty() {
+        default_color.to_string()
+    } else if reset.is_empty() {
+        String::new()
+    } else {
+        resolve_color_override(override_color)
+    }
+}
+
 impl VariableBuilder {
     /// Create a new empty variable builder
     pub fn new() -> Self {
@@ -192,11 +206,7 @@ impl VariableBuilder {
         let basename = sanitize_for_terminal(basename);
 
         // Determine which color to use
-        let color = if config.color.is_empty() {
-            default_color.to_string()
-        } else {
-            resolve_color_override(&config.color)
-        };
+        let color = component_color(&config.color, default_color, reset);
 
         // Apply truncation if configured (character-based, not byte-based for UTF-8 safety)
         let truncate = |s: &str| -> String {
@@ -301,11 +311,7 @@ impl VariableBuilder {
         }
 
         // Determine color
-        let color = if config.color.is_empty() {
-            default_color.to_string()
-        } else {
-            resolve_color_override(&config.color)
-        };
+        let color = component_color(&config.color, default_color, reset);
 
         // Format based on config
         match config.format.as_str() {
@@ -492,11 +498,7 @@ impl VariableBuilder {
     ) -> Self {
         let full_name = sanitize_for_terminal(full_name);
 
-        let color = if config.color.is_empty() {
-            default_color.to_string()
-        } else {
-            resolve_color_override(&config.color)
-        };
+        let color = component_color(&config.color, default_color, reset);
 
         // Format based on config
         let display_value = match config.format.as_str() {
@@ -597,11 +599,7 @@ impl VariableBuilder {
         reset: &str,
         config: &CostComponentConfig,
     ) -> Self {
-        let cost_color = if config.color.is_empty() {
-            default_cost_color.to_string()
-        } else {
-            resolve_color_override(&config.color)
-        };
+        let cost_color = component_color(&config.color, default_cost_color, reset);
 
         // Always set individual variables for templates that want them
         if let Some(cost) = session_cost {
@@ -734,11 +732,7 @@ impl VariableBuilder {
             return self;
         }
 
-        let color = if config.color.is_empty() {
-            default_color.to_string()
-        } else {
-            resolve_color_override(&config.color)
-        };
+        let color = component_color(&config.color, default_color, reset);
 
         // Format rate based on time_unit
         let rate_str = if rate > 0.0 {
@@ -846,11 +840,7 @@ impl VariableBuilder {
         component_config: &crate::config::TokenRateComponentConfig,
         token_rate_config: &crate::config::TokenRateConfig,
     ) -> Self {
-        let color = if component_config.color.is_empty() {
-            default_color.to_string()
-        } else {
-            resolve_color_override(&component_config.color)
-        };
+        let color = component_color(&component_config.color, default_color, reset);
 
         // Get time unit multiplier and suffix
         let (time_mult, unit_suffix) = match component_config.time_unit.as_str() {

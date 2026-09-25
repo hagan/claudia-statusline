@@ -153,6 +153,12 @@ fn power_user_example_renders_burn_rate_once() {
         1,
         "Power User example must show the burn rate exactly once; rendered {rendered:?}"
     );
+    // NO_COLOR=1: the example's `color = "#FFD700"` override must not open an
+    // ANSI sequence that no reset closes (WR-05).
+    assert!(
+        !rendered.contains('\x1b'),
+        "Power User example leaked an ANSI escape under NO_COLOR; rendered {rendered:?}"
+    );
 }
 
 /// The built-in `power` preset must show the burn rate once: under the default

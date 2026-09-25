@@ -762,6 +762,47 @@ fn test_cost_with_config_cost_only() {
     assert!(!cost.contains("/hr")); // No burn rate
 }
 
+/// WR-05: with colors disabled the caller passes an empty `reset`; a component
+/// `color` override must then be dropped, or it opens an ANSI sequence that is
+/// never closed.
+#[test]
+fn test_color_override_dropped_when_colors_disabled() {
+    let cost_config = CostComponentConfig {
+        format: "full".to_string(),
+        color: "#FFD700".to_string(),
+    };
+    let dir_config = DirectoryComponentConfig {
+        format: "short".to_string(),
+        max_length: 0,
+        color: "red".to_string(),
+    };
+    let vars = VariableBuilder::new()
+        .cost_with_config(
+            Some(12.50),
+            Some(3.25),
+            Some(45.00),
+            "",
+            "",
+            "",
+            &cost_config,
+        )
+        .directory_with_config(
+            "/home/user/projects/app",
+            "~/projects/app",
+            "app",
+            "",
+            "",
+            &dir_config,
+        )
+        .build();
+    for (key, value) in &vars {
+        assert!(
+            !value.contains('\x1b'),
+            "{key} leaked an ANSI escape with colors disabled: {value:?}"
+        );
+    }
+}
+
 #[test]
 fn test_cost_with_config_rate_only() {
     let config = CostComponentConfig {
