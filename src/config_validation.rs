@@ -1487,8 +1487,9 @@ pub fn classify_cache(
 
 /// Classify all three config-governed caches (D-12).
 ///
-/// Thresholds come from the config being validated: `[pricing].max_age` for
-/// `prices`, `[ant].models_stale_after` for `models`, `[ant].usage_stale_after`
+/// Thresholds come from the config being validated: the EFFECTIVE
+/// `[pricing].max_age` (`crate::pricing::effective_max_age`, the render's own
+/// fallback) for `prices`, `[ant].models_stale_after` for `models`, `[ant].usage_stale_after`
 /// for `usage`.
 ///
 /// # The active account
@@ -1526,7 +1527,11 @@ pub fn classify_all_caches(cfg: &crate::config::Config) -> Vec<CacheStatus> {
         "prices",
         crate::pricing::cache::price_cache_path(),
         crate::pricing::cache::PRICE_CACHE_SCHEMA_VERSION,
-        &cfg.pricing.max_age,
+        // The render's EFFECTIVE window, not the raw string: a malformed
+        // `max_age` falls back to the default there, so it must here too, or
+        // validate reports `fresh` for a cache the render demotes (W-1). The
+        // malformed value itself is reported separately as a config error.
+        crate::pricing::effective_max_age(&cfg.pricing.max_age),
     ));
     out.push(classify_cache(
         "models",

@@ -310,17 +310,30 @@ pub(crate) fn select_synced_at(
     }
 }
 
-/// Parse `[pricing].max_age`, falling back to [`DEFAULT_PRICE_MAX_AGE`].
+/// The EFFECTIVE `[pricing].max_age` string: `raw` when it parses, otherwise
+/// [`DEFAULT_PRICE_MAX_AGE`].
 ///
 /// An unparseable value must NOT silently disable staleness demotion (that
 /// would turn a typo into "trust an arbitrarily old cache forever"), so it
 /// behaves exactly like an absent value. The render never fails on config.
+///
+/// This is the ONE home of that fallback. [`max_age_window`] (price source
+/// selection) and `config validate`'s price-cache classifier both go through
+/// it, so the diagnostic can never call a cache `fresh` that the render is
+/// demoting as stale (W-1).
+pub(crate) fn effective_max_age(raw: &str) -> &str {
+    if crate::ant::duration::parse_max_age(raw).is_ok() {
+        raw
+    } else {
+        DEFAULT_PRICE_MAX_AGE
+    }
+}
+
+/// Parse the effective `[pricing].max_age` (see [`effective_max_age`]).
 fn max_age_window(raw: &str) -> std::time::Duration {
     const DEFAULT_SECS: u64 = 30 * 86_400;
-    crate::ant::duration::parse_max_age(raw).unwrap_or_else(|_| {
-        crate::ant::duration::parse_max_age(DEFAULT_PRICE_MAX_AGE)
-            .unwrap_or(std::time::Duration::from_secs(DEFAULT_SECS))
-    })
+    crate::ant::duration::parse_max_age(effective_max_age(raw))
+        .unwrap_or(std::time::Duration::from_secs(DEFAULT_SECS))
 }
 
 /// One resolution STEP over the per-id union of `synced` and the bundled table.

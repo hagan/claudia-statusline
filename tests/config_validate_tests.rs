@@ -4118,3 +4118,47 @@ fn render_terminates_on_a_fifo_reached_through_preset_name() {
     );
     assert_still_fifos(&fifos);
 }
+
+/// W-1: with an UNPARSEABLE `[pricing].max_age`, `config validate` must classify
+/// the price cache against the SAME effective window the render uses.
+///
+/// The render's price-source selection (`pricing::select_synced_at`) treats a
+/// malformed `max_age` exactly like an absent one and falls back to the default
+/// `30d` window, so a 60-day-old synced table is demoted to the bundled one.
+/// Validate previously classified that same cache with the diagnostic helper,
+/// which maps a malformed threshold to "never stale", and so reported `fresh`
+/// for a cache the render was ignoring. The malformed value itself must still be
+/// reported as its own `pricing.max_age` error.
+#[test]
+#[serial]
+fn invalid_price_max_age_classifies_cache_with_render_fallback_window() {
+    let env = ConfigEnv::new("[pricing]\nsource = \"auto\"\nmax_age = \"banana\"\n");
+    let seeded = env.seed_cache(
+        "ant/prices.json",
+        &price_cache_body(chrono::Utc::now() - chrono::Duration::days(60)),
+    );
+    let (ok, code, stdout, stderr) = env.run(&["config", "validate", "--json"]);
+    assert!(
+        !ok,
+        "a malformed `max_age` is an ERROR, so the run must exit NON-ZERO; code={code:?} \
+         stderr={stderr}"
+    );
+    let report = parse_exactly_one_json(&stdout, "config validate --json");
+    let findings = validate_findings(&report);
+    assert_reported_path_is_seeded(&report, "prices", &seeded);
+
+    assert_eq!(
+        cache_row(&report, "prices")["state"],
+        "stale",
+        "a 60-day-old price cache is stale under the render's fallback 30d window: {report}"
+    );
+    let errors: Vec<_> = findings_at(findings, "pricing.max_age")
+        .into_iter()
+        .filter(|f| f["severity"] == "error")
+        .collect();
+    assert_eq!(
+        errors.len(),
+        1,
+        "the malformed `max_age` must still be reported as its own error: {report}"
+    );
+}
