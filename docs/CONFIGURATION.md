@@ -376,6 +376,14 @@ format = "{directory} • {git_branch} • {model}"
 separator = " | "
 ```
 
+> **No conditionals in `format`.** `[layout] format` is plain variable
+> substitution: an empty variable renders as an empty string (and doubled
+> separators around it are collapsed), but `{if ...}`, `{else}` and `{endif}` are
+> not evaluated. They are dropped and every branch body is printed, so
+> `format = "<{gsd_milestone}|{if gsd_milestone}M{endif}>"` renders `<|M>`. The
+> `{if}`/`{else}`/`{endif}` syntax belongs to the conditional template engine
+> available to library consumers (`LayoutRenderer::render_template`).
+
 ### Template Variables
 
 | Variable | Example | Description |
@@ -442,8 +450,13 @@ $ echo '{"workspace":{"current_dir":"'"$PWD"'"}}' | statusline --list-vars
 ...
 ```
 
-Both are empty strings when unavailable, so `{if gsd_milestone}...{endif}`
-behaves. `{gsd_milestone_name}` is truncated by the existing
+Both are empty strings when unavailable, so a conditional such as
+`{if gsd_milestone}...{endif}` hides its segment in the library's conditional
+template engine (`LayoutRenderer::render_template`, which evaluates the bundled
+default template). It does **not** work in `[layout] format`: that renderer has
+no conditionals, so `{if ...}`, `{else}` and `{endif}` are dropped and every
+branch body is printed unconditionally (see the note under
+[Basic Layout Configuration](#basic-layout-configuration)). `{gsd_milestone_name}` is truncated by the existing
 `[gsd] phase_max_width` setting — it deliberately does not add a config key of
 its own. Both are blanked by `[gsd] show_phase = false`, alongside the phase,
 progress and plan variables.
@@ -506,8 +519,9 @@ Three things a reader would otherwise get wrong:
    line. **This is an intended output change:** a repository whose STATE.md did
    not parse under the older, narrower patterns now reports a populated
    `{gsd_phase}` where it previously reported an empty one, and any template
-   gated on `{if gsd_phase}` — including the bundled default template — gains
-   its GSD segment as a result. That is the fix, not a regression. (Per the
+   evaluated by the conditional template engine that is gated on
+   `{if gsd_phase}` — including the bundled default template — gains its GSD
+   segment as a result. That is the fix, not a regression. (Per the
    note above, that segment is visible in `--list-vars`'s provider-only gsd
    section, through `statusline gsd state --json`, and to library consumers —
    not in the line the binary currently prints.)
