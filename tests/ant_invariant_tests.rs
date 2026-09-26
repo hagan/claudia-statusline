@@ -2883,3 +2883,299 @@ fn structural_guard_validation_engine_call_sites_are_bounded() {
          than the intended one, so it must not be allowed to pass silently"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Group 7: T2 — the pricing accessor is TOTAL / panic-free (in-suite guard,
+// Nyquist gap fill — 10-VALIDATION.md recorded T2 as PARTIAL: only an ad-hoc
+// `awk | grep` re-derivable by hand each session, with no in-suite guard
+// analogous to T7's `static_scan_no_network_or_subprocess_tokens`).
+// ---------------------------------------------------------------------------
+//
+// Deliberately does NOT reuse this file's `code_portion`, which truncates a
+// line at the first `//` it finds regardless of context. That is a known
+// false-negative mode: a string literal containing `//` (e.g. a URL) makes it
+// truncate there, silently discarding anything real that follows on the SAME
+// line — including a genuine `.unwrap()`. This guard instead walks the source
+// character-by-character, tracking whether it is inside a string/char literal
+// or a comment, and only treats `//` / `/* */` as a comment start when it is
+// NOT inside a string or char literal. MUTATION PROOF 3 below demonstrates the
+// exact scenario `code_portion` would miss, and pins that `code_portion`
+// itself still has the limitation (so this comment cannot go stale silently).
+
+/// Strip Rust line comments, nesting-aware block comments, string literals
+/// (including raw strings `r"..."` / `r#"..."#` / ... and byte strings
+/// `b"..."`), and char literals from `src`. Each stripped span is replaced
+/// with nothing except its newlines (preserved, so a caller doing line-based
+/// reporting on the result still lines up with the original). `//` and `/*`
+/// occurring inside a string or char literal are NEVER treated as comment
+/// starts — the property `code_portion` lacks (see the Group 7 header above).
+fn strip_comments_and_string_contents(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    let mut block_depth: u32 = 0;
+
+    while i < n {
+        let c = chars[i];
+
+        if block_depth > 0 {
+            if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+                block_depth += 1;
+                i += 2;
+            } else if c == '*' && i + 1 < n && chars[i + 1] == '/' {
+                block_depth -= 1;
+                i += 2;
+            } else {
+                if c == '\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            block_depth = 1;
+            i += 2;
+            continue;
+        }
+
+        // Raw / raw-byte string: optional `b`, then `r`, then `#`*, then `"`.
+        if c == 'r' || (c == 'b' && i + 1 < n && chars[i + 1] == 'r') {
+            let start = i;
+            let mut j = i;
+            if chars[j] == 'b' {
+                j += 1;
+            }
+            if j < n && chars[j] == 'r' {
+                let mut k = j + 1;
+                let mut hashes = 0u32;
+                while k < n && chars[k] == '#' {
+                    hashes += 1;
+                    k += 1;
+                }
+                if k < n && chars[k] == '"' {
+                    k += 1; // past the opening quote
+                    let mut m = k;
+                    while m < n {
+                        if chars[m] == '"' {
+                            let mut h = 0u32;
+                            let mut mm = m + 1;
+                            while mm < n && chars[mm] == '#' && h < hashes {
+                                h += 1;
+                                mm += 1;
+                            }
+                            if h == hashes {
+                                m = mm;
+                                break;
+                            }
+                        }
+                        m += 1;
+                    }
+                    for &ch in &chars[start..m.min(n)] {
+                        if ch == '\n' {
+                            out.push('\n');
+                        }
+                    }
+                    i = m;
+                    continue;
+                }
+            }
+            // Not actually a raw string (e.g. an identifier starting with `r`
+            // or `b`) — fall through to ordinary character handling below.
+        }
+
+        if c == '"' {
+            let start = i;
+            i += 1;
+            while i < n {
+                if chars[i] == '\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            for &ch in &chars[start..i] {
+                if ch == '\n' {
+                    out.push('\n');
+                }
+            }
+            continue;
+        }
+
+        if c == '\'' {
+            // Disambiguate a char literal ('a', '\n', '\'', '\u{1F600}') from a
+            // lifetime/apostrophe punctuation token by requiring a closing `'`
+            // within the grammar-permitted span.
+            let start = i;
+            let mut j = i + 1;
+            if j < n && chars[j] == '\\' {
+                j += 1;
+                if j < n && chars[j] == 'u' {
+                    j += 1;
+                    if j < n && chars[j] == '{' {
+                        while j < n && chars[j] != '}' {
+                            j += 1;
+                        }
+                        if j < n {
+                            j += 1;
+                        }
+                    }
+                } else if j < n {
+                    j += 1;
+                }
+            } else if j < n {
+                j += 1;
+            }
+            if j < n && chars[j] == '\'' {
+                for &ch in &chars[start..=j] {
+                    if ch == '\n' {
+                        out.push('\n');
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+
+    out
+}
+
+/// Forbidden-token vocabulary for T2: a panic/crash surface, or a literal
+/// index that can go out of bounds, reachable from render-path pricing code.
+/// `.unwrap_or(` / `.unwrap_or_default(` / `.unwrap_or_else(` are NOT flagged
+/// — the module doc explicitly allows those (they are total) — because the
+/// substring checked is `.unwrap()` (with the closing paren immediately after
+/// the bare call), which those do not contain.
+fn pricing_forbidden_violations(code: &str) -> Vec<String> {
+    let mut violations = Vec::new();
+    for tok in [
+        ".unwrap()",
+        ".expect(",
+        "panic!",
+        "unreachable!",
+        "todo!",
+        "unimplemented!",
+    ] {
+        if code.contains(tok) {
+            violations.push(tok.to_string());
+        }
+    }
+    let index_re = regex::Regex::new(r"\[[0-9]+\]").expect("valid literal-index regex");
+    if index_re.is_match(code) {
+        violations.push("literal index [N]".to_string());
+    }
+    violations
+}
+
+/// T2: `src/pricing/mod.rs`'s production code (everything before its trailing
+/// `#[cfg(test)] mod tests` block) never panics and never indexes literally —
+/// a corrupt embedded table or a malicious payload must degrade to
+/// `unpriceable`, never crash the render. Mutation-proven below on THIS SAME
+/// scanner, including the R5-IN-02 string-comment ambiguity scenario.
+#[test]
+fn pricing_accessor_production_code_is_panic_free_and_never_indexes_literally() {
+    let source = read_src("src/pricing/mod.rs");
+    let (production, was_split) = production_portion("src/pricing/mod.rs", &source);
+    assert!(
+        was_split,
+        "src/pricing/mod.rs must still have a trailing `#[cfg(test)] mod tests` block for \
+         this guard to scope to PRODUCTION code only — without it the guard would either \
+         scan test code too (false positives) or silently scan nothing"
+    );
+
+    // --- THE REAL FILE MUST BE CLEAN -----------------------------------
+    let stripped = strip_comments_and_string_contents(&production);
+    let violations = pricing_forbidden_violations(&stripped);
+    assert!(
+        violations.is_empty(),
+        "T2: src/pricing/mod.rs production code must be TOTAL / panic-free — found forbidden \
+         token(s) {violations:?}. A `.unwrap()`/`.expect(`/`panic!`/`unreachable!`/`todo!`/\
+         `unimplemented!`/literal index added here would panic the render path on a bad \
+         embedded table or a malicious payload instead of degrading to `unpriceable`."
+    );
+
+    // --- MUTATION PROOF: each forbidden token, injected, is caught ------
+    for (tok, snippet) in [
+        (
+            ".unwrap()",
+            "fn _mutation_probe_unwrap() { let x: Option<i32> = None; x.unwrap(); }",
+        ),
+        (
+            ".expect(",
+            "fn _mutation_probe_expect() { let x: Option<i32> = None; x.expect(\"boom\"); }",
+        ),
+        ("panic!", "fn _mutation_probe_panic() { panic!(\"boom\"); }"),
+        (
+            "unreachable!",
+            "fn _mutation_probe_unreachable() { unreachable!(); }",
+        ),
+        ("todo!", "fn _mutation_probe_todo() { todo!(); }"),
+        (
+            "unimplemented!",
+            "fn _mutation_probe_unimplemented() { unimplemented!(); }",
+        ),
+        (
+            "literal index [N]",
+            "fn _mutation_probe_index(v: &[i32]) -> i32 { v[0] }",
+        ),
+    ] {
+        let mutated = format!("{production}\n{snippet}\n");
+        let mutated_violations =
+            pricing_forbidden_violations(&strip_comments_and_string_contents(&mutated));
+        assert!(
+            mutated_violations.iter().any(|v| v == tok),
+            "mutation proof failed: an injected `{tok}` was not detected by the scanner that \
+             clears the real file — the guard would not catch a real regression"
+        );
+    }
+
+    // --- MUTATION PROOF (R5-IN-02): a `//` inside a STRING literal must not
+    // hide a real forbidden token later on the SAME line. This is the exact
+    // false-negative mode `code_portion` (this file's other, line-oriented
+    // scanner) has: it truncates at the first `//` it finds, with no
+    // awareness of string/char context.
+    let sneaky = format!(
+        "{production}\nfn _mutation_probe_sneaky() {{ let _u = \"http://example.com\"; \
+         let x: Option<i32> = None; x.unwrap(); }}\n"
+    );
+    let sneaky_violations =
+        pricing_forbidden_violations(&strip_comments_and_string_contents(&sneaky));
+    assert!(
+        sneaky_violations.iter().any(|v| v == ".unwrap()"),
+        "mutation proof failed (R5-IN-02): a `.unwrap()` following a `//`-bearing string \
+         literal on the same line was not detected — this scanner must not share \
+         `code_portion`'s first-`//`-truncation blind spot"
+    );
+
+    // Sanity/non-vacuity: pin that `code_portion` really would have missed
+    // it, so the mutation proof above is exercising a real difference between
+    // the two scanners rather than a scenario neither could hit.
+    let naive_line = "let _u = \"http://example.com\"; let x: Option<i32> = None; x.unwrap();";
+    let naive_result = code_portion(naive_line);
+    assert!(
+        !naive_result.contains(".unwrap()"),
+        "sanity check failed: `code_portion` was expected to truncate this line before \
+         reaching `.unwrap()` (first-`//`-truncation, found inside the URL string) — if it no \
+         longer does, the R5-IN-02 caveat this guard exists to avoid may itself be stale"
+    );
+}
