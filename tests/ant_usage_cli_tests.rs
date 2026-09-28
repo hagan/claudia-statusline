@@ -68,6 +68,9 @@ impl UsageEnv {
     /// NOT include any dir that contains a real `ant`, so the fetch resolves only
     /// a fake (or nothing) — keeping the test deterministic on machines that DO
     /// have `ant` installed.
+    /// When `/bin` or `/usr/bin` holds a real `ant` (the Ubuntu CI image ships
+    /// Apache Ant) that directory is dropped, so fake scripts must use shell
+    /// builtins or absolute paths (`/bin/cat`, `/usr/bin/env`), never bare tools.
     fn system_path(&self) -> String {
         let mut dirs = vec![self.bin.path().display().to_string()];
         for d in ["/bin", "/usr/bin"] {
@@ -102,7 +105,7 @@ impl UsageEnv {
     fn install_fake_curl(&self, stdin_capture: &Path, json_body: &str) {
         let body = format!(
             "echo \"ARGV: $@\" >> \"{rec}\"\n\
-             cat >> \"{cap}\"\n\
+             /bin/cat >> \"{cap}\"\n\
              echo '{json}'\n\
              exit 0\n",
             rec = self.record.display(),
@@ -280,7 +283,7 @@ fn degrades_401_403_differentiated() {
             "curl",
             &format!(
                 "echo \"ARGV: $@\" >> \"{rec}\"\n\
-                 cat > /dev/null\n\
+                 /bin/cat > /dev/null\n\
                  printf '%s\\n401' '{{\"error\":\"unauthorized\"}}'\n\
                  exit 22\n",
                 rec = env.record.display(),
@@ -315,7 +318,7 @@ fn degrades_401_403_differentiated() {
             "curl",
             &format!(
                 "echo \"ARGV: $@\" >> \"{rec}\"\n\
-                 cat > /dev/null\n\
+                 /bin/cat > /dev/null\n\
                  printf '%s\\n403' '{{\"error\":\"forbidden\"}}'\n\
                  exit 22\n",
                 rec = env.record.display(),

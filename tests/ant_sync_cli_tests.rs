@@ -76,6 +76,9 @@ impl SyncEnv {
     /// NOT include any dir that contains a real `ant`, so the fetch's
     /// `tool_on_path("ant")` resolves only a fake (or nothing) — keeping the test
     /// deterministic on machines that DO have `ant` installed.
+    /// When `/bin` or `/usr/bin` holds a real `ant` (the Ubuntu CI image ships
+    /// Apache Ant) that directory is dropped, so fake scripts must use shell
+    /// builtins or absolute paths (`/bin/cat`, `/usr/bin/env`), never bare tools.
     fn system_path(&self) -> String {
         let mut dirs = vec![self.bin.path().display().to_string()];
         for d in ["/bin", "/usr/bin"] {
@@ -205,7 +208,7 @@ fn fake_ant_profile_mode_no_key_in_argv_profile_set_key_removed() {
     // Fake `ant` records argv + env, then emits a single page and exits 0.
     let body = format!(
         "echo \"ARGV: $@\" >> \"{rec}\"\n\
-         env >> \"{rec}\"\n\
+         /usr/bin/env >> \"{rec}\"\n\
          echo '{{\"data\":[{{\"id\":\"claude-x\",\"max_input_tokens\":200000}}],\"has_more\":false}}'\n\
          exit 0\n",
         rec = env.record.display()
@@ -249,7 +252,7 @@ fn fake_ant_profile_mode_no_key_in_argv_profile_set_key_removed() {
 fn fake_ant_env_key_mode_inherits_key_and_labels_env() {
     let env = SyncEnv::new("[ant]\nenabled = true\nprofile = \"\"\n");
     let body = format!(
-        "env >> \"{rec}\"\n\
+        "/usr/bin/env >> \"{rec}\"\n\
          echo '{{\"data\":[{{\"id\":\"claude-y\",\"max_input_tokens\":100000}}],\"has_more\":false}}'\n\
          exit 0\n",
         rec = env.record.display()
@@ -324,7 +327,7 @@ fn fake_curl_fallback_leakfree_stdin_config() {
     // Fake `curl`: record argv, slurp stdin (the config) to a file, emit JSON.
     let body = format!(
         "echo \"ARGV: $@\" >> \"{rec}\"\n\
-         cat >> \"{cap}\"\n\
+         /bin/cat >> \"{cap}\"\n\
          echo '{{\"data\":[{{\"id\":\"curl-model\",\"max_input_tokens\":150000}}],\"has_more\":false}}'\n\
          exit 0\n",
         rec = env.record.display(),
