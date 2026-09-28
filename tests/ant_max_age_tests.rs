@@ -70,11 +70,15 @@ impl ThrottleEnv {
     /// Install a fake executable named `name` that records its invocation (drops the
     /// marker) and emits a single valid page, then exits 0. If the throttle
     /// short-circuits, this is never run and the marker stays ABSENT.
+    ///
+    /// The marker is written with the shell BUILTIN redirection `: >`, not `touch`:
+    /// `system_path()` drops `/bin` and `/usr/bin` when they hold a real `ant` (the
+    /// Ubuntu CI image ships Apache Ant there), and `touch` then fails silently.
     fn install_fake_fetch(&self, name: &str) {
         let exe = self.bin.path().join(name);
         let body = format!(
             "#!/bin/sh\n\
-             touch \"{marker}\"\n\
+             : > \"{marker}\"\n\
              echo '{{\"data\":[{{\"id\":\"claude-x\",\"max_input_tokens\":200000}}],\"has_more\":false}}'\n\
              exit 0\n",
             marker = self.marker.display()

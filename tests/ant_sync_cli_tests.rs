@@ -281,11 +281,13 @@ fn fake_ant_pagination_accumulates_both_pages() {
     let counter = env.home.path().join("count");
     // First invocation (no --after-id): emit page 1; second: page 2. We key off a
     // counter file so we don't depend on argv parsing in the shell.
+    // The counter is written with the shell BUILTIN `: >`, not `touch`, so it
+    // still works when the restricted test PATH omits /usr/bin.
     let body = format!(
         "if [ -f \"{cnt}\" ]; then\n\
          echo '{{\"data\":[{{\"id\":\"model-b\",\"max_input_tokens\":200}}],\"has_more\":false}}'\n\
          else\n\
-         touch \"{cnt}\"\n\
+         : > \"{cnt}\"\n\
          echo '{{\"data\":[{{\"id\":\"model-a\",\"max_input_tokens\":100}}],\"has_more\":true,\"last_id\":\"model-a\"}}'\n\
          fi\n\
          exit 0\n",

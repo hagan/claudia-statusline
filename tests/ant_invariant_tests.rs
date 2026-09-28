@@ -330,6 +330,9 @@ fn age_vars_absent_with_ant_disabled_lib_path() {
 /// Create a temp dir holding fake `ant` and `curl` executables that, when
 /// invoked, create `<marker_dir>/<name>.invoked` and exit 0. Returns
 /// `(bin_dir, marker_dir)`. Unix-only mechanism (chmod +x shell scripts).
+///
+/// The marker uses the shell BUILTIN `: >`, not `touch`: a `touch` missing from a
+/// restricted PATH fails silently and would make these no-spawn guards vacuous.
 #[cfg(unix)]
 fn make_fake_execs() -> (tempfile::TempDir, tempfile::TempDir) {
     use std::os::unix::fs::PermissionsExt;
@@ -339,7 +342,7 @@ fn make_fake_execs() -> (tempfile::TempDir, tempfile::TempDir) {
 
     for name in ["ant", "curl"] {
         let script = format!(
-            "#!/bin/sh\ntouch \"{}/{}.invoked\"\nexit 0\n",
+            "#!/bin/sh\n: > \"{}/{}.invoked\"\nexit 0\n",
             marker_dir.path().display(),
             name
         );
@@ -2477,7 +2480,11 @@ fn vendor_pricing_workflow_violations(source: &str) -> Vec<String> {
     for (i, line) in source.lines().enumerate() {
         let code = code_portion(line);
         if code.contains("git push") {
-            violations.push(format!("line {}: contains `git push`: {}", i + 1, line.trim()));
+            violations.push(format!(
+                "line {}: contains `git push`: {}",
+                i + 1,
+                line.trim()
+            ));
         }
     }
     if !source.contains("peter-evans/create-pull-request") {
@@ -2544,7 +2551,10 @@ fn vendor_pricing_workflow_opens_a_review_pr_and_never_pushes_main() {
 /// Token vocabulary naming the above-200k tier. Assembled from fragments per
 /// this file's structural-guard idiom.
 fn above_200k_field_tokens() -> Vec<String> {
-    vec![format!("{}_{}", "above", "200k"), format!("{}{}", "200", "k")]
+    vec![
+        format!("{}_{}", "above", "200k"),
+        format!("{}{}", "200", "k"),
+    ]
 }
 
 /// T25/R3-1 structural half: `PriceEntry` (see its declaration in
