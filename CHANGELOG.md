@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.3.0] - 2026-09-23
+## [3.3.0] - 2026-09-28
 
 > **Minor release**: the "Cost Accuracy & Honesty" milestone. A bundled, offline Claude price table powers new opt-in API-equivalent cost variables, an optional out-of-band `statusline ant sync-pricing` keeps prices current without touching the render path, `statusline config validate` checks your config before it silently misbehaves, and `statusline gsd state --json` exposes GSD project state as machine-readable JSON. The render path stays offline and never fails. Fully backward-compatible; no breaking changes.
 
