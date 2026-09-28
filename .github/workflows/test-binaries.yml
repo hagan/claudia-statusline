@@ -11,6 +11,12 @@ on:
     paths:
       - '.github/workflows/test-binaries.yml'
 
+# workflow_run executes in this repository's context even when the triggering
+# build came from a fork, so pin the token to the minimum these jobs use
+# (checkout only) instead of inheriting the repository default.
+permissions:
+  contents: read
+
 jobs:
   test-linux-binary:
     runs-on: ubuntu-latest
