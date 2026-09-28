@@ -293,10 +293,13 @@ fn models_bad_max_age_exits_nonzero() {
 /// `[ant]` config enabling an account `work` with an admin_key_command that, if
 /// reached, would be exec'd by the usage fetch (the credential command). We point
 /// it at a marker-dropping fake so a fetch attempt is observable.
+///
+/// `/bin/sh` is absolute and the marker uses the builtin `: >` because
+/// `system_path()` can omit `/bin` and `/usr/bin` (see `install_fake_fetch`).
 fn usage_config(marker: &Path) -> String {
     format!(
         "[ant]\nenabled = true\nprofile = \"\"\n\n\
-         [ant.accounts.work]\nadmin_key_command = [\"sh\", \"-c\", \"touch '{m}'; echo sk-ant-admin01-x\"]\n",
+         [ant.accounts.work]\nadmin_key_command = [\"/bin/sh\", \"-c\", \": > '{m}'; echo sk-ant-admin01-x\"]\n",
         m = marker.display()
     )
 }
