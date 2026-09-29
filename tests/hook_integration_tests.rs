@@ -616,3 +616,201 @@ fn test_postcompact_with_empty_session_id() {
     // Cleanup
     let _ = fs::remove_file(&state_file);
 }
+
+// ==================== Isolation guard ====================
+
+/// Source-scan guard (INTEG-06): every child process in this file must be
+/// spawned through `HookEnv::cmd()`, which points HOME and every XDG base dir
+/// at a per-test temp dir. A bare `Command::new(` here would inherit the
+/// invoking shell's environment and could reach the real stats.db (the
+/// empty-session_id postcompact path zeroes `max_tokens_observed` for EVERY
+/// session and runs migrations). Likewise the test process itself must not
+/// resolve the real cache/data dir via `dirs::*` — use `HookEnv::state_file()`
+/// / `HookEnv::db_path()`.
+#[test]
+fn hook_tests_route_every_child_through_isolated_env() {
+    const SOURCE: &str = include_str!("hook_integration_tests.rs");
+    let code = strip_comments_and_string_contents(SOURCE);
+
+    let spawns = code.matches(concat!("Command", "::new(")).count();
+    assert_eq!(
+        spawns, 1,
+        "tests/hook_integration_tests.rs must contain exactly one process spawn \
+         (inside HookEnv::cmd); found {spawns}. Spawn every child via `env.cmd()` \
+         so it runs against a per-test HOME/XDG_* temp dir, never the real data dir."
+    );
+
+    for forbidden in [
+        concat!("dirs::", "cache_dir("),
+        concat!("dirs::", "data_dir("),
+    ] {
+        assert_eq!(
+            code.matches(forbidden).count(),
+            0,
+            "tests/hook_integration_tests.rs must not call `{forbidden}` — it resolves \
+             the invoking user's real directory. Use HookEnv::state_file()/db_path() \
+             and spawn children via `env.cmd()`."
+        );
+    }
+}
+
+/// Local copy of `strip_comments_and_string_contents` from
+/// tests/ant_invariant_tests.rs (integration-test crates cannot share
+/// non-module helpers without a `#[path]` module).
+/// Strip Rust line comments, nesting-aware block comments, string literals
+/// (including raw strings `r"..."` / `r#"..."#` / ... and byte strings
+/// `b"..."`), and char literals from `src`. Each stripped span is replaced
+/// with nothing except its newlines (preserved, so a caller doing line-based
+/// reporting on the result still lines up with the original). `//` and `/*`
+/// occurring inside a string or char literal are NEVER treated as comment
+/// starts — the property `code_portion` lacks (see the Group 7 header above).
+fn strip_comments_and_string_contents(src: &str) -> String {
+    let chars: Vec<char> = src.chars().collect();
+    let n = chars.len();
+    let mut out = String::with_capacity(src.len());
+    let mut i = 0usize;
+    let mut block_depth: u32 = 0;
+
+    while i < n {
+        let c = chars[i];
+
+        if block_depth > 0 {
+            if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+                block_depth += 1;
+                i += 2;
+            } else if c == '*' && i + 1 < n && chars[i + 1] == '/' {
+                block_depth -= 1;
+                i += 2;
+            } else {
+                if c == '\n' {
+                    out.push('\n');
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && i + 1 < n && chars[i + 1] == '/' {
+            while i < n && chars[i] != '\n' {
+                i += 1;
+            }
+            continue;
+        }
+
+        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            block_depth = 1;
+            i += 2;
+            continue;
+        }
+
+        // Raw / raw-byte string: optional `b`, then `r`, then `#`*, then `"`.
+        if c == 'r' || (c == 'b' && i + 1 < n && chars[i + 1] == 'r') {
+            let start = i;
+            let mut j = i;
+            if chars[j] == 'b' {
+                j += 1;
+            }
+            if j < n && chars[j] == 'r' {
+                let mut k = j + 1;
+                let mut hashes = 0u32;
+                while k < n && chars[k] == '#' {
+                    hashes += 1;
+                    k += 1;
+                }
+                if k < n && chars[k] == '"' {
+                    k += 1; // past the opening quote
+                    let mut m = k;
+                    while m < n {
+                        if chars[m] == '"' {
+                            let mut h = 0u32;
+                            let mut mm = m + 1;
+                            while mm < n && chars[mm] == '#' && h < hashes {
+                                h += 1;
+                                mm += 1;
+                            }
+                            if h == hashes {
+                                m = mm;
+                                break;
+                            }
+                        }
+                        m += 1;
+                    }
+                    for &ch in &chars[start..m.min(n)] {
+                        if ch == '\n' {
+                            out.push('\n');
+                        }
+                    }
+                    i = m;
+                    continue;
+                }
+            }
+            // Not actually a raw string (e.g. an identifier starting with `r`
+            // or `b`) — fall through to ordinary character handling below.
+        }
+
+        if c == '"' {
+            let start = i;
+            i += 1;
+            while i < n {
+                if chars[i] == '\\' && i + 1 < n {
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            for &ch in &chars[start..i] {
+                if ch == '\n' {
+                    out.push('\n');
+                }
+            }
+            continue;
+        }
+
+        if c == '\'' {
+            // Disambiguate a char literal ('a', '\n', '\'', '\u{1F600}') from a
+            // lifetime/apostrophe punctuation token by requiring a closing `'`
+            // within the grammar-permitted span.
+            let start = i;
+            let mut j = i + 1;
+            if j < n && chars[j] == '\\' {
+                j += 1;
+                if j < n && chars[j] == 'u' {
+                    j += 1;
+                    if j < n && chars[j] == '{' {
+                        while j < n && chars[j] != '}' {
+                            j += 1;
+                        }
+                        if j < n {
+                            j += 1;
+                        }
+                    }
+                } else if j < n {
+                    j += 1;
+                }
+            } else if j < n {
+                j += 1;
+            }
+            if j < n && chars[j] == '\'' {
+                for &ch in &chars[start..=j] {
+                    if ch == '\n' {
+                        out.push('\n');
+                    }
+                }
+                i = j + 1;
+                continue;
+            }
+            out.push(c);
+            i += 1;
+            continue;
+        }
+
+        out.push(c);
+        i += 1;
+    }
+
+    out
+}
