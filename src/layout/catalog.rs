@@ -41,6 +41,8 @@ const TOKEN_RATE: &str = "token_rate (requires [token_rate] enabled = true)";
 const RATE_LIMITS: &str = "rate_limits (Claude.ai Pro/Max payloads only)";
 const API_USAGE: &str = "api_usage (requires [ant] enabled = true + `statusline ant sync-usage`)";
 const API_EQUIV: &str = "api_equiv (notional API-equivalent cost from [pricing]; not billed spend)";
+const AGENTS: &str = "agents (subagent attribution; present only when the session spawned agents)";
+const PROMPT_CACHE: &str = "prompt_cache (payload `prompt_cache` object, Claude Code >= 2.1.251)";
 const LAYOUT: &str = "layout";
 
 /// Every variable the layout render can substitute, in `--list-vars` display order.
@@ -342,6 +344,68 @@ pub const RENDER_VARIABLES: &[RenderVar] = &[
         group: API_EQUIV,
         example: "claude-opus-4-8:$15.20 claude-sonnet-4-5:$3.33",
         description: "Org usage cache priced per model, highest first (requires the usage cache)",
+    },
+    // --- agents ---
+    RenderVar {
+        name: "agents",
+        group: AGENTS,
+        example: "🤖3 30%",
+        description: "Agent transcript count and the agents' share of session input traffic",
+    },
+    RenderVar {
+        name: "agents_count",
+        group: AGENTS,
+        example: "3",
+        description: "Number of subagent transcripts attributed to this session",
+    },
+    RenderVar {
+        name: "agents_pct",
+        group: AGENTS,
+        example: "30%",
+        description: "Subagents' share of session input traffic",
+    },
+    RenderVar {
+        name: "agents_tokens",
+        group: AGENTS,
+        example: "152M/449k",
+        description: "Subagent input traffic / output tokens",
+    },
+    RenderVar {
+        name: "agents_types",
+        group: AGENTS,
+        example: "Explore×2 general-purpose×1",
+        description: "Subagent types with per-type counts",
+    },
+    // --- prompt_cache ---
+    RenderVar {
+        name: "prompt_cache",
+        group: PROMPT_CACHE,
+        example: "cache 91% miss:2 tools_changed",
+        description: "Prompt-cache summary: hit rate, miss count and last miss cause",
+    },
+    RenderVar {
+        name: "cache_hit",
+        group: PROMPT_CACHE,
+        example: "91%",
+        description: "Prompt-cache hit rate",
+    },
+    RenderVar {
+        name: "cache_misses",
+        group: PROMPT_CACHE,
+        example: "2",
+        description: "Number of prompt-cache misses",
+    },
+    RenderVar {
+        name: "cache_miss_cause",
+        group: PROMPT_CACHE,
+        example: "tools_changed",
+        description: "Cause reported for the most recent prompt-cache miss",
+    },
+    RenderVar {
+        name: "cache_warm",
+        group: PROMPT_CACHE,
+        example: "warm",
+        description: "Whether the prompt cache is warm or cold",
     },
     // --- layout ---
     RenderVar {
