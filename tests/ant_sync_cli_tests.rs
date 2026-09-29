@@ -102,6 +102,18 @@ impl SyncEnv {
     /// Run `statusline ant sync-models [--quiet]` with the given PATH and optional
     /// `ANTHROPIC_API_KEY`. Returns (status_success, stdout, stderr).
     fn run(&self, path: &str, key: Option<&str>, quiet: bool) -> (bool, String, String) {
+        let (code, stdout, stderr) = self.run_status(path, key, quiet);
+        (code == Some(0), stdout, stderr)
+    }
+
+    /// Like `run`, but returns the raw exit code (`None` when the process was
+    /// killed by a signal) so tests can prove a normal, non-signal exit.
+    fn run_status(
+        &self,
+        path: &str,
+        key: Option<&str>,
+        quiet: bool,
+    ) -> (Option<i32>, String, String) {
         let mut cmd = Command::new(test_support::test_binary());
         cmd.arg("ant").arg("sync-models");
         if quiet {
@@ -124,7 +136,7 @@ impl SyncEnv {
         }
         let out = cmd.output().expect("spawn statusline ant sync-models");
         (
-            out.status.success(),
+            out.status.code(),
             String::from_utf8_lossy(&out.stdout).into_owned(),
             String::from_utf8_lossy(&out.stderr).into_owned(),
         )
@@ -1060,4 +1072,37 @@ fn sync_pricing_quiet_suppresses_the_summary() {
         env.find_price_cache().is_some(),
         "--quiet still publishes the cache"
     );
+}
+
+/// INTEG-02: with no global SIGPIPE disposition, a fake `curl` that closes its
+/// stdin before statusline finishes streaming the leak-free config must yield a
+/// reported error and a normal exit code -- never a silent signal death. The
+/// write/close ordering is racy (the ~200-byte config may land in the pipe
+/// buffer first), so only invariants that hold in both orderings are asserted.
+#[test]
+#[serial]
+fn curl_closing_stdin_is_reported() {
+    let env = SyncEnv::new("[ant]\nenabled = true\nprofile = \"\"\n");
+    env.install_fake("curl", "exec 0<&-\nexit 7");
+
+    let (code, stdout, stderr) = env.run_status(&env.system_path(), Some("sk-ant-closekey"), false);
+
+    assert!(
+        code.is_some(),
+        "statusline must not be killed by a signal when curl closes stdin (no global SIGPIPE disposition)"
+    );
+    assert_ne!(code, Some(0), "sync must fail; stderr: {stderr}");
+    assert!(
+        !stderr.trim().is_empty(),
+        "an error must be reported on stderr"
+    );
+    assert!(
+        !stdout.contains("sk-ant-"),
+        "key leaked to stdout: {stdout}"
+    );
+    assert!(
+        !stderr.contains("sk-ant-"),
+        "key leaked to stderr: {stderr}"
+    );
+    assert!(env.find_cache().is_none(), "no models cache on failure");
 }
