@@ -219,9 +219,9 @@ const API_EQUIV_NAMES: [&str; 7] = [
 fn builder_keys_are_all_in_catalog() {
     let names = builder_variable_names();
     assert!(
-        names.len() >= 48,
+        names.len() >= 58,
         "the builder scan recovered only {} variable name(s) ({names:?}) — fewer \
-         than the 48 known to exist, so the scan is broken and this guard would \
+         than the 58 known to exist, so the scan is broken and this guard would \
          pass vacuously",
         names.len()
     );
@@ -243,7 +243,7 @@ fn builder_keys_are_all_in_catalog() {
 fn catalog_names_are_all_emitted_by_builder() {
     let names = render_reachable_variable_names();
     assert!(
-        names.len() >= 48,
+        names.len() >= 58,
         "builder scan broken (only {} names) — guard would be vacuous",
         names.len()
     );
@@ -264,8 +264,8 @@ fn catalog_names_are_all_emitted_by_builder() {
 fn catalog_rows_are_well_formed() {
     assert_eq!(
         RENDER_VARIABLES.len(),
-        49,
-        "expected 48 builder variables + `sep`"
+        59,
+        "expected 58 builder variables + `sep`"
     );
 
     let mut seen: Vec<&str> = Vec::new();
