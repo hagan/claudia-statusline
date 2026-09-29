@@ -161,8 +161,10 @@ pub fn format_token_count(tokens: usize) -> String {
 /// Determines the context window size for a given model
 ///
 /// Uses intelligent defaults based on model family and version:
-/// - Sonnet 3.5+, 4.5+: 200k tokens
-/// - Opus 3.5+: 200k tokens
+/// - Sonnet 3.5+, 4.x+ (incl. 4.6+/5+): 200k tokens
+/// - Opus 3.5+, 4.x+ (incl. 4.6+/5+): 200k tokens (1M is opt-in per session;
+///   the payload's `context_window_size` is authoritative when present)
+/// - Fable / Mythos: 1M tokens
 /// - Older models: 160k tokens
 /// - Unknown models: Config default (200k)
 ///
@@ -276,24 +278,20 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
 
                 match family.as_str() {
                     "Sonnet" => {
-                        // Sonnet 4.6+ and 5+: 1M is the default (and only) window.
-                        // Sonnet 3.5–4.5: 200k.
-                        if version_number >= 5 || (version_number == 4 && minor_version >= 6) {
-                            1_000_000
-                        } else if version_number == 4 || (version_number == 3 && minor_version >= 5)
-                        {
+                        // Sonnet 3.5+, 4.x+ (incl. 4.6+/5+): 200k fallback. The 1M window
+                        // is opt-in per session; the payload's context_window_size is
+                        // authoritative when present.
+                        if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
                             200_000
                         } else {
                             160_000
                         }
                     }
                     "Opus" => {
-                        // Opus 4.6+ and 5+: 1M is the default (and only) window.
-                        // Opus 3.5–4.5: 200k.
-                        if version_number >= 5 || (version_number == 4 && minor_version >= 6) {
-                            1_000_000
-                        } else if version_number == 4 || (version_number == 3 && minor_version >= 5)
-                        {
+                        // Opus 3.5+, 4.x+ (incl. 4.6+/5+): 200k fallback. The 1M window
+                        // is opt-in per session; the payload's context_window_size is
+                        // authoritative when present.
+                        if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
                             200_000
                         } else {
                             160_000
@@ -305,8 +303,10 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
                         config.context.window_size
                     }
                     // Fable / Mythos: 1M is both the default and the maximum window
-                    // (no 200k mode). Same for Opus/Sonnet 4.6+ above; the payload's
-                    // context_window_size (authoritative) still overrides this guess.
+                    // (no 200k mode), so 1M is the correct guess here. Note: for
+                    // Opus/Sonnet the 1M window is opt-in per session, so we keep the
+                    // conservative 200k default above and rely on the payload's
+                    // context_window_size (authoritative) to report 1M when active.
                     "Fable" | "Mythos" => 1_000_000,
                     _ => config.context.window_size,
                 }
@@ -1280,7 +1280,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fable_mythos_default_1m_window() {
+    fn test_context_window_fallback_defaults() {
         let cfg = test_config();
         // Fable/Mythos default (and max) window is 1M, so the fallback guesses 1M.
         assert_eq!(
@@ -1291,27 +1291,24 @@ mod tests {
             get_context_window_for_model(Some("claude-mythos-5"), &cfg),
             1_000_000
         );
-        // Opus/Sonnet 4.6+ and 5+ default to the 1M window; 4.5 and older stay 200k.
-        assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
-            1_000_000
-        );
-        assert_eq!(
-            get_context_window_for_model(Some("claude-opus-5"), &cfg),
-            1_000_000
-        );
-        assert_eq!(
-            get_context_window_for_model(Some("claude-sonnet-4-6"), &cfg),
-            1_000_000
-        );
-        assert_eq!(
-            get_context_window_for_model(Some("Claude Sonnet 4.5"), &cfg),
-            200_000
-        );
-        assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
-            200_000
-        );
+        // Opus/Sonnet fall back to 200k: the 1M window is opt-in per session, and
+        // the payload's context_window_size is authoritative when present.
+        for model in [
+            "claude-opus-4-8",
+            "claude-opus-4-6",
+            "claude-opus-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "Claude Opus 4.6",
+            "Claude Sonnet 4.5",
+            "claude-opus-4-5",
+        ] {
+            assert_eq!(
+                get_context_window_for_model(Some(model), &cfg),
+                200_000,
+                "fallback window for {model}"
+            );
+        }
     }
 
     #[test]
