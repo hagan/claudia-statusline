@@ -61,9 +61,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `statusline <subcommand> | head` panicked with "failed printing to stdout:
-  Broken pipe". `main()` now restores the default SIGPIPE disposition so a
-  closed pipe ends the process quietly (status 141) like other CLIs; the render
-  path is unaffected because Claude Code reads the whole line.
+  Broken pipe". Subcommand output now treats a closed stdout as a clean end
+  (exit 0, no message). No process-wide signal disposition is changed, so a
+  failed write to a helper such as `curl` is still reported as an error; the
+  statusline render path is unaffected.
 - Transcript token sums counted every line of a response. Claude Code writes
   one transcript line per content block (thinking, text, tool_use, ...), each
   repeating the same `usage`, which inflated `total_output_tokens` and

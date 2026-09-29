@@ -437,16 +437,6 @@ pub(crate) enum HookAction {
 }
 
 fn main() -> Result<()> {
-    // Rust ignores SIGPIPE and turns a closed stdout into a panic inside
-    // println!. Restore the Unix default so `statusline sessions | head`
-    // ends silently (exit 141) like any other CLI. The statusline render path
-    // is unaffected: Claude Code reads the whole line.
-    #[cfg(unix)]
-    // SAFETY: called before any thread exists; SIG_DFL is a valid disposition.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
-
     let cli = Cli::parse();
 
     // Handle log level with precedence: CLI > env > default

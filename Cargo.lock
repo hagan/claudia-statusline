@@ -2018,7 +2018,6 @@ dependencies = [
  "env_logger",
  "fs2",
  "hostname",
- "libc",
  "libsql",
  "log",
  "proptest",
