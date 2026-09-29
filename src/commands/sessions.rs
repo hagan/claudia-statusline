@@ -11,7 +11,7 @@
 
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
 
 /// One row of `sessions` as stored; `Option` where the column is nullable.
@@ -93,7 +93,7 @@ fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
 fn open_db() -> Result<Option<Connection>> {
     let db_path = crate::stats::StatsData::get_sqlite_path()?;
     if !db_path.exists() {
-        println!("No statistics database at {}", db_path.display());
+        cli_println!("No statistics database at {}", db_path.display());
         return Ok(None);
     }
     // Opening through SqliteDatabase applies pending migrations; the queries
@@ -294,7 +294,7 @@ fn index_and_filter<'a>(
 }
 
 fn print_list(rows: &[(usize, &SessionRow)]) {
-    println!(
+    cli_println!(
         "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>6} {:>8}",
         "#",
         "session",
@@ -309,7 +309,7 @@ fn print_list(rows: &[(usize, &SessionRow)]) {
         "cost*"
     );
     for (i, r) in rows.iter() {
-        println!(
+        cli_println!(
             "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>5.1}% {:>8.2}",
             i,
             &r.session_id[..r.session_id.len().min(8)],
@@ -327,10 +327,10 @@ fn print_list(rows: &[(usize, &SessionRow)]) {
             r.cost,
         );
     }
-    println!();
-    println!("cost* = counter of the last CLI process for the session; resets on resume");
-    println!("main_req/agents/share% = 0 for sessions recorded before attribution existed");
-    println!("select with: statusline sessions show <#|id-prefix>   (or: sessions pick)");
+    cli_println!();
+    cli_println!("cost* = counter of the last CLI process for the session; resets on resume");
+    cli_println!("main_req/agents/share% = 0 for sessions recorded before attribution existed");
+    cli_println!("select with: statusline sessions show <#|id-prefix>   (or: sessions pick)");
 }
 
 fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
@@ -340,44 +340,45 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
         .find(|t| !t.is_agent)
         .map(|t| t.path.clone());
 
-    println!("session_id        {}", r.session_id);
-    println!(
+    cli_println!("session_id        {}", r.session_id);
+    cli_println!(
         "claude_version    {}",
         r.claude_version.as_deref().unwrap_or("?")
     );
-    println!(
+    cli_println!(
         "model             {}",
         r.model_name.as_deref().unwrap_or("?")
     );
-    println!(
+    cli_println!(
         "workspace         {}",
         r.workspace_dir.as_deref().unwrap_or("?")
     );
-    println!("start             {}", r.start_time);
-    println!("last_updated      {}", r.last_updated);
-    println!(
+    cli_println!("start             {}", r.start_time);
+    cli_println!("last_updated      {}", r.last_updated);
+    cli_println!(
         "active_time       {} ({} s)",
         hms(r.active_time_seconds),
         r.active_time_seconds
     );
-    println!("cost*             ${:.2}", r.cost);
-    println!(
+    cli_println!("cost*             ${:.2}", r.cost);
+    cli_println!(
         "lines             +{} / -{}",
-        r.lines_added, r.lines_removed
+        r.lines_added,
+        r.lines_removed
     );
-    println!("max_context_seen  {} tokens", r.max_tokens_observed);
-    println!();
-    println!("payload totals (main conversation, as reported by Claude Code)");
-    println!(
+    cli_println!("max_context_seen  {} tokens", r.max_tokens_observed);
+    cli_println!();
+    cli_println!("payload totals (main conversation, as reported by Claude Code)");
+    cli_println!(
         "  input {}  output {}  cache_read {}  cache_write {}",
         r.total_input_tokens,
         r.total_output_tokens,
         r.total_cache_read_tokens,
         r.total_cache_creation_tokens
     );
-    println!();
-    println!("attribution (from transcripts, requestId-deduped)");
-    println!(
+    cli_println!();
+    cli_println!("attribution (from transcripts, requestId-deduped)");
+    cli_println!(
         "  main    requests {:>6}  in {:>12}  out {:>10}  in_k/req {:>7.1}  out/req {:>6.0}",
         r.main_requests,
         r.main_input_tokens,
@@ -385,7 +386,7 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
         div(r.main_input_tokens, r.main_requests) / 1000.0,
         div(r.main_output_tokens, r.main_requests)
     );
-    println!(
+    cli_println!(
         "  agents  requests {:>6}  in {:>12}  out {:>10}  files {:>4}  share {:>5.1}%",
         r.agent_requests,
         r.agent_input_tokens,
@@ -396,8 +397,8 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
 
     let agents: Vec<&TranscriptRow> = transcripts.iter().filter(|t| t.is_agent).collect();
     if !agents.is_empty() {
-        println!();
-        println!(
+        cli_println!();
+        cli_println!(
             "agent transcripts ({}):  {:<18} {:>6} {:>10} {:>10} {:>9} {:>8}",
             agents.len(),
             "type",
@@ -412,7 +413,7 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| t.path.clone());
-            println!(
+            cli_println!(
                 "  {:<28} {:<18} {:>6} {:>10} {:>10} {:>9} {:>8}",
                 name.trim_end_matches(".jsonl"),
                 t.agent_type.as_deref().unwrap_or("?"),
@@ -425,19 +426,21 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
         }
     }
 
-    println!();
+    cli_println!();
     match main_path {
         Some(p) => {
             let exists = Path::new(&p).exists();
-            println!(
+            cli_println!(
                 "transcript        {}{}",
                 p,
                 if exists { "" } else { "  (missing on disk)" }
             );
         }
-        None => println!("transcript        (not scanned yet: renders before attribution existed)"),
+        None => {
+            cli_println!("transcript        (not scanned yet: renders before attribution existed)")
+        }
     }
-    println!("resume            claude --resume {}", r.session_id);
+    cli_println!("resume            claude --resume {}", r.session_id);
     Ok(())
 }
 
@@ -459,14 +462,14 @@ pub(crate) fn list(
     let view = index_and_filter(&rows, workspace.as_deref(), if all { 0 } else { limit });
     if view.is_empty() {
         match &workspace {
-            Some(w) => println!("(no sessions recorded under {w})"),
-            None => println!("(no sessions recorded)"),
+            Some(w) => cli_println!("(no sessions recorded under {w})"),
+            None => cli_println!("(no sessions recorded)"),
         }
         return Ok(());
     }
     print_list(&view);
     if workspace.is_some() {
-        println!("\nfiltered by workspace; # is the position in the unfiltered list, so `sessions show <#>` still works");
+        cli_println!("\nfiltered by workspace; # is the position in the unfiltered list, so `sessions show <#>` still works");
     }
     Ok(())
 }
@@ -500,14 +503,14 @@ pub(crate) fn pick(all: bool, limit: usize, workspace: Option<String>) -> Result
     let view = index_and_filter(&rows, workspace.as_deref(), if all { 0 } else { limit });
     if view.is_empty() {
         match &workspace {
-            Some(w) => println!("(no sessions recorded under {w})"),
-            None => println!("(no sessions recorded)"),
+            Some(w) => cli_println!("(no sessions recorded under {w})"),
+            None => cli_println!("(no sessions recorded)"),
         }
         return Ok(());
     }
     print_list(&view);
-    print!("session (#, id prefix, empty = quit): ");
-    io::stdout().flush()?;
+    cli_print!("session (#, id prefix, empty = quit): ");
+    crate::cli_output::flush_stdout();
     let mut line = String::new();
     io::stdin().lock().read_line(&mut line)?;
     let sel = line.trim();
@@ -515,7 +518,7 @@ pub(crate) fn pick(all: bool, limit: usize, workspace: Option<String>) -> Result
         return Ok(());
     }
     let r = resolve(&rows, sel)?;
-    println!();
+    cli_println!();
     print_show(&conn, r)
 }
 

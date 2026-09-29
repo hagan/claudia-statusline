@@ -90,7 +90,7 @@ fn state(json_output: bool, dir: Option<PathBuf>) -> Result<()> {
 }
 
 /// The ONE document. One `json!` literal, one compact serialization, one
-/// `println!` — nothing else reaches stdout in this mode.
+/// `cli_println!` — nothing else reaches stdout in this mode.
 fn print_json(summary: &GsdSummary) -> Result<()> {
     let document = json!({
         "schema_version": summary.schema_version,
@@ -123,63 +123,63 @@ fn print_json(summary: &GsdSummary) -> Result<()> {
             .map(|w| sanitize_for_terminal(w))
             .collect::<Vec<String>>(),
     });
-    println!("{}", serde_json::to_string(&document)?);
+    cli_println!("{}", serde_json::to_string(&document)?);
     Ok(())
 }
 
 /// The human report, in the `health` report's two-space-indented style.
 fn print_human(summary: &GsdSummary) {
-    println!("GSD Project State");
-    println!("=================");
-    println!();
-    println!("Source:");
-    println!(
+    cli_println!("GSD Project State");
+    cli_println!("=================");
+    cli_println!();
+    cli_println!("Source:");
+    cli_println!(
         "  Planning dir: {}",
         or_unknown(path_text(&summary.planning_dir))
     );
-    println!("  STATE.md: {}", or_unknown(path_text(&summary.state_md)));
-    println!(
+    cli_println!("  STATE.md: {}", or_unknown(path_text(&summary.state_md)));
+    cli_println!(
         "  ROADMAP.md: {}",
         or_unknown(path_text(&summary.roadmap_md))
     );
-    println!(
+    cli_println!(
         "  Frontmatter version: {}",
         or_unknown(text(&summary.state_frontmatter_version))
     );
-    println!();
-    println!("Milestone:");
-    println!("  ID: {}", or_unknown(text(&summary.milestone_id)));
-    println!("  Name: {}", or_unknown(text(&summary.milestone_name)));
-    println!();
-    println!("Phase:");
-    println!("  Number: {}", or_unknown(text(&summary.phase_number)));
-    println!("  Name: {}", or_unknown(text(&summary.phase_name)));
-    println!("  Display: {}", or_unknown(text(&summary.phase_display)));
-    println!();
-    println!("Progress:");
-    println!(
+    cli_println!();
+    cli_println!("Milestone:");
+    cli_println!("  ID: {}", or_unknown(text(&summary.milestone_id)));
+    cli_println!("  Name: {}", or_unknown(text(&summary.milestone_name)));
+    cli_println!();
+    cli_println!("Phase:");
+    cli_println!("  Number: {}", or_unknown(text(&summary.phase_number)));
+    cli_println!("  Name: {}", or_unknown(text(&summary.phase_name)));
+    cli_println!("  Display: {}", or_unknown(text(&summary.phase_display)));
+    cli_println!();
+    cli_println!("Progress:");
+    cli_println!(
         "  Phases: {} (computed from ROADMAP.md)",
         fraction(summary.phases_completed, summary.phases_total)
     );
-    println!(
+    cli_println!(
         "  Percent: {}",
         summary
             .phases_percent
             .map(|p| format!("{}%", p))
             .unwrap_or_else(|| "(unknown)".to_string())
     );
-    println!(
+    cli_println!(
         "  Plans in this phase: {}",
         fraction(summary.plans_completed, summary.plans_total)
     );
 
     if !summary.warnings.is_empty() {
-        println!();
-        println!("Warnings:");
+        cli_println!();
+        cli_println!("Warnings:");
         for warning in &summary.warnings {
             // Per PIECE: the sanitizer strips newlines, so each warning is
             // sanitized on its own and the layout is assembled afterwards.
-            println!("  - {}", sanitize_for_terminal(warning));
+            cli_println!("  - {}", sanitize_for_terminal(warning));
         }
     }
 }

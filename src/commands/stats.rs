@@ -13,7 +13,7 @@ use rusqlite::{Connection, OpenFlags};
 pub(crate) fn show_stats(by_version: bool, sessions: bool) -> Result<()> {
     let db_path = crate::stats::StatsData::get_sqlite_path()?;
     if !db_path.exists() {
-        println!("No statistics database at {}", db_path.display());
+        cli_println!("No statistics database at {}", db_path.display());
         return Ok(());
     }
     // Opening through SqliteDatabase applies pending migrations (v7 adds the
@@ -70,7 +70,7 @@ fn show_by_version(conn: &Connection) -> Result<()> {
         ))
     })?;
 
-    println!(
+    cli_println!(
         "{:<10} {:>5}  {:<10} {:<10} {:>8} {:>9} {:>8} {:>7} {:>9} {:>9} {:>7}",
         "version",
         "sess",
@@ -88,7 +88,7 @@ fn show_by_version(conn: &Connection) -> Result<()> {
     for row in rows {
         let (v, n, first, last, mreq, min, mout, acount, areq, ain, aout) = row?;
         any = true;
-        println!(
+        cli_println!(
             "{:<10} {:>5}  {:<10} {:<10} {:>8} {:>9.1} {:>8.0} {:>7} {:>9} {:>9.0} {:>6.1}%",
             v,
             n,
@@ -104,11 +104,11 @@ fn show_by_version(conn: &Connection) -> Result<()> {
         );
     }
     if !any {
-        println!("(no sessions with attribution data yet; it accumulates as sessions render)");
+        cli_println!("(no sessions with attribution data yet; it accumulates as sessions render)");
     } else {
-        println!();
-        println!("in_k/req = main input traffic (fresh + cache read + cache write) per main request, thousands");
-        println!("share%   = agents' input traffic / (agents + main); a jump after an update is the signal");
+        cli_println!();
+        cli_println!("in_k/req = main input traffic (fresh + cache read + cache write) per main request, thousands");
+        cli_println!("share%   = agents' input traffic / (agents + main); a jump after an update is the signal");
     }
     Ok(())
 }
@@ -139,7 +139,7 @@ fn show_sessions(conn: &Connection) -> Result<()> {
             r.get::<_, f64>(9)?,
         ))
     })?;
-    println!(
+    cli_println!(
         "{:<8} {:<9} {:<16} {:<18} {:>8} {:>9} {:>8} {:>6} {:>7} {:>9}",
         "session",
         "version",
@@ -154,7 +154,7 @@ fn show_sessions(conn: &Connection) -> Result<()> {
     );
     for row in rows {
         let (sid, v, start, model, mreq, min, mout, acount, ain, cost) = row?;
-        println!(
+        cli_println!(
             "{:<8} {:<9} {:<16} {:<18} {:>8} {:>9.1} {:>8.0} {:>6} {:>6.1}% {:>9.2}",
             sid,
             v,
@@ -168,7 +168,7 @@ fn show_sessions(conn: &Connection) -> Result<()> {
             cost,
         );
     }
-    println!();
-    println!("cost* = counter of the last CLI process for the session; resets on resume");
+    cli_println!();
+    cli_println!("cost* = counter of the last CLI process for the session; resets on resume");
     Ok(())
 }

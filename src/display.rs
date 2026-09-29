@@ -1294,7 +1294,14 @@ fn format_output_with_config(
             display_config,
         )
     };
-    print!("{}", output);
+    // Non-exiting write: this path is compiled into the library too, so a closed
+    // stdout must never exit or panic here. Bytes are identical to `print!`.
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(output.as_bytes());
+        let _ = out.flush();
+    }
 }
 
 /// Format output to a string instead of printing.

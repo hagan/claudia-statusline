@@ -26,6 +26,9 @@ use std::env;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+// Out of alphabetical order on purpose: macro_rules! textual scoping requires it before `mod commands;`.
+#[macro_use]
+mod cli_output;
 mod agents;
 mod ant;
 mod commands;
@@ -490,7 +493,7 @@ fn main() -> Result<()> {
 
     // Handle version-full flag
     if cli.version_full {
-        print!("{}", version_string());
+        cli_print!("{}", version_string());
         return Ok(());
     }
 
@@ -644,7 +647,7 @@ fn main() -> Result<()> {
 
     // Early exit for empty or home directory only
     if current_dir.is_empty() || current_dir == "~" {
-        print!("{}~{}", Colors::directory(), Colors::reset());
+        cli_print!("{}~{}", Colors::directory(), Colors::reset());
         return Ok(());
     }
 

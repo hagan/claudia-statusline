@@ -38,28 +38,28 @@ pub(crate) fn handle_sync_command(
 
 /// Handle push command
 fn handle_sync_push(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) -> Result<()> {
-    println!("{}Pushing to remote{}", Colors::cyan(), Colors::reset());
+    cli_println!("{}Pushing to remote{}", Colors::cyan(), Colors::reset());
     if dry_run {
-        println!(
+        cli_println!(
             "{}[DRY RUN MODE - No changes will be made]{}",
             Colors::yellow(),
             Colors::reset()
         );
     }
-    println!();
+    cli_println!();
 
     match sync_manager.push(dry_run) {
         Ok(result) => {
-            println!("{}✅ Push completed{}", Colors::green(), Colors::reset());
-            println!();
-            println!("Summary:");
-            println!("  Sessions: {} pushed", result.sessions_pushed);
-            println!("  Daily stats: {} pushed", result.daily_stats_pushed);
-            println!("  Monthly stats: {} pushed", result.monthly_stats_pushed);
+            cli_println!("{}✅ Push completed{}", Colors::green(), Colors::reset());
+            cli_println!();
+            cli_println!("Summary:");
+            cli_println!("  Sessions: {} pushed", result.sessions_pushed);
+            cli_println!("  Daily stats: {} pushed", result.daily_stats_pushed);
+            cli_println!("  Monthly stats: {} pushed", result.monthly_stats_pushed);
 
             if result.dry_run {
-                println!();
-                println!(
+                cli_println!();
+                cli_println!(
                     "{}This was a dry run - no data was actually pushed.{}",
                     Colors::yellow(),
                     Colors::reset()
@@ -77,29 +77,29 @@ fn handle_sync_push(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) 
 
 /// Handle pull command
 fn handle_sync_pull(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) -> Result<()> {
-    println!("{}Pulling from remote{}", Colors::cyan(), Colors::reset());
+    cli_println!("{}Pulling from remote{}", Colors::cyan(), Colors::reset());
     if dry_run {
-        println!(
+        cli_println!(
             "{}[DRY RUN MODE - No changes will be made]{}",
             Colors::yellow(),
             Colors::reset()
         );
     }
-    println!();
+    cli_println!();
 
     match sync_manager.pull(dry_run) {
         Ok(result) => {
-            println!("{}✅ Pull completed{}", Colors::green(), Colors::reset());
-            println!();
-            println!("Summary:");
-            println!("  Sessions: {} pulled", result.sessions_pulled);
-            println!("  Daily stats: {} pulled", result.daily_stats_pulled);
-            println!("  Monthly stats: {} pulled", result.monthly_stats_pulled);
-            println!("  Conflicts resolved: {}", result.conflicts_resolved);
+            cli_println!("{}✅ Pull completed{}", Colors::green(), Colors::reset());
+            cli_println!();
+            cli_println!("Summary:");
+            cli_println!("  Sessions: {} pulled", result.sessions_pulled);
+            cli_println!("  Daily stats: {} pulled", result.daily_stats_pulled);
+            cli_println!("  Monthly stats: {} pulled", result.monthly_stats_pulled);
+            cli_println!("  Conflicts resolved: {}", result.conflicts_resolved);
 
             if result.dry_run {
-                println!();
-                println!(
+                cli_println!();
+                cli_println!(
                     "{}This was a dry run - no data was actually pulled.{}",
                     Colors::yellow(),
                     Colors::reset()
@@ -121,29 +121,29 @@ fn show_sync_status(_sync_manager: &crate::sync::SyncManager) -> Result<()> {
 
     let config = Config::load()?;
 
-    println!("{}Sync Status{}", Colors::cyan(), Colors::reset());
-    println!("============");
-    println!();
+    cli_println!("{}Sync Status{}", Colors::cyan(), Colors::reset());
+    cli_println!("============");
+    cli_println!();
 
-    println!("Configuration:");
-    println!(
+    cli_println!("Configuration:");
+    cli_println!(
         "  Sync enabled: {}",
         if config.sync.enabled { "✅" } else { "❌" }
     );
-    println!("  Provider: {}", config.sync.provider);
-    println!("  Sync interval: {}s", config.sync.sync_interval_seconds);
-    println!(
+    cli_println!("  Provider: {}", config.sync.provider);
+    cli_println!("  Sync interval: {}s", config.sync.sync_interval_seconds);
+    cli_println!(
         "  Quota warning threshold: {:.0}%",
         config.sync.soft_quota_fraction * 100.0
     );
-    println!();
+    cli_println!();
 
     if config.sync.enabled {
-        println!("Turso Configuration:");
+        cli_println!("Turso Configuration:");
         if !config.sync.turso.database_url.is_empty() {
-            println!("  Database URL: {}", config.sync.turso.database_url);
+            cli_println!("  Database URL: {}", config.sync.turso.database_url);
         } else {
-            println!(
+            cli_println!(
                 "  Database URL: {}(not configured){}",
                 Colors::red(),
                 Colors::reset()
@@ -152,21 +152,21 @@ fn show_sync_status(_sync_manager: &crate::sync::SyncManager) -> Result<()> {
 
         if !config.sync.turso.auth_token.is_empty() {
             if config.sync.turso.auth_token.starts_with('$') {
-                println!("  Auth token: {} (env var)", config.sync.turso.auth_token);
+                cli_println!("  Auth token: {} (env var)", config.sync.turso.auth_token);
             } else {
-                println!("  Auth token: *** (configured)");
+                cli_println!("  Auth token: *** (configured)");
             }
         } else {
-            println!(
+            cli_println!(
                 "  Auth token: {}(not configured){}",
                 Colors::red(),
                 Colors::reset()
             );
         }
-        println!();
+        cli_println!();
 
         // Test connection
-        println!("Testing connection...");
+        cli_println!("Testing connection...");
         // Note: We need a mutable reference for test_connection
         // But we received an immutable reference, so we'll create a temp copy
         let mut temp_manager = crate::sync::SyncManager::new(config.sync.clone());
@@ -174,24 +174,24 @@ fn show_sync_status(_sync_manager: &crate::sync::SyncManager) -> Result<()> {
         match temp_manager.test_connection() {
             Ok(connected) => {
                 if connected {
-                    println!(
+                    cli_println!(
                         "  Connection: {}✅ Connected{}",
                         Colors::green(),
                         Colors::reset()
                     );
                 } else {
-                    println!(
+                    cli_println!(
                         "  Connection: {}❌ Not connected{}",
                         Colors::red(),
                         Colors::reset()
                     );
                     if let Some(err) = temp_manager.status().error_message.as_ref() {
-                        println!("  Error: {}", err);
+                        cli_println!("  Error: {}", err);
                     }
                 }
             }
             Err(e) => {
-                println!(
+                cli_println!(
                     "  Connection: {}❌ Error: {}{}",
                     Colors::red(),
                     e,
@@ -200,12 +200,12 @@ fn show_sync_status(_sync_manager: &crate::sync::SyncManager) -> Result<()> {
             }
         }
     } else {
-        println!("Sync is disabled. To enable:");
-        println!("  1. Edit your config file with sync settings");
-        println!("  2. Set sync.enabled = true");
-        println!("  3. Configure Turso database URL and token");
-        println!();
-        println!("See: statusline generate-config for example configuration");
+        cli_println!("Sync is disabled. To enable:");
+        cli_println!("  1. Edit your config file with sync settings");
+        cli_println!("  2. Set sync.enabled = true");
+        cli_println!("  3. Configure Turso database URL and token");
+        cli_println!();
+        cli_println!("See: statusline generate-config for example configuration");
     }
 
     Ok(())

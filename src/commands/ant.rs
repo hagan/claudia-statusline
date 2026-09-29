@@ -203,16 +203,16 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
                 "usage": usage_probe,
             },
         });
-        println!("{}", serde_json::to_string(&report)?);
+        cli_println!("{}", serde_json::to_string(&report)?);
     } else {
         let yn = |b: bool| if b { "yes" } else { "no" };
-        println!("ant Enrichment Doctor");
-        println!("=====================");
-        println!();
-        println!("Configuration:");
-        println!("  ant on PATH: {}", yn(ant_on_path));
-        println!("  Enabled: {}", yn(ant.enabled));
-        println!(
+        cli_println!("ant Enrichment Doctor");
+        cli_println!("=====================");
+        cli_println!();
+        cli_println!("Configuration:");
+        cli_println!("  ant on PATH: {}", yn(ant_on_path));
+        cli_println!("  Enabled: {}", yn(ant.enabled));
+        cli_println!(
             "  Profile: {}",
             if ant.profile.is_empty() {
                 "(default)".to_string()
@@ -222,7 +222,7 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
         );
         let mut accounts: Vec<&String> = ant.accounts.keys().collect();
         accounts.sort();
-        println!(
+        cli_println!(
             "  Accounts: {}",
             if accounts.is_empty() {
                 "(none)".to_string()
@@ -234,47 +234,47 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
                     .join(", ")
             }
         );
-        println!(
+        cli_println!(
             "  Active account: {}",
             active_account.as_deref().unwrap_or("(none)")
         );
-        println!();
-        println!("Caches:");
+        cli_println!();
+        cli_println!("Caches:");
         match (&models_age, &models_path) {
-            (Some(age), Some(path)) => println!(
+            (Some(age), Some(path)) => cli_println!(
                 "  Models: present, age {age}{}\n    {path}",
                 if models_stale { " (stale)" } else { "" }
             ),
-            _ => println!("  Models: absent"),
+            _ => cli_println!("  Models: absent"),
         }
         match (&usage_age, &usage_path) {
-            (Some(age), Some(path)) => println!(
+            (Some(age), Some(path)) => cli_println!(
                 "  Usage:  present, age {age}{}\n    {path}",
                 if usage_stale { " (stale)" } else { "" }
             ),
-            _ => println!("  Usage:  absent"),
+            _ => cli_println!("  Usage:  absent"),
         }
         match (&prices_age, &prices_path) {
-            (Some(age), Some(path)) => println!(
+            (Some(age), Some(path)) => cli_println!(
                 "  Prices: present, age {age}{}\n    {path}",
                 if prices_stale { " (stale)" } else { "" }
             ),
-            _ => println!("  Prices: absent"),
+            _ => cli_println!("  Prices: absent"),
         }
-        println!();
-        println!("Credentials (source labels only — never executed in passive mode):");
-        println!("  Models: {models_cred}");
-        println!(
+        cli_println!();
+        cli_println!("Credentials (source labels only — never executed in passive mode):");
+        cli_println!("  Models: {models_cred}");
+        cli_println!(
             "  Usage:  {}",
             usage_cred.as_deref().unwrap_or("(no active account)")
         );
-        println!();
-        println!("Active enrichment:");
-        println!("  {{api_*}} models vars: {}", yn(models_active));
-        println!("  {{api_*}} usage vars:  {}", yn(usage_active));
-        println!();
-        println!("Security self-audit (on-disk artifacts):");
-        println!(
+        cli_println!();
+        cli_println!("Active enrichment:");
+        cli_println!("  {{api_*}} models vars: {}", yn(models_active));
+        cli_println!("  {{api_*}} usage vars:  {}", yn(usage_active));
+        cli_println!();
+        cli_println!("Security self-audit (on-disk artifacts):");
+        cli_println!(
             "  {} ({} artifact{} scanned)",
             if audit_clean {
                 "✅ no API-key strings found"
@@ -284,14 +284,14 @@ fn doctor(json_output: bool, probe: bool) -> Result<()> {
             scanned,
             if scanned == 1 { "" } else { "s" }
         );
-        println!();
-        println!("Probe (--probe to run; opt-in credential/network):");
+        cli_println!();
+        cli_println!("Probe (--probe to run; opt-in credential/network):");
         match (&models_probe, &usage_probe) {
             (Some(m), Some(u)) => {
-                println!("  Models reachability: {m}");
-                println!("  Usage reachability:  {u}");
+                cli_println!("  Models reachability: {m}");
+                cli_println!("  Usage reachability:  {u}");
             }
-            _ => println!("  not run (passive)"),
+            _ => cli_println!("  not run (passive)"),
         }
     }
 
@@ -319,7 +319,7 @@ fn sync_models(quiet: bool, max_age: Option<String>) -> Result<()> {
             let age = cache.age().to_std().unwrap_or(std::time::Duration::ZERO);
             if age < max {
                 if !quiet {
-                    println!("Models cache is fresh (within {spec}); skipping fetch.");
+                    cli_println!("Models cache is fresh (within {spec}); skipping fetch.");
                 }
                 return Ok(());
             }
@@ -346,14 +346,14 @@ fn sync_models(quiet: bool, max_age: Option<String>) -> Result<()> {
     if !quiet {
         let count = outcome.cache.models.len();
         let path = models_cache_path()?;
-        println!(
+        cli_println!(
             "Synced {} model{} from the Models API.",
             count,
             if count == 1 { "" } else { "s" }
         );
-        println!("Cache: {}", path.display());
+        cli_println!("Cache: {}", path.display());
         // Credential SOURCE label only — never the key (D-09 / D-17).
-        println!("Credential source: {}", outcome.credential_source);
+        cli_println!("Credential source: {}", outcome.credential_source);
     }
 
     Ok(())
@@ -389,7 +389,7 @@ fn sync_pricing(quiet: bool, max_age: Option<String>) -> Result<()> {
             let age = cache.age().to_std().unwrap_or(std::time::Duration::ZERO);
             if age < max {
                 if !quiet {
-                    println!("Price cache is fresh (within {spec}); skipping fetch.");
+                    cli_println!("Price cache is fresh (within {spec}); skipping fetch.");
                 }
                 return Ok(());
             }
@@ -406,14 +406,14 @@ fn sync_pricing(quiet: bool, max_age: Option<String>) -> Result<()> {
     if !quiet {
         let count = outcome.cache.prices.len();
         let path = price_cache_path()?;
-        println!(
+        cli_println!(
             "Synced {} model price{} from the upstream table.",
             count,
             if count == 1 { "" } else { "s" }
         );
         // D-03: a dropped row is never invisible.
         if outcome.skipped > 0 {
-            println!(
+            cli_println!(
                 "Skipped {} unusable upstream row{}.",
                 outcome.skipped,
                 if outcome.skipped == 1 { "" } else { "s" }
@@ -428,18 +428,18 @@ fn sync_pricing(quiet: bool, max_age: Option<String>) -> Result<()> {
         // the two transforms agreeing, and that includes what they tell the
         // operator.
         if !outcome.wrong_typed_1h.is_empty() {
-            println!(
+            cli_println!(
                 "1h-wrong-type: upstream published a non-numeric 1-hour cache-write rate; \
                  the row is synced with the 1-hour dimension dropped (1h tokens render \
                  `unknown`):"
             );
             for id in &outcome.wrong_typed_1h {
-                println!("  ~ {id}");
+                cli_println!("  ~ {id}");
             }
         }
-        println!("Cache: {}", path.display());
-        println!("Source: {}", outcome.cache.source);
-        println!("Snapshot: {}", outcome.cache.version);
+        cli_println!("Cache: {}", path.display());
+        cli_println!("Source: {}", outcome.cache.source);
+        cli_println!("Snapshot: {}", outcome.cache.version);
     }
 
     Ok(())
@@ -486,7 +486,7 @@ fn sync_usage(
             let age = cache.age().to_std().unwrap_or(std::time::Duration::ZERO);
             if age < max {
                 if !quiet {
-                    println!(
+                    cli_println!(
                         "Usage cache for ant account '{account}' is fresh (within {spec}); skipping fetch."
                     );
                 }
@@ -523,11 +523,11 @@ fn sync_usage(
 
     if !quiet {
         let path = usage_cache_path(&account)?;
-        println!("Synced usage & cost for ant account '{}'.", slice.account);
-        println!("Cache: {}", path.display());
+        cli_println!("Synced usage & cost for ant account '{}'.", slice.account);
+        cli_println!("Cache: {}", path.display());
         // Credential SOURCE label only — never the key, never the raw argv (D-09/D-17).
-        println!("Credential source: admin_key_command (credential command)");
-        println!(
+        cli_println!("Credential source: admin_key_command (credential command)");
+        cli_println!(
             "Today: ${:.2} {tz}   MTD: ${:.2} {tz}",
             slice.today_usd,
             slice.mtd_usd,
