@@ -40,9 +40,16 @@ impl HookEnv {
             .env("XDG_DATA_HOME", root.join("data"))
             .env("XDG_CONFIG_HOME", root.join("config"))
             .env("XDG_CACHE_HOME", root.join("cache"))
-            .env_remove("STATUSLINE_CONFIG_PATH")
-            .env_remove("STATUSLINE_CONFIG")
             .env_remove("RUST_LOG");
+        // Drop every inherited STATUSLINE_*/CLAUDE_* var (as test_support::init
+        // does): e.g. a host STATUSLINE_DEBUG_INPUT=<path> would make each render
+        // child overwrite that real file, outside this env.
+        for (k, _) in std::env::vars_os() {
+            let name = k.to_string_lossy();
+            if name.starts_with("STATUSLINE_") || name.starts_with("CLAUDE_") {
+                cmd.env_remove(&k);
+            }
+        }
         cmd
     }
 

@@ -171,11 +171,14 @@ mod tests {
     /// handlers write state files under `dirs::cache_dir()` (macOS:
     /// `$HOME/Library/Caches`, ignoring XDG_CACHE_HOME) and postcompact opens
     /// `get_data_dir()/stats.db`, so without this the tests would touch the
-    /// invoking user's real cache and database. Always pair with
-    /// the serial_test `serial` attribute — env vars are process-global.
+    /// invoking user's real cache and database. Every inherited
+    /// `STATUSLINE_*` / `CLAUDE_*` var (e.g. `STATUSLINE_CONFIG_PATH`) is also
+    /// removed for the duration, so the developer's config never loads. Always
+    /// pair with the serial_test `serial` attribute — env vars are
+    /// process-global.
     struct HookTestEnv {
         _dir: tempfile::TempDir,
-        saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        saved: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
     }
 
     impl HookTestEnv {
@@ -183,10 +186,17 @@ mod tests {
             ["HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"];
 
         fn new() -> Self {
-            let saved = Self::KEYS
+            let mut saved: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = Self::KEYS
                 .iter()
-                .map(|k| (*k, std::env::var_os(k)))
+                .map(|k| (std::ffi::OsString::from(k), std::env::var_os(k)))
                 .collect();
+            for (k, v) in std::env::vars_os() {
+                let name = k.to_string_lossy();
+                if name.starts_with("STATUSLINE_") || name.starts_with("CLAUDE_") {
+                    std::env::remove_var(&k);
+                    saved.push((k, Some(v)));
+                }
+            }
             let dir = tempfile::TempDir::new().expect("create HookTestEnv temp dir");
             let home = dir.path().join("home");
             std::fs::create_dir_all(&home).expect("create isolated HOME");

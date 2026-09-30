@@ -61,14 +61,24 @@ cargo test --quiet --no-run --test hook_integration_tests --lib --bin statusline
 
 mkdir -p "$CANARY/home" "$CANARY/data" "$CANARY/config" "$CANARY/cache"
 
+# Unset every inherited STATUSLINE_*/CLAUDE_* var for the seeding renders and
+# the test runs: e.g. a host STATUSLINE_DEBUG_INPUT=<path> would make each render
+# overwrite that real file, outside $CANARY, where the diff cannot see it.
+HOST_UNSET=()
+for name in $(compgen -e); do
+    case "$name" in
+        STATUSLINE_*|CLAUDE_*) HOST_UNSET+=(-u "$name") ;;
+    esac
+done
+
 echo "==> Seeding canary data dirs"
 # XDG-set location
-printf '%s' "$SEED" | env -u STATUSLINE_CONFIG_PATH -u STATUSLINE_CONFIG \
+printf '%s' "$SEED" | env ${HOST_UNSET[@]+"${HOST_UNSET[@]}"} \
     HOME="$CANARY/home" XDG_DATA_HOME="$CANARY/data" \
     XDG_CONFIG_HOME="$CANARY/config" XDG_CACHE_HOME="$CANARY/cache" \
     target/debug/statusline >/dev/null
 # Fallback location (XDG unset -> dirs::data_dir() under canary HOME)
-printf '%s' "$SEED" | env -u STATUSLINE_CONFIG_PATH -u STATUSLINE_CONFIG \
+printf '%s' "$SEED" | env ${HOST_UNSET[@]+"${HOST_UNSET[@]}"} \
     -u XDG_DATA_HOME -u XDG_CONFIG_HOME -u XDG_CACHE_HOME \
     HOME="$CANARY/home" \
     target/debug/statusline >/dev/null
@@ -107,11 +117,11 @@ run_tests() {
     # `if ! run_tests ...`, and bash disables `set -e` for everything inside a
     # function called from an `if` condition, so without them only the LAST
     # cargo run's status would count.
-    env "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
+    env ${HOST_UNSET[@]+"${HOST_UNSET[@]}"} "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
         HOME="$CANARY/home" cargo test --quiet --test hook_integration_tests || return 1
-    env "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
+    env ${HOST_UNSET[@]+"${HOST_UNSET[@]}"} "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
         HOME="$CANARY/home" cargo test --quiet --lib hook_handler || return 1
-    env "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
+    env ${HOST_UNSET[@]+"${HOST_UNSET[@]}"} "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
         HOME="$CANARY/home" cargo test --quiet --bin statusline hook_handler || return 1
 }
 
