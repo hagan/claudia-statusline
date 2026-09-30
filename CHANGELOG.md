@@ -61,8 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `statusline <subcommand> | head` panicked with "failed printing to stdout:
-  Broken pipe". Subcommand output now treats a closed stdout as a clean end
-  (exit 0, no message). No process-wide signal disposition is changed, so a
+  Broken pipe". Once stdout's reader is gone, further subcommand output is
+  dropped without a message and the command still runs to completion, so it
+  keeps its real exit status: a read-only command exits 0, a command that
+  changes data (`db-maintain`, `context-learning --reset-all --rebuild`,
+  `sync`) finishes its work, and a failure (`config validate` errors,
+  `db-maintain` integrity failure) still exits non-zero. No process-wide
+  signal disposition is changed, so a
   failed write to a helper such as `curl` is still reported as an error; the
   statusline render path is unaffected.
 - Transcript token sums counted every line of a response. Claude Code writes

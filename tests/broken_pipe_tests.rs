@@ -3,7 +3,9 @@
 //!
 //! `statusline <cmd> | head` must end cleanly: when the reader of stdout goes
 //! away, subcommand output (routed through the bin-only `cli_print!` /
-//! `cli_println!` macros in `src/cli_output.rs`) exits 0 without a message.
+//! `cli_println!` macros in `src/cli_output.rs`) is dropped without a message
+//! and the command runs to completion, keeping its own exit status: 0 for a
+//! read-only command, non-zero for a failure.
 //!
 //! The exit status is asserted as `Some(0)`, not merely "success": a process
 //! killed by a signal reports `code() == None`, so `Some(0)` is the behavioural
@@ -160,6 +162,75 @@ fn version_full_exits_cleanly_on_broken_pipe() {
 fn help_exits_cleanly_on_broken_pipe() {
     let env = PipeEnv::new();
     assert_clean_on_closed_stdout(&env, &["--help"]);
+}
+
+/// A closed stdout must not turn a failure into success: `config validate` on a
+/// broken config prints its report, then exits 1. With the reader gone the
+/// report is dropped, but the command must still finish and exit 1 (CR-01).
+#[test]
+fn failing_command_keeps_nonzero_exit_on_broken_pipe() {
+    let env = PipeEnv::new();
+    let bad = env.home.path().join("broken.toml");
+    std::fs::write(&bad, "this is = = not toml\n[unterminated\n").expect("write bad config");
+    let bad = bad.to_str().expect("utf-8 temp path");
+    let args = ["config", "validate", bad];
+
+    let (open_code, stdout) = env.run_open(&args);
+    assert_eq!(open_code, Some(1), "broken config must fail validation");
+    assert!(
+        !stdout.trim().is_empty(),
+        "validate printed nothing, so the closed-pipe check proves nothing"
+    );
+
+    let (code, stderr) = env.run_closed(&args);
+    assert_eq!(
+        code,
+        Some(1),
+        "closed stdout must keep validate's failure exit (None = killed by a signal); stderr: {}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("panicked"),
+        "validate panicked: {}",
+        stderr
+    );
+}
+
+/// A closed stdout must not stop a command midway: `migrate --dump-schema`
+/// prints the schema and only then deletes its temp database. With the reader
+/// gone it must still run to the end and remove the file (CR-01 / WR-02).
+#[test]
+fn dump_schema_completes_cleanup_on_broken_pipe() {
+    let env = PipeEnv::new();
+    let tmp = env.home.path().join("tmp");
+    std::fs::create_dir_all(&tmp).expect("create temp dir");
+
+    let mut child = env
+        .cmd(&["migrate", "--dump-schema"])
+        .env("TMPDIR", &tmp)
+        .spawn()
+        .expect("spawn statusline");
+    drop(child.stdout.take());
+    let out = child.wait_with_output().expect("wait for statusline");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "dump-schema with closed stdout must exit 0; stderr: {}",
+        stderr
+    );
+    let leftovers: Vec<_> = std::fs::read_dir(&tmp)
+        .expect("read temp dir")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with("statusline_schema_"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "dump-schema stopped before cleanup, temp DB left behind: {:?}",
+        leftovers
+    );
 }
 
 /// Copy of the `ant_invariant_tests` helper: only code before a `//` counts,
