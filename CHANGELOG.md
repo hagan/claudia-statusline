@@ -66,10 +66,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps its real exit status: a read-only command exits 0, a command that
   changes data (`db-maintain`, `context-learning --reset-all --rebuild`,
   `sync`) finishes its work, and a failure (`config validate` errors,
-  `db-maintain` integrity failure) still exits non-zero. No process-wide
-  signal disposition is changed, so a
-  failed write to a helper such as `curl` is still reported as an error; the
-  statusline render path is unaffected.
+  `db-maintain` integrity failure) still exits non-zero. Subcommand notes on
+  stderr are dropped the same way when stderr is closed (`2>&1 | head`)
+  instead of aborting the process. No process-wide signal disposition is
+  changed, so a failed write to a helper such as `curl` is still reported as
+  an error; the statusline render path is unaffected.
 - Transcript token sums counted every line of a response. Claude Code writes
   one transcript line per content block (thinking, text, tool_use, ...), each
   repeating the same `usage`, which inflated `total_output_tokens` and

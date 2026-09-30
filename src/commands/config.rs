@@ -54,13 +54,13 @@ static GENERATE_CONFIG_DEPRECATION_WARNED: OnceLock<()> = OnceLock::new();
 
 /// Emit the one-shot deprecation note for `statusline generate-config`.
 ///
-/// `OnceLock` + `eprintln!`, the idiom of
+/// `OnceLock` + a stderr note (`cli_eprintln!`), the idiom of
 /// `config::warn_json_backup_legacy_if_set` (`src/config.rs:2318`): it fires at
 /// most once per process and never pollutes stdout, so a script that pipes
 /// `generate-config`'s output keeps parsing exactly what it parsed before.
 fn warn_generate_config_deprecated() {
     GENERATE_CONFIG_DEPRECATION_WARNED.get_or_init(|| {
-        eprintln!(
+        cli_eprintln!(
             "note: `statusline generate-config` is deprecated; use `statusline config generate` instead"
         );
     });

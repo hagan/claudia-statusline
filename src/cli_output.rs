@@ -15,7 +15,13 @@
 //! reports failure rather than masking it, and such errors mean output the user
 //! asked for was lost.
 //!
-//! Only stdout goes through here. Errors on OTHER pipes (e.g. the curl stdin
+//! Bin-side stderr messages go through [`cli_eprintln!`], which ignores write
+//! errors. Rust's runtime ignores SIGPIPE, so a plain `eprintln!` whose reader
+//! has gone away (`statusline migrate --dump-schema 2>&1 | head -1`) panics, and
+//! `panic = "abort"` turns that into SIGABRT. A diagnostic nobody can read is
+//! not worth killing the command for.
+//!
+//! Only stdout (and bin-side stderr notes) go through here. Errors on OTHER pipes (e.g. the curl stdin
 //! pipe in `src/ant`) never pass through this module and must stay reported.
 //!
 //! This module is declared only in `src/main.rs`, never in `src/lib.rs`: a
@@ -60,6 +66,13 @@ pub(crate) fn flush_stdout() {
     }
 }
 
+/// Write formatted arguments to stderr, ignoring any write error (see module
+/// docs).
+#[doc(hidden)]
+pub(crate) fn emit_stderr(args: std::fmt::Arguments<'_>) {
+    let _ = std::io::stderr().lock().write_fmt(args);
+}
+
 /// `print!` replacement for subcommand output (see module docs).
 macro_rules! cli_print {
     ($($a:tt)*) => {
@@ -74,5 +87,16 @@ macro_rules! cli_println {
     };
     ($($a:tt)*) => {
         $crate::cli_output::emit_stdout(format_args!("{}\n", format_args!($($a)*)))
+    };
+}
+
+/// `eprintln!` replacement for bin-side diagnostics: never panics on a closed
+/// stderr (see module docs).
+macro_rules! cli_eprintln {
+    () => {
+        $crate::cli_output::emit_stderr(format_args!("\n"))
+    };
+    ($($a:tt)*) => {
+        $crate::cli_output::emit_stderr(format_args!("{}\n", format_args!($($a)*)))
     };
 }

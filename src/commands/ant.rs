@@ -337,7 +337,7 @@ fn sync_models(quiet: bool, max_age: Option<String>) -> Result<()> {
     // D-03: one-time stderr divergence note, SYNC PATH ONLY. This never touches
     // the render path / get_context_window_for_model. The note carries no secret.
     for (id, cached, override_val) in divergences(&outcome.cache, &config.context.model_windows) {
-        eprintln!(
+        cli_eprintln!(
             "note: cached context window for {id} ({cached}) differs from your \
              [context.model_windows] override ({override_val}); the override wins at render time"
         );

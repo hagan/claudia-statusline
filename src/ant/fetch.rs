@@ -145,7 +145,9 @@ pub fn fetch_models(cfg: &AntConfig) -> Result<FetchOutcome> {
     // One-time best-effort note for the profile path: profile selection via
     // ANT_PROFILE is unverified against the installed `ant` (RESEARCH OQ1).
     if let CredentialMode::Profile(name) = &mode {
-        eprintln!(
+        // Not `eprintln!`: that panics (abort in release) on a closed stderr.
+        let _ = writeln!(
+            std::io::stderr(),
             "note: selecting ant profile '{}' is best-effort (ANT_PROFILE); \
              verify your ant version honors it",
             name

@@ -67,7 +67,7 @@ fn handle_sync_push(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) 
             }
         }
         Err(e) => {
-            eprintln!("{}❌ Push failed: {}{}", Colors::red(), e, Colors::reset());
+            cli_eprintln!("{}❌ Push failed: {}{}", Colors::red(), e, Colors::reset());
             return Err(e);
         }
     }
@@ -107,7 +107,7 @@ fn handle_sync_pull(sync_manager: &mut crate::sync::SyncManager, dry_run: bool) 
             }
         }
         Err(e) => {
-            eprintln!("{}❌ Pull failed: {}{}", Colors::red(), e, Colors::reset());
+            cli_eprintln!("{}❌ Pull failed: {}{}", Colors::red(), e, Colors::reset());
             return Err(e);
         }
     }

@@ -561,7 +561,7 @@ fn main() -> Result<()> {
                 };
                 // Selection mistakes are user-facing: plain text, not Debug.
                 if let Err(e) = res {
-                    eprintln!("error: {e}");
+                    cli_eprintln!("error: {e}");
                     std::process::exit(1);
                 }
                 return Ok(());

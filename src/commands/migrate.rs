@@ -107,12 +107,12 @@ pub(crate) fn dump_database_schema() -> Result<()> {
     use crate::display::Colors;
 
     // Print status to stderr so it doesn't pollute the SQL output on stdout
-    eprintln!(
+    cli_eprintln!(
         "{}Generating database schema...{}",
         Colors::cyan(),
         Colors::reset()
     );
-    eprintln!();
+    cli_eprintln!();
 
     // Run all migrations on this temporary database
     let temp_dir = std::env::temp_dir();

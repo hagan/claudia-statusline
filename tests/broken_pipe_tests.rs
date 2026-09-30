@@ -233,6 +233,64 @@ fn dump_schema_completes_cleanup_on_broken_pipe() {
     );
 }
 
+/// A closed stderr must not kill a command: `migrate --dump-schema` writes its
+/// progress note to stderr. Rust's runtime ignores SIGPIPE, so a plain
+/// `eprintln!` would panic there (abort under the release profile). Bin-side
+/// notes go through `cli_eprintln!`, which ignores the error (WR-01).
+#[test]
+fn closed_stderr_does_not_panic() {
+    let env = PipeEnv::new();
+    let mut child = env
+        .cmd(&["migrate", "--dump-schema"])
+        .spawn()
+        .expect("spawn statusline");
+    drop(child.stderr.take());
+    let out = child.wait_with_output().expect("wait for statusline");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "dump-schema with closed stderr must exit 0 (None = killed by a signal, 101 = panic)"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("CREATE TABLE"),
+        "dump-schema did not finish writing the schema to stdout"
+    );
+}
+
+/// Bin-side code must print diagnostics with `cli_eprintln!`, never a bare
+/// `eprintln!`/`eprint!`, which panics on a closed stderr (WR-01). Test
+/// modules (`#[cfg(test)]` onward) are not scanned.
+#[test]
+fn no_bare_eprintln_in_bin_code() {
+    let needles = [concat!("eprint", "ln!("), concat!("eprint", "!(")];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![root.join("src/main.rs")];
+    collect_rs_files(&root.join("src/commands"), &mut files);
+    for file in &files {
+        let source = std::fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("read {}: {}", file.display(), e));
+        for (i, line) in source.lines().enumerate() {
+            if line.trim_start().starts_with("#[cfg(test)]") {
+                break;
+            }
+            let code = code_portion(line);
+            for needle in needles {
+                let bare = code
+                    .match_indices(needle)
+                    .any(|(idx, _)| !code[..idx].ends_with("cli_"));
+                assert!(
+                    !bare,
+                    "bare `{}` in {} line {} (use cli_eprintln!): {}",
+                    needle,
+                    file.display(),
+                    i + 1,
+                    line.trim()
+                );
+            }
+        }
+    }
+}
+
 /// Copy of the `ant_invariant_tests` helper: only code before a `//` counts,
 /// and comment-only lines are ignored.
 fn code_portion(line: &str) -> &str {

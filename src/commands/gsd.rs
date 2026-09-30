@@ -68,7 +68,7 @@ fn state(json_output: bool, dir: Option<PathBuf>) -> Result<()> {
     let planning_dir = match dir {
         Some(project_dir) => {
             if !project_dir.is_dir() {
-                eprintln!(
+                cli_eprintln!(
                     "error: --dir {} is not a directory",
                     sanitize_for_terminal(&project_dir.display().to_string())
                 );

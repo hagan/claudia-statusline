@@ -2390,8 +2390,10 @@ static JSON_BACKUP_DEPRECATION_WARNED: OnceLock<()> = OnceLock::new();
 fn warn_json_backup_legacy_if_set(cfg: &Config) {
     if cfg.database.json_backup {
         JSON_BACKUP_DEPRECATION_WARNED.get_or_init(|| {
-            eprintln!(
-                "note: 'json_backup' is ignored in v3.0.0 (writes removed); see MIGRATION_GUIDE.md"
+            // Not `eprintln!`: that panics (abort in release) on a closed stderr.
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                b"note: 'json_backup' is ignored in v3.0.0 (writes removed); see MIGRATION_GUIDE.md\n",
             );
         });
     }
