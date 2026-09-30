@@ -102,12 +102,17 @@ echo "==> Baseline: $(wc -l < "$SNAPDIR/before" | tr -d ' ') canary files"
 
 run_tests() {
     # "$@" = extra env args (e.g. XDG vars or -u flags)
+    #
+    # Every step needs its own `|| return 1`: this function is called as
+    # `if ! run_tests ...`, and bash disables `set -e` for everything inside a
+    # function called from an `if` condition, so without them only the LAST
+    # cargo run's status would count.
     env "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
-        HOME="$CANARY/home" cargo test --quiet --test hook_integration_tests
+        HOME="$CANARY/home" cargo test --quiet --test hook_integration_tests || return 1
     env "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
-        HOME="$CANARY/home" cargo test --quiet --lib hook_handler
+        HOME="$CANARY/home" cargo test --quiet --lib hook_handler || return 1
     env "$@" CARGO_HOME="$REAL_CARGO_HOME" RUSTUP_HOME="$REAL_RUSTUP_HOME" \
-        HOME="$CANARY/home" cargo test --quiet --bin statusline hook_handler
+        HOME="$CANARY/home" cargo test --quiet --bin statusline hook_handler || return 1
 }
 
 check_canary() {
