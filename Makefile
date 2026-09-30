@@ -48,6 +48,7 @@ help:
 	@echo "  $(YELLOW)make test-install$(NC) - Run installation verification"
 	@echo "  $(YELLOW)make test-all$(NC)     - Run all tests"
 	@echo "  $(YELLOW)make test-manual$(NC)  - Run with isolated test database"
+	@echo "  $(YELLOW)make test-hook-isolation$(NC) - Verify hook tests leave a canary data dir untouched"
 	@echo "  $(YELLOW)make clean-test$(NC)   - Remove test database"
 	@echo "  $(YELLOW)make show-db-path$(NC) - Show database paths (prod vs test)"
 	@echo "  $(YELLOW)make check$(NC)        - Check build environment"
@@ -160,7 +161,14 @@ test: debug
 	@echo "$(YELLOW)Using isolated test directories:$(NC)"
 	@echo "  Config: $(TEST_TEMP_DIR)/config"
 	@echo "  Data:   $(TEST_TEMP_DIR)/data"
-	@$(TEST_ENV) $(CARGO) test
+	@$(TEST_ENV) $(CARGO) test --no-fail-fast
+
+# Verify hook tests never touch a real data/cache dir (INTEG-06 canary proof)
+.PHONY: test-hook-isolation
+test-hook-isolation:
+	@echo "$(BLUE)Checking hook tests never touch a real data dir (canary)...$(NC)"
+	@./scripts/check-hook-isolation.sh
+	@echo "$(GREEN)✓$(NC) Hook tests isolated"
 
 # Run SQLite integration tests
 .PHONY: test-sqlite
