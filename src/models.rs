@@ -392,10 +392,10 @@ pub struct TranscriptEntry {
     /// ISO 8601 formatted timestamp
     pub timestamp: String,
     /// API request this line belongs to. Claude Code writes ONE line PER CONTENT
-    /// BLOCK of a response (thinking, text, tool_use, ...), each carrying the same
-    /// `usage`, so token sums must be de-duplicated on this id (2.2x inflation
-    /// otherwise, measured 2026-09-16: 996 lines for 454 requests). Absent in
-    /// older transcripts, in which case every line counts.
+    /// BLOCK of a response (thinking, text, tool_use, ...), each repeating the
+    /// request's `usage`. Consumers de-duplicate through
+    /// `utils::collect_request_usage`: per requestId, the last line with non-empty
+    /// usage wins. Absent in older transcripts, in which case each line counts.
     #[serde(rename = "requestId", default)]
     pub request_id: Option<String>,
 }

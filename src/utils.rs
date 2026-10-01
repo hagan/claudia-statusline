@@ -364,6 +364,79 @@ pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
     get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.context_size())
 }
 
+/// One API request's usage after per-requestId de-duplication.
+///
+/// `ts` is the Unix timestamp of the winning line (None when unparseable) and
+/// `order` is that line's position in the input, which entries are sorted by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestUsage {
+    pub input: u32,
+    pub output: u32,
+    pub cache_read: u32,
+    pub cache_creation: u32,
+    pub ts: Option<u64>,
+    pub order: usize,
+}
+
+/// Collect assistant usage from transcript lines, counting each API request once.
+///
+/// Claude Code writes one line per content block of a response, each repeating
+/// the request's `usage`. Rule (D-11): per `requestId`, the LAST line with
+/// non-empty usage wins. Lines without usage (or with an all-empty usage object)
+/// are ignored and do not mark their requestId as seen. Lines without a
+/// `requestId` (older transcripts) each count individually (D-12).
+///
+/// Malformed lines are skipped; this never panics on untrusted input. The
+/// result is ordered by the winning line's position. Shared by
+/// `get_token_breakdown_from_transcript` and `get_rolling_window_rates`;
+/// Phase 17 is expected to reuse it for subagent attribution.
+pub(crate) fn collect_request_usage<'a, I: IntoIterator<Item = &'a str>>(
+    lines: I,
+) -> Vec<RequestUsage> {
+    let mut out: Vec<RequestUsage> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (order, line) in lines.into_iter().enumerate() {
+        let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) else {
+            continue;
+        };
+        if entry.message.role != "assistant" {
+            continue;
+        }
+        let Some(usage) = entry.message.usage else {
+            continue;
+        };
+        if usage.input_tokens.is_none()
+            && usage.output_tokens.is_none()
+            && usage.cache_read_input_tokens.is_none()
+            && usage.cache_creation_input_tokens.is_none()
+        {
+            continue;
+        }
+        let item = RequestUsage {
+            input: usage.input_tokens.unwrap_or(0),
+            output: usage.output_tokens.unwrap_or(0),
+            cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+            cache_creation: usage.cache_creation_input_tokens.unwrap_or(0),
+            ts: parse_iso8601_to_unix(&entry.timestamp),
+            order,
+        };
+        match entry.request_id {
+            Some(rid) => match index.get(&rid) {
+                Some(&slot) => out[slot] = item,
+                None => {
+                    index.insert(rid, out.len());
+                    out.push(item);
+                }
+            },
+            None => out.push(item),
+        }
+    }
+
+    out.sort_by_key(|e| e.order);
+    out
+}
+
 /// Extracts detailed token breakdown from transcript file.
 ///
 /// Returns a TokenBreakdown with separate counts for input, output, cache read, and cache creation tokens.
@@ -427,53 +500,25 @@ pub fn get_token_breakdown_from_transcript(
             .collect()
     };
 
-    // Process all assistant messages:
+    // Each API request counted once (see `collect_request_usage`):
     // - LAST for context-related tokens (input, cache_read) - represents CURRENT context usage
     //   This is what users see on the statusline (e.g., "9%" after compaction, not "64%")
     // - SUM for generated tokens (output, cache_creation) - represents total work done
     //
     // IMPORTANT: For compaction detection heuristics (Phase 2), the database tracks
     // max_tokens_observed separately. This function returns CURRENT values for display.
-    let mut last_input = 0u32;
-    let mut last_cache_read = 0u32;
+    let entries = collect_request_usage(lines.iter().map(String::as_str));
+    let has_data = !entries.is_empty();
     let mut sum_output = 0u32;
     let mut sum_cache_creation = 0u32;
-    let mut has_data = false;
-    // One API response is written as several lines (one per content block), all
-    // with the same usage. Count each requestId once; lines without an id (old
-    // transcripts) are counted individually.
-    let mut seen_requests = std::collections::HashSet::new();
-
-    for line in lines {
-        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
-            if entry.message.role == "assistant" {
-                if let Some(rid) = &entry.request_id {
-                    if !seen_requests.insert(rid.clone()) {
-                        continue;
-                    }
-                }
-                if let Some(usage) = entry.message.usage {
-                    has_data = true;
-
-                    // Extract individual token counts
-                    let input = usage.input_tokens.unwrap_or(0);
-                    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
-                    let cache_creation = usage.cache_creation_input_tokens.unwrap_or(0);
-                    let output = usage.output_tokens.unwrap_or(0);
-
-                    // SUM: output and cache_creation (cumulative work done)
-                    sum_output = sum_output.saturating_add(output);
-                    sum_cache_creation = sum_cache_creation.saturating_add(cache_creation);
-
-                    // LAST: input and cache_read (CURRENT context usage for display)
-                    // We overwrite on each iteration to keep only the most recent values
-                    // This ensures the statusline shows current context %, not historical peak
-                    last_input = input;
-                    last_cache_read = cache_read;
-                }
-            }
-        }
+    for e in &entries {
+        sum_output = sum_output.saturating_add(e.output);
+        sum_cache_creation = sum_cache_creation.saturating_add(e.cache_creation);
     }
+    let (last_input, last_cache_read) = entries
+        .last()
+        .map(|e| (e.input, e.cache_read))
+        .unwrap_or((0, 0));
 
     if has_data {
         Some(TokenBreakdown {
@@ -765,13 +810,8 @@ pub fn get_rolling_window_rates(
     // Note: For rolling window, we use different logic than session totals:
     // - SUM for output/cache_creation (cumulative work done in window)
     // - MAX for input/cache_read (peak context, not cumulative - input shows full context each message)
-    let mut max_input = 0u32;
-    let mut max_cache_read = 0u32;
-    let mut sum_output = 0u32;
-    let mut sum_cache_creation = 0u32;
     let mut earliest_timestamp: Option<u64> = None;
     let mut latest_timestamp: Option<u64> = None;
-    let mut has_data = false;
 
     for line in buffer.iter() {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) {
@@ -789,30 +829,29 @@ pub fn get_rolling_window_rates(
                         Some(l) if ts > l => latest_timestamp = Some(ts),
                         _ => {}
                     }
-
-                    // Only assistant messages have usage data
-                    if entry.message.role == "assistant" {
-                        if let Some(usage) = entry.message.usage {
-                            has_data = true;
-                            // MAX for context tokens (input/cache_read represent full context, not delta)
-                            let input = usage.input_tokens.unwrap_or(0);
-                            let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
-                            if input > max_input {
-                                max_input = input;
-                            }
-                            if cache_read > max_cache_read {
-                                max_cache_read = cache_read;
-                            }
-                            // SUM for generated tokens (output/cache_creation are cumulative)
-                            sum_output =
-                                sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
-                            sum_cache_creation = sum_cache_creation
-                                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-                        }
-                    }
                 }
             }
         }
+    }
+
+    // Usage: each API request counted once (see `collect_request_usage`), and a
+    // request belongs to the window when its WINNING (last) line is in it. A
+    // request's usage is final when its last line is written, so a request whose
+    // lines straddle the cutoff lands in exactly one window.
+    let mut max_input = 0u32;
+    let mut max_cache_read = 0u32;
+    let mut sum_output = 0u32;
+    let mut sum_cache_creation = 0u32;
+    let mut has_data = false;
+    for e in collect_request_usage(buffer.iter().map(String::as_str))
+        .into_iter()
+        .filter(|e| e.ts.is_some_and(|t| t >= cutoff))
+    {
+        has_data = true;
+        max_input = max_input.max(e.input);
+        max_cache_read = max_cache_read.max(e.cache_read);
+        sum_output = sum_output.saturating_add(e.output);
+        sum_cache_creation = sum_cache_creation.saturating_add(e.cache_creation);
     }
 
     if !has_data {
@@ -1024,6 +1063,21 @@ mod tests {
         let (_d, p) = write_transcript(&lines);
         let r = get_rolling_window_rates(&p, 3600).unwrap();
         assert_eq!(recovered_sums(r), (50, 10));
+    }
+
+    #[test]
+    fn dedup_orders_by_winning_line() {
+        let a1 = dedup_line("A", TS, 1, 0, 0, 5);
+        let b = dedup_line("B", TS, 2, 0, 0, 7);
+        let a2 = dedup_line("A", TS, 3, 0, 0, 5);
+        let garbage = "not json".to_string();
+        let lines = [a1, garbage, b, a2];
+        let got = collect_request_usage(lines.iter().map(String::as_str));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].input, 2); // B (order 2)
+        assert_eq!(got[1].input, 3); // A's winning line (order 3)
+        assert_eq!(got[1].order, 3);
+        assert!(got[1].ts.is_some());
     }
 
     #[test]
