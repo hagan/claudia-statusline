@@ -25,7 +25,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     agent_output_tokens INTEGER DEFAULT 0,
     main_requests INTEGER DEFAULT 0,
     main_input_tokens INTEGER DEFAULT 0,
-    main_output_tokens INTEGER DEFAULT 0
+    main_output_tokens INTEGER DEFAULT 0,
+    -- v8 (migration 008): raw payload baseline + inferred process start; NULL = no baseline yet
+    raw_cost REAL,
+    raw_lines_added INTEGER,
+    raw_lines_removed INTEGER,
+    process_start_ms INTEGER
 );
 
 -- Incremental transcript parse state (v7): one row per main/subagent transcript
@@ -151,7 +156,12 @@ CREATE TABLE IF NOT EXISTS session_archive (
     last_activity TEXT,
     model_name TEXT,
     workspace_dir TEXT,
-    device_id TEXT
+    device_id TEXT,
+    -- v8 (migration 008): raw payload baseline + inferred process start; NULL = no baseline yet
+    raw_cost REAL,
+    raw_lines_added INTEGER,
+    raw_lines_removed INTEGER,
+    process_start_ms INTEGER
 );
 
 -- Indexes for session_archive

@@ -92,6 +92,7 @@ impl MigrationRunner {
             Box::new(AddBurnRateTracking),
             Box::new(AddDailyTokenTracking),
             Box::new(AddAgentTracking),
+            Box::new(AddAccountingBaseline),
         ]
     }
 
@@ -720,6 +721,65 @@ impl Migration for AddAgentTracking {
     }
 }
 
+/// Migration 008: per-session delta baseline for accounting correctness.
+///
+/// Stores the last raw payload counters (cost, lines added/removed) and the
+/// inferred process start on both `sessions` and `session_archive`, so the
+/// restart/correction classifier can compute deltas against what the payload
+/// last reported rather than against the stored cumulative totals.
+///
+/// Pure additive DDL (D-15): no UPDATE, no backfill. The columns are nullable
+/// with no default; NULL means "no baseline yet" and readers use
+/// `COALESCE(raw_cost, cost)` (correct for every pre-008 row, whose `cost`
+/// always held the last raw payload value).
+///
+/// Columns that already exist are skipped, so a DB created from the full v8
+/// `SCHEMA`, or a concurrent opener that lost the version-record race, never
+/// hits "duplicate column name". Phase 16's migration race hardening for 007
+/// must cover 008 as well.
+pub struct AddAccountingBaseline;
+
+impl Migration for AddAccountingBaseline {
+    fn version(&self) -> u32 {
+        8
+    }
+
+    fn description(&self) -> &str {
+        "Add per-session raw counter baseline + inferred process start (sessions, session_archive)"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        for table in ["sessions", "session_archive"] {
+            let existing: Vec<String> = {
+                let mut stmt = tx.prepare(&format!("PRAGMA table_info({})", table))?;
+                let names = stmt
+                    .query_map([], |row| row.get::<_, String>(1))?
+                    .collect::<Result<Vec<String>>>()?;
+                names
+            };
+            for col in [
+                "raw_cost REAL",
+                "raw_lines_added INTEGER",
+                "raw_lines_removed INTEGER",
+                "process_start_ms INTEGER",
+            ] {
+                let name = col.split(' ').next().unwrap_or(col);
+                if existing.iter().any(|c| c == name) {
+                    continue;
+                }
+                tx.execute(&format!("ALTER TABLE {} ADD COLUMN {}", table, col), [])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn down(&self, _tx: &Transaction) -> Result<()> {
+        // SQLite doesn't support DROP COLUMN easily; the nullable baseline
+        // columns stay, which is harmless for older readers.
+        Ok(())
+    }
+}
+
 /// Run migrations on a specific database path
 /// Returns Err only on critical failures that prevent migrations from running
 pub fn run_migrations_on_db(db_path: &Path) -> Result<()> {
@@ -1023,7 +1083,9 @@ mod tests {
         runner.migrate().unwrap();
         assert_eq!(runner.current_version().unwrap(), 8);
 
-        for table in ["sessions", "session_archive"] {
+        // Scope to the seeded rows: migration 001 imports whatever StatsData::load()
+        // returns, so the table may hold other rows depending on the environment.
+        for (table, sid) in [("sessions", "s1"), ("session_archive", "s0")] {
             let cols = column_names(&runner.conn, table);
             for col in BASELINE_COLUMNS {
                 assert!(cols.iter().any(|c| c == col), "{table} missing {col}");
@@ -1032,15 +1094,19 @@ mod tests {
                 .conn
                 .query_row(
                     &format!(
-                        "SELECT COUNT(*) FROM {} WHERE raw_cost IS NULL AND raw_lines_added IS NULL
-                         AND raw_lines_removed IS NULL AND process_start_ms IS NULL",
-                        table
+                        "SELECT COUNT(*) FROM {} WHERE session_id = '{}' AND raw_cost IS NULL
+                         AND raw_lines_added IS NULL AND raw_lines_removed IS NULL
+                         AND process_start_ms IS NULL",
+                        table, sid
                     ),
                     [],
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert_eq!(nulls, 1, "{table}: pre-existing row must have NULL baseline");
+            assert_eq!(
+                nulls, 1,
+                "{table}: pre-existing row must have NULL baseline"
+            );
         }
 
         let (cost, added, removed): (f64, i64, i64) = runner
