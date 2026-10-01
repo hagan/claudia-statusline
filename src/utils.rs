@@ -895,6 +895,151 @@ mod tests {
         assert_eq!(b.input_tokens, 1);
     }
 
+    // ---- #78 / ACCT-04: per-requestId last-wins dedup (D-11, D-12) ----
+
+    /// Assistant line with a requestId, explicit usage and timestamp.
+    fn dedup_line(rid: &str, ts: &str, input: u32, cr: u32, cc: u32, out: u32) -> String {
+        format!(
+            r#"{{"type":"assistant","requestId":"{rid}","timestamp":"{ts}","message":{{"role":"assistant","content":[],"usage":{{"input_tokens":{input},"cache_read_input_tokens":{cr},"cache_creation_input_tokens":{cc},"output_tokens":{out}}}}}}}"#
+        )
+    }
+
+    fn write_transcript(lines: &[String]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let p = path.to_str().unwrap().to_string();
+        (dir, p)
+    }
+
+    const TS: &str = "2026-09-16T00:00:00Z";
+
+    #[test]
+    fn dedup_repeated_identical_usage() {
+        let mut lines = vec![dedup_line("r1", TS, 1, 100, 10, 5); 3];
+        lines.push(dedup_line("r2", TS, 2, 200, 20, 7));
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 5 + 7);
+        assert_eq!(b.cache_creation_tokens, 10 + 20);
+        assert_eq!(b.input_tokens, 2);
+        assert_eq!(b.cache_read_tokens, 200);
+    }
+
+    #[test]
+    fn dedup_missing_then_present() {
+        // First line of r1 carries no usage; it must not mark r1 as seen.
+        let lines = vec![
+            format!(
+                r#"{{"type":"assistant","requestId":"r1","timestamp":"{TS}","message":{{"role":"assistant","content":[]}}}}"#
+            ),
+            dedup_line("r1", TS, 3, 300, 30, 11),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 11);
+        assert_eq!(b.cache_creation_tokens, 30);
+        assert_eq!(b.input_tokens, 3);
+        assert_eq!(b.cache_read_tokens, 300);
+    }
+
+    #[test]
+    fn dedup_revised_usage_last_wins() {
+        let lines = vec![
+            dedup_line("r1", TS, 1, 100, 10, 5),
+            dedup_line("r1", TS, 1, 100, 12, 9),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 9);
+        assert_eq!(b.cache_creation_tokens, 12);
+    }
+
+    #[test]
+    fn dedup_interleaved_a_b_a() {
+        let lines = vec![
+            dedup_line("A", TS, 1, 100, 10, 5),
+            dedup_line("B", TS, 2, 200, 20, 7),
+            dedup_line("A", TS, 1, 100, 10, 5),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 12);
+        assert_eq!(b.cache_creation_tokens, 30);
+        // A's winning line comes after B, so "last" values come from A.
+        assert_eq!(b.input_tokens, 1);
+        assert_eq!(b.cache_read_tokens, 100);
+    }
+
+    #[test]
+    fn dedup_empty_usage_object_is_ignored() {
+        let lines = vec![
+            format!(
+                r#"{{"type":"assistant","requestId":"r1","timestamp":"{TS}","message":{{"role":"assistant","content":[],"usage":{{}}}}}}"#
+            ),
+            dedup_line("r1", TS, 4, 400, 40, 13),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 13);
+        assert_eq!(b.cache_read_tokens, 400);
+
+        // An empty usage object alone is not data.
+        let only_empty = vec![format!(
+            r#"{{"type":"assistant","requestId":"r9","timestamp":"{TS}","message":{{"role":"assistant","content":[],"usage":{{}}}}}}"#
+        )];
+        let (_d2, p2) = write_transcript(&only_empty);
+        assert!(get_token_breakdown_from_transcript(&p2).is_none());
+    }
+
+    #[test]
+    fn legacy_lines_without_request_id_count_individually() {
+        let legacy = format!(
+            r#"{{"type":"assistant","timestamp":"{TS}","message":{{"role":"assistant","content":[],"usage":{{"input_tokens":1,"cache_read_input_tokens":50,"cache_creation_input_tokens":6,"output_tokens":4}}}}}}"#
+        );
+        let (_d, p) = write_transcript(&[legacy.clone(), legacy]);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 8);
+        assert_eq!(b.cache_creation_tokens, 12);
+    }
+
+    fn ago(secs: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::seconds(secs))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    /// Recover the summed (output, cache_creation) from rolling-window rates.
+    fn recovered_sums(r: (f64, f64, f64, f64, u64)) -> (u64, u64) {
+        let dur = r.4 as f64;
+        ((r.1 * dur).round() as u64, (r.3 * dur).round() as u64)
+    }
+
+    #[test]
+    fn rolling_window_dedups_repeated_request_lines() {
+        let lines = vec![
+            dedup_line("r1", &ago(120), 1, 100, 10, 50),
+            dedup_line("r1", &ago(119), 1, 100, 10, 50),
+            dedup_line("r1", &ago(118), 1, 100, 10, 50),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let r = get_rolling_window_rates(&p, 3600).unwrap();
+        assert_eq!(recovered_sums(r), (50, 10));
+    }
+
+    #[test]
+    fn rolling_window_membership_uses_winning_line_timestamp() {
+        // X straddles the cutoff: first line outside, winning line inside -> once.
+        // Y's only (winning) line is outside -> excluded.
+        let lines = vec![
+            dedup_line("Y", &ago(7300), 1, 100, 1000, 700),
+            dedup_line("X", &ago(7200), 1, 100, 10, 50),
+            dedup_line("X", &ago(60), 1, 100, 10, 50),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let r = get_rolling_window_rates(&p, 3600).unwrap();
+        assert_eq!(recovered_sums(r), (50, 10));
+    }
+
     #[test]
     fn test_validate_transcript_file_security() {
         // Test null byte injection
