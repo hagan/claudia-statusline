@@ -1,11 +1,55 @@
 //! Accounting policy for cumulative per-process counters (issue #77).
 //!
-//! RED stub: implementation follows.
+//! Claude Code's payload counters (`total_cost_usd`, `total_lines_added`,
+//! `total_lines_removed`) are cumulative per CLI process. A session id can
+//! outlive a process, so a stored value can be followed by a *lower* one. This
+//! module decides, in one pure function, how much each update contributes to
+//! the accounted totals and what the next stored baseline is.
+//!
+//! The start signal is the **inferred start** = now minus running time
+//! (`cost.total_duration_ms`). Claude Code's `total_duration_ms` accumulates
+//! across resumes and excludes time while the session is not running, so the
+//! inferred start also moves later after a plain pause. That is why a Restart
+//! is only ever decided on a counter **drop**: later start plus growth is just
+//! a resume with carried-over totals.
+//!
+//! Let `Δstart = obs.start − prior.start` when both are known, `tol` = the
+//! restart tolerance ([`RESTART_TOLERANCE_MS`], D-19).
+//!
+//! Rules:
+//! - no prior baseline                     → **New**: full observed values count
+//! - both starts known, `Δstart < −tol`    → **Stale** (update from an older
+//!   process timeline): contributes 0, baseline unchanged (D-17)
+//! - both starts known, `Δstart > tol` and any counter dropped
+//!   → **Restart** (new process, D-01): full observed values count, baseline =
+//!   observation; all three counters reset together (D-03)
+//! - otherwise (`|Δstart| ≤ tol`, a later start with no drop, or either start
+//!   unknown) → high-water per counter: contributes `max(obs − base, 0)`, next
+//!   baseline is `max(base, obs)` (D-01, D-02). **Correction** if any counter
+//!   dropped, else **Growth**. A known start is stored on every accepted update;
+//!   an unknown start never overwrites a known one (D-17).
+//!
+//! With an unknown start a real restart first observed above the old value's
+//! high-water is undercounted until the new process passes it; that is the
+//! documented D-02/D-04 trade-off (never overcount). A `total_duration_ms` that
+//! is absent, 0 or larger than now is an unknown start (D-17).
+//! This replaces the PR #76 "< half = restart" heuristic (D-02).
 
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+/// Maximum |Δstart| (ms) still treated as the same process (D-19).
+///
+/// The failure directions are asymmetric: a false Restart overcounts the whole
+/// session, while a false same-process verdict only undercounts until the new
+/// process passes the old high-water. Jitter in the inferred start comes from
+/// ms-scale process spawn/JSON parse time plus the 300 ms render debounce,
+/// whereas a real restart moves the start by minutes or more. 60 s sits far
+/// above the jitter and well below any realistic restart gap.
 pub const RESTART_TOLERANCE_MS: i64 = 60_000;
 
+/// Stored per-session baseline: high-water raw payload counters plus the last
+/// known inferred process start (epoch ms).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct Baseline {
     pub raw_cost: f64,
@@ -14,6 +58,7 @@ pub struct Baseline {
     pub start_ms: Option<i64>,
 }
 
+/// One (untrusted) payload observation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Observation {
     pub cost: f64,
@@ -22,6 +67,7 @@ pub struct Observation {
     pub start_ms: Option<i64>,
 }
 
+/// Classification of one update.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     New,
@@ -31,6 +77,7 @@ pub enum Kind {
     Stale,
 }
 
+/// Result of [`classify`]: non-negative, finite deltas plus the next baseline.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Outcome {
     pub kind: Kind,
@@ -40,9 +87,113 @@ pub struct Outcome {
     pub next: Baseline,
 }
 
+fn sanitize_cost(c: f64) -> f64 {
+    if c.is_finite() && c > 0.0 {
+        c
+    } else {
+        0.0
+    }
+}
+
+fn sanitize_baseline(b: Baseline) -> Baseline {
+    Baseline {
+        raw_cost: sanitize_cost(b.raw_cost),
+        raw_lines_added: b.raw_lines_added.max(0),
+        raw_lines_removed: b.raw_lines_removed.max(0),
+        start_ms: b.start_ms,
+    }
+}
+
+fn full(kind: Kind, o: Observation) -> Outcome {
+    Outcome {
+        kind,
+        cost_delta: o.cost,
+        lines_added_delta: o.lines_added,
+        lines_removed_delta: o.lines_removed,
+        next: Baseline {
+            raw_cost: o.cost,
+            raw_lines_added: o.lines_added,
+            raw_lines_removed: o.lines_removed,
+            start_ms: o.start_ms,
+        },
+    }
+}
+
+/// Classify one observation against the stored baseline (see module docs).
+///
+/// Total: never panics, never errors; every returned delta is finite and >= 0.
 pub fn classify(prior: Option<Baseline>, obs: Observation, tol_ms: i64) -> Outcome {
-    let _ = (prior, obs, tol_ms);
-    unimplemented!()
+    let o = Observation {
+        cost: sanitize_cost(obs.cost),
+        lines_added: obs.lines_added.max(0),
+        lines_removed: obs.lines_removed.max(0),
+        start_ms: obs.start_ms,
+    };
+    let tol = tol_ms.max(0);
+
+    let Some(prior) = prior else {
+        return full(Kind::New, o);
+    };
+    let p = sanitize_baseline(prior);
+
+    let drop = o.cost < p.raw_cost
+        || o.lines_added < p.raw_lines_added
+        || o.lines_removed < p.raw_lines_removed;
+
+    if let (Some(obs_start), Some(prior_start)) = (o.start_ms, p.start_ms) {
+        let d = obs_start.saturating_sub(prior_start);
+        if d < -tol {
+            return Outcome {
+                kind: Kind::Stale,
+                cost_delta: 0.0,
+                lines_added_delta: 0,
+                lines_removed_delta: 0,
+                next: prior,
+            };
+        }
+        if d > tol && drop {
+            log::debug!(
+                "accounting: restart detected (old raw cost {:.6}, new raw cost {:.6}, start diff {} ms)",
+                p.raw_cost,
+                o.cost,
+                d
+            );
+            return full(Kind::Restart, o);
+        }
+    }
+
+    Outcome {
+        kind: if drop { Kind::Correction } else { Kind::Growth },
+        cost_delta: (o.cost - p.raw_cost).max(0.0),
+        lines_added_delta: o.lines_added.saturating_sub(p.raw_lines_added).max(0),
+        lines_removed_delta: o.lines_removed.saturating_sub(p.raw_lines_removed).max(0),
+        next: Baseline {
+            raw_cost: p.raw_cost.max(o.cost),
+            raw_lines_added: p.raw_lines_added.max(o.lines_added),
+            raw_lines_removed: p.raw_lines_removed.max(o.lines_removed),
+            start_ms: o.start_ms.or(p.start_ms),
+        },
+    }
+}
+
+/// Inferred process start (epoch ms) = `now_ms − total_duration_ms`.
+///
+/// `None` (unknown start) when the duration is absent, 0, does not fit in
+/// `i64`, or exceeds `now_ms` (untrusted input must not fake a start, D-17).
+pub fn inferred_start_ms(total_duration_ms: Option<u64>, now_ms: i64) -> Option<i64> {
+    let d = i64::try_from(total_duration_ms?).ok()?;
+    if d == 0 || d > now_ms {
+        return None;
+    }
+    Some(now_ms - d)
+}
+
+/// Current wall-clock time in epoch milliseconds; 0 on a pre-epoch clock.
+pub fn unix_now_ms() -> i64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => i64::try_from(d.as_millis()).unwrap_or(i64::MAX),
+        Err(_) => 0,
+    }
 }
 
 #[cfg(test)]
