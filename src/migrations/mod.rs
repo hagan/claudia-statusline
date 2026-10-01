@@ -749,10 +749,10 @@ mod tests {
         assert_eq!(runner.current_version().unwrap(), 0);
 
         runner.migrate().unwrap();
-        // We now have 7 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3),
+        // We now have 8 migrations: InitialJsonToSqlite (v1), AddMetaTable (v2), AddSyncMetadata (v3),
         // AddAdaptiveLearning (v4), AddBurnRateTracking (v5), AddDailyTokenTracking (v6),
-        // AddAgentTracking (v7)
-        assert_eq!(runner.current_version().unwrap(), 7);
+        // AddAgentTracking (v7), AddAccountingBaseline (v8)
+        assert_eq!(runner.current_version().unwrap(), 8);
     }
 
     #[test]
@@ -762,7 +762,7 @@ mod tests {
 
         let mut runner = MigrationRunner::new(&db_path).unwrap();
         runner.migrate().unwrap();
-        assert_eq!(runner.current_version().unwrap(), 7);
+        assert_eq!(runner.current_version().unwrap(), 8);
 
         let session_columns: Vec<String> = runner
             .conn
@@ -896,8 +896,8 @@ mod tests {
         let mut runner = MigrationRunner::new(&db_path).unwrap();
         runner.migrate().unwrap();
 
-        // Verify the runner is at the latest version (v7 follows the token migration)
-        assert_eq!(runner.current_version().unwrap(), 7);
+        // Verify the runner is at the latest version (v7 and v8 follow the token migration)
+        assert_eq!(runner.current_version().unwrap(), 8);
 
         // Verify token columns were added to daily_stats
         let daily_columns: Vec<String> = runner
@@ -972,5 +972,174 @@ mod tests {
             monthly_index_exists,
             "idx_monthly_tokens index should exist"
         );
+    }
+
+    const BASELINE_COLUMNS: [&str; 4] = [
+        "raw_cost",
+        "raw_lines_added",
+        "raw_lines_removed",
+        "process_start_ms",
+    ];
+
+    fn column_names(conn: &Connection, table: &str) -> Vec<String> {
+        conn.prepare(&format!("PRAGMA table_info({})", table))
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn test_accounting_baseline_migration() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_baseline.db");
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        // Bring the DB to v7 first so session_archive exists, then seed rows that
+        // predate migration 008.
+        runner.migrations.retain(|m| m.version() <= 7);
+        runner.migrate().unwrap();
+        assert_eq!(runner.current_version().unwrap(), 7);
+        runner
+            .conn
+            .execute(
+                "INSERT INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
+                 VALUES ('s1', '2026-01-01T00:00:00Z', '2026-01-01T01:00:00Z', 12.34, 100, 20)",
+                [],
+            )
+            .unwrap();
+        runner
+            .conn
+            .execute(
+                "INSERT INTO session_archive (session_id, start_time, end_time, archived_at, cost, lines_added, lines_removed)
+                 VALUES ('s0', '2025-12-31T00:00:00Z', '2025-12-31T01:00:00Z', '2025-12-31T02:00:00Z', 5.5, 7, 3)",
+                [],
+            )
+            .unwrap();
+
+        // Now run the full migration set (008 is pending).
+        runner.migrations = MigrationRunner::load_all_migrations();
+        runner.migrate().unwrap();
+        assert_eq!(runner.current_version().unwrap(), 8);
+
+        for table in ["sessions", "session_archive"] {
+            let cols = column_names(&runner.conn, table);
+            for col in BASELINE_COLUMNS {
+                assert!(cols.iter().any(|c| c == col), "{table} missing {col}");
+            }
+            let nulls: i64 = runner
+                .conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {} WHERE raw_cost IS NULL AND raw_lines_added IS NULL
+                         AND raw_lines_removed IS NULL AND process_start_ms IS NULL",
+                        table
+                    ),
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(nulls, 1, "{table}: pre-existing row must have NULL baseline");
+        }
+
+        let (cost, added, removed): (f64, i64, i64) = runner
+            .conn
+            .query_row(
+                "SELECT cost, lines_added, lines_removed FROM sessions WHERE session_id = 's1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cost.to_bits(), 12.34f64.to_bits());
+        assert_eq!((added, removed), (100, 20));
+
+        let (cost, added, removed): (f64, i64, i64) = runner
+            .conn
+            .query_row(
+                "SELECT cost, lines_added, lines_removed FROM session_archive WHERE session_id = 's0'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(cost.to_bits(), 5.5f64.to_bits());
+        assert_eq!((added, removed), (7, 3));
+    }
+
+    #[test]
+    fn test_accounting_baseline_migration_skips_existing_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_baseline_fresh.db");
+
+        // Fresh path: full SCHEMA (already has the 008 columns) + version 8 recorded.
+        drop(crate::database::SqliteDatabase::new(&db_path).unwrap());
+
+        // Simulate a concurrent opener / lost race that sees v7 and re-runs 008:
+        // drop the v8 record and mark the DB as v7 so only migration 008 is pending.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("DELETE FROM schema_migrations WHERE version = 8", [])
+                .unwrap();
+            conn.execute(
+                "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
+                 VALUES (7, '2026-01-01T00:00:00Z', '', 'test', 0)",
+                [],
+            )
+            .unwrap();
+        }
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        assert_eq!(runner.current_version().unwrap(), 7);
+        runner
+            .migrate()
+            .expect("migration 008 must skip columns that already exist");
+        assert_eq!(runner.current_version().unwrap(), 8);
+        for table in ["sessions", "session_archive"] {
+            let cols = column_names(&runner.conn, table);
+            for col in BASELINE_COLUMNS {
+                assert_eq!(
+                    cols.iter().filter(|c| *c == col).count(),
+                    1,
+                    "{table}.{col} must exist exactly once"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn fresh_and_migrated_schemas_match() {
+        let fresh_dir = TempDir::new().unwrap();
+        let fresh_path = fresh_dir.path().join("fresh.db");
+        drop(crate::database::SqliteDatabase::new(&fresh_path).unwrap());
+        let fresh = Connection::open(&fresh_path).unwrap();
+
+        let migrated_dir = TempDir::new().unwrap();
+        let migrated_path = migrated_dir.path().join("migrated.db");
+        let mut runner = MigrationRunner::new(&migrated_path).unwrap();
+        runner.migrate().unwrap();
+
+        // Known pre-008 drift (out of scope here, Phase 16 note): SCHEMA always has
+        // `sessions.sync_timestamp`, but migration 003 only adds it with `turso-sync`.
+        // Any other difference between the two paths fails this test.
+        const KNOWN_PRE_008_DRIFT: [&str; 1] = ["sync_timestamp"];
+
+        for table in ["sessions", "session_archive"] {
+            let a = column_names(&fresh, table);
+            let b = column_names(&runner.conn, table);
+            for col in BASELINE_COLUMNS {
+                assert!(a.iter().any(|c| c == col), "fresh {table} missing {col}");
+                assert!(b.iter().any(|c| c == col), "migrated {table} missing {col}");
+            }
+            let unexpected: Vec<&String> = a
+                .iter()
+                .filter(|c| !b.contains(c))
+                .chain(b.iter().filter(|c| !a.contains(c)))
+                .filter(|c| !KNOWN_PRE_008_DRIFT.contains(&c.as_str()))
+                .collect();
+            assert!(
+                unexpected.is_empty(),
+                "{table}: fresh SCHEMA and migrated columns differ: {unexpected:?}"
+            );
+        }
     }
 }
