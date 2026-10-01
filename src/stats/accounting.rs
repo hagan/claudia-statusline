@@ -401,4 +401,75 @@ mod tests {
             assert_sane(&c);
         }
     }
+
+    #[test]
+    fn inferred_start_absent_is_unknown() {
+        assert_eq!(inferred_start_ms(None, 1_000_000), None);
+    }
+
+    #[test]
+    fn inferred_start_zero_duration_is_unknown() {
+        assert_eq!(inferred_start_ms(Some(0), 1_000_000), None);
+    }
+
+    #[test]
+    fn inferred_start_duration_exceeding_now_is_unknown() {
+        assert_eq!(inferred_start_ms(Some(2_000_000), 1_000_000), None);
+    }
+
+    #[test]
+    fn inferred_start_huge_duration_is_unknown() {
+        assert_eq!(inferred_start_ms(Some(u64::MAX), i64::MAX), None);
+    }
+
+    #[test]
+    fn inferred_start_normal() {
+        assert_eq!(inferred_start_ms(Some(250_000), 1_000_000), Some(750_000));
+    }
+
+    #[test]
+    fn unix_now_ms_is_positive() {
+        assert!(unix_now_ms() > 1_600_000_000_000);
+    }
+
+    mod props {
+        use super::*;
+        use proptest::prelude::*;
+
+        fn start_strategy() -> impl Strategy<Value = Option<i64>> {
+            prop_oneof![
+                Just(None),
+                Just(Some(S)),
+                Just(Some(S + 30_000)),
+                Just(Some(S + 3_600_000)),
+                Just(Some(S - 3_600_000)),
+            ]
+        }
+
+        fn obs_strategy() -> impl Strategy<Value = Observation> {
+            (0.0f64..100.0, 0i64..10_000, 0i64..10_000, start_strategy())
+                .prop_map(|(cost, added, removed, start)| obs(cost, added, removed, start))
+        }
+
+        proptest! {
+            #[test]
+            fn prop_deltas_never_negative_and_accumulate_to_accounted_total(
+                seq in prop::collection::vec(obs_strategy(), 1..40)
+            ) {
+                let mut prior: Option<Baseline> = None;
+                let mut sum = 0.0f64;
+                for o in &seq {
+                    let out = classify(prior, *o, RESTART_TOLERANCE_MS);
+                    prop_assert!(out.cost_delta.is_finite() && out.cost_delta >= 0.0);
+                    prop_assert!(out.lines_added_delta >= 0);
+                    prop_assert!(out.lines_removed_delta >= 0);
+                    prop_assert!(out.next.raw_cost.is_finite());
+                    sum += out.cost_delta;
+                    prior = Some(out.next);
+                }
+                prop_assert!(sum.is_finite());
+                prop_assert!(sum >= seq[0].cost - 1e-9);
+            }
+        }
+    }
 }
