@@ -17,39 +17,6 @@ use std::sync::OnceLock;
 /// Static ANSI regex pattern, initialized once
 static ANSI_REGEX: OnceLock<regex::Regex> = OnceLock::new();
 
-/// Delta for a cumulative per-process counter that may have been reset upstream.
-///
-/// Claude Code's payload counters (`total_cost_usd`, lines added/removed) are
-/// cumulative per CLI process. When a session is resumed in a new process the
-/// counters restart from zero while the session id stays the same, so the new
-/// value can be *lower* than the stored one. A raw `new - old` delta would then
-/// drive daily/monthly aggregates negative.
-///
-/// Rules:
-/// - `new >= old`  → normal growth, delta is `new - old`
-/// - `new < old/2` → counter reset; the new counter value is fresh spend
-/// - otherwise     → small downward correction; contributes nothing
-pub fn clamp_reset_delta_f64(new: f64, old: f64) -> f64 {
-    if new >= old {
-        new - old
-    } else if new < old * 0.5 {
-        new
-    } else {
-        0.0
-    }
-}
-
-/// Integer variant of [`clamp_reset_delta_f64`] for line counters.
-pub fn clamp_reset_delta_i64(new: i64, old: i64) -> i64 {
-    if new >= old {
-        new - old
-    } else if new < old / 2 {
-        new
-    } else {
-        0
-    }
-}
-
 /// Sanitizes a string for safe terminal output by removing control characters
 /// and ANSI escape sequences. This prevents malicious strings from manipulating
 /// terminal state or executing unintended commands.

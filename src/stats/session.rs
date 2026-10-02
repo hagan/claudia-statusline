@@ -3,9 +3,10 @@
 //! Contains the `SessionStats` struct and `StatsData` methods for session
 //! updates, max token tracking, and duration calculation by mode.
 
+use super::accounting::{self, Baseline, Observation};
 use super::StatsData;
 use crate::common::{current_date, current_month, current_timestamp};
-use crate::database::SqliteDatabase;
+use crate::database::{AppliedUpdate, SqliteDatabase};
 use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
 
@@ -44,41 +45,45 @@ impl StatsData {
         // SqliteDatabase::new() will create the database if it doesn't exist
         // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
         //
-        // IMPORTANT: Auto-reset mode deletes then RECREATES the session in the same transaction,
-        // so we can't check existence. Instead, compare start_time to detect if session was reset.
-        let mut session_was_reset = false;
+        // The DB transaction runs the accounting classifier and reports exactly which deltas it
+        // committed (AppliedUpdate); the in-memory aggregates add those same deltas so the
+        // rendered daily total always matches daily_stats (D-10).
         let config = crate::config::get_config();
+        let mut applied: Option<AppliedUpdate> = None;
 
         if let Ok(db_path) = Self::get_sqlite_path() {
             if let Ok(db) = SqliteDatabase::new(&db_path) {
-                if let Err(e) = db.update_session(session_id, update.clone()) {
-                    log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
-                } else if config.burn_rate.mode == "auto_reset" {
-                    // Only check for reset if we're in auto_reset mode
-                    // Check if session was reset by comparing start_time
-                    // Auto-reset deletes+recreates session, giving it a new start_time
-                    if let Some(db_start_time) = db.get_session_start_time(session_id) {
-                        // Compare with in-memory start_time
-                        if let Some(in_memory_session) = self.sessions.get(session_id) {
-                            if let Some(ref in_memory_start) = in_memory_session.start_time {
-                                // If start times differ by more than 1 second, session was reset
-                                // (allow small differences due to timestamp precision)
-                                if let (Some(db_time), Some(mem_time)) = (
-                                    crate::utils::parse_iso8601_to_unix(&db_start_time),
-                                    crate::utils::parse_iso8601_to_unix(in_memory_start),
-                                ) {
-                                    let time_diff = db_time.abs_diff(mem_time);
-
-                                    if time_diff > 1 {
-                                        // More than 1 second difference = reset
-                                        session_was_reset = true;
-                                        log::info!(
-                                            "Session {} was auto-reset (start_time changed: {} -> {})",
-                                            session_id,
-                                            in_memory_start,
-                                            db_start_time
-                                        );
-                                        self.sessions.remove(session_id);
+                match db.update_session_applied(session_id, update.clone()) {
+                    Err(e) => {
+                        log::warn!("Failed to persist session {} to SQLite: {}", session_id, e);
+                    }
+                    Ok(a) => {
+                        applied = Some(a);
+                        if config.burn_rate.mode == "auto_reset" {
+                            // Session bookkeeping only (map entry / all_time.sessions): auto_reset
+                            // archives and recreates the session row with a new start_time, so
+                            // drop the stale in-memory entry. This no longer influences any delta;
+                            // the deltas come from the DB transaction above.
+                            if let Some(db_start_time) = db.get_session_start_time(session_id) {
+                                if let Some(in_memory_session) = self.sessions.get(session_id) {
+                                    if let Some(ref in_memory_start) = in_memory_session.start_time
+                                    {
+                                        // If start times differ by more than 1 second, session was
+                                        // reset (allow small differences due to timestamp precision)
+                                        if let (Some(db_time), Some(mem_time)) = (
+                                            crate::utils::parse_iso8601_to_unix(&db_start_time),
+                                            crate::utils::parse_iso8601_to_unix(in_memory_start),
+                                        ) {
+                                            if db_time.abs_diff(mem_time) > 1 {
+                                                log::info!(
+                                                    "Session {} was auto-reset (start_time changed: {} -> {})",
+                                                    session_id,
+                                                    in_memory_start,
+                                                    db_start_time
+                                                );
+                                                self.sessions.remove(session_id);
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -95,44 +100,62 @@ impl StatsData {
             log::warn!("Failed to get SQLite path for session update");
         }
 
-        // Calculate delta from last known session cost
-        // If session was reset, treat as new session (delta = full value)
-        let last_cost = if session_was_reset {
-            0.0
-        } else {
-            self.sessions.get(session_id).map(|s| s.cost).unwrap_or(0.0)
+        // Deltas and the new accounted session state. With the DB available these are exactly
+        // what its transaction committed. Without it, run the same classifier against the
+        // in-memory baseline (D-10); never re-derive deltas from the accounted session cost.
+        let (
+            cost_delta,
+            lines_added_delta,
+            lines_removed_delta,
+            session_cost,
+            session_la,
+            session_lr,
+            baseline,
+        ) = match applied {
+            Some(applied) => (
+                applied.cost_delta,
+                applied.lines_added_delta,
+                applied.lines_removed_delta,
+                applied.session_total,
+                applied.session_lines_added.max(0) as u64,
+                applied.session_lines_removed.max(0) as u64,
+                applied.baseline,
+            ),
+            None => {
+                let payload_cost = update.cost;
+                let existing = self.sessions.get(session_id);
+                let prior = existing.map(|s| {
+                    s.baseline.unwrap_or(Baseline {
+                        raw_cost: s.cost,
+                        raw_lines_added: i64::try_from(s.lines_added).unwrap_or(i64::MAX),
+                        raw_lines_removed: i64::try_from(s.lines_removed).unwrap_or(i64::MAX),
+                        start_ms: None,
+                    })
+                });
+                let outcome = accounting::classify(
+                    prior,
+                    Observation {
+                        cost: payload_cost,
+                        lines_added: i64::try_from(update.lines_added).unwrap_or(i64::MAX),
+                        lines_removed: i64::try_from(update.lines_removed).unwrap_or(i64::MAX),
+                        start_ms: update.inferred_start_ms,
+                    },
+                    accounting::RESTART_TOLERANCE_MS,
+                );
+                let (base_cost, base_la, base_lr) = existing
+                    .map(|s| (s.cost, s.lines_added, s.lines_removed))
+                    .unwrap_or((0.0, 0, 0));
+                (
+                    outcome.cost_delta,
+                    outcome.lines_added_delta,
+                    outcome.lines_removed_delta,
+                    base_cost + outcome.cost_delta,
+                    base_la.saturating_add(outcome.lines_added_delta.max(0) as u64),
+                    base_lr.saturating_add(outcome.lines_removed_delta.max(0) as u64),
+                    outcome.next,
+                )
+            }
         };
-
-        // Guard against upstream counter resets (session resumed in a new CLI
-        // process reports a near-zero cumulative cost for the same session id):
-        // never let a backwards-moving counter subtract from the aggregates.
-        let cost_delta = crate::utils::clamp_reset_delta_f64(update.cost, last_cost);
-
-        // Calculate line deltas from previous values
-        // If session was reset, treat as new session (delta = full value)
-        let last_lines_added = if session_was_reset {
-            0
-        } else {
-            self.sessions
-                .get(session_id)
-                .map(|s| s.lines_added)
-                .unwrap_or(0)
-        };
-        let last_lines_removed = if session_was_reset {
-            0
-        } else {
-            self.sessions
-                .get(session_id)
-                .map(|s| s.lines_removed)
-                .unwrap_or(0)
-        };
-        // Same reset guard as for cost (see above).
-        let lines_added_delta =
-            crate::utils::clamp_reset_delta_i64(update.lines_added as i64, last_lines_added as i64);
-        let lines_removed_delta = crate::utils::clamp_reset_delta_i64(
-            update.lines_removed as i64,
-            last_lines_removed as i64,
-        );
 
         // Query active_time_seconds and last_activity from SQLite for JSON backup persistence
         let (active_time_seconds, last_activity) = if let Ok(db_path) = Self::get_sqlite_path() {
@@ -149,10 +172,13 @@ impl StatsData {
         // Always update session metadata (even with zero/negative deltas)
         // This ensures cost corrections and metadata refreshes are persisted
         // IMPORTANT: Also populate active_time_seconds and last_activity for JSON backup
+        // Session cost/lines are the cumulative accounted values, matching sessions.cost
+        // (D-05, D-06); the raw payload lives in the baseline.
         if let Some(session) = self.sessions.get_mut(session_id) {
-            session.cost = update.cost;
-            session.lines_added = update.lines_added;
-            session.lines_removed = update.lines_removed;
+            session.cost = session_cost;
+            session.lines_added = session_la;
+            session.lines_removed = session_lr;
+            session.baseline = Some(baseline);
             session.last_updated = now.clone();
             session.active_time_seconds = active_time_seconds;
             session.last_activity = last_activity.clone();
@@ -161,14 +187,14 @@ impl StatsData {
                 session_id.to_string(),
                 SessionStats {
                     last_updated: now.clone(),
-                    cost: update.cost,
-                    lines_added: update.lines_added,
-                    lines_removed: update.lines_removed,
+                    cost: session_cost,
+                    lines_added: session_la,
+                    lines_removed: session_lr,
                     start_time: Some(now.clone()), // Track when session started
                     max_tokens_observed: None,     // Will be updated by adaptive learning
                     active_time_seconds,           // Populated from SQLite
                     last_activity,                 // Populated from SQLite
-                    baseline: None,
+                    baseline: Some(baseline),
                 },
             );
             self.all_time.sessions += 1;
