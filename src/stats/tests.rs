@@ -1135,3 +1135,123 @@ fn test_update_stats_data_migrates_legacy_json_when_db_missing() {
     env::remove_var("XDG_CONFIG_HOME");
     crate::config::reset_config();
 }
+
+/// Isolated XDG env for the in-memory accounting parity tests; restores the previous
+/// values (not just removes them) so `make test`'s TEST_ENV isolation survives.
+struct ParityEnv {
+    _temp: TempDir,
+    prev_data: Option<String>,
+    prev_config: Option<String>,
+}
+
+impl ParityEnv {
+    fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let prev_data = env::var("XDG_DATA_HOME").ok();
+        let prev_config = env::var("XDG_CONFIG_HOME").ok();
+        env::set_var("XDG_DATA_HOME", temp.path().join("data"));
+        env::set_var("XDG_CONFIG_HOME", temp.path().join("config"));
+        crate::config::reset_config();
+        ParityEnv {
+            _temp: temp,
+            prev_data,
+            prev_config,
+        }
+    }
+}
+
+impl Drop for ParityEnv {
+    fn drop(&mut self) {
+        match &self.prev_data {
+            Some(v) => env::set_var("XDG_DATA_HOME", v),
+            None => env::remove_var("XDG_DATA_HOME"),
+        }
+        match &self.prev_config {
+            Some(v) => env::set_var("XDG_CONFIG_HOME", v),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+        crate::config::reset_config();
+    }
+}
+
+const PARITY_START_MS: i64 = 1_700_000_000_000;
+const PARITY_HOUR_MS: i64 = 3_600_000;
+
+fn parity_update(cost: f64, start_ms: i64) -> crate::database::SessionUpdate {
+    crate::database::SessionUpdate {
+        cost,
+        lines_added: 0,
+        lines_removed: 0,
+        inferred_start_ms: Some(start_ms),
+        ..Default::default()
+    }
+}
+
+/// ACCT-01/ACCT-02, D-10: the in-memory daily/monthly/all-time totals and the in-memory
+/// session cost equal what the DB committed, through a correction and a restart.
+#[test]
+#[serial]
+fn in_memory_matches_db() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+    let h = PARITY_HOUR_MS;
+    let sid = "parity-session";
+    let today = crate::common::current_date();
+
+    let mut stats = StatsData::default();
+    for (cost, start) in [(10.0, s), (9.8, s), (10.3, s), (0.5, s + h), (1.0, s + h)] {
+        let (daily, _monthly) = stats.update_session(sid, parity_update(cost, start));
+        let db_path = StatsData::get_sqlite_path().unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let db_daily: f64 = conn
+            .query_row(
+                "SELECT total_cost FROM daily_stats WHERE date = ?1",
+                [&today],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            (daily - db_daily).abs() < 1e-9,
+            "after {cost}: in-memory daily {daily} != daily_stats {db_daily}"
+        );
+    }
+
+    let month = crate::common::current_month();
+    let daily = stats.daily.get(&today).unwrap().total_cost;
+    let monthly = stats.monthly.get(&month).unwrap().total_cost;
+    assert!((daily - 11.3).abs() < 1e-9, "daily {daily}");
+    assert!((monthly - 11.3).abs() < 1e-9, "monthly {monthly}");
+    assert!((stats.all_time.total_cost - 11.3).abs() < 1e-9);
+    assert!((stats.sessions[sid].cost - 11.3).abs() < 1e-9);
+}
+
+/// D-10: with the DB unavailable the in-memory path runs the same classifier against its
+/// own baseline (correction contributes nothing, restart counts the new process).
+#[test]
+#[serial]
+fn in_memory_fallback_applies_same_policy_when_db_unavailable() {
+    let _env = ParityEnv::new();
+    // A directory where the DB file should be makes SqliteDatabase::new fail.
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    fs::create_dir_all(&db_path).unwrap();
+    assert!(db_path.is_dir());
+
+    let s = PARITY_START_MS;
+    let h = PARITY_HOUR_MS;
+    let sid = "fallback-session";
+
+    let mut stats = StatsData::default();
+    let mut daily = 0.0;
+    for cost in [10.0, 9.8, 10.3] {
+        daily = stats.update_session(sid, parity_update(cost, s)).0;
+    }
+    assert!(
+        (daily - 10.3).abs() < 1e-9,
+        "daily after correction {daily}"
+    );
+
+    let daily = stats.update_session(sid, parity_update(0.5, s + h)).0;
+    assert!((daily - 10.8).abs() < 1e-9, "daily after restart {daily}");
+    assert!((stats.sessions[sid].cost - 10.8).abs() < 1e-9);
+    assert!((stats.all_time.total_cost - 10.8).abs() < 1e-9);
+}
