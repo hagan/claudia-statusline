@@ -1094,6 +1094,118 @@ mod tests {
         assert_eq!(recovered_sums(r), (50, 10));
     }
 
+    // ---- Synthetic multi-block fixture (D-13). Expected values are hand-computed in
+    // tests/fixtures/transcripts/multiblock-synthetic.provenance.md ----
+
+    const FIXTURE_MULTIBLOCK: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/transcripts/multiblock-synthetic.jsonl"
+    ));
+    const FIXTURE_SUM_OUTPUT: u64 = 860;
+    const FIXTURE_SUM_CACHE_CREATION: u64 = 5450;
+    const FIXTURE_LAST_INPUT: u32 = 8;
+    const FIXTURE_LAST_CACHE_READ: u32 = 12500;
+    const FIXTURE_REQUESTS: usize = 10;
+
+    fn write_fixture(text: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multiblock-synthetic.jsonl");
+        std::fs::write(&path, text).unwrap();
+        let p = path.to_str().unwrap().to_string();
+        (dir, p)
+    }
+
+    #[test]
+    fn fixture_multiblock_breakdown_counts_each_request_once() {
+        let entries = collect_request_usage(FIXTURE_MULTIBLOCK.lines());
+        assert_eq!(entries.len(), FIXTURE_REQUESTS);
+
+        let (_d, p) = write_fixture(FIXTURE_MULTIBLOCK);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens as u64, FIXTURE_SUM_OUTPUT);
+        assert_eq!(b.cache_creation_tokens as u64, FIXTURE_SUM_CACHE_CREATION);
+        assert_eq!(b.input_tokens, FIXTURE_LAST_INPUT);
+        assert_eq!(b.cache_read_tokens, FIXTURE_LAST_CACHE_READ);
+    }
+
+    #[test]
+    fn fixture_multiblock_rolling_window_counts_each_request_once() {
+        // Re-base the fixture's timestamps so its latest line is 10 s ago, keeping
+        // the relative offsets, then read it through a 30-day window.
+        let values: Vec<serde_json::Value> = FIXTURE_MULTIBLOCK
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let latest = values
+            .iter()
+            .filter_map(|v| v.get("timestamp")?.as_str())
+            .filter_map(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .max()
+            .unwrap();
+        let shift = (chrono::Utc::now() - chrono::Duration::seconds(10))
+            - latest.with_timezone(&chrono::Utc);
+        let rebased: Vec<String> = values
+            .into_iter()
+            .map(|mut v| {
+                let new_ts = v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map(|t| {
+                        (t.with_timezone(&chrono::Utc) + shift)
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    });
+                if let Some(ts) = new_ts {
+                    v["timestamp"] = serde_json::Value::String(ts);
+                }
+                v.to_string()
+            })
+            .collect();
+
+        let (_d, p) = write_fixture(&(rebased.join("\n") + "\n"));
+        let r = get_rolling_window_rates(&p, 30 * 24 * 3600).unwrap();
+        assert_eq!(
+            recovered_sums(r),
+            (FIXTURE_SUM_OUTPUT, FIXTURE_SUM_CACHE_CREATION)
+        );
+    }
+
+    #[test]
+    fn fixture_has_no_private_data() {
+        // The repo is public: the synthetic fixture must carry no paths, user
+        // names, hosts or emails, and only invented identifiers.
+        for needle in [
+            "/Users/",
+            "/home/",
+            "/root/",
+            "C:\\\\",
+            "@",
+            "\"cwd\"",
+            "gitBranch",
+            "hostname",
+            ".local",
+        ] {
+            assert!(
+                !FIXTURE_MULTIBLOCK.contains(needle),
+                "fixture contains {needle:?}"
+            );
+        }
+        for line in FIXTURE_MULTIBLOCK.lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(rid) = v.get("requestId") {
+                assert!(rid.as_str().unwrap().starts_with("req_synth_"), "{rid}");
+            }
+            if let Some(sid) = v.get("sessionId") {
+                assert_eq!(sid, "synthetic-session-0001");
+            }
+        }
+        assert!(FIXTURE_MULTIBLOCK
+            .lines()
+            .next()
+            .unwrap()
+            .contains("SYNTHETIC FIXTURE"));
+    }
+
     #[test]
     fn test_validate_transcript_file_security() {
         // Test null byte injection
