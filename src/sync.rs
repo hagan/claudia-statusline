@@ -337,6 +337,8 @@ impl SyncManager {
                     max_tokens_observed: None, // Sync doesn't track token counts
                     active_time_seconds: active_time_seconds.map(|t| t as u64),
                     last_activity,
+                    // Preserving the migration 008 baseline columns on pull is Phase 16 (INTEG-05).
+                    baseline: None,
                 },
             );
         }

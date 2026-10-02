@@ -24,7 +24,7 @@ pub use analytics::SessionWithModel;
 pub use maintenance::perform_maintenance;
 #[allow(unused_imports)]
 pub use maintenance::MaintenanceResult;
-pub use schema::{SessionUpdate, SCHEMA};
+pub use schema::{AppliedUpdate, SessionUpdate, SCHEMA};
 
 // Track which database files have been migrated to avoid redundant migration checks
 static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();

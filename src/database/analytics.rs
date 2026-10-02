@@ -71,7 +71,8 @@ impl SqliteDatabase {
         let conn = self.get_connection()?;
         let mut stmt = conn.prepare(
             "SELECT session_id, start_time, last_updated, cost, lines_added, lines_removed,
-                    max_tokens_observed, active_time_seconds, last_activity
+                    max_tokens_observed, active_time_seconds, last_activity,
+                    raw_cost, raw_lines_added, raw_lines_removed, process_start_ms
              FROM sessions",
         )?;
 
@@ -85,6 +86,11 @@ impl SqliteDatabase {
             let max_tokens_observed: Option<i64> = row.get(6).ok();
             let active_time_seconds: Option<i64> = row.get(7).ok();
             let last_activity: Option<String> = row.get(8).ok();
+            // Migration 008 baseline; NULL raw_* read as the accounted value (COALESCE).
+            let raw_cost: Option<f64> = row.get(9).ok();
+            let raw_lines_added: Option<i64> = row.get(10).ok();
+            let raw_lines_removed: Option<i64> = row.get(11).ok();
+            let start_ms: Option<i64> = row.get(12).ok();
 
             Ok((
                 session_id.clone(),
@@ -97,6 +103,12 @@ impl SqliteDatabase {
                     max_tokens_observed: max_tokens_observed.map(|t| t as u32),
                     active_time_seconds: active_time_seconds.map(|t| t as u64),
                     last_activity,
+                    baseline: Some(crate::stats::accounting::Baseline {
+                        raw_cost: raw_cost.unwrap_or(cost),
+                        raw_lines_added: raw_lines_added.unwrap_or(lines_added),
+                        raw_lines_removed: raw_lines_removed.unwrap_or(lines_removed),
+                        start_ms,
+                    }),
                 },
             ))
         })?;

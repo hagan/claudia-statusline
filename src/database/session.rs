@@ -1,4 +1,4 @@
-use super::schema::SessionUpdate;
+use super::schema::{AppliedUpdate, SessionUpdate};
 use super::SqliteDatabase;
 use crate::common::{current_date, current_month, current_timestamp};
 use crate::retry::{retry_if_retryable, RetryConfig};
@@ -53,7 +53,23 @@ fn prior_from_row(row: &rusqlite::Row<'_>) -> Result<PriorAccounting> {
 
 impl SqliteDatabase {
     /// Update or insert a session with atomic transaction
+    ///
+    /// Returns `(day_total, session_total)`. See [`Self::update_session_applied`] for the
+    /// full set of committed deltas.
+    // public library API; the binary now calls update_session_applied
+    #[allow(dead_code)]
     pub fn update_session(&self, session_id: &str, update: SessionUpdate) -> Result<(f64, f64)> {
+        let applied = self.update_session_applied(session_id, update)?;
+        Ok((applied.day_total, applied.session_total))
+    }
+
+    /// Update or insert a session with atomic transaction, returning exactly what the
+    /// transaction committed (totals after the write, applied deltas and the new baseline).
+    pub fn update_session_applied(
+        &self,
+        session_id: &str,
+        update: SessionUpdate,
+    ) -> Result<AppliedUpdate> {
         let retry_config = RetryConfig::for_db_ops();
 
         // Wrap the entire transaction in retry logic.
@@ -235,7 +251,7 @@ impl SqliteDatabase {
         tx: &Transaction,
         session_id: &str,
         update: SessionUpdate,
-    ) -> Result<(f64, f64)> {
+    ) -> Result<AppliedUpdate> {
         let now = current_timestamp();
         let today = current_date();
         let month = current_month();
@@ -636,15 +652,25 @@ impl SqliteDatabase {
             )
             .unwrap_or(0.0);
 
-        let session_total: f64 = tx
+        let (session_total, session_lines_added, session_lines_removed): (f64, i64, i64) = tx
             .query_row(
-                "SELECT cost FROM sessions WHERE session_id = ?1",
+                "SELECT cost, lines_added, lines_removed FROM sessions WHERE session_id = ?1",
                 params![session_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
-            .unwrap_or(0.0);
+            .unwrap_or((0.0, 0, 0));
 
-        Ok((day_total, session_total))
+        Ok(AppliedUpdate {
+            day_total,
+            session_total,
+            session_lines_added,
+            session_lines_removed,
+            cost_delta,
+            lines_added_delta,
+            lines_removed_delta,
+            kind: outcome.kind,
+            baseline: outcome.next,
+        })
     }
 
     /// Get session duration in seconds

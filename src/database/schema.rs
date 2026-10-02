@@ -169,6 +169,31 @@ CREATE INDEX IF NOT EXISTS idx_archive_session ON session_archive(session_id);
 CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at));
 "#;
 
+/// What one update_session transaction committed: totals read back after the write plus the
+/// deltas and baseline it applied; the in-memory stats path adds these deltas instead of
+/// re-deriving them (D-10).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AppliedUpdate {
+    /// `daily_stats.total_cost` for today after the write.
+    pub day_total: f64,
+    /// Cumulative accounted session cost (`sessions.cost`) after the write.
+    pub session_total: f64,
+    /// Cumulative accounted session lines added after the write.
+    pub session_lines_added: i64,
+    /// Cumulative accounted session lines removed after the write.
+    pub session_lines_removed: i64,
+    /// Cost delta added to the daily/monthly aggregates.
+    pub cost_delta: f64,
+    /// Lines-added delta added to the daily/monthly aggregates.
+    pub lines_added_delta: i64,
+    /// Lines-removed delta added to the daily/monthly aggregates.
+    pub lines_removed_delta: i64,
+    /// How the classifier interpreted this observation.
+    pub kind: crate::stats::accounting::Kind,
+    /// Raw baseline stored for the next comparison.
+    pub baseline: crate::stats::accounting::Baseline,
+}
+
 /// Parameters for updating a session in the database
 #[derive(Clone, Default)]
 pub struct SessionUpdate {

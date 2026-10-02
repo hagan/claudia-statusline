@@ -23,6 +23,10 @@ pub struct SessionStats {
     pub active_time_seconds: Option<u64>, // Accumulated active time (for burn_rate.mode = "active_time")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_activity: Option<String>, // ISO 8601 timestamp of last activity (for active_time tracking)
+    /// Raw payload high-water + inferred start (migration 008); None = unknown, fall back to
+    /// the accounted values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<crate::stats::accounting::Baseline>,
 }
 
 impl StatsData {
@@ -164,6 +168,7 @@ impl StatsData {
                     max_tokens_observed: None,     // Will be updated by adaptive learning
                     active_time_seconds,           // Populated from SQLite
                     last_activity,                 // Populated from SQLite
+                    baseline: None,
                 },
             );
             self.all_time.sessions += 1;

@@ -747,6 +747,7 @@ fn test_public_api_surface() {
         max_tokens_observed: None,
         active_time_seconds: None,
         last_activity: None,
+        baseline: None,
     };
     let _ = DailyStats {
         total_cost: 0.0,
