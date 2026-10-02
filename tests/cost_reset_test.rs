@@ -12,7 +12,9 @@
 //!   (high-water fallback, D-02), and a counter dropped. Contributes 0; the
 //!   baseline stays at the high-water mark so later growth counts only above it.
 //! - **Stale** (D-17): the inferred start is earlier than the stored one (an
-//!   update from an older process timeline). Contributes 0, baseline unchanged.
+//!   update from an older process timeline) *and* a counter dropped.
+//!   Contributes 0, baseline unchanged. An earlier start without a drop is
+//!   Growth and moves the stored start back (CR-02).
 //! - One classification covers cost and both line counters (D-03).
 //! - The stored session total is cumulative across processes and always equals
 //!   what the session contributed to the daily/monthly aggregates (D-05, D-06).
@@ -235,6 +237,32 @@ fn stale_out_of_order_update_contributes_nothing() {
     let (day, sess) = step(&db, "stale", 12.5, 0, 0, Some(S));
     assert_close(day, 12.5, "growth above the high-water counts (day)");
     assert_close(sess, 12.5, "growth above the high-water counts (session)");
+}
+
+#[test]
+#[serial]
+fn one_late_start_sample_does_not_freeze_accounting() {
+    // CR-02: one sample whose inferred start is ~70 s late (machine sleep before
+    // the render, wall-clock step) must not turn every later update into Stale.
+    let _guard = init_burn_rate("wall_clock", None);
+    let (_tmp, db, path) = new_db();
+    let conn = open(&path);
+
+    step(&db, "late", 1.0, 0, 0, Some(S));
+    step(&db, "late", 2.0, 0, 0, Some(S + 70_000));
+    step(&db, "late", 3.0, 0, 0, Some(S));
+    step(&db, "late", 5.0, 0, 0, Some(S));
+    let (day, sess) = step(&db, "late", 9.0, 0, 0, Some(S));
+    assert_close(day, 9.0, "CR-02: no spend lost after a late sample (day)");
+    assert_close(sess, 9.0, "CR-02: session total");
+    assert_close(daily_cost(&conn, &today()), 9.0, "CR-02: daily_stats");
+    let (raw_cost, _, _, start) = session_raw_baseline(&conn, "late");
+    assert_close(raw_cost.unwrap(), 9.0, "CR-02: raw baseline follows growth");
+    assert_eq!(
+        start,
+        Some(S),
+        "CR-02: stored start moves back to the earlier value"
+    );
 }
 
 #[test]

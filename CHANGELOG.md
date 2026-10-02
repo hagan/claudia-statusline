@@ -118,8 +118,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inferred process start (now minus `cost.total_duration_ms`, 60 s
   tolerance), and its new spend counts in full; a drop in only the line
   counters is a correction;
-  a correction or a stale update contributes nothing and never reduces an
-  earlier day. A correction followed by growth is no longer counted twice:
+  a correction or a stale update (an earlier inferred start together with a
+  counter drop) contributes nothing and never reduces an earlier day. An
+  earlier start without a drop counts as growth, so one late reading cannot
+  freeze a session's totals. A correction followed by growth is no longer counted twice:
   10.0 → 9.8 → 10.3 now totals 10.30, not 10.50. Lines added/removed follow
   the same rule, and the `auto_reset` and in-memory paths use the same policy.
   Without `total_duration_ms` a drop is treated as a correction, so a restart

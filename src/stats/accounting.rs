@@ -18,15 +18,18 @@
 //!
 //! Rules:
 //! - no prior baseline                     → **New**: full observed values count
-//! - both starts known, `Δstart < −tol`    → **Stale** (update from an older
-//!   process timeline): contributes 0, baseline unchanged (D-17)
+//! - both starts known, `Δstart < −tol` and any counter dropped → **Stale**
+//!   (update from an older process timeline): contributes 0, baseline unchanged
+//!   apart from sanitizing (D-17). An earlier start **without** a drop is Growth
+//!   and the stored start moves back to the earlier value (D-17 revision, CR-02),
+//!   so one late sample cannot freeze a session's accounting.
 //! - both starts known, `Δstart > tol` and **cost** dropped
 //!   → **Restart** (new process, D-01): full observed values count, baseline =
 //!   observation; all three counters reset together (D-03). A drop in only a
 //!   line counter is never a Restart (D-17 revision, CR-01).
-//! - otherwise (`|Δstart| ≤ tol`, a later start without a cost drop, or either
-//!   start unknown) → high-water per counter: contributes `max(obs − base, 0)`, next
-//!   baseline is `max(base, obs)` (D-01, D-02). **Correction** if any counter
+//! - otherwise (`|Δstart| ≤ tol`, a later start without a cost drop, an earlier
+//!   start without any drop, or either start unknown) → high-water per counter:
+//!   contributes `max(obs − base, 0)`, next baseline is `max(base, obs)` (D-01, D-02). **Correction** if any counter
 //!   dropped, else **Growth**. A known start is stored on every accepted update;
 //!   an unknown start never overwrites a known one (D-17).
 //!
@@ -146,13 +149,18 @@ pub fn classify(prior: Option<Baseline>, obs: Observation, tol_ms: i64) -> Outco
 
     if let (Some(obs_start), Some(prior_start)) = (o.start_ms, p.start_ms) {
         let d = obs_start.saturating_sub(prior_start);
-        if d < -tol {
+        // An earlier start is Stale only when a counter also dropped (CR-02). Without a
+        // drop it is ordinary growth whose start is more accurate than the stored one
+        // (one late sample, e.g. after a sleep before the render, must not freeze the
+        // session); the high-water branch below then stores min(obs, prior) start.
+        if d < -tol && drop {
             return Outcome {
                 kind: Kind::Stale,
                 cost_delta: 0.0,
                 lines_added_delta: 0,
                 lines_removed_delta: 0,
-                next: prior,
+                // Sanitized prior state (IN-01): never persist a negative/non-finite value.
+                next: p,
             };
         }
         if d > tol && cost_drop {
@@ -175,6 +183,8 @@ pub fn classify(prior: Option<Baseline>, obs: Observation, tol_ms: i64) -> Outco
             raw_cost: p.raw_cost.max(o.cost),
             raw_lines_added: p.raw_lines_added.max(o.lines_added),
             raw_lines_removed: p.raw_lines_removed.max(o.lines_removed),
+            // Latest known start on a forward move (resume), the earlier one on a backward
+            // move (CR-02: min of the two); an unknown start keeps the known one.
             start_ms: o.start_ms.or(p.start_ms),
         },
     }
@@ -315,6 +325,42 @@ mod tests {
         assert_eq!(out.lines_added_delta, 0);
         assert_eq!(out.lines_removed_delta, 0);
         assert_eq!(out.next, prior);
+    }
+
+    #[test]
+    fn classify_earlier_start_without_drop_is_growth_and_moves_start_back() {
+        // CR-02: an earlier start is Stale only when a counter also dropped.
+        let prior = base(2.0, 10, 1, Some(S + 70_000));
+        let out = run(Some(prior), obs(3.0, 12, 1, Some(S)));
+        assert_eq!(out.kind, Kind::Growth);
+        assert!((out.cost_delta - 1.0).abs() < EPS);
+        assert_eq!(out.lines_added_delta, 2);
+        assert_eq!(out.next, base(3.0, 12, 1, Some(S)));
+    }
+
+    #[test]
+    fn classify_one_late_sample_does_not_freeze_accounting() {
+        // CR-02 repro: 1, 2 (inferred start ~70 s late), 3, 5, 9 in one process
+        // must account 9.00, not stay frozen at 2.00.
+        let mut prior = None;
+        let mut total = 0.0;
+        for (cost, start) in [(1.0, S), (2.0, S + 70_000), (3.0, S), (5.0, S), (9.0, S)] {
+            let out = run(prior, obs(cost, 0, 0, Some(start)));
+            assert_ne!(out.kind, Kind::Stale, "cost {cost} must not be Stale");
+            total += out.cost_delta;
+            prior = Some(out.next);
+        }
+        assert!((total - 9.0).abs() < EPS, "total was {total}");
+        assert_eq!(prior.unwrap().start_ms, Some(S));
+    }
+
+    #[test]
+    fn classify_stale_returns_sanitized_baseline() {
+        // IN-01: Stale keeps the prior state but never persists insane values.
+        let prior = base(f64::NAN, -3, 50, Some(S));
+        let out = run(Some(prior), obs(0.0, 0, 10, Some(S - 3_600_000)));
+        assert_eq!(out.kind, Kind::Stale);
+        assert_eq!(out.next, base(0.0, 0, 50, Some(S)));
     }
 
     #[test]
