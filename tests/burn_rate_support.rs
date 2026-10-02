@@ -255,7 +255,7 @@ pub fn archive_count(conn: &Connection, id: &str) -> i64 {
 pub fn archived_latest_cost_lines(conn: &Connection, id: &str) -> (f64, i64, i64) {
     conn.query_row(
         "SELECT cost, lines_added, lines_removed FROM session_archive \
-         WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
+         WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
         rusqlite::params![id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )
@@ -373,7 +373,7 @@ pub fn session_raw_baseline(conn: &Connection, id: &str) -> RawBaseline {
 pub fn archived_latest_baseline(conn: &Connection, id: &str) -> RawBaseline {
     conn.query_row(
         "SELECT raw_cost, raw_lines_added, raw_lines_removed, process_start_ms \
-         FROM session_archive WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
+         FROM session_archive WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
         rusqlite::params![id],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )

@@ -382,6 +382,9 @@ impl SqliteDatabase {
         } else if config.burn_rate.mode == "auto_reset" {
             // Session was just archived and deleted (or never existed): classify against
             // the latest archived raw baseline and carry its accounted totals (D-09, D-18).
+            // "Latest" is the AUTOINCREMENT id (insertion order), not `archived_at`: that is
+            // a local-offset RFC 3339 string, which does not sort chronologically across a
+            // DST fall-back or on equal-second ties (WR-03).
             //
             // TOKEN BEHAVIOR IN AUTO_RESET MODE:
             // session_archive doesn't track tokens, so token deltas use full values after reset.
@@ -400,7 +403,7 @@ impl SqliteDatabase {
                                 COALESCE(raw_cost, cost), COALESCE(raw_lines_added, lines_added),
                                 COALESCE(raw_lines_removed, lines_removed), process_start_ms
                          FROM session_archive
-                         WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
+                         WHERE session_id = ?1 ORDER BY id DESC LIMIT 1",
                     params![session_id],
                     prior_from_row,
                 )

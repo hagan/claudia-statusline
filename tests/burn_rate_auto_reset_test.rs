@@ -781,3 +781,42 @@ fn auto_reset_archived_baseline_correction_contributes_nothing() {
         "growth above the archived high-water counts, got {day_total}"
     );
 }
+
+/// WR-03: the latest archive is chosen by insertion order (`id`), not by the
+/// local-offset `archived_at` string. Across the DST fall-back hour the later
+/// archive (01:30-06:00 = 07:30Z) sorts *before* the earlier one
+/// (01:45-05:00 = 06:45Z) as text; picking the earlier one would add
+/// `obs - 10` instead of `obs - 20` and carry the wrong accounted total.
+#[test]
+#[serial]
+fn auto_reset_picks_latest_archive_by_insertion_order() {
+    let _guard = init_burn_rate("auto_reset", Some(60));
+    let (_temp, db, db_path) = new_db();
+    let conn = open(&db_path);
+    for (archived_at, value) in [
+        ("2026-11-01T01:45:00-05:00", 10.0),
+        ("2026-11-01T01:30:00-06:00", 20.0),
+    ] {
+        conn.execute(
+            "INSERT INTO session_archive (session_id, start_time, end_time, archived_at,
+                 cost, lines_added, lines_removed, raw_cost, raw_lines_added, raw_lines_removed)
+             VALUES ('dst', ?1, ?1, ?1, ?2, 0, 0, ?2, 0, 0)",
+            rusqlite::params![archived_at, value],
+        )
+        .unwrap();
+    }
+
+    let (day_total, session_total) = db
+        .update_session("dst", update(21.0, 0, 0).into_inner())
+        .unwrap();
+    assert!(
+        (day_total - 1.0).abs() < 1e-9,
+        "only growth above the latest archive (raw 20) counts, got {day_total}"
+    );
+    assert!(
+        (session_total - 21.0).abs() < 1e-9,
+        "latest archive's accounted total carries over, got {session_total}"
+    );
+    let (raw_cost, _, _, _) = archived_latest_baseline(&conn, "dst");
+    assert_eq!(raw_cost, Some(20.0), "helper also orders by insertion");
+}
