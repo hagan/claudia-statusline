@@ -623,6 +623,11 @@ session's cumulative total instead of starting again from zero.
   session's cost slightly below the last value the statusline saw, that resume
   looks like a restart and its cost is counted again. Run with
   `RUST_LOG=debug` and look for `accounting: restart detected` to spot it.
+- **Out-of-range payload values.** For the daily, monthly and session
+  totals, one process's cost is capped at $10,000,000 and each line counter at
+  4,294,967,296 (2^32). Larger values in a payload are treated as these
+  limits, so a corrupt payload cannot overflow the database. The status line
+  still shows the payload's own cost.
 
 ### Token totals
 

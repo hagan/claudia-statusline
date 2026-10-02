@@ -52,6 +52,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// above the jitter and well below any realistic restart gap.
 pub const RESTART_TOLERANCE_MS: i64 = 60_000;
 
+/// Upper bound for one observed (untrusted) line counter (CR-03).
+///
+/// The payload's `total_lines_*` are `u64`, but every aggregate is a signed 64-bit
+/// SQLite INTEGER that silently turns into REAL on overflow (after which every
+/// `load_from_sqlite` fails). 2^32 (about 4.3 billion lines in one CLI process) is
+/// far above any real session, and each update contributes at most this much, so
+/// a day/month/session sum needs at least 2^31 maximal updates (a restart on every
+/// render for about 20 years at the 300 ms debounce) before it could reach `i64::MAX`.
+pub const MAX_LINES: i64 = 1 << 32;
+
+/// Upper bound for one observed (untrusted) cost in USD (CR-03).
+///
+/// $10M in one CLI process is far above any real session; with this bound the f64
+/// totals stay finite (no `inf` in `daily_stats`) for any realistic number of updates.
+pub const MAX_COST_USD: f64 = 1.0e7;
+
 /// Stored per-session baseline: high-water raw payload counters plus the last
 /// known inferred process start (epoch ms).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -93,17 +109,21 @@ pub struct Outcome {
 
 fn sanitize_cost(c: f64) -> f64 {
     if c.is_finite() && c > 0.0 {
-        c
+        c.min(MAX_COST_USD)
     } else {
         0.0
     }
 }
 
+fn sanitize_lines(n: i64) -> i64 {
+    n.clamp(0, MAX_LINES)
+}
+
 fn sanitize_baseline(b: Baseline) -> Baseline {
     Baseline {
         raw_cost: sanitize_cost(b.raw_cost),
-        raw_lines_added: b.raw_lines_added.max(0),
-        raw_lines_removed: b.raw_lines_removed.max(0),
+        raw_lines_added: sanitize_lines(b.raw_lines_added),
+        raw_lines_removed: sanitize_lines(b.raw_lines_removed),
         start_ms: b.start_ms,
     }
 }
@@ -125,12 +145,13 @@ fn full(kind: Kind, o: Observation) -> Outcome {
 
 /// Classify one observation against the stored baseline (see module docs).
 ///
-/// Total: never panics, never errors; every returned delta is finite and >= 0.
+/// Total: never panics, never errors; every returned delta is finite, >= 0 and
+/// bounded by [`MAX_COST_USD`] / [`MAX_LINES`], and so is the returned baseline.
 pub fn classify(prior: Option<Baseline>, obs: Observation, tol_ms: i64) -> Outcome {
     let o = Observation {
         cost: sanitize_cost(obs.cost),
-        lines_added: obs.lines_added.max(0),
-        lines_removed: obs.lines_removed.max(0),
+        lines_added: sanitize_lines(obs.lines_added),
+        lines_removed: sanitize_lines(obs.lines_removed),
         start_ms: obs.start_ms,
     };
     let tol = tol_ms.max(0);
@@ -442,6 +463,34 @@ mod tests {
                 assert_sane(&out);
             }
         }
+    }
+
+    #[test]
+    fn classify_clamps_huge_untrusted_values() {
+        // CR-03: u64::MAX lines arrive as i64::MAX, cost as a finite 1e308.
+        let out = run(None, obs(1e308, i64::MAX, i64::MAX, Some(S)));
+        assert_eq!(out.lines_added_delta, MAX_LINES);
+        assert_eq!(out.lines_removed_delta, MAX_LINES);
+        assert_eq!(out.cost_delta, MAX_COST_USD);
+        assert_eq!(out.next, base(MAX_COST_USD, MAX_LINES, MAX_LINES, Some(S)));
+
+        // A stored baseline beyond the bounds is clamped too.
+        let prior = base(1e308, i64::MAX, i64::MAX, Some(S));
+        let out = run(Some(prior), obs(1e308, i64::MAX, i64::MAX, Some(S)));
+        assert_eq!(out.kind, Kind::Growth);
+        assert_eq!(out.cost_delta, 0.0);
+        assert_eq!(out.next, base(MAX_COST_USD, MAX_LINES, MAX_LINES, Some(S)));
+    }
+
+    #[test]
+    fn bounds_keep_sqlite_sums_in_range() {
+        // CR-03: pin the bounds. Summing 2^31 - 1 maximal deltas (a restart on
+        // every render for ~20 years at 300 ms) still fits in SQLite's signed
+        // 64-bit INTEGER, so `total + delta` never overflows to REAL.
+        assert_eq!(MAX_LINES, 1 << 32);
+        assert!(MAX_LINES.checked_mul((1 << 31) - 1).is_some());
+        assert_eq!(MAX_COST_USD, 1.0e7);
+        assert!((MAX_COST_USD * 2f64.powi(31)).is_finite());
     }
 
     #[test]

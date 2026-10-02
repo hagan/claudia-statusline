@@ -245,8 +245,14 @@ impl StatsData {
         }
         daily.total_cost += cost_delta;
         // Use deltas instead of absolute totals to avoid double-counting
-        daily.lines_added = (daily.lines_added as i64 + lines_added_delta).max(0) as u64;
-        daily.lines_removed = (daily.lines_removed as i64 + lines_removed_delta).max(0) as u64;
+        // Saturating: the classifier bounds each delta, but a stored aggregate is
+        // untrusted too and the render path must never panic (CR-03).
+        daily.lines_added = daily
+            .lines_added
+            .saturating_add(lines_added_delta.max(0) as u64);
+        daily.lines_removed = daily
+            .lines_removed
+            .saturating_add(lines_removed_delta.max(0) as u64);
 
         // Update monthly stats
         let monthly =
@@ -269,8 +275,12 @@ impl StatsData {
 
         monthly.total_cost += cost_delta;
         // Use deltas instead of absolute totals to avoid double-counting
-        monthly.lines_added = (monthly.lines_added as i64 + lines_added_delta).max(0) as u64;
-        monthly.lines_removed = (monthly.lines_removed as i64 + lines_removed_delta).max(0) as u64;
+        monthly.lines_added = monthly
+            .lines_added
+            .saturating_add(lines_added_delta.max(0) as u64);
+        monthly.lines_removed = monthly
+            .lines_removed
+            .saturating_add(lines_removed_delta.max(0) as u64);
 
         // Update all-time stats
         self.all_time.total_cost += cost_delta;

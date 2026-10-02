@@ -125,7 +125,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   10.0 → 9.8 → 10.3 now totals 10.30, not 10.50. Lines added/removed follow
   the same rule, and the `auto_reset` and in-memory paths use the same policy.
   Without `total_duration_ms` a drop is treated as a correction, so a restart
-  can be undercounted but is never overcounted. The previous "below half =
+  can be undercounted but is never overcounted. Out-of-range payload values
+  (more than 2^32 lines or $10,000,000 per process) are capped before they are
+  counted, so they can no longer overflow the database's integer columns and
+  break later loads, or panic a debug build. The previous "below half =
   restart" heuristic is gone. See "How spend and token totals are counted" in
   `docs/USAGE.md`.
 

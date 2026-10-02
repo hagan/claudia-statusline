@@ -1255,3 +1255,75 @@ fn in_memory_fallback_applies_same_policy_when_db_unavailable() {
     assert!((stats.sessions[sid].cost - 10.8).abs() < 1e-9);
     assert!((stats.all_time.total_cost - 10.8).abs() < 1e-9);
 }
+
+/// CR-03: untrusted counters near `u64::MAX` and a finite but absurd cost must not panic
+/// the render path, must keep every SQLite counter column an INTEGER (no overflow to
+/// REAL), keep cost totals finite, and leave `load_from_sqlite` working.
+#[test]
+#[serial]
+fn huge_untrusted_counters_do_not_corrupt_db() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+    let h = PARITY_HOUR_MS;
+    let huge = |cost: f64, start_ms: i64| crate::database::SessionUpdate {
+        cost,
+        lines_added: u64::MAX,
+        lines_removed: u64::MAX,
+        inferred_start_ms: Some(start_ms),
+        ..Default::default()
+    };
+
+    let mut stats = StatsData::default();
+    // A normal session first, so the aggregates already hold a value to overflow.
+    stats.update_session(
+        "normal",
+        crate::database::SessionUpdate {
+            cost: 1.0,
+            lines_added: 10,
+            lines_removed: 5,
+            inferred_start_ms: Some(s),
+            ..Default::default()
+        },
+    );
+    let (daily, monthly) = stats.update_session("huge", huge(1e308, s));
+    assert!(
+        daily.is_finite() && monthly.is_finite(),
+        "{daily} {monthly}"
+    );
+    // A restart (cost drop, later start) re-adds the full huge values.
+    let (daily, _) = stats.update_session("huge", huge(1e307, s + h));
+    assert!(daily.is_finite(), "{daily}");
+
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    for (table, cols) in [
+        ("daily_stats", "total_lines_added, total_lines_removed"),
+        ("monthly_stats", "total_lines_added, total_lines_removed"),
+        ("sessions", "lines_added, lines_removed"),
+    ] {
+        let (a, b): (String, String) = conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM {table} LIMIT 1",
+                    cols.split(", ")
+                        .map(|c| format!("typeof(MAX({c}))"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((a.as_str(), b.as_str()), ("integer", "integer"), "{table}");
+    }
+    let max_cost: f64 = conn
+        .query_row("SELECT MAX(total_cost) FROM daily_stats", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(max_cost.is_finite(), "daily total_cost {max_cost}");
+
+    let loaded = StatsData::load_from_sqlite().expect("load_from_sqlite must still work");
+    let today = crate::common::current_date();
+    assert!(loaded.daily[&today].total_cost.is_finite());
+}
