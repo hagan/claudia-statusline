@@ -1327,3 +1327,31 @@ fn huge_untrusted_counters_do_not_corrupt_db() {
     let today = crate::common::current_date();
     assert!(loaded.daily[&today].total_cost.is_finite());
 }
+
+/// WR-01: the in-memory daily/monthly cost totals are the totals the DB transaction
+/// committed, so spend another writer (another Claude Code session) committed after this
+/// process loaded its snapshot is not left out of the rendered daily total.
+#[test]
+#[serial]
+fn in_memory_totals_include_concurrent_writer() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+
+    // Snapshot taken before the other writer commits (empty DB).
+    let mut stats = StatsData::default();
+
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let other = crate::database::SqliteDatabase::new(&db_path).unwrap();
+    other
+        .update_session("other-writer", parity_update(5.0, s))
+        .unwrap();
+
+    let (daily, monthly) = stats.update_session("this-writer", parity_update(1.0, s));
+    assert!((daily - 6.0).abs() < 1e-9, "daily {daily}");
+    assert!((monthly - 6.0).abs() < 1e-9, "monthly {monthly}");
+    let today = crate::common::current_date();
+    let month = crate::common::current_month();
+    assert!((stats.daily[&today].total_cost - 6.0).abs() < 1e-9);
+    assert!((stats.monthly[&month].total_cost - 6.0).abs() < 1e-9);
+}

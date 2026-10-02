@@ -45,9 +45,11 @@ impl StatsData {
         // SqliteDatabase::new() will create the database if it doesn't exist
         // Note: max_tokens_observed will be updated separately from main.rs/lib.rs
         //
-        // The DB transaction runs the accounting classifier and reports exactly which deltas it
-        // committed (AppliedUpdate); the in-memory aggregates add those same deltas so the
-        // rendered daily total always matches daily_stats (D-10).
+        // The DB transaction runs the accounting classifier and reports exactly what it
+        // committed (AppliedUpdate). The in-memory daily/monthly cost totals are then set to
+        // the totals read back inside that transaction, so they include spend that other
+        // writers (other sessions) committed after this process loaded its snapshot (D-10).
+        // Lines and the all-time total add the committed deltas to the snapshot.
         let config = crate::config::get_config();
         let mut applied: Option<AppliedUpdate> = None;
 
@@ -243,7 +245,10 @@ impl StatsData {
         if is_new_session {
             daily.sessions.push(session_id.to_string());
         }
-        daily.total_cost += cost_delta;
+        daily.total_cost = match applied {
+            Some(a) => a.day_total,
+            None => daily.total_cost + cost_delta,
+        };
         // Use deltas instead of absolute totals to avoid double-counting
         // Saturating: the classifier bounds each delta, but a stored aggregate is
         // untrusted too and the render path must never panic (CR-03).
@@ -273,7 +278,10 @@ impl StatsData {
             monthly.sessions += 1;
         }
 
-        monthly.total_cost += cost_delta;
+        monthly.total_cost = match applied {
+            Some(a) => a.month_total,
+            None => monthly.total_cost + cost_delta,
+        };
         // Use deltas instead of absolute totals to avoid double-counting
         monthly.lines_added = monthly
             .lines_added

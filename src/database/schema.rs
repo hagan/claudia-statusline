@@ -170,12 +170,14 @@ CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at)
 "#;
 
 /// What one update_session transaction committed: totals read back after the write plus the
-/// deltas and baseline it applied; the in-memory stats path adds these deltas instead of
-/// re-deriving them (D-10).
+/// deltas and baseline it applied. The in-memory stats path adopts these totals and deltas
+/// instead of re-deriving them (D-10).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AppliedUpdate {
     /// `daily_stats.total_cost` for today after the write.
     pub day_total: f64,
+    /// `monthly_stats.total_cost` for this month after the write.
+    pub month_total: f64,
     /// Cumulative accounted session cost (`sessions.cost`) after the write.
     pub session_total: f64,
     /// Cumulative accounted session lines added after the write.

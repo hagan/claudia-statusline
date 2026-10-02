@@ -652,6 +652,14 @@ impl SqliteDatabase {
             )
             .unwrap_or(0.0);
 
+        let month_total: f64 = tx
+            .query_row(
+                "SELECT total_cost FROM monthly_stats WHERE month = ?1",
+                params![&month],
+                |row| row.get(0),
+            )
+            .unwrap_or(0.0);
+
         let (session_total, session_lines_added, session_lines_removed): (f64, i64, i64) = tx
             .query_row(
                 "SELECT cost, lines_added, lines_removed FROM sessions WHERE session_id = ?1",
@@ -662,6 +670,7 @@ impl SqliteDatabase {
 
         Ok(AppliedUpdate {
             day_total,
+            month_total,
             session_total,
             session_lines_added,
             session_lines_removed,
