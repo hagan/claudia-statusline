@@ -283,3 +283,99 @@ pub fn duration_secs_from_start(start_time_rfc3339: &str) -> u64 {
         .as_secs();
     now_unix.saturating_sub(start_unix)
 }
+
+// --- accounting (issue #77) helpers --------------------------------------
+
+/// Local `YYYY-MM-DD` for today (matches `common::current_date`).
+#[allow(dead_code)]
+pub fn today() -> String {
+    chrono::Local::now().format("%Y-%m-%d").to_string()
+}
+
+/// Local `YYYY-MM-DD` for yesterday.
+#[allow(dead_code)]
+pub fn yesterday() -> String {
+    (chrono::Local::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string()
+}
+
+/// Simulate a day boundary without clock injection: relabel today's daily_stats row as
+/// yesterday and move the session's `last_updated` to yesterday noon (local time).
+#[allow(dead_code)]
+pub fn relabel_today_as_yesterday(conn: &Connection, id: &str) {
+    conn.execute(
+        "UPDATE daily_stats SET date = ?1 WHERE date = ?2",
+        rusqlite::params![yesterday(), today()],
+    )
+    .unwrap();
+    let noon = (chrono::Local::now() - chrono::Duration::days(1))
+        .date_naive()
+        .and_hms_opt(12, 0, 0)
+        .unwrap()
+        .and_local_timezone(chrono::Local)
+        .single()
+        .unwrap()
+        .to_rfc3339();
+    conn.execute(
+        "UPDATE sessions SET last_updated = ?1 WHERE session_id = ?2",
+        rusqlite::params![noon, id],
+    )
+    .unwrap();
+}
+
+/// `daily_stats.total_cost` for a date (0.0 when the row is absent).
+#[allow(dead_code)]
+pub fn daily_cost(conn: &Connection, date: &str) -> f64 {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT total_cost FROM daily_stats WHERE date = ?1",
+        rusqlite::params![date],
+        |row| row.get(0),
+    )
+    .optional()
+    .unwrap()
+    .unwrap_or(0.0)
+}
+
+/// (total_lines_added, total_lines_removed) for a date ((0, 0) when absent).
+#[allow(dead_code)]
+pub fn daily_lines(conn: &Connection, date: &str) -> (i64, i64) {
+    use rusqlite::OptionalExtension;
+    conn.query_row(
+        "SELECT total_lines_added, total_lines_removed FROM daily_stats WHERE date = ?1",
+        rusqlite::params![date],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .unwrap()
+    .unwrap_or((0, 0))
+}
+
+/// Raw baseline type: (raw_cost, raw_lines_added, raw_lines_removed, process_start_ms).
+#[allow(dead_code)]
+pub type RawBaseline = (Option<f64>, Option<i64>, Option<i64>, Option<i64>);
+
+/// Raw baseline columns (migration 008) of the live session row.
+#[allow(dead_code)]
+pub fn session_raw_baseline(conn: &Connection, id: &str) -> RawBaseline {
+    conn.query_row(
+        "SELECT raw_cost, raw_lines_added, raw_lines_removed, process_start_ms \
+         FROM sessions WHERE session_id = ?1",
+        rusqlite::params![id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .unwrap()
+}
+
+/// Raw baseline columns of the most-recently-archived row for a session id.
+#[allow(dead_code)]
+pub fn archived_latest_baseline(conn: &Connection, id: &str) -> RawBaseline {
+    conn.query_row(
+        "SELECT raw_cost, raw_lines_added, raw_lines_removed, process_start_ms \
+         FROM session_archive WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
+        rusqlite::params![id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )
+    .unwrap()
+}

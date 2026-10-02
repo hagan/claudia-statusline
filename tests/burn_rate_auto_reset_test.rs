@@ -65,17 +65,21 @@ fn test_auto_reset_basic_behavior() {
             .device("test-device"),
     );
 
-    // Verify session was RESET (not accumulated) - should have new values only
+    // D-05/D-09/D-18: no duration -> high-water against the archived raw baseline (5.0 < 10.0
+    // contributes 0); the new row carries the archived accounted totals (never 15.0 / 120 / 7).
     let (cost_2, lines_added_2, lines_removed_2) = session_cost_lines(&conn, "test-auto-reset");
 
-    assert_eq!(cost_2, 5.0, "After reset, cost should be 5.0 (not 15.0)");
     assert_eq!(
-        lines_added_2, 20,
-        "After reset, lines_added should be 20 (not 120)"
+        cost_2, 10.0,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted cost"
     );
     assert_eq!(
-        lines_removed_2, 2,
-        "After reset, lines_removed should be 2 (not 7)"
+        lines_added_2, 100,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted lines_added"
+    );
+    assert_eq!(
+        lines_removed_2, 5,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted lines_removed"
     );
 
     // Verify session was archived to session_archive table
@@ -496,7 +500,8 @@ fn test_auto_reset_after_weekend() {
             .device("work-laptop"),
     );
 
-    // Verify session was RESET (not accumulated)
+    // D-05/D-09/D-18: the new row carries Friday's accounted totals; Monday's lower raw
+    // counters (no duration) contribute 0 under high-water (never 35.0 / 600).
     let (monday_cost, monday_lines, _) = session_cost_lines(&conn, "weekend-test");
 
     eprintln!(
@@ -505,12 +510,12 @@ fn test_auto_reset_after_weekend() {
     );
 
     assert_eq!(
-        monday_cost, 10.0,
-        "After 60-hour gap, cost should be reset to 10.0 (not 35.0)"
+        monday_cost, 25.0,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted cost (not 35.0)"
     );
     assert_eq!(
-        monday_lines, 100,
-        "After 60-hour gap, lines should be reset to 100 (not 600)"
+        monday_lines, 500,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted lines (not 600)"
     );
 
     // Verify Friday session was archived
@@ -591,16 +596,16 @@ fn test_auto_reset_after_vacation() {
             .device("laptop"),
     );
 
-    // Verify session was reset
+    // D-05/D-09/D-18: archived, and the new row carries the archived accounted totals
     let (after_cost, after_lines, _) = session_cost_lines(&conn, "vacation-test");
 
     assert_eq!(
-        after_cost, 5.0,
-        "After 7-day gap, should be reset (not $105)"
+        after_cost, 100.0,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted cost (not $105)"
     );
     assert_eq!(
-        after_lines, 50,
-        "After 7-day gap, should be reset (not 2050)"
+        after_lines, 2000,
+        "D-05/D-09/D-18: no duration -> high-water; new row carries archived accounted lines (not 2050)"
     );
 
     eprintln!("✓ 7-day vacation gap handled correctly");
@@ -685,12 +690,94 @@ fn test_auto_reset_multiple_gaps() {
         "Both period 1 and 2 should be archived"
     );
 
-    // Current session should have only period 3 values
+    // Growth 10 -> 20 -> 30 is carried cumulatively across the archived periods (D-18)
     let (current_cost, current_lines, _) = session_cost_lines(&conn, "multi-gap");
 
-    assert_eq!(current_cost, 30.0, "Current should be period 3 only");
-    assert_eq!(current_lines, 300, "Current should be period 3 only");
+    assert_eq!(current_cost, 30.0, "cumulative across periods (D-18)");
+    assert_eq!(current_lines, 300, "cumulative across periods (D-18)");
 
     eprintln!("✓ Multiple long gaps handled correctly");
-    eprintln!("✓ 2 archives created, current session has fresh values");
+    eprintln!("✓ 2 archives created, current session is cumulative across periods (D-18)");
+}
+
+/// D-09/D-18: in auto_reset mode a restart (later inferred start + drop) is classified
+/// against the archived raw baseline; the new process's spend counts in full and is added
+/// to the carried accounted total.
+#[test]
+#[serial]
+fn auto_reset_archived_baseline_restart_counts_new_process() {
+    const S: i64 = 1_800_000_000_000;
+    const HOUR: i64 = 3_600_000;
+    let _guard = init_burn_rate("auto_reset", Some(0));
+    let (_temp, db, db_path) = new_db();
+    let conn = open(&db_path);
+
+    apply(&db, "arch-restart", update(10.0, 100, 10).start_ms(S));
+    backdate_last_activity_secs(&conn, "arch-restart", 5);
+    let (day_total, session_total) = db
+        .update_session(
+            "arch-restart",
+            update(2.0, 20, 2).start_ms(S + HOUR).into_inner(),
+        )
+        .unwrap();
+
+    let (raw_cost, _, _, start) = archived_latest_baseline(&conn, "arch-restart");
+    assert!(
+        (raw_cost.unwrap() - 10.0).abs() < 1e-9,
+        "D-09: archive row carries the raw baseline"
+    );
+    assert_eq!(
+        start,
+        Some(S),
+        "D-09: archive row carries the inferred start"
+    );
+    assert!(
+        (session_total - 12.0).abs() < 1e-9,
+        "D-18: archived accounted 10.0 + restart spend 2.0, got {session_total}"
+    );
+    assert!(
+        (session_cost(&conn, "arch-restart") - 12.0).abs() < 1e-9,
+        "D-18: sessions.cost = archived accounted + delta"
+    );
+    assert!(
+        (day_total - 12.0).abs() < 1e-9,
+        "D-01: restart spend counts in full, got {day_total}"
+    );
+}
+
+/// D-09/D-17: a same-process correction across an auto_reset archive contributes nothing,
+/// and later growth counts only above the archived high-water.
+#[test]
+#[serial]
+fn auto_reset_archived_baseline_correction_contributes_nothing() {
+    const S: i64 = 1_800_000_000_000;
+    let _guard = init_burn_rate("auto_reset", Some(0));
+    let (_temp, db, db_path) = new_db();
+    let conn = open(&db_path);
+
+    apply(&db, "arch-corr", update(10.0, 0, 0).start_ms(S));
+    backdate_last_activity_secs(&conn, "arch-corr", 5);
+    let (day_total, session_total) = db
+        .update_session("arch-corr", update(9.5, 0, 0).start_ms(S).into_inner())
+        .unwrap();
+    assert!(
+        (session_total - 10.0).abs() < 1e-9,
+        "D-18: correction keeps the carried accounted total, got {session_total}"
+    );
+    assert!(
+        (day_total - 10.0).abs() < 1e-9,
+        "D-01: correction contributes nothing, got {day_total}"
+    );
+
+    let (day_total, session_total) = db
+        .update_session("arch-corr", update(10.4, 0, 0).start_ms(S).into_inner())
+        .unwrap();
+    assert!(
+        (session_total - 10.4).abs() < 1e-9,
+        "growth above the archived high-water counts, got {session_total}"
+    );
+    assert!(
+        (day_total - 10.4).abs() < 1e-9,
+        "growth above the archived high-water counts, got {day_total}"
+    );
 }
