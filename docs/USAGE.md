@@ -571,6 +571,71 @@ is the whole point.
 The `STATE.md` frontmatter keys statusline consumes are documented in
 [CONFIGURATION.md](CONFIGURATION.md) under the STATE.md frontmatter contract.
 
+## How spend and token totals are counted
+
+Claude Code reports cumulative counters per CLI process: `cost.total_cost_usd`,
+`cost.total_lines_added` and `cost.total_lines_removed` only ever describe the
+process that is running now. The statusline turns them into daily and monthly
+totals by adding only the *increase* since the last update it saw for that
+session.
+
+A session id can outlive a process (a restart or `--resume`), and a counter can
+also go down within one process (a correction, or an update that arrives out of
+order). To tell these apart the statusline infers when the process started:
+*now minus `cost.total_duration_ms`*. Two starts that differ by 60 seconds or
+less are the same process.
+
+| What the statusline sees | How it is counted |
+|---|---|
+| A counter grows | The increase counts. |
+| A counter drops, same process (start within 60 seconds) | A correction or an out-of-order update: it counts 0, and later growth counts only above the previous peak. Example: 10.00, then 9.80, then 10.30 counts 10.30 in total, not 10.50. |
+| A counter drops and the process started more than 60 seconds later | A restart: the new value counts in full. Earlier spend, including yesterday's total, is never reduced. |
+| The update's process started more than 60 seconds *earlier* than the stored one | A stale update from an older process: it is ignored. |
+| No `total_duration_ms`, or a value of 0 | The start is unknown, so the update is treated as the same process (peak rule above). |
+
+Cost, lines added and lines removed are classified together: one update is
+either a restart for all three counters or for none of them. A later start
+without any drop is ordinary growth, because current Claude Code versions carry
+the session's totals across a resume.
+
+### Session totals are cumulative
+
+The session total stored in the database (`statusline sessions`, database
+views, cloud sync) is what that session contributed to your daily and monthly
+totals across all of its processes. Example: $10.00 in a first process, then a
+restart and $0.50 in a second one, is stored as $10.50. The status line itself
+still shows Claude Code's current `total_cost_usd`, so after that restart it
+reads `$0.50`.
+
+With `burn_rate.mode = "auto_reset"`, a new work period continues the
+session's cumulative total instead of starting again from zero.
+
+### Known limits
+
+- **Restart without `total_duration_ms`.** If a restart is reported without a
+  duration, it cannot be told apart from a correction. The new process's spend
+  is undercounted until it passes the previous peak. Totals are never
+  overcounted in this case.
+- **Resume restored slightly low.** If Claude Code ever restores a resumed
+  session's cost slightly below the last value the statusline saw, that resume
+  looks like a restart and its cost is counted again. Run with
+  `RUST_LOG=debug` and look for `accounting: restart detected` to spot it.
+
+### Token totals
+
+Claude Code writes one transcript line per content block of a response, and
+each line repeats the same `usage`. Each API request is now counted once: the
+last line with usage for a `requestId` wins. Lines without a `requestId`
+(older transcripts) still count individually.
+
+Output and cache-creation token totals recorded before v3.4.0 (session,
+daily/monthly, token rates and cache ROI) may be inflated, typically about 2x.
+Cost and context % were never affected. Existing history is not recomputed:
+the transcript is only read in part and daily/monthly sums cannot be split back
+into sessions. A session that was running during the upgrade keeps its larger
+stored token totals, and its daily token growth pauses until the new
+de-duplicated sum passes the old stored value.
+
 ## JSON Input Format
 
 The statusline accepts JSON via stdin with this format:
@@ -601,6 +666,7 @@ The statusline accepts JSON via stdin with this format:
 - `cost.total_cost_usd` - Session cost in USD (optional)
 - `cost.total_lines_added` - Lines added count (optional)
 - `cost.total_lines_removed` - Lines removed count (optional)
+- `cost.total_duration_ms` - Running time reported by Claude Code, in ms (optional; used to tell restarts from corrections, see [How spend and token totals are counted](#how-spend-and-token-totals-are-counted))
 
 ## Understanding the Output
 
@@ -803,7 +869,9 @@ grep -c "usage" /path/to/transcript.jsonl
 
 ### Cost tracking not showing
 
-**Cause**: Claude Code not sending cost data, or using old binary
+**Cause**: Claude Code not sending cost data, or using old binary. If the
+daily total looks lower or higher than the session cost on the status line, see
+[How spend and token totals are counted](#how-spend-and-token-totals-are-counted).
 
 **Fix**:
 ```bash

@@ -58,6 +58,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `show <#>` always resolves against the full ordering and renumbering per
   filter would make a copied number open the wrong session.
 
+### Changed
+
+- **Session cost is cumulative.** `sessions.cost`, `sessions.lines_added` and
+  `sessions.lines_removed` (and the in-memory session totals) now hold the
+  total a session contributed across restarts and `auto_reset` periods, which
+  always equals its share of the daily/monthly totals. Existing rows already
+  match this. Cloud sync push sends this value. The rendered status line still
+  shows Claude Code's own `total_cost_usd`, so the default output is unchanged.
+- **Historical token totals.** Output and cache-creation token totals (session,
+  daily/monthly, token rates, cache ROI) recorded before v3.4.0 may be
+  inflated, typically about 2×. Cost and context % were never affected.
+  Nothing is recomputed: the transcript is only read in part and aggregate
+  sums cannot be split back out. A session running during the upgrade keeps
+  its larger stored totals and its daily token growth pauses until the
+  de-duplicated sum catches up.
+- **Database schema v8.** Migration 008 adds nullable `raw_cost`,
+  `raw_lines_added`, `raw_lines_removed` and `process_start_ms` columns to
+  `sessions` and `session_archive` (the last raw payload counters and inferred
+  process start). No existing data is rewritten; a NULL means "no baseline
+  yet". Downgrading to an older binary after running v3.4.0 is not supported
+  for accounting accuracy: older binaries ignore the new columns and treat
+  `cost` as the raw payload value again. A session pulled from cloud sync
+  starts without a baseline, which can undercount but never overcounts.
+- **Library API (breaking for crate users).** `utils::clamp_reset_delta_f64`
+  and `utils::clamp_reset_delta_i64` were removed. `SessionUpdate` gains
+  `inferred_start_ms` and now derives `Default`; `SessionStats` gains
+  `baseline`. New: the `stats::accounting` module (`classify`,
+  `RESTART_TOLERANCE_MS`, `Baseline`, `Observation`, `Outcome`) and
+  `SqliteDatabase::update_session_applied`, which returns an `AppliedUpdate`
+  describing exactly what was committed.
+
 ### Fixed
 
 - `statusline <subcommand> | head` panicked with "failed printing to stdout:
@@ -71,12 +102,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of aborting the process. No process-wide signal disposition is
   changed, so a failed write to a helper such as `curl` is still reported as
   an error; the statusline render path is unaffected.
-- Transcript token sums counted every line of a response. Claude Code writes
-  one transcript line per content block (thinking, text, tool_use, ...), each
-  repeating the same `usage`, which inflated `total_output_tokens` and
+- Transcript token sums counted every line of a response (#78). Claude Code
+  writes one transcript line per content block (thinking, text, tool_use, ...),
+  each repeating the same `usage`, which inflated `total_output_tokens` and
   `total_cache_creation_tokens` about 2.2× (996 lines for 454 requests in one
-  measured session). Sums are now de-duplicated per `requestId`; lines without
-  an id (older transcripts) still count individually.
+  measured session). Both the session/daily token breakdown and the
+  rolling-window token rates now count each API request once: the last line
+  with usage per `requestId` wins, so a first line without usage no longer
+  hides the request, and repeats that are not next to each other are still
+  counted once. Lines without a `requestId` (older transcripts) still count
+  individually.
+- Daily and monthly spend could lose or double-count money when a session's
+  counters dropped (a restart, a correction or an out-of-order update) (#77).
+  A restart is now recognised by the inferred process start (now minus
+  `cost.total_duration_ms`, 60 s tolerance) and its new spend counts in full;
+  a correction or a stale update contributes nothing and never reduces an
+  earlier day. A correction followed by growth is no longer counted twice:
+  10.0 → 9.8 → 10.3 now totals 10.30, not 10.50. Lines added/removed follow
+  the same rule, and the `auto_reset` and in-memory paths use the same policy.
+  Without `total_duration_ms` a drop is treated as a correction, so a restart
+  can be undercounted but is never overcounted. The previous "below half =
+  restart" heuristic is gone. See "How spend and token totals are counted" in
+  `docs/USAGE.md`.
 
 ## [3.3.0] - 2026-09-28
 
