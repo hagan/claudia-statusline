@@ -88,6 +88,7 @@ pub fn update(cost: f64, lines_added: u64, lines_removed: u64) -> Update {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     }
 }
@@ -104,6 +105,11 @@ impl Update {
     }
     pub fn device(mut self, d: &str) -> Self {
         self.inner.device_id = Some(d.to_string());
+        self
+    }
+    /// Set the inferred process start (epoch ms) for accounting classification.
+    pub fn start_ms(mut self, s: i64) -> Self {
+        self.inner.inferred_start_ms = Some(s);
         self
     }
     pub fn into_inner(self) -> SessionUpdate {

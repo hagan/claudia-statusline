@@ -63,6 +63,7 @@ fn test_token_rate_calculation() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -186,6 +187,7 @@ fn test_token_rate_short_duration() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();

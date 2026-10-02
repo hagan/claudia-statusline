@@ -34,6 +34,10 @@ pub fn update_stats_and_daily_total(
 ) -> (f64, Option<crate::agents::AgentsSummary>) {
     use crate::{common, config, stats, utils};
 
+    // Sample "now" before any transcript read or DB open: lock waits (busy_timeout 10 s plus
+    // retries) would otherwise inflate the inferred process start (RESEARCH Pitfall 3).
+    let now_ms = crate::stats::accounting::unix_now_ms();
+
     let model_name = input.model.as_ref().and_then(|m| m.detection_name());
     let transcript_path = input.transcript.as_deref();
     let session_id = input.session_id.as_deref();
@@ -72,6 +76,12 @@ pub fn update_stats_and_daily_total(
                             // at this SessionUpdate construction site. v3.0.0 cleanup per CONTEXT.md D-13.
                             active_time_seconds: None,
                             last_activity: None,
+                            // Inferred process start for restart/correction classification
+                            // (stats::accounting, D-01/D-17); None when duration is unknown.
+                            inferred_start_ms: crate::stats::accounting::inferred_start_ms(
+                                cost.total_duration_ms,
+                                now_ms,
+                            ),
                         },
                     )
                 });

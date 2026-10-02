@@ -170,7 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at)
 "#;
 
 /// Parameters for updating a session in the database
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SessionUpdate {
     pub cost: f64,
     pub lines_added: u64,
@@ -182,6 +182,10 @@ pub struct SessionUpdate {
     pub max_tokens_observed: Option<u32>,
     pub active_time_seconds: Option<u64>,
     pub last_activity: Option<String>,
+    /// Inferred process start (`now - cost.total_duration_ms`, ms since epoch) sampled at
+    /// payload-read time; None = unknown start, which makes the accounting classifier fall
+    /// back to high-water (D-01, D-02, D-17).
+    pub inferred_start_ms: Option<i64>,
 }
 
 impl SessionUpdate {

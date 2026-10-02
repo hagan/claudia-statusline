@@ -49,6 +49,7 @@ fn test_stats_data_update_session() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -98,6 +99,7 @@ fn test_stats_save_and_load() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -169,6 +171,7 @@ fn test_session_start_time_tracking() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -191,6 +194,7 @@ fn test_session_start_time_tracking() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -254,6 +258,7 @@ fn test_concurrent_update_safety() {
                         max_tokens_observed: None,
                         active_time_seconds: None,
                         last_activity: None,
+                        inferred_start_ms: None,
                     },
                 )
             });
@@ -344,6 +349,7 @@ fn test_get_session_duration() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
     });

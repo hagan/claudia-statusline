@@ -35,6 +35,7 @@ fn test_public_api_surface() {
         max_tokens_observed: None,
         active_time_seconds: None,
         last_activity: None,
+        inferred_start_ms: None,
     };
 
     // MaintenanceResult -- must be constructable with all fields
@@ -94,6 +95,7 @@ fn test_session_update() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -115,6 +117,7 @@ fn test_session_update() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -155,6 +158,7 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -176,6 +180,7 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -198,6 +203,7 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -222,6 +228,7 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -247,6 +254,7 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -292,6 +300,7 @@ fn test_concurrent_updates() {
                         max_tokens_observed: None,
                         active_time_seconds: None,
                         last_activity: None,
+                        inferred_start_ms: None,
                     },
                 )
             })
@@ -331,6 +340,7 @@ fn test_aggregates() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -347,6 +357,7 @@ fn test_aggregates() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -363,6 +374,7 @@ fn test_aggregates() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -397,6 +409,7 @@ fn test_session_start_time_preserved_on_update() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -428,6 +441,7 @@ fn test_session_start_time_preserved_on_update() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -641,6 +655,7 @@ fn test_automatic_database_upgrade() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -697,6 +712,7 @@ fn test_all_time_stats_loading() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -713,6 +729,7 @@ fn test_all_time_stats_loading() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -729,6 +746,7 @@ fn test_all_time_stats_loading() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -793,6 +811,7 @@ fn test_database_wal_shm_permissions() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         };
         db.update_session("test-session", update).unwrap();
     } // Drop db to ensure WAL/SHM files are created
@@ -893,6 +912,7 @@ fn test_active_time_tracking_storage() {
             max_tokens_observed: None,
             active_time_seconds: Some(0), // Explicitly set to 0
             last_activity: Some(now.clone()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -969,6 +989,7 @@ fn test_active_time_accumulation() {
             max_tokens_observed: None,
             active_time_seconds: Some(0),
             last_activity: Some(first_activity.clone()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -990,6 +1011,7 @@ fn test_active_time_accumulation() {
             max_tokens_observed: None,
             active_time_seconds: Some(300), // 5 minutes accumulated
             last_activity: Some(second_activity),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -1049,6 +1071,7 @@ fn test_active_time_ignores_long_gaps() {
             max_tokens_observed: None,
             active_time_seconds: Some(0),
             last_activity: Some("2025-01-01T10:00:00Z".to_string()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -1069,6 +1092,7 @@ fn test_active_time_ignores_long_gaps() {
             max_tokens_observed: None,
             active_time_seconds: Some(0), // Still 0 - gap was ignored
             last_activity: Some("2025-01-01T12:00:00Z".to_string()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -1139,6 +1163,7 @@ fn cost_only_update(cost: f64) -> SessionUpdate {
         max_tokens_observed: None,
         active_time_seconds: None,
         last_activity: None,
+        inferred_start_ms: None,
     }
 }
 
@@ -1317,6 +1342,7 @@ fn test_reset_session_max_tokens() {
         max_tokens_observed: Some(150000), // 150K tokens
         active_time_seconds: None,
         last_activity: None,
+        inferred_start_ms: None,
     };
     db.update_session(session_id, update).unwrap();
 
