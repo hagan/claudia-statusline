@@ -5,7 +5,8 @@
 //! shared classifier (`stats::accounting`) decides what each update contributes:
 //!
 //! - **Restart** (D-01): the inferred process start (`now - total_duration_ms`)
-//!   moved later by more than the 60 s tolerance (D-19) *and* a counter dropped.
+//!   moved later by more than the 60 s tolerance (D-19) *and* cost dropped (a
+//!   dip in only a line counter is a Correction, CR-01).
 //!   The new counter values are fresh spend and count in full.
 //! - **Correction** (D-01): same start (within tolerance), or an unknown start
 //!   (high-water fallback, D-02), and a counter dropped. Contributes 0; the
@@ -265,6 +266,35 @@ fn resume_with_carried_over_cost_counts_only_growth() {
         "same-process correction after resume contributes nothing (not 20.7)",
     );
     assert_close(sess, 10.4, "same-process correction after resume (session)");
+}
+
+#[test]
+#[serial]
+fn resume_with_line_counter_dip_counts_only_cost_growth() {
+    // CR-01: a resume (start ~2 h later) whose cost grew but whose lines_removed
+    // dipped must not be a Restart: only a cost drop can trigger one.
+    let _guard = init_burn_rate("wall_clock", None);
+    let (_tmp, db, path) = new_db();
+    let conn = open(&path);
+
+    step(&db, "resume-dip", 10.0, 100, 10, Some(S));
+    let (day, sess) = step(&db, "resume-dip", 10.4, 100, 9, Some(S + 2 * HOUR));
+    assert_close(
+        day,
+        10.4,
+        "CR-01: line dip on resume is not a restart (day)",
+    );
+    assert_close(sess, 10.4, "CR-01: line dip on resume (session)");
+    assert_close(
+        session_cost(&conn, "resume-dip"),
+        10.4,
+        "CR-01: sessions.cost",
+    );
+    assert_eq!(
+        daily_lines(&conn, &today()),
+        (100, 10),
+        "CR-01: line dip contributes nothing, high-water kept"
+    );
 }
 
 #[test]

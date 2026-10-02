@@ -10,8 +10,8 @@
 //! (`cost.total_duration_ms`). Claude Code's `total_duration_ms` accumulates
 //! across resumes and excludes time while the session is not running, so the
 //! inferred start also moves later after a plain pause. That is why a Restart
-//! is only ever decided on a counter **drop**: later start plus growth is just
-//! a resume with carried-over totals.
+//! is only ever decided on a **cost drop**: later start plus growth is just a
+//! resume with carried-over totals.
 //!
 //! Let `Δstart = obs.start − prior.start` when both are known, `tol` = the
 //! restart tolerance ([`RESTART_TOLERANCE_MS`], D-19).
@@ -20,11 +20,12 @@
 //! - no prior baseline                     → **New**: full observed values count
 //! - both starts known, `Δstart < −tol`    → **Stale** (update from an older
 //!   process timeline): contributes 0, baseline unchanged (D-17)
-//! - both starts known, `Δstart > tol` and any counter dropped
+//! - both starts known, `Δstart > tol` and **cost** dropped
 //!   → **Restart** (new process, D-01): full observed values count, baseline =
-//!   observation; all three counters reset together (D-03)
-//! - otherwise (`|Δstart| ≤ tol`, a later start with no drop, or either start
-//!   unknown) → high-water per counter: contributes `max(obs − base, 0)`, next
+//!   observation; all three counters reset together (D-03). A drop in only a
+//!   line counter is never a Restart (D-17 revision, CR-01).
+//! - otherwise (`|Δstart| ≤ tol`, a later start without a cost drop, or either
+//!   start unknown) → high-water per counter: contributes `max(obs − base, 0)`, next
 //!   baseline is `max(base, obs)` (D-01, D-02). **Correction** if any counter
 //!   dropped, else **Growth**. A known start is stored on every accepted update;
 //!   an unknown start never overwrites a known one (D-17).
@@ -136,9 +137,12 @@ pub fn classify(prior: Option<Baseline>, obs: Observation, tol_ms: i64) -> Outco
     };
     let p = sanitize_baseline(prior);
 
-    let drop = o.cost < p.raw_cost
-        || o.lines_added < p.raw_lines_added
-        || o.lines_removed < p.raw_lines_removed;
+    // Only the money counter can signal a Restart (CR-01): Claude Code carries totals
+    // across a resume, so a dip in a line counter alone is not evidence of a new
+    // process. Any drop still makes a same-process update a Correction.
+    let cost_drop = o.cost < p.raw_cost;
+    let drop =
+        cost_drop || o.lines_added < p.raw_lines_added || o.lines_removed < p.raw_lines_removed;
 
     if let (Some(obs_start), Some(prior_start)) = (o.start_ms, p.start_ms) {
         let d = obs_start.saturating_sub(prior_start);
@@ -151,7 +155,7 @@ pub fn classify(prior: Option<Baseline>, obs: Observation, tol_ms: i64) -> Outco
                 next: prior,
             };
         }
-        if d > tol && drop {
+        if d > tol && cost_drop {
             log::debug!(
                 "accounting: restart detected (old raw cost {:.6}, new raw cost {:.6}, start diff {} ms)",
                 p.raw_cost,
@@ -325,6 +329,20 @@ mod tests {
         let out2 = run(Some(out.next), obs(10.3, 0, 0, Some(resumed + 500)));
         assert_eq!(out2.kind, Kind::Correction);
         assert_eq!(out2.cost_delta, 0.0);
+    }
+
+    #[test]
+    fn classify_resume_with_line_dip_is_correction_not_restart() {
+        // CR-01: cost grew across a resume (start +2 h) while lines_removed dipped.
+        // Only a cost drop can mean a Restart; a line-only drop is a Correction.
+        let prior = base(10.0, 100, 10, Some(S));
+        let resumed = S + 7_200_000;
+        let out = run(Some(prior), obs(10.4, 100, 9, Some(resumed)));
+        assert_eq!(out.kind, Kind::Correction);
+        assert!((out.cost_delta - 0.4).abs() < EPS);
+        assert_eq!(out.lines_added_delta, 0);
+        assert_eq!(out.lines_removed_delta, 0);
+        assert_eq!(out.next, base(10.4, 100, 10, Some(resumed)));
     }
 
     #[test]

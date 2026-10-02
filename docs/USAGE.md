@@ -589,14 +589,16 @@ less are the same process.
 |---|---|
 | A counter grows | The increase counts. |
 | A counter drops, same process (start within 60 seconds) | A correction or an out-of-order update: it counts 0, and later growth counts only above the previous peak. Example: 10.00, then 9.80, then 10.30 counts 10.30 in total, not 10.50. |
-| A counter drops and the process started more than 60 seconds later | A restart: the new value counts in full. Earlier spend, including yesterday's total, is never reduced. |
+| Cost drops and the process started more than 60 seconds later | A restart: the new values count in full. Earlier spend, including yesterday's total, is never reduced. |
+| Only lines added or removed drop and the process started more than 60 seconds later | A correction, not a restart (see the peak rule above). Only a drop in cost can mark a restart. |
 | The update's process started more than 60 seconds *earlier* than the stored one | A stale update from an older process: it is ignored. |
 | No `total_duration_ms`, or a value of 0 | The start is unknown, so the update is treated as the same process (peak rule above). |
 
 Cost, lines added and lines removed are classified together: one update is
-either a restart for all three counters or for none of them. A later start
-without any drop is ordinary growth, because current Claude Code versions carry
-the session's totals across a resume.
+either a restart for all three counters or for none of them. Only a drop in
+cost decides that it is a restart. A later start without a cost drop is
+ordinary growth (or a correction, if a line counter dipped), because current
+Claude Code versions carry the session's totals across a resume.
 
 ### Session totals are cumulative
 

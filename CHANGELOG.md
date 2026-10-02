@@ -114,8 +114,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   individually.
 - Daily and monthly spend could lose or double-count money when a session's
   counters dropped (a restart, a correction or an out-of-order update) (#77).
-  A restart is now recognised by the inferred process start (now minus
-  `cost.total_duration_ms`, 60 s tolerance) and its new spend counts in full;
+  A restart is now recognised by a drop in cost together with a later
+  inferred process start (now minus `cost.total_duration_ms`, 60 s
+  tolerance), and its new spend counts in full; a drop in only the line
+  counters is a correction;
   a correction or a stale update contributes nothing and never reduces an
   earlier day. A correction followed by growth is no longer counted twice:
   10.0 → 9.8 → 10.3 now totals 10.30, not 10.50. Lines added/removed follow
