@@ -77,9 +77,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `raw_lines_added`, `raw_lines_removed` and `process_start_ms` columns to
   `sessions` and `session_archive` (the last raw payload counters and inferred
   process start). No existing data is rewritten; a NULL means "no baseline
-  yet". Downgrading to an older binary after running v3.4.0 is not supported
-  for accounting accuracy: older binaries ignore the new columns and treat
-  `cost` as the raw payload value again. A session pulled from cloud sync
+  yet". **Downgrading is unsafe.** After upgrading, `sessions.cost` holds the
+  session's cumulative accounted spend, not the raw payload value. An older
+  binary, or an application still built against an older version of the
+  library, that writes to the same database ignores the new columns and
+  treats `cost` as the raw payload value. Its updates then double-count spend
+  or subtract it from the daily and monthly totals, and v3.4.0 cannot detect
+  or repair this afterwards. Do not run an older statusline against a
+  database v3.4.0 has used. A session pulled from cloud sync
   starts without a baseline, which can undercount but never overcounts.
 - **Library API (breaking for crate users).** `utils::clamp_reset_delta_f64`
   and `utils::clamp_reset_delta_i64` were removed. `SessionUpdate` gains
