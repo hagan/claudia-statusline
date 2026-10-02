@@ -213,3 +213,134 @@ fn test_token_rate_short_duration() {
     env::remove_var("XDG_CONFIG_HOME");
     env::remove_var("STATUSLINE_TOKEN_RATE_ENABLED");
 }
+
+/// Restores the previous values of the given env vars on drop (does not just remove
+/// them), so a surrounding isolated test environment survives this test.
+struct EnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+impl EnvRestore {
+    fn set(vars: &[(&'static str, std::path::PathBuf)]) -> Self {
+        let saved = vars
+            .iter()
+            .map(|(k, v)| {
+                let prev = env::var_os(k);
+                env::set_var(k, v);
+                (*k, prev)
+            })
+            .collect();
+        EnvRestore(saved)
+    }
+}
+
+impl Drop for EnvRestore {
+    fn drop(&mut self) {
+        for (k, prev) in &self.0 {
+            match prev {
+                Some(v) => env::set_var(k, v),
+                None => env::remove_var(k),
+            }
+        }
+    }
+}
+
+/// #78 historical-data disposition: a session that was live across the upgrade keeps
+/// its (possibly inflated, pre-v3.4.0) stored token totals. Stored token totals are
+/// never rewritten downward (MAX upsert), daily token growth pauses (zero-clamped
+/// delta) until the new de-duplicated sum passes the stored value, and then only the
+/// excess counts. No one-shot rebaseline (D-15, D-16).
+#[test]
+#[serial]
+fn live_session_across_upgrade_keeps_max_tokens() {
+    use statusline::database::{SessionUpdate, SqliteDatabase};
+    use statusline::models::TokenBreakdown;
+
+    let _guard = test_support::init();
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let temp_home = temp_dir.path();
+    // The config is cached process-wide (OnceLock) by the first get_config() call, and
+    // SqliteDatabase reads it. Set the same token-rate/burn-rate vars as
+    // test_token_rate_calculation so the cached config matches whichever test runs
+    // first in this binary.
+    let _env = EnvRestore::set(&[
+        ("XDG_DATA_HOME", temp_home.join(".local/share")),
+        ("XDG_CONFIG_HOME", temp_home.join(".config")),
+        ("STATUSLINE_TOKEN_RATE_ENABLED", "true".into()),
+        ("STATUSLINE_TOKEN_RATE_MODE", "summary".into()),
+        ("STATUSLINE_TOKEN_RATE_CACHE_METRICS", "true".into()),
+        ("STATUSLINE_BURN_RATE_MODE", "wall_clock".into()),
+    ]);
+
+    let data_dir = temp_home.join(".local/share/claudia-statusline");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let db_path = data_dir.join("stats.db");
+    let db = SqliteDatabase::new(&db_path).unwrap();
+
+    let id = "live-across-upgrade";
+    let update = |output_tokens: u32, cache_creation_tokens: u32| SessionUpdate {
+        cost: 1.0,
+        lines_added: 10,
+        lines_removed: 1,
+        model_name: Some("Sonnet".to_string()),
+        workspace_dir: Some("/test".to_string()),
+        device_id: Some("test-device".to_string()),
+        token_breakdown: Some(TokenBreakdown {
+            input_tokens: 100,
+            output_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens,
+        }),
+        max_tokens_observed: None,
+        active_time_seconds: None,
+        last_activity: None,
+        inferred_start_ms: None,
+    };
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let today = statusline::common::current_date();
+    let read = |conn: &rusqlite::Connection| -> (i64, i64, i64, i64) {
+        let (s_out, s_cc): (i64, i64) = conn
+            .query_row(
+                "SELECT total_output_tokens, total_cache_creation_tokens \
+                 FROM sessions WHERE session_id = ?1",
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let (d_out, d_cc): (i64, i64) = conn
+            .query_row(
+                "SELECT total_output_tokens, total_cache_creation_tokens \
+                 FROM daily_stats WHERE date = ?1",
+                [&today],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        (s_out, s_cc, d_out, d_cc)
+    };
+
+    // Pre-upgrade: inflated (double-counted) totals already stored.
+    db.update_session(id, update(2000, 800)).unwrap();
+    let (s_out, s_cc, d_out0, d_cc0) = read(&conn);
+    assert_eq!((s_out, s_cc), (2000, 800));
+
+    // Post-upgrade: the de-duplicated sum is smaller. Stored totals keep the MAX and
+    // the daily token totals do not move.
+    db.update_session(id, update(1000, 400)).unwrap();
+    let (s_out, s_cc, d_out, d_cc) = read(&conn);
+    assert_eq!((s_out, s_cc), (2000, 800), "session keeps MAX token totals");
+    assert_eq!((d_out, d_cc), (d_out0, d_cc0), "daily token growth pauses");
+
+    // The de-duplicated sum passes the stored value: only the excess counts.
+    db.update_session(id, update(2500, 900)).unwrap();
+    let (s_out, s_cc, d_out, d_cc) = read(&conn);
+    assert_eq!((s_out, s_cc), (2500, 900));
+    assert_eq!(
+        d_out - d_out0,
+        500,
+        "daily output grows by exactly the excess"
+    );
+    assert_eq!(
+        d_cc - d_cc0,
+        100,
+        "daily cache creation grows by exactly the excess"
+    );
+}

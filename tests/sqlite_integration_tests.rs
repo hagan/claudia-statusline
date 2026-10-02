@@ -631,8 +631,149 @@ fn test_cost_reduction_updates_correctly() {
     let result2 = output2.wait_with_output().unwrap();
     let output_str2 = String::from_utf8_lossy(&result2.stdout);
 
-    // Daily total should reflect the reduction: $10 + (-$4) = $6
+    // Session cost shown is the payload's $6 (D-08); the daily total keeps the $10
+    // high-water because no total_duration_ms means an unknown start (D-02)
     assert!(output_str2.contains("$6"));
+
+    let (daily, session) = read_cost_totals(temp_dir.path(), "cost-reduction-test");
+    assert!(
+        (daily - 10.0).abs() < 1e-9,
+        "daily total keeps the $10 high-water, got {daily}"
+    );
+    assert!(
+        (session - 10.0).abs() < 1e-9,
+        "sessions.cost keeps the $10 high-water, got {session}"
+    );
+}
+
+/// Run the real binary once against an isolated temp data/config dir and return stdout.
+///
+/// Every child gets HOME and all XDG_* dirs pointed at `temp`, so it can never resolve
+/// the user's real data directory.
+fn run_isolated_binary(temp: &std::path::Path, input: &str) -> String {
+    let mut child = std::process::Command::new(test_support::test_binary())
+        .env("NO_COLOR", "1")
+        .env("HOME", temp)
+        .env("XDG_DATA_HOME", temp)
+        .env("XDG_CONFIG_HOME", temp)
+        .env("XDG_CACHE_HOME", temp.join("cache"))
+        .arg("--no-color")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "statusline exited with {:?}",
+        out.status
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+/// Read today's `daily_stats.total_cost` and the session's `sessions.cost` from the
+/// isolated stats DB the binary wrote (`<temp>/claudia-statusline/stats.db`).
+fn read_cost_totals(temp: &std::path::Path, session_id: &str) -> (f64, f64) {
+    let db_path = temp.join("claudia-statusline").join("stats.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    let today = statusline::common::current_date();
+    let daily: f64 = conn
+        .query_row(
+            "SELECT total_cost FROM daily_stats WHERE date = ?1",
+            [&today],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let session: f64 = conn
+        .query_row(
+            "SELECT cost FROM sessions WHERE session_id = ?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    (daily, session)
+}
+
+fn cost_payload(
+    session_id: &str,
+    cost: f64,
+    total_duration_ms: u64,
+    added: u64,
+    removed: u64,
+) -> String {
+    format!(
+        r#"{{
+        "workspace": {{"current_dir": "/test"}},
+        "session_id": "{session_id}",
+        "cost": {{"total_cost_usd": {cost}, "total_duration_ms": {total_duration_ms}, "total_lines_added": {added}, "total_lines_removed": {removed}}}
+    }}"#
+    )
+}
+
+/// #77 end to end: a counter drop whose inferred start (now - total_duration_ms) is
+/// about an hour later than the stored one is a restart, so the new process's spend
+/// counts in full (D-01, D-05). The rendered line still shows the payload cost (D-08).
+#[test]
+#[serial_test::serial]
+fn binary_payload_restart_counts_new_process_spend() {
+    let _guard = test_support::init();
+    let temp_dir = TempDir::new().unwrap();
+    let id = "binary-restart-test";
+
+    run_isolated_binary(temp_dir.path(), &cost_payload(id, 10.0, 3_600_000, 100, 10));
+    // New process: running for 1 s, so its inferred start is ~1 h after the first one.
+    let out = run_isolated_binary(temp_dir.path(), &cost_payload(id, 0.5, 1_000, 5, 1));
+    assert!(
+        out.contains("$0.5"),
+        "rendered line shows the payload session cost: {out}"
+    );
+
+    let (daily, session) = read_cost_totals(temp_dir.path(), id);
+    assert!(
+        (daily - 10.5).abs() < 1e-9,
+        "daily = 10.0 + 0.5, got {daily}"
+    );
+    assert!(
+        (session - 10.5).abs() < 1e-9,
+        "sessions.cost is cumulative across processes, got {session}"
+    );
+}
+
+/// #77 end to end: 10.0 -> 9.8 -> 10.3 with the same inferred start (within the 60 s
+/// tolerance) is a correction followed by growth; the totals end at 10.3, not 10.5
+/// (D-01, D-04).
+#[test]
+#[serial_test::serial]
+fn binary_payload_correction_keeps_high_water() {
+    let _guard = test_support::init();
+    let temp_dir = TempDir::new().unwrap();
+    let id = "binary-correction-test";
+    // total_duration_ms advances by about the wall time between renders, so the
+    // inferred start stays within the 60 s tolerance: one process throughout.
+
+    run_isolated_binary(temp_dir.path(), &cost_payload(id, 10.0, 3_600_000, 100, 10));
+    run_isolated_binary(temp_dir.path(), &cost_payload(id, 9.8, 3_600_500, 100, 10));
+    let (daily, session) = read_cost_totals(temp_dir.path(), id);
+    assert!(
+        (daily - 10.0).abs() < 1e-9,
+        "correction contributes 0, got {daily}"
+    );
+    assert!((session - 10.0).abs() < 1e-9, "got {session}");
+
+    run_isolated_binary(temp_dir.path(), &cost_payload(id, 10.3, 3_601_000, 110, 12));
+    let (daily, session) = read_cost_totals(temp_dir.path(), id);
+    assert!(
+        (daily - 10.3).abs() < 1e-9,
+        "growth counts only above the 10.0 peak, got {daily}"
+    );
+    assert!((session - 10.3).abs() < 1e-9, "got {session}");
 }
 
 // Regression test for unchanged cost still updating metadata
