@@ -2,22 +2,54 @@ use super::schema::SessionUpdate;
 use super::SqliteDatabase;
 use crate::common::{current_date, current_month, current_timestamp};
 use crate::retry::{retry_if_retryable, RetryConfig};
-use crate::utils::{clamp_reset_delta_f64, clamp_reset_delta_i64};
+use crate::stats::accounting::{self, Baseline, Observation};
 use rusqlite::{params, OptionalExtension, Result, Transaction};
 
-// Type alias for session archive data tuple
-type SessionArchiveData = (
-    String,         // start_time
-    String,         // last_updated
-    f64,            // cost
-    i64,            // lines_added
-    i64,            // lines_removed
-    Option<i64>,    // active_time_seconds
-    Option<String>, // last_activity
-    Option<String>, // model_name
-    Option<String>, // workspace_dir
-    Option<String>, // device_id
-);
+/// Session row copied into `session_archive` (auto_reset mode).
+struct SessionArchiveData {
+    start_time: String,
+    last_updated: String,
+    cost: f64,
+    lines_added: i64,
+    lines_removed: i64,
+    active_time_seconds: Option<i64>,
+    last_activity: Option<String>,
+    model_name: Option<String>,
+    workspace_dir: Option<String>,
+    device_id: Option<String>,
+    /// Raw payload baseline (migration 008); falls back to the accounted value when NULL.
+    raw_cost: f64,
+    raw_lines_added: i64,
+    raw_lines_removed: i64,
+    process_start_ms: Option<i64>,
+}
+
+/// Prior accounting state for one session: cumulative accounted totals plus the
+/// raw-counter baseline the classifier compares against.
+struct PriorAccounting {
+    accounted_cost: f64,
+    accounted_lines_added: i64,
+    accounted_lines_removed: i64,
+    baseline: Baseline,
+}
+
+/// Read accounted totals and the raw baseline from columns 0..=6 of a row laid out as
+/// `cost, lines_added, lines_removed, COALESCE(raw_cost, cost),
+/// COALESCE(raw_lines_added, lines_added), COALESCE(raw_lines_removed, lines_removed),
+/// process_start_ms`.
+fn prior_from_row(row: &rusqlite::Row<'_>) -> Result<PriorAccounting> {
+    Ok(PriorAccounting {
+        accounted_cost: row.get(0)?,
+        accounted_lines_added: row.get(1)?,
+        accounted_lines_removed: row.get(2)?,
+        baseline: Baseline {
+            raw_cost: row.get(3)?,
+            raw_lines_added: row.get(4)?,
+            raw_lines_removed: row.get(5)?,
+            start_ms: row.get::<_, Option<i64>>(6).ok().flatten(),
+        },
+    })
+}
 
 impl SqliteDatabase {
     /// Update or insert a session with atomic transaction
@@ -124,74 +156,74 @@ impl SqliteDatabase {
         let session_data: Option<SessionArchiveData> = tx
             .query_row(
                 "SELECT start_time, last_updated, cost, lines_added, lines_removed,
-                        active_time_seconds, last_activity, model_name, workspace_dir, device_id
+                        active_time_seconds, last_activity, model_name, workspace_dir, device_id,
+                        COALESCE(raw_cost, cost), COALESCE(raw_lines_added, lines_added),
+                        COALESCE(raw_lines_removed, lines_removed), process_start_ms
                  FROM sessions WHERE session_id = ?1",
                 params![session_id],
                 |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5).ok(),
-                        row.get(6).ok(),
-                        row.get(7).ok(),
-                        row.get(8).ok(),
-                        row.get(9).ok(),
-                    ))
+                    Ok(SessionArchiveData {
+                        start_time: row.get(0)?,
+                        last_updated: row.get(1)?,
+                        cost: row.get(2)?,
+                        lines_added: row.get(3)?,
+                        lines_removed: row.get(4)?,
+                        active_time_seconds: row.get(5).ok(),
+                        last_activity: row.get(6).ok(),
+                        model_name: row.get(7).ok(),
+                        workspace_dir: row.get(8).ok(),
+                        device_id: row.get(9).ok(),
+                        raw_cost: row.get(10)?,
+                        raw_lines_added: row.get(11)?,
+                        raw_lines_removed: row.get(12)?,
+                        process_start_ms: row.get::<_, Option<i64>>(13).ok().flatten(),
+                    })
                 },
             )
             .optional()?;
 
-        if let Some((
-            start_time,
-            last_updated,
-            cost,
-            lines_added,
-            lines_removed,
-            active_time_seconds,
-            last_activity,
-            model_name,
-            workspace_dir,
-            device_id,
-        )) = session_data
-        {
+        if let Some(d) = session_data {
             let archived_at = current_timestamp();
 
-            // Insert into session_archive
+            // Insert into session_archive, carrying the raw baseline and inferred start so
+            // the next update classifies against them (D-09).
             tx.execute(
                 "INSERT INTO session_archive (
                     session_id, start_time, end_time, archived_at,
                     cost, lines_added, lines_removed,
                     active_time_seconds, last_activity,
-                    model_name, workspace_dir, device_id
+                    model_name, workspace_dir, device_id,
+                    raw_cost, raw_lines_added, raw_lines_removed, process_start_ms
                  )
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 params![
                     session_id,
-                    start_time,
-                    last_updated, // end_time = last_updated
+                    d.start_time,
+                    d.last_updated, // end_time = last_updated
                     archived_at,
-                    cost,
-                    lines_added,
-                    lines_removed,
-                    active_time_seconds,
-                    last_activity,
-                    model_name,
-                    workspace_dir,
-                    device_id,
+                    d.cost,
+                    d.lines_added,
+                    d.lines_removed,
+                    d.active_time_seconds,
+                    d.last_activity,
+                    d.model_name,
+                    d.workspace_dir,
+                    d.device_id,
+                    d.raw_cost,
+                    d.raw_lines_added,
+                    d.raw_lines_removed,
+                    d.process_start_ms,
                 ],
             )?;
 
             log::info!(
                 "Archived session {} ({}–{}, ${:.2}, +{}-{} lines)",
                 session_id,
-                start_time,
-                last_updated,
-                cost,
-                lines_added,
-                lines_removed
+                d.start_time,
+                d.last_updated,
+                d.cost,
+                d.lines_added,
+                d.lines_removed
             );
         }
 
@@ -284,66 +316,56 @@ impl SqliteDatabase {
             }
         }
 
-        // Calculate delta AFTER auto_reset check (so archived sessions are treated as new)
-        // Check if session exists (may have been deleted by auto_reset above)
-        // Include token columns for delta calculation
-        let old_values: Option<(f64, i64, i64, i64, i64, i64, i64)> = tx
+        // Calculate deltas AFTER the auto_reset check (an archived session has no live row).
+        // Token columns keep their own handling (D-16); cost/lines go through the classifier.
+        let old_row: Option<(PriorAccounting, i64, i64, i64, i64)> = tx
             .query_row(
                 "SELECT cost, lines_added, lines_removed,
+                        COALESCE(raw_cost, cost), COALESCE(raw_lines_added, lines_added),
+                        COALESCE(raw_lines_removed, lines_removed), process_start_ms,
                         COALESCE(total_input_tokens, 0), COALESCE(total_output_tokens, 0),
                         COALESCE(total_cache_read_tokens, 0), COALESCE(total_cache_creation_tokens, 0)
                  FROM sessions WHERE session_id = ?1",
                 params![session_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+                |row| {
+                    Ok((
+                        prior_from_row(row)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                        row.get(9)?,
+                        row.get(10)?,
+                    ))
+                },
             )
             .optional()?;
 
-        // Calculate the delta (difference between new and old values)
+        // Prior accounting state plus token deltas.
         let (
-            cost_delta,
-            lines_added_delta,
-            lines_removed_delta,
+            prior,
             input_tokens_delta,
             output_tokens_delta,
             cache_read_tokens_delta,
             cache_creation_tokens_delta,
-        ) = if let Some((
-            old_cost,
-            old_lines_added,
-            old_lines_removed,
-            old_input,
-            old_output,
-            old_cache_read,
-            old_cache_creation,
-        )) = old_values
+        ) = if let Some((prior, old_input, old_output, old_cache_read, old_cache_creation)) =
+            old_row
         {
-            // Session exists, calculate delta
+            // Live session.
             // IMPORTANT: Token deltas must be non-negative because:
             // - Transcript parser only reads last N lines (buffer_lines)
             // - For long sessions, older messages scroll out of buffer
             // - This can cause transcript sum < DB stored value (false "decrease")
             // - Negative deltas would incorrectly subtract from daily/monthly totals
             // Solution: clamp token deltas to 0 minimum
-            //
-            // COST/LINES RESET: the payload counters (total_cost_usd, lines
-            // added/removed) are cumulative per CLI process. When a session is
-            // resumed in a new process the counters restart from zero while the
-            // session_id stays the same, so `new < old` here. Subtracting would
-            // drive daily/monthly totals negative. A drop below half the stored
-            // value is treated as such a reset (the new counter value is fresh
-            // spend); a smaller drop is a correction and contributes nothing.
             (
-                clamp_reset_delta_f64(cost, old_cost),
-                clamp_reset_delta_i64(lines_added as i64, old_lines_added),
-                clamp_reset_delta_i64(lines_removed as i64, old_lines_removed),
+                Some(prior),
                 (input_tokens - old_input).max(0),
                 (output_tokens - old_output).max(0),
                 (cache_read_tokens - old_cache_read).max(0),
                 (cache_creation_tokens - old_cache_creation).max(0),
             )
         } else if config.burn_rate.mode == "auto_reset" {
-            // Session was just archived and deleted - query last archived values
-            // to avoid double-counting the cumulative cost
+            // Session was just archived and deleted (or never existed): classify against
+            // the latest archived raw baseline and carry its accounted totals (D-09, D-18).
             //
             // TOKEN BEHAVIOR IN AUTO_RESET MODE:
             // session_archive doesn't track tokens, so token deltas use full values after reset.
@@ -356,57 +378,72 @@ impl SqliteDatabase {
             //   tokens typically accumulate within a single work period before reset
             // - Cost and lines use archived baselines so they don't have this issue
             // - If precise token continuity is needed, consider using wall_clock mode instead
-            let archived_values: Option<(f64, i64, i64)> = tx
+            let archived: Option<PriorAccounting> = tx
                 .query_row(
-                    "SELECT cost, lines_added, lines_removed FROM session_archive
+                    "SELECT cost, lines_added, lines_removed,
+                                COALESCE(raw_cost, cost), COALESCE(raw_lines_added, lines_added),
+                                COALESCE(raw_lines_removed, lines_removed), process_start_ms
+                         FROM session_archive
                          WHERE session_id = ?1 ORDER BY archived_at DESC LIMIT 1",
                     params![session_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    prior_from_row,
                 )
                 .optional()?;
-
-            if let Some((archived_cost, archived_lines_added, archived_lines_removed)) =
-                archived_values
-            {
-                // Use archived values as baseline - only count incremental delta
-                // This prevents double-counting when cumulative cost continues after reset
-                // Token deltas use full values since they're not archived
-                // Same upstream-counter-reset guard as the live-session branch:
-                // a resumed CLI process can report values below the archived
-                // baseline, which must never subtract from the aggregates.
-                (
-                    clamp_reset_delta_f64(cost, archived_cost),
-                    clamp_reset_delta_i64(lines_added as i64, archived_lines_added),
-                    clamp_reset_delta_i64(lines_removed as i64, archived_lines_removed),
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    cache_creation_tokens,
-                )
-            } else {
-                // Truly new session (no archive entry), use full value
-                (
-                    cost,
-                    lines_added as i64,
-                    lines_removed as i64,
-                    input_tokens,
-                    output_tokens,
-                    cache_read_tokens,
-                    cache_creation_tokens,
-                )
-            }
-        } else {
-            // New session (not auto_reset mode), delta is the full value
             (
-                cost,
-                lines_added as i64,
-                lines_removed as i64,
+                archived,
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_creation_tokens,
+            )
+        } else {
+            // New session: no baseline, full values.
+            (
+                None,
                 input_tokens,
                 output_tokens,
                 cache_read_tokens,
                 cache_creation_tokens,
             )
         };
+
+        // COST/LINES: one classification per update via the shared policy in
+        // `stats::accounting` (restart by inferred start, high-water fallback, stale updates
+        // contribute nothing; D-01, D-02, D-03, D-17). The stored session totals are the
+        // cumulative accounted values: prior accounted + delta (D-05, D-06, D-18).
+        let (base_cost, base_lines_added, base_lines_removed) = prior
+            .as_ref()
+            .map(|p| {
+                (
+                    p.accounted_cost,
+                    p.accounted_lines_added,
+                    p.accounted_lines_removed,
+                )
+            })
+            .unwrap_or((0.0, 0, 0));
+        let obs = Observation {
+            cost,
+            lines_added: i64::try_from(lines_added).unwrap_or(i64::MAX),
+            lines_removed: i64::try_from(lines_removed).unwrap_or(i64::MAX),
+            start_ms: update.inferred_start_ms,
+        };
+        let outcome = accounting::classify(
+            prior.map(|p| p.baseline),
+            obs,
+            accounting::RESTART_TOLERANCE_MS,
+        );
+        log::trace!(
+            "accounting: session {} classified as {:?} (cost delta {:.6})",
+            session_id,
+            outcome.kind,
+            outcome.cost_delta
+        );
+        let cost_delta = outcome.cost_delta;
+        let lines_added_delta = outcome.lines_added_delta;
+        let lines_removed_delta = outcome.lines_removed_delta;
+        let new_cost = base_cost + cost_delta;
+        let new_lines_added = base_lines_added.saturating_add(lines_added_delta);
+        let new_lines_removed = base_lines_removed.saturating_add(lines_removed_delta);
 
         let (active_time_to_save, last_activity_to_save) = if config.burn_rate.mode == "active_time"
         {
@@ -486,14 +523,20 @@ impl SqliteDatabase {
                 session_id, start_time, last_updated, cost, lines_added, lines_removed,
                 model_name, workspace_dir, device_id,
                 total_input_tokens, total_output_tokens, total_cache_read_tokens, total_cache_creation_tokens,
-                max_tokens_observed, active_time_seconds, last_activity
+                max_tokens_observed, active_time_seconds, last_activity,
+                raw_cost, raw_lines_added, raw_lines_removed, process_start_ms
              )
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16,
+                     ?17, ?18, ?19, ?20)
              ON CONFLICT(session_id) DO UPDATE SET
                 last_updated = ?3,
-                cost = ?4,
-                lines_added = ?5,
-                lines_removed = ?6,
+                cost = cost + ?21,
+                lines_added = lines_added + ?22,
+                lines_removed = lines_removed + ?23,
+                raw_cost = ?17,
+                raw_lines_added = ?18,
+                raw_lines_removed = ?19,
+                process_start_ms = COALESCE(?20, process_start_ms),
                 model_name = ?7,
                 workspace_dir = ?8,
                 device_id = ?9,
@@ -509,10 +552,13 @@ impl SqliteDatabase {
                 active_time_seconds = COALESCE(?15, active_time_seconds),
                 last_activity = COALESCE(?16, last_activity)",
             params![
-                session_id, &now, &now, cost, lines_added as i64, lines_removed as i64,
+                session_id, &now, &now, new_cost, new_lines_added, new_lines_removed,
                 model_name, workspace_dir, device_id,
                 input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens,
-                max_tokens, active_time, last_activity
+                max_tokens, active_time, last_activity,
+                outcome.next.raw_cost, outcome.next.raw_lines_added, outcome.next.raw_lines_removed,
+                outcome.next.start_ms,
+                cost_delta, lines_added_delta, lines_removed_delta
             ],
         )?;
 

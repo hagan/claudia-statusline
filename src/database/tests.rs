@@ -102,7 +102,7 @@ fn test_session_update() {
     assert_eq!(day_total, 10.0);
     assert_eq!(session_total, 10.0);
 
-    // Update same session - should REPLACE not accumulate
+    // Update same session with a lower value (no start signal)
     let (day_total, session_total) = db
         .update_session(
             "test-session",
@@ -121,16 +121,15 @@ fn test_session_update() {
             },
         )
         .unwrap();
-    // Downward re-report (>= half the stored value) is a correction: the
-    // session baseline is replaced, but it must not subtract from the day
-    // total (upstream counters only move backwards on process resets).
+    // Downward re-report with no start signal: high-water fallback (D-02), so it
+    // contributes nothing and the session keeps its cumulative accounted total (D-05/D-06).
     assert_eq!(
         day_total, 10.0,
         "Day total must not decrease on a downward correction"
     );
     assert_eq!(
-        session_total, 5.0,
-        "Session total should be replaced, not accumulated"
+        session_total, 10.0,
+        "D-05/D-06: session total is the cumulative accounted value, not the raw payload"
     );
 }
 
@@ -207,7 +206,10 @@ fn test_session_update_delta_calculation() {
             },
         )
         .unwrap();
-    assert_eq!(session_total, 8.0, "Session should have new value");
+    assert_eq!(
+        session_total, 10.0,
+        "D-05/D-06: a correction leaves the accounted session total at the high-water"
+    );
     assert_eq!(
         day_total, 30.0,
         "Day total must not decrease on a downward correction"
@@ -234,12 +236,12 @@ fn test_session_update_delta_calculation() {
         .unwrap();
     assert_eq!(session_total, 15.0, "Session should have new value");
     assert_eq!(
-        day_total, 37.0,
-        "Day total should increase by 7 (30 + 7 = 37)"
+        day_total, 35.0,
+        "ACCT-02/D-04: growth counts only above the 10.0 high-water (30 + 5 = 35)"
     );
 
-    // Update second session to zero — a counter reset: the new counter value
-    // (0.0) is counted as fresh spend, so the day total is unchanged
+    // Update second session to zero with no start signal: high-water fallback (D-02),
+    // contributes nothing, and the accounted session total stays at 20.0 (D-05)
     let (day_total, session_total) = db
         .update_session(
             "session2",
@@ -258,9 +260,12 @@ fn test_session_update_delta_calculation() {
             },
         )
         .unwrap();
-    assert_eq!(session_total, 0.0, "Session should be zero");
     assert_eq!(
-        day_total, 37.0,
+        session_total, 20.0,
+        "D-05/D-06: session keeps its cumulative accounted total"
+    );
+    assert_eq!(
+        day_total, 35.0,
         "A reset to zero must not subtract the old session cost"
     );
 }

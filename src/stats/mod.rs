@@ -4,10 +4,8 @@
 //! startup as a recovery fallback when SQLite is missing or unusable (see BREAK-03);
 //! writes are SQLite-only as of v3.0.0.
 
-mod aggregation;
-// callers arrive in plan 15-04 (database) and 15-05 (in-memory); 15-04 removes this attribute
-#[allow(dead_code)]
 pub mod accounting;
+mod aggregation;
 mod cache;
 mod persistence;
 mod provider;
