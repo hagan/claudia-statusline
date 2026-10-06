@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 /// One column a schema version requires (see [`REQUIRED_COLUMNS`]).
-#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RequiredColumn {
     /// Schema version that introduced the column.
@@ -26,7 +25,6 @@ pub(crate) struct RequiredColumn {
 /// Scope: version 3 (`sessions.sync_timestamp` only; the default-feature migration 003
 /// never added it, so the repair closes that drift), 7 and 8. Older columns are covered
 /// by the fresh-vs-migrated parity test.
-#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
 pub(crate) const REQUIRED_COLUMNS: &[RequiredColumn] = &[
     RequiredColumn {
         version: 3,
@@ -135,7 +133,6 @@ pub(crate) const REQUIRED_COLUMNS: &[RequiredColumn] = &[
 /// Column names of every distinct table referenced by the registry rows matching
 /// `pred`, with exactly one `PRAGMA table_info` per table (an absent table yields an
 /// empty set). `Transaction` derefs to `Connection`, so this serves both.
-#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
 fn registry_table_columns(
     conn: &Connection,
     pred: impl Fn(u32) -> bool,
@@ -158,7 +155,6 @@ fn registry_table_columns(
 /// Explicit, non-retryable error for a table that registry columns live on but that
 /// does not exist. The message deliberately avoids the words `retry::is_retryable_error`
 /// matches, so the retry loop returns it at once.
-#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
 fn schema_invariant_error(table: &str, version: u32) -> rusqlite::Error {
     rusqlite::Error::SqliteFailure(
         rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
@@ -173,7 +169,6 @@ fn schema_invariant_error(table: &str, version: u32) -> rusqlite::Error {
 ///
 /// If a matching row's table does not exist, returns the schema-invariant error
 /// before running any ALTER: a missing required table is never skipped.
-#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
 pub(crate) fn add_missing_columns(
     tx: &Transaction,
     pred: impl Fn(u32) -> bool,
@@ -205,7 +200,7 @@ pub(crate) fn add_missing_columns(
 
 /// Read-only: every registry column with `version <= max_version` that is absent,
 /// including rows whose table does not exist.
-#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+#[allow(dead_code)] // TEMP-16-01: used by the open-time repair (Task 2)
 pub(crate) fn missing_required_columns(
     conn: &Connection,
     max_version: u32,
@@ -878,35 +873,9 @@ impl Migration for AddDailyTokenTracking {
     }
 }
 
-/// Migration 007: per-session subagent/main token attribution, the Claude Code
-/// version that produced the session, and the incremental transcript parse
-/// state that makes the subagent scan cheap on every render.
-pub struct AddAgentTracking;
-
-impl Migration for AddAgentTracking {
-    fn version(&self) -> u32 {
-        7
-    }
-
-    fn description(&self) -> &str {
-        "Add claude_version + agent/main token columns to sessions and the transcript_progress table"
-    }
-
-    fn up(&self, tx: &Transaction) -> Result<()> {
-        for col in [
-            "claude_version TEXT",
-            "agent_count INTEGER DEFAULT 0",
-            "agent_requests INTEGER DEFAULT 0",
-            "agent_input_tokens INTEGER DEFAULT 0",
-            "agent_output_tokens INTEGER DEFAULT 0",
-            "main_requests INTEGER DEFAULT 0",
-            "main_input_tokens INTEGER DEFAULT 0",
-            "main_output_tokens INTEGER DEFAULT 0",
-        ] {
-            tx.execute(&format!("ALTER TABLE sessions ADD COLUMN {}", col), [])?;
-        }
-        tx.execute_batch(
-            "CREATE TABLE IF NOT EXISTS transcript_progress (
+/// transcript_progress table and its session index (migration 007). IF NOT EXISTS,
+/// so the open-time repair can re-run it safely.
+const TRANSCRIPT_PROGRESS_DDL: &str = "CREATE TABLE IF NOT EXISTS transcript_progress (
                 path TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
                 is_agent INTEGER NOT NULL DEFAULT 0,
@@ -923,8 +892,25 @@ impl Migration for AddAgentTracking {
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_transcript_progress_session
-                ON transcript_progress(session_id);",
-        )?;
+                ON transcript_progress(session_id);";
+
+/// Migration 007: per-session subagent/main token attribution, the Claude Code
+/// version that produced the session, and the incremental transcript parse
+/// state that makes the subagent scan cheap on every render.
+pub struct AddAgentTracking;
+
+impl Migration for AddAgentTracking {
+    fn version(&self) -> u32 {
+        7
+    }
+
+    fn description(&self) -> &str {
+        "Add claude_version + agent/main token columns to sessions and the transcript_progress table"
+    }
+
+    fn up(&self, tx: &Transaction) -> Result<()> {
+        add_missing_columns(tx, |v| v == 7)?;
+        tx.execute_batch(TRANSCRIPT_PROGRESS_DDL)?;
         Ok(())
     }
 
@@ -950,8 +936,9 @@ impl Migration for AddAgentTracking {
 ///
 /// Columns that already exist are skipped, so a DB created from the full v8
 /// `SCHEMA`, or a concurrent opener that lost the version-record race, never
-/// hits "duplicate column name". Phase 16's migration race hardening for 007
-/// must cover 008 as well.
+/// hits "duplicate column name". 007 and 008 share the registry-driven idempotent
+/// helper (`add_missing_columns` over `REQUIRED_COLUMNS`) and the open-time repair
+/// (Phase 16); a missing `session_archive` is an explicit schema-invariant error.
 pub struct AddAccountingBaseline;
 
 impl Migration for AddAccountingBaseline {
@@ -964,27 +951,7 @@ impl Migration for AddAccountingBaseline {
     }
 
     fn up(&self, tx: &Transaction) -> Result<()> {
-        for table in ["sessions", "session_archive"] {
-            let existing: Vec<String> = {
-                let mut stmt = tx.prepare(&format!("PRAGMA table_info({})", table))?;
-                let names = stmt
-                    .query_map([], |row| row.get::<_, String>(1))?
-                    .collect::<Result<Vec<String>>>()?;
-                names
-            };
-            for col in [
-                "raw_cost REAL",
-                "raw_lines_added INTEGER",
-                "raw_lines_removed INTEGER",
-                "process_start_ms INTEGER",
-            ] {
-                let name = col.split(' ').next().unwrap_or(col);
-                if existing.iter().any(|c| c == name) {
-                    continue;
-                }
-                tx.execute(&format!("ALTER TABLE {} ADD COLUMN {}", table, col), [])?;
-            }
-        }
+        add_missing_columns(tx, |v| v == 8)?;
         Ok(())
     }
 
