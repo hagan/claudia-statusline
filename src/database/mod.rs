@@ -33,7 +33,9 @@ static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 // `SqliteDatabase::new`. Thread-local so parallel tests cannot see each other's hooks;
 // compiled out of non-test builds.
 #[cfg(test)]
-thread_local! { pub(crate) static AFTER_NEW_DB_CHECK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) }; }
+pub(crate) type AfterNewDbHook = Option<Box<dyn FnOnce(&Path)>>;
+#[cfg(test)]
+thread_local! { pub(crate) static AFTER_NEW_DB_CHECK: std::cell::RefCell<AfterNewDbHook> = const { std::cell::RefCell::new(None) }; }
 
 pub struct SqliteDatabase {
     #[allow(dead_code)]
@@ -115,6 +117,8 @@ impl SqliteDatabase {
             .unwrap_or(false);
 
         let is_new_db = !has_sessions_table;
+        // True only when this process created the complete schema and stamped v8.
+        let mut created_fresh = false;
 
         if is_new_db {
             // Test-only: let a test commit another binary's schema in the race window.
@@ -137,10 +141,49 @@ impl SqliteDatabase {
             // keeps a lost version-record race from raising `UNIQUE constraint failed:
             // schema_migrations.version`. Mirrors the adapter pattern in
             // `SqliteDatabase::update_session`.
-            crate::retry::retry_if_retryable(&crate::retry::RetryConfig::for_db_ops(), || {
+            //
+            // Stale-read re-check (D-01, INTEG-04): because `is_new_db` was read outside any
+            // transaction, another process (for example a v3.3.0 binary, whose own init is
+            // the same shape but stamps v6) can commit its tables and version stamp in the
+            // gap. Running our SCHEMA over its tables would then be a no-op
+            // (`CREATE ... IF NOT EXISTS`) while we still stamped v8, recording migrations
+            // 007 and 008 (D-03) whose columns we never created. BEGIN IMMEDIATE starts a
+            // write transaction on the latest committed snapshot, so re-reading
+            // `sqlite_master` inside it sees the other process's committed tables. If
+            // `sessions` is already there we write nothing, return `created_fresh = false`
+            // and fall through to the migration runner, which runs 007/008 (idempotent) and
+            // records them itself; a newer binary therefore never stamps a version whose
+            // columns it did not create.
+            //
+            // Reverse order: if this binary commits first, a stale v6 initializer later only
+            // adds `INSERT OR IGNORE` stamp 6 over IF NOT EXISTS DDL, leaving versions [6, 8]
+            // with every v8 column present.
+            //
+            // Falling through with an empty `schema_migrations` (RESEARCH Pitfall 2) cannot
+            // happen with v3.3.0 or v3.4.0 binaries: both commit SCHEMA and their stamp in
+            // one transaction. Making 003-006 idempotent is out of scope.
+            //
+            // BUSY coverage: the WAL switch above and this transaction run under
+            // `retry_if_retryable`; `run_migrations_on_db` below retries the migration steps
+            // and the repair, while `MigrationRunner::new`'s own setup relies on its
+            // busy_timeout (set before WAL).
+            created_fresh = crate::retry::retry_if_retryable(&crate::retry::RetryConfig::for_db_ops(), || {
                 let tx = conn
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(crate::error::StatuslineError::Database)?;
+                let sessions_exists: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::error::StatuslineError::Database)?;
+                if sessions_exists > 0 {
+                    // Another process created the schema after our stale read: write
+                    // nothing and let the migration runner bring it up to date.
+                    tx.commit().map_err(crate::error::StatuslineError::Database)?;
+                    return Ok(false);
+                }
                 tx.execute_batch(SCHEMA)
                     .map_err(crate::error::StatuslineError::Database)?;
                 // Mark as fully migrated (v8 adds the accounting baseline columns (migration 008)).
@@ -151,7 +194,7 @@ impl SqliteDatabase {
                 )
                 .map_err(crate::error::StatuslineError::Database)?;
                 tx.commit().map_err(crate::error::StatuslineError::Database)?;
-                Ok(())
+                Ok(true)
             })
             .map_err(|e| match e {
                 crate::error::StatuslineError::Database(db_err) => db_err,
@@ -160,7 +203,9 @@ impl SqliteDatabase {
                     Some(e.to_string()),
                 ),
             })?;
-        } else {
+        }
+
+        if !created_fresh {
             // OLD DATABASE: Only ensure base tables exist, let migrations add columns/indexes
             // This prevents "no such column" errors when creating indexes
             conn.execute_batch(
