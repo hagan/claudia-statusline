@@ -200,7 +200,6 @@ pub(crate) fn add_missing_columns(
 
 /// Read-only: every registry column with `version <= max_version` that is absent,
 /// including rows whose table does not exist.
-#[allow(dead_code)] // TEMP-16-01: used by the open-time repair (Task 2)
 pub(crate) fn missing_required_columns(
     conn: &Connection,
     max_version: u32,
@@ -216,7 +215,6 @@ pub(crate) fn missing_required_columns(
 
 /// sync_meta table (migration 003 under `turso-sync`; same text as `SCHEMA`). The
 /// default-feature 003 never created it, so the open-time repair does.
-#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
 const SYNC_META_DDL: &str = "CREATE TABLE IF NOT EXISTS sync_meta (
                 device_id TEXT PRIMARY KEY,
                 last_sync_push INTEGER,
@@ -225,7 +223,6 @@ const SYNC_META_DDL: &str = "CREATE TABLE IF NOT EXISTS sync_meta (
             )";
 
 /// One table or index a schema version requires (see [`REQUIRED_OBJECTS`]).
-#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RequiredObject {
     /// Schema version that introduced the object.
@@ -240,31 +237,15 @@ pub(crate) struct RequiredObject {
 
 /// Tables and indexes each schema version requires that the open-time repair can
 /// create with IF NOT EXISTS DDL.
-#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
+#[rustfmt::skip]
 pub(crate) const REQUIRED_OBJECTS: &[RequiredObject] = &[
-    RequiredObject {
-        version: 3,
-        kind: "table",
-        name: "sync_meta",
-        ddl: SYNC_META_DDL,
-    },
-    RequiredObject {
-        version: 7,
-        kind: "table",
-        name: "transcript_progress",
-        ddl: TRANSCRIPT_PROGRESS_DDL,
-    },
-    RequiredObject {
-        version: 7,
-        kind: "index",
-        name: "idx_transcript_progress_session",
-        ddl: TRANSCRIPT_PROGRESS_DDL,
-    },
+    RequiredObject { version: 3, kind: "table", name: "sync_meta", ddl: SYNC_META_DDL },
+    RequiredObject { version: 7, kind: "table", name: "transcript_progress", ddl: TRANSCRIPT_PROGRESS_DDL },
+    RequiredObject { version: 7, kind: "index", name: "idx_transcript_progress_session", ddl: TRANSCRIPT_PROGRESS_DDL },
 ];
 
 /// Read-only: every [`REQUIRED_OBJECTS`] entry with `version <= max_version` that is
 /// absent from `sqlite_master` (one query).
-#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
 pub(crate) fn missing_required_objects(
     conn: &Connection,
     max_version: u32,
@@ -311,9 +292,10 @@ impl MigrationRunner {
         // Open connection for migrations (don't call SqliteDatabase::new to avoid infinite recursion)
         let conn = Connection::open(db_path)?;
 
+        // busy_timeout first so the WAL switch and the base-table batch wait on a held lock instead of failing at once (mirrors SqliteDatabase::new)
+        conn.pragma_update(None, "busy_timeout", 10000)?;
         // Enable WAL for concurrent access
         conn.pragma_update(None, "journal_mode", "WAL")?;
-        conn.pragma_update(None, "busy_timeout", 10000)?;
 
         // Create minimal base schema (WITHOUT migration columns) for testing migrations
         // This allows migrations to add columns without "duplicate column" errors
@@ -393,14 +375,23 @@ impl MigrationRunner {
     /// serialize at BEGIN; the applied version is re-checked INSIDE that transaction to
     /// close the read-then-write gap; the version is recorded with `INSERT OR IGNORE`
     /// so a lost race never raises `UNIQUE constraint failed: schema_migrations.version`;
-    /// and the whole thing is wrapped in `retry_if_retryable` so a serialized loser that
-    /// still hits SQLITE_BUSY retries cleanly.
+    /// and a serialized loser that still hits SQLITE_BUSY retries cleanly.
+    ///
+    /// After the pending steps, [`Self::repair_required_columns`] adds any
+    /// [`REQUIRED_COLUMNS`] / [`REQUIRED_OBJECTS`] entry missing for a version that is
+    /// already recorded (additive DDL only; no transaction when nothing is missing).
+    ///
+    /// What the retry covers: the pending migration steps and the repair, both run
+    /// inside `retry_if_retryable`. `MigrationRunner::new`'s WAL switch and base-table
+    /// batch are NOT retried; they are protected by `busy_timeout` only. A missing
+    /// required table is a non-retryable schema-invariant error and is returned at once.
     pub fn migrate(&mut self) -> Result<()> {
         // Mirror the adapter pattern in SqliteDatabase::update_session: run the loop under
         // retry_if_retryable (which works over crate::error::Result/StatuslineError), then
         // map the final StatuslineError back to a rusqlite::Error for our Result signature.
         retry_if_retryable(&RetryConfig::for_db_ops(), || {
             self.migrate_once()
+                .and_then(|_| self.repair_required_columns())
                 .map_err(crate::error::StatuslineError::Database)
         })
         .map_err(|e| match e {
@@ -410,6 +401,49 @@ impl MigrationRunner {
                 Some(e.to_string()),
             ),
         })
+    }
+
+    /// Open-time self-repair: add every registry column and object that a recorded
+    /// version requires but the DB lacks (for example a DB stamped v8 by a PR-branch
+    /// build, or by an interleaving the fresh-init re-check does not anticipate).
+    ///
+    /// Additive DDL only (ALTER TABLE ADD COLUMN, CREATE TABLE/INDEX IF NOT EXISTS); it
+    /// never changes rows or schema_migrations. The preflight is read-only, so a healthy DB
+    /// opens no transaction. A table that registry columns live on but that is absent is
+    /// an explicit schema-invariant error, and the transaction rolls back.
+    fn repair_required_columns(&mut self) -> Result<()> {
+        let current = self.current_version()?;
+        if missing_required_columns(&self.conn, current)?.is_empty()
+            && missing_required_objects(&self.conn, current)?.is_empty()
+        {
+            return Ok(());
+        }
+
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        // Re-read inside the write lock: a concurrent repairer may have done the work.
+        let added_columns = add_missing_columns(&tx, |v| v <= current)?;
+        let missing_objects = missing_required_objects(&tx, current)?;
+        for name in &missing_objects {
+            if let Some(obj) = REQUIRED_OBJECTS.iter().find(|o| o.name == *name) {
+                tx.execute_batch(obj.ddl)?;
+            }
+        }
+        tx.commit()?;
+
+        if !added_columns.is_empty() || !missing_objects.is_empty() {
+            let cols: Vec<String> = added_columns
+                .iter()
+                .map(|(t, c)| format!("{t}.{c}"))
+                .collect();
+            log::warn!(
+                "schema repair: version {current} was recorded without columns [{}] and objects [{}]; added them",
+                cols.join(", "),
+                missing_objects.join(", ")
+            );
+        }
+        Ok(())
     }
 
     /// Single attempt at running pending migrations. Safe to retry.
