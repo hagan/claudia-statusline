@@ -335,7 +335,7 @@ impl SyncManager {
                     last_updated,
                     start_time,
                     max_tokens_observed: None, // Sync doesn't track token counts
-                    active_time_seconds: active_time_seconds.map(|t| t as u64),
+                    active_time_seconds: remote_active_seconds(active_time_seconds),
                     last_activity,
                     // Preserving the migration 008 baseline columns on pull is Phase 16 (INTEG-05).
                     baseline: None,
@@ -638,6 +638,8 @@ impl SyncManager {
                             remote_stats.cost,
                             remote_stats.lines_added,
                             remote_stats.lines_removed,
+                            remote_stats.active_time_seconds,
+                            remote_stats.last_activity.as_deref(),
                         )?;
                         sessions_pulled += 1;
                     }
@@ -708,10 +710,27 @@ pub struct PullResult {
     pub dry_run: bool,
 }
 
+/// Convert a pulled `active_time_seconds` value to the local representation.
+///
+/// Remote activity seconds are untrusted: a negative value is treated as absent so the
+/// local value is kept (D-08).
+pub(crate) fn remote_active_seconds(raw: Option<i64>) -> Option<u64> {
+    raw.map(|t| t as u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::TursoConfig;
+
+    #[test]
+    fn remote_active_seconds_rejects_negative_and_keeps_valid() {
+        assert_eq!(remote_active_seconds(Some(-1)), None);
+        assert_eq!(remote_active_seconds(Some(i64::MIN)), None);
+        assert_eq!(remote_active_seconds(Some(0)), Some(0));
+        assert_eq!(remote_active_seconds(Some(5)), Some(5));
+        assert_eq!(remote_active_seconds(None), None);
+    }
 
     #[test]
     fn test_sync_manager_disabled() {
