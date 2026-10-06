@@ -26,8 +26,14 @@ impl SqliteDatabase {
         Ok(count)
     }
 
-    /// Upsert session data directly (for sync pull)
-    /// This replaces the entire session without delta calculations
+    /// Upsert a pulled session. Updates only the columns the pull carries; every other
+    /// local column (attribution, baseline, tokens, device_id, ...) is preserved
+    /// (INTEG-05). Out-of-range activity values are treated as absent.
+    ///
+    /// `start_time` overwrites the local value only when non-empty, and a `None`
+    /// activity value keeps the local one (D-08). The keep-local COALESCEs use the bound
+    /// parameters, not `excluded.*`, because the insert side already defaults
+    /// `active_time_seconds` to 0.
     #[allow(clippy::too_many_arguments)]
     pub fn upsert_session_direct(
         &self,
@@ -37,26 +43,41 @@ impl SqliteDatabase {
         cost: f64,
         lines_added: u64,
         lines_removed: u64,
-        _active_time_seconds: Option<u64>,
-        _last_activity: Option<&str>,
+        active_time_seconds: Option<u64>,
+        last_activity: Option<&str>,
     ) -> Result<()> {
+        // A value above i64::MAX binds NULL, so the local value is kept.
+        let active_time_seconds = active_time_seconds.and_then(|t| i64::try_from(t).ok());
         let conn = self.get_connection()?;
         conn.execute(
-            "INSERT OR REPLACE INTO sessions (session_id, start_time, last_updated, cost, lines_added, lines_removed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO sessions (session_id, start_time, last_updated, cost, lines_added,
+                lines_removed, active_time_seconds, last_activity)
+             VALUES (?1, COALESCE(?2, ''), ?3, ?4, ?5, ?6, COALESCE(?7, 0), ?8)
+             ON CONFLICT(session_id) DO UPDATE SET
+                start_time = COALESCE(NULLIF(?2, ''), start_time),
+                last_updated = excluded.last_updated,
+                cost = excluded.cost,
+                lines_added = excluded.lines_added,
+                lines_removed = excluded.lines_removed,
+                active_time_seconds = COALESCE(?7, active_time_seconds),
+                last_activity = COALESCE(?8, last_activity)",
             params![
                 session_id,
-                start_time.unwrap_or(""),
+                start_time,
                 last_updated,
                 cost,
                 lines_added as i64,
                 lines_removed as i64,
+                active_time_seconds,
+                last_activity,
             ],
         )?;
         Ok(())
     }
 
-    /// Upsert daily stats directly (for sync pull)
+    /// Upsert pulled daily stats. Only the cost and line totals are pulled columns:
+    /// `session_count`, `device_id` and token columns keep their local values (a new
+    /// row gets the column defaults).
     pub fn upsert_daily_stats_direct(
         &self,
         date: &str,
@@ -66,19 +87,19 @@ impl SqliteDatabase {
     ) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
-            "INSERT OR REPLACE INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed, session_count)
-             VALUES (?1, ?2, ?3, ?4, 0)",
-            params![
-                date,
-                total_cost,
-                lines_added as i64,
-                lines_removed as i64,
-            ],
+            "INSERT INTO daily_stats (date, total_cost, total_lines_added, total_lines_removed)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(date) DO UPDATE SET
+                total_cost = excluded.total_cost,
+                total_lines_added = excluded.total_lines_added,
+                total_lines_removed = excluded.total_lines_removed",
+            params![date, total_cost, lines_added as i64, lines_removed as i64,],
         )?;
         Ok(())
     }
 
-    /// Upsert monthly stats directly (for sync pull)
+    /// Upsert pulled monthly stats. Cost, line totals and `session_count` are pulled
+    /// columns; `device_id` and token columns keep their local values.
     pub fn upsert_monthly_stats_direct(
         &self,
         month: &str,
@@ -89,8 +110,14 @@ impl SqliteDatabase {
     ) -> Result<()> {
         let conn = self.get_connection()?;
         conn.execute(
-            "INSERT OR REPLACE INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed, session_count)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO monthly_stats (month, total_cost, total_lines_added, total_lines_removed,
+                session_count)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(month) DO UPDATE SET
+                total_cost = excluded.total_cost,
+                total_lines_added = excluded.total_lines_added,
+                total_lines_removed = excluded.total_lines_removed,
+                session_count = excluded.session_count",
             params![
                 month,
                 total_cost,

@@ -337,7 +337,9 @@ impl SyncManager {
                     max_tokens_observed: None, // Sync doesn't track token counts
                     active_time_seconds: remote_active_seconds(active_time_seconds),
                     last_activity,
-                    // Preserving the migration 008 baseline columns on pull is Phase 16 (INTEG-05).
+                    // The baseline is not carried by Turso; the pull UPSERT does not list
+                    // raw_* / process_start_ms, so this device's baseline is preserved in the
+                    // DB (Phase 16 D-07). This in-memory value is only used for the merge.
                     baseline: None,
                 },
             );
@@ -715,7 +717,7 @@ pub struct PullResult {
 /// Remote activity seconds are untrusted: a negative value is treated as absent so the
 /// local value is kept (D-08).
 pub(crate) fn remote_active_seconds(raw: Option<i64>) -> Option<u64> {
-    raw.map(|t| t as u64)
+    raw.and_then(|t| u64::try_from(t).ok())
 }
 
 #[cfg(test)]
