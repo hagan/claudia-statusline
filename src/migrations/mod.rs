@@ -1265,6 +1265,248 @@ mod tests {
             .collect()
     }
 
+    /// Frozen v3.3.0 (schema v6) SCHEMA text, no stamp.
+    const V6_SCHEMA: &str = include_str!("../../tests/fixtures/schema_v6_v3.3.0.sql");
+    /// Synthetic v6 seed rows, ending with the v6 stamp.
+    const V6_SEED: &str = include_str!("../../tests/fixtures/seed_v6.sql");
+
+    const AGENT_COLUMNS: [&str; 8] = [
+        "claude_version",
+        "agent_count",
+        "agent_requests",
+        "agent_input_tokens",
+        "agent_output_tokens",
+        "main_requests",
+        "main_input_tokens",
+        "main_output_tokens",
+    ];
+
+    /// Create a DB at `dir/name` exactly as a v3.3.0 binary leaves it: v6 SCHEMA,
+    /// synthetic seed rows, and the v6 stamp.
+    fn v6_fixture_db(dir: &TempDir, name: &str) -> std::path::PathBuf {
+        let path = dir.path().join(name);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(V6_SCHEMA).unwrap();
+        conn.execute_batch(V6_SEED).unwrap();
+        path
+    }
+
+    fn recorded_versions(conn: &Connection) -> Vec<u32> {
+        conn.prepare("SELECT version FROM schema_migrations ORDER BY version")
+            .unwrap()
+            .query_map([], |row| row.get::<_, u32>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    fn stamp(conn: &Connection, version: u32) {
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
+             VALUES (?1, '2026-01-01T00:00:00+00:00', '', 'test stamp', 0)",
+            params![version],
+        )
+        .unwrap();
+    }
+
+    /// (name, type, notnull, dflt_value, pk) for every column of `table`.
+    type ColumnMeta = (String, String, i64, Option<String>, i64);
+
+    fn column_meta(conn: &Connection, table: &str) -> Vec<ColumnMeta> {
+        conn.prepare(&format!(
+            "SELECT name, type, \"notnull\", dflt_value, pk FROM pragma_table_info('{}')",
+            table
+        ))
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    }
+
+    fn table_names(conn: &Connection) -> std::collections::BTreeSet<String> {
+        conn.prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .unwrap()
+        .query_map([], |row| row.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    }
+
+    #[test]
+    fn test_agent_tracking_migration_skips_existing_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("test_agents_fresh.db");
+
+        // Fresh path: full SCHEMA already has every 007 column.
+        drop(crate::database::SqliteDatabase::new(&db_path).unwrap());
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("DELETE FROM schema_migrations WHERE version IN (7, 8)", [])
+                .unwrap();
+            stamp(&conn, 6);
+        }
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner
+            .migrate()
+            .expect("migration 007 must skip columns that already exist");
+        let cols = column_names(&runner.conn, "sessions");
+        for col in AGENT_COLUMNS {
+            assert_eq!(
+                cols.iter().filter(|c| *c == col).count(),
+                1,
+                "sessions.{col} must exist exactly once"
+            );
+        }
+        assert_eq!(recorded_versions(&runner.conn), vec![6, 7, 8]);
+    }
+
+    #[test]
+    fn test_agent_tracking_migration_adds_partially_missing_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = v6_fixture_db(&temp_dir, "partial.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute("ALTER TABLE sessions ADD COLUMN claude_version TEXT", [])
+                .unwrap();
+            conn.execute(
+                "ALTER TABLE sessions ADD COLUMN agent_count INTEGER DEFAULT 0",
+                [],
+            )
+            .unwrap();
+        }
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner
+            .migrate()
+            .expect("migration 007 must add only the missing columns");
+        let cols = column_names(&runner.conn, "sessions");
+        for col in AGENT_COLUMNS {
+            assert_eq!(
+                cols.iter().filter(|c| *c == col).count(),
+                1,
+                "sessions.{col} must exist exactly once"
+            );
+        }
+        assert_eq!(recorded_versions(&runner.conn), vec![6, 7, 8]);
+    }
+
+    #[test]
+    fn required_columns_match_schema_minus_v6() {
+        let full = Connection::open_in_memory().unwrap();
+        full.execute_batch(crate::database::SCHEMA).unwrap();
+        let v6 = Connection::open_in_memory().unwrap();
+        v6.execute_batch(V6_SCHEMA).unwrap();
+
+        let full_tables = table_names(&full);
+        let v6_tables = table_names(&v6);
+        let new_tables: Vec<&String> = full_tables.difference(&v6_tables).collect();
+        assert_eq!(new_tables, vec!["transcript_progress"]);
+        assert!(
+            v6_tables.is_subset(&full_tables),
+            "SCHEMA dropped a v6 table: {:?}",
+            v6_tables.difference(&full_tables).collect::<Vec<_>>()
+        );
+
+        // For every table in both: SCHEMA columns minus v6 columns == registry rows >= 7.
+        for table in full_tables.intersection(&v6_tables) {
+            let full_cols: HashSet<String> = column_names(&full, table).into_iter().collect();
+            let v6_cols: HashSet<String> = column_names(&v6, table).into_iter().collect();
+            let added: HashSet<String> = full_cols.difference(&v6_cols).cloned().collect();
+            let registry: HashSet<String> = REQUIRED_COLUMNS
+                .iter()
+                .filter(|r| r.version >= 7 && r.table == table)
+                .map(|r| r.name.to_string())
+                .collect();
+            assert_eq!(
+                added, registry,
+                "{table}: SCHEMA minus v6 must equal the registry's v7+ columns"
+            );
+        }
+
+        // Every registry row exists in SCHEMA with exactly the declared metadata.
+        for row in REQUIRED_COLUMNS {
+            let schema_meta = column_meta(&full, row.table)
+                .into_iter()
+                .find(|m| m.0 == row.name)
+                .unwrap_or_else(|| panic!("SCHEMA lacks {}.{}", row.table, row.name));
+
+            let probe = Connection::open_in_memory().unwrap();
+            probe
+                .execute_batch("CREATE TABLE probe (id INTEGER)")
+                .unwrap();
+            probe
+                .execute(
+                    &format!("ALTER TABLE probe ADD COLUMN {} {}", row.name, row.decl),
+                    [],
+                )
+                .unwrap();
+            let probe_meta = column_meta(&probe, "probe")
+                .into_iter()
+                .find(|m| m.0 == row.name)
+                .unwrap();
+            assert_eq!(
+                (probe_meta.1, probe_meta.2, probe_meta.3, probe_meta.4),
+                (schema_meta.1, schema_meta.2, schema_meta.3, schema_meta.4),
+                "registry decl for {}.{} ({:?}) does not match SCHEMA",
+                row.table,
+                row.name,
+                row.decl
+            );
+        }
+    }
+
+    #[test]
+    fn migration_008_errors_when_session_archive_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = v6_fixture_db(&temp_dir, "no_archive.db");
+        Connection::open(&db_path)
+            .unwrap()
+            .execute("DROP TABLE session_archive", [])
+            .unwrap();
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        let err = runner
+            .migrate()
+            .expect_err("008 must fail when session_archive is missing");
+        assert!(
+            err.to_string().contains("session_archive"),
+            "error must name the missing table: {err}"
+        );
+        assert!(!recorded_versions(&runner.conn).contains(&8));
+        assert!(
+            !column_names(&runner.conn, "sessions")
+                .iter()
+                .any(|c| c == "raw_cost"),
+            "008's transaction must roll back"
+        );
+    }
+
+    #[test]
+    fn missing_required_columns_reports_absent_table() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(V6_SCHEMA).unwrap();
+        conn.execute("DROP TABLE session_archive", []).unwrap();
+        let missing = missing_required_columns(&conn, 8).unwrap();
+        for col in BASELINE_COLUMNS {
+            assert!(
+                missing.contains(&("session_archive", col)),
+                "missing_required_columns must report session_archive.{col}: {missing:?}"
+            );
+        }
+    }
+
     #[test]
     fn test_accounting_baseline_migration() {
         let temp_dir = TempDir::new().unwrap();
