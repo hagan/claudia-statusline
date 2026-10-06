@@ -214,6 +214,74 @@ pub(crate) fn missing_required_columns(
         .collect())
 }
 
+/// sync_meta table (migration 003 under `turso-sync`; same text as `SCHEMA`). The
+/// default-feature 003 never created it, so the open-time repair does.
+#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
+const SYNC_META_DDL: &str = "CREATE TABLE IF NOT EXISTS sync_meta (
+                device_id TEXT PRIMARY KEY,
+                last_sync_push INTEGER,
+                last_sync_pull INTEGER,
+                hostname_hash TEXT
+            )";
+
+/// One table or index a schema version requires (see [`REQUIRED_OBJECTS`]).
+#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RequiredObject {
+    /// Schema version that introduced the object.
+    pub version: u32,
+    /// `"table"` or `"index"`, matching `sqlite_master.type`.
+    pub kind: &'static str,
+    /// Object name in `sqlite_master`.
+    pub name: &'static str,
+    /// IF NOT EXISTS DDL that creates it (safe to re-run).
+    pub ddl: &'static str,
+}
+
+/// Tables and indexes each schema version requires that the open-time repair can
+/// create with IF NOT EXISTS DDL.
+#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
+pub(crate) const REQUIRED_OBJECTS: &[RequiredObject] = &[
+    RequiredObject {
+        version: 3,
+        kind: "table",
+        name: "sync_meta",
+        ddl: SYNC_META_DDL,
+    },
+    RequiredObject {
+        version: 7,
+        kind: "table",
+        name: "transcript_progress",
+        ddl: TRANSCRIPT_PROGRESS_DDL,
+    },
+    RequiredObject {
+        version: 7,
+        kind: "index",
+        name: "idx_transcript_progress_session",
+        ddl: TRANSCRIPT_PROGRESS_DDL,
+    },
+];
+
+/// Read-only: every [`REQUIRED_OBJECTS`] entry with `version <= max_version` that is
+/// absent from `sqlite_master` (one query).
+#[allow(dead_code)] // TEMP-16-01: wired into the repair in the next commit
+pub(crate) fn missing_required_objects(
+    conn: &Connection,
+    max_version: u32,
+) -> Result<Vec<&'static str>> {
+    let mut stmt =
+        conn.prepare("SELECT type, name FROM sqlite_master WHERE type IN ('table', 'index')")?;
+    let present = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<Result<HashSet<(String, String)>>>()?;
+    Ok(REQUIRED_OBJECTS
+        .iter()
+        .filter(|o| o.version <= max_version)
+        .filter(|o| !present.contains(&(o.kind.to_string(), o.name.to_string())))
+        .map(|o| o.name)
+        .collect())
+}
+
 /// Migration trait for database schema changes
 #[allow(dead_code)]
 pub trait Migration {
@@ -1608,11 +1676,6 @@ mod tests {
         let mut runner = MigrationRunner::new(&migrated_path).unwrap();
         runner.migrate().unwrap();
 
-        // Known pre-008 drift (out of scope here, Phase 16 note): SCHEMA always has
-        // `sessions.sync_timestamp`, but migration 003 only adds it with `turso-sync`.
-        // Any other difference between the two paths fails this test.
-        const KNOWN_PRE_008_DRIFT: [&str; 1] = ["sync_timestamp"];
-
         for table in ["sessions", "session_archive"] {
             let a = column_names(&fresh, table);
             let b = column_names(&runner.conn, table);
@@ -1620,15 +1683,253 @@ mod tests {
                 assert!(a.iter().any(|c| c == col), "fresh {table} missing {col}");
                 assert!(b.iter().any(|c| c == col), "migrated {table} missing {col}");
             }
-            let unexpected: Vec<&String> = a
-                .iter()
-                .filter(|c| !b.contains(c))
-                .chain(b.iter().filter(|c| !a.contains(c)))
-                .filter(|c| !KNOWN_PRE_008_DRIFT.contains(&c.as_str()))
-                .collect();
+        }
+
+        // Every table, full column metadata, no allowlist. Order-independent: migrations
+        // append columns in a different order than SCHEMA declares them.
+        let fresh_tables = table_names(&fresh);
+        let migrated_tables = table_names(&runner.conn);
+        let all: std::collections::BTreeSet<&String> =
+            fresh_tables.union(&migrated_tables).collect();
+        for table in all {
+            assert!(fresh_tables.contains(table), "fresh DB lacks table {table}");
             assert!(
-                unexpected.is_empty(),
-                "{table}: fresh SCHEMA and migrated columns differ: {unexpected:?}"
+                migrated_tables.contains(table),
+                "migrated DB lacks table {table}"
+            );
+            let a: std::collections::BTreeSet<ColumnMeta> =
+                column_meta(&fresh, table).into_iter().collect();
+            let b: std::collections::BTreeSet<ColumnMeta> =
+                column_meta(&runner.conn, table).into_iter().collect();
+            assert_eq!(
+                a,
+                b,
+                "{table}: fresh SCHEMA and migrated column metadata differ\n  only fresh: {:?}\n  only migrated: {:?}",
+                a.difference(&b).collect::<Vec<_>>(),
+                b.difference(&a).collect::<Vec<_>>()
+            );
+        }
+
+        // Indexes: only the phase-owned idx_transcript_progress_session is compared. Known
+        // pre-existing index drift, intentionally not compared here (exists only on fresh
+        // DBs since migrations 001-006, outside D-05): idx_sessions_start_time,
+        // idx_sessions_last_updated, idx_sessions_cost, idx_sessions_device,
+        // idx_daily_date_cost, idx_daily_device, idx_monthly_device.
+        for conn in [&fresh, &runner.conn] {
+            let tbl: String = conn
+                .query_row(
+                    "SELECT tbl_name FROM sqlite_master WHERE type='index' AND name='idx_transcript_progress_session'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(tbl, "transcript_progress");
+            let cols: Vec<String> = conn
+                .prepare("SELECT name FROM pragma_index_info('idx_transcript_progress_session')")
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            assert_eq!(cols, vec!["session_id"]);
+        }
+    }
+
+    /// Snapshot every seeded v6 row: the v6 column list, ordered by primary key.
+    fn seeded_rows(conn: &Connection) -> Vec<(String, Vec<Vec<rusqlite::types::Value>>)> {
+        let v6 = Connection::open_in_memory().unwrap();
+        v6.execute_batch(V6_SCHEMA).unwrap();
+        [
+            ("sessions", "session_id"),
+            ("daily_stats", "date"),
+            ("monthly_stats", "month"),
+            ("session_archive", "id"),
+            ("learned_context_windows", "model_name"),
+        ]
+        .iter()
+        .map(|(table, pk)| {
+            let cols = column_names(&v6, table);
+            let sql = format!("SELECT {} FROM {} ORDER BY {}", cols.join(", "), table, pk);
+            let mut stmt = conn.prepare(&sql).unwrap();
+            let rows = stmt
+                .query_map([], |row| {
+                    (0..cols.len())
+                        .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                        .collect::<Result<Vec<_>>>()
+                })
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect::<Vec<_>>();
+            assert!(!rows.is_empty(), "seed must populate {table}");
+            (table.to_string(), rows)
+        })
+        .collect()
+    }
+
+    /// v6 fixture DB stamped 6, 7 and 8 by hand, without any 007/008 column, table or index.
+    fn stamped_v8_without_columns(dir: &TempDir, name: &str) -> std::path::PathBuf {
+        let path = v6_fixture_db(dir, name);
+        let conn = Connection::open(&path).unwrap();
+        stamp(&conn, 7);
+        stamp(&conn, 8);
+        path
+    }
+
+    #[test]
+    fn repair_adds_missing_columns_when_stamped_v8() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = stamped_v8_without_columns(&temp_dir, "stamped_v8.db");
+        let before = seeded_rows(&Connection::open(&db_path).unwrap());
+
+        drop(crate::database::SqliteDatabase::new(&db_path).expect("open must repair, not fail"));
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(missing_required_columns(&conn, 8).unwrap(), vec![]);
+        assert_eq!(
+            missing_required_objects(&conn, 8).unwrap(),
+            Vec::<&str>::new()
+        );
+        assert_eq!(recorded_versions(&conn), vec![6, 7, 8]);
+        assert_eq!(seeded_rows(&conn), before, "repair must not change any row");
+    }
+
+    #[test]
+    fn repair_errors_and_rolls_back_when_required_table_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = stamped_v8_without_columns(&temp_dir, "no_archive_v8.db");
+        Connection::open(&db_path)
+            .unwrap()
+            .execute("DROP TABLE session_archive", [])
+            .unwrap();
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        let err = runner
+            .migrate()
+            .expect_err("a missing required table must be an explicit error");
+        assert!(
+            err.to_string().contains("session_archive"),
+            "error must name the missing table: {err}"
+        );
+        assert!(!crate::retry::is_retryable_error(
+            &crate::error::StatuslineError::Database(err)
+        ));
+        assert!(
+            !column_names(&runner.conn, "sessions")
+                .iter()
+                .any(|c| c == "claude_version"),
+            "repair must roll back: nothing half-applied"
+        );
+        assert_eq!(recorded_versions(&runner.conn), vec![6, 7, 8]);
+        drop(runner);
+
+        assert!(crate::database::SqliteDatabase::new(&db_path).is_err());
+    }
+
+    #[test]
+    fn repair_recreates_missing_transcript_index() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("no_index.db");
+        drop(crate::database::SqliteDatabase::new(&db_path).unwrap());
+        let read_row = |conn: &Connection| -> (String, String, i64, i64) {
+            conn.query_row(
+                "SELECT path, session_id, offset, output_tokens FROM transcript_progress",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap()
+        };
+        let before = {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO transcript_progress (path, session_id, offset, output_tokens, updated_at)
+                 VALUES ('/tmp/synthetic/t.jsonl', 'synthetic-session', 4096, 77, '2026-01-01T00:00:00+00:00')",
+                [],
+            )
+            .unwrap();
+            conn.execute("DROP INDEX idx_transcript_progress_session", [])
+                .unwrap();
+            read_row(&conn)
+        };
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.migrate().unwrap();
+
+        let has_index: i64 = runner
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_transcript_progress_session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_index, 1);
+        assert_eq!(read_row(&runner.conn), before);
+    }
+
+    #[test]
+    fn repair_healthy_path_takes_no_write_lock() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("healthy.db");
+        drop(crate::database::SqliteDatabase::new(&db_path).unwrap());
+        let schema_version = |conn: &Connection| -> i64 {
+            conn.query_row("PRAGMA schema_version", [], |r| r.get(0))
+                .unwrap()
+        };
+        let before = schema_version(&Connection::open(&db_path).unwrap());
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.conn.busy_timeout(std::time::Duration::ZERO).unwrap();
+        let blocker = Connection::open(&db_path).unwrap();
+        blocker.execute_batch("BEGIN IMMEDIATE").unwrap();
+
+        let result = runner.migrate();
+        blocker.execute_batch("ROLLBACK").unwrap();
+        result.expect("healthy path must not need the write lock");
+
+        assert_eq!(schema_version(&runner.conn), before);
+        assert_eq!(missing_required_columns(&runner.conn, 8).unwrap(), vec![]);
+        assert_eq!(
+            missing_required_objects(&runner.conn, 8).unwrap(),
+            Vec::<&str>::new()
+        );
+    }
+
+    #[test]
+    fn concurrent_repairers_add_each_column_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = stamped_v8_without_columns(&temp_dir, "concurrent.db");
+        // Switch to WAL up front so the two constructors do not race the journal-mode change.
+        Connection::open(&db_path)
+            .unwrap()
+            .pragma_update(None, "journal_mode", "WAL")
+            .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let barrier = barrier.clone();
+                let path = db_path.clone();
+                std::thread::spawn(move || -> Result<()> {
+                    barrier.wait();
+                    MigrationRunner::new(&path)?.migrate()
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().expect("each repairer must succeed");
+        }
+
+        let conn = Connection::open(&db_path).unwrap();
+        for row in REQUIRED_COLUMNS {
+            assert_eq!(
+                column_names(&conn, row.table)
+                    .iter()
+                    .filter(|c| *c == row.name)
+                    .count(),
+                1,
+                "{}.{} must exist exactly once",
+                row.table,
+                row.name
             );
         }
     }
