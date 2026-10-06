@@ -2,7 +2,222 @@ use crate::retry::{retry_if_retryable, RetryConfig};
 use crate::stats::StatsData;
 use chrono::Local;
 use rusqlite::{params, Connection, Result, Transaction, TransactionBehavior};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
+
+/// One column a schema version requires (see [`REQUIRED_COLUMNS`]).
+#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct RequiredColumn {
+    /// Schema version that introduced the column.
+    pub version: u32,
+    /// Table the column lives on.
+    pub table: &'static str,
+    /// Column name.
+    pub name: &'static str,
+    /// Column declaration (type plus default), exactly as in `SCHEMA`.
+    pub decl: &'static str,
+}
+
+/// Single source of truth for the columns each schema version requires. Used by
+/// migrations 007/008, the open-time repair, and the tests. Column declarations must
+/// match src/database/schema.rs SCHEMA exactly.
+///
+/// Scope: version 3 (`sessions.sync_timestamp` only; the default-feature migration 003
+/// never added it, so the repair closes that drift), 7 and 8. Older columns are covered
+/// by the fresh-vs-migrated parity test.
+#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+pub(crate) const REQUIRED_COLUMNS: &[RequiredColumn] = &[
+    RequiredColumn {
+        version: 3,
+        table: "sessions",
+        name: "sync_timestamp",
+        decl: "INTEGER",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "claude_version",
+        decl: "TEXT",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "agent_count",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "agent_requests",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "agent_input_tokens",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "agent_output_tokens",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "main_requests",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "main_input_tokens",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "sessions",
+        name: "main_output_tokens",
+        decl: "INTEGER DEFAULT 0",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "sessions",
+        name: "raw_cost",
+        decl: "REAL",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "sessions",
+        name: "raw_lines_added",
+        decl: "INTEGER",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "sessions",
+        name: "raw_lines_removed",
+        decl: "INTEGER",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "sessions",
+        name: "process_start_ms",
+        decl: "INTEGER",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "session_archive",
+        name: "raw_cost",
+        decl: "REAL",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "session_archive",
+        name: "raw_lines_added",
+        decl: "INTEGER",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "session_archive",
+        name: "raw_lines_removed",
+        decl: "INTEGER",
+    },
+    RequiredColumn {
+        version: 8,
+        table: "session_archive",
+        name: "process_start_ms",
+        decl: "INTEGER",
+    },
+];
+
+/// Column names of every distinct table referenced by the registry rows matching
+/// `pred`, with exactly one `PRAGMA table_info` per table (an absent table yields an
+/// empty set). `Transaction` derefs to `Connection`, so this serves both.
+#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+fn registry_table_columns(
+    conn: &Connection,
+    pred: impl Fn(u32) -> bool,
+) -> Result<HashMap<&'static str, HashSet<String>>> {
+    let mut map: HashMap<&'static str, HashSet<String>> = HashMap::new();
+    for row in REQUIRED_COLUMNS.iter().filter(|r| pred(r.version)) {
+        if map.contains_key(row.table) {
+            continue;
+        }
+        // Table names come only from the compile-time registry, never from input.
+        let mut stmt = conn.prepare(&format!("PRAGMA table_info({})", row.table))?;
+        let names = stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .collect::<Result<HashSet<String>>>()?;
+        map.insert(row.table, names);
+    }
+    Ok(map)
+}
+
+/// Explicit, non-retryable error for a table that registry columns live on but that
+/// does not exist. The message deliberately avoids the words `retry::is_retryable_error`
+/// matches, so the retry loop returns it at once.
+#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+fn schema_invariant_error(table: &str, version: u32) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+        Some(format!(
+            "schema invariant violated: table {table} is required by schema version {version} but does not exist"
+        )),
+    )
+}
+
+/// Add every registry column whose version matches `pred` and which is absent, and
+/// return the `(table, column)` pairs that were added.
+///
+/// If a matching row's table does not exist, returns the schema-invariant error
+/// before running any ALTER: a missing required table is never skipped.
+#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+pub(crate) fn add_missing_columns(
+    tx: &Transaction,
+    pred: impl Fn(u32) -> bool,
+) -> Result<Vec<(&'static str, &'static str)>> {
+    let mut existing = registry_table_columns(tx, &pred)?;
+    for row in REQUIRED_COLUMNS.iter().filter(|r| pred(r.version)) {
+        if existing.get(row.table).is_none_or(|cols| cols.is_empty()) {
+            return Err(schema_invariant_error(row.table, row.version));
+        }
+    }
+    let mut added = Vec::new();
+    for row in REQUIRED_COLUMNS.iter().filter(|r| pred(r.version)) {
+        let cols = existing.entry(row.table).or_default();
+        if cols.contains(row.name) {
+            continue;
+        }
+        tx.execute(
+            &format!(
+                "ALTER TABLE {} ADD COLUMN {} {}",
+                row.table, row.name, row.decl
+            ),
+            [],
+        )?;
+        cols.insert(row.name.to_string());
+        added.push((row.table, row.name));
+    }
+    Ok(added)
+}
+
+/// Read-only: every registry column with `version <= max_version` that is absent,
+/// including rows whose table does not exist.
+#[allow(dead_code)] // TEMP-16-01: wired into 007/008 in the next commit
+pub(crate) fn missing_required_columns(
+    conn: &Connection,
+    max_version: u32,
+) -> Result<Vec<(&'static str, &'static str)>> {
+    let existing = registry_table_columns(conn, |v| v <= max_version)?;
+    Ok(REQUIRED_COLUMNS
+        .iter()
+        .filter(|r| r.version <= max_version)
+        .filter(|r| !existing.get(r.table).is_some_and(|c| c.contains(r.name)))
+        .map(|r| (r.table, r.name))
+        .collect())
+}
 
 /// Migration trait for database schema changes
 #[allow(dead_code)]
