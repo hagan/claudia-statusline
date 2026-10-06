@@ -84,15 +84,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   treats `cost` as the raw payload value. Its updates then double-count spend
   or subtract it from the daily and monthly totals, and v3.4.0 cannot detect
   or repair this afterwards. Do not run an older statusline against a
-  database v3.4.0 has used. A session pulled from cloud sync
-  starts without a baseline, which can undercount but never overcounts.
+  database v3.4.0 has used. A v3.3.0 binary still running against such a
+  database (a second install or a stale hook) also wipes the v7 and v8
+  columns on `statusline sync --pull`, because its pull uses
+  `INSERT OR REPLACE`, and its live writes overwrite the cumulative `cost`;
+  upgrade every install together. A cloud-sync pull keeps this device's
+  baseline, so the next live update is still measured against the last
+  payload this device saw.
 - **Library API (breaking for crate users).** `utils::clamp_reset_delta_f64`
   and `utils::clamp_reset_delta_i64` were removed. `SessionUpdate` gains
   `inferred_start_ms` and now derives `Default`; `SessionStats` gains
   `baseline`. New: the `stats::accounting` module (`classify`,
   `RESTART_TOLERANCE_MS`, `Baseline`, `Observation`, `Outcome`) and
   `SqliteDatabase::update_session_applied`, which returns an `AppliedUpdate`
-  describing exactly what was committed.
+  describing exactly what was committed. `SqliteDatabase::upsert_session_direct`
+  (`turso-sync`) takes two new parameters, `active_time_seconds: Option<u64>`
+  and `last_activity: Option<&str>`.
 
 ### Fixed
 
@@ -136,6 +143,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   break later loads, or panic a debug build. The previous "below half =
   restart" heuristic is gone. See "How spend and token totals are counted" in
   `docs/USAGE.md`.
+- A fresh database initialized at the same moment by an older and a newer
+  binary could record schema v8 without the v7/v8 columns. The newer binary
+  now re-checks for an existing schema inside its initialization transaction
+  and runs the normal migrations instead. Opening a database also repairs one
+  already in that state: missing v7/v8 columns, the `transcript_progress`
+  table and its index are added (additive DDL only, no rows rewritten).
+- Migration 007 is idempotent: it adds only the columns that are missing
+  instead of failing on a partially migrated database.
+- Databases built without `turso-sync` now get `sessions.sync_timestamp` and
+  the `sync_meta` table, like a fresh database, so the schema no longer
+  depends on the feature set of the binary that created it.
+- A Turso pull (`statusline sync --pull`) no longer resets local-only columns.
+  It used `INSERT OR REPLACE`, which deletes the row first, so a pull reset
+  subagent attribution, the accounting baseline, token totals, `device_id`,
+  model and workspace, and set the daily `session_count` to 0. The pull now
+  updates only the columns it carries, writes active time and last activity
+  when the remote row has them, and ignores negative or out-of-range remote
+  values.
+- The CI test job now fails when `cargo test` fails (previously masked by
+  piping through `tee`), and it runs the `turso-sync` tests. `make test-turso`
+  runs them locally; `make test-full` runs every suite in sequence without
+  installing.
 
 ## [3.3.0] - 2026-09-28
 
