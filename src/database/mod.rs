@@ -29,6 +29,12 @@ pub use schema::{AppliedUpdate, SessionUpdate, SCHEMA};
 // Track which database files have been migrated to avoid redundant migration checks
 static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
 
+// Test-only race seam: fires between the stale `is_new_db` read and BEGIN IMMEDIATE in
+// `SqliteDatabase::new`. Thread-local so parallel tests cannot see each other's hooks;
+// compiled out of non-test builds.
+#[cfg(test)]
+thread_local! { pub(crate) static AFTER_NEW_DB_CHECK: std::cell::RefCell<Option<Box<dyn FnOnce(&Path)>>> = const { std::cell::RefCell::new(None) }; }
+
 pub struct SqliteDatabase {
     #[allow(dead_code)]
     path: PathBuf,
@@ -111,6 +117,12 @@ impl SqliteDatabase {
         let is_new_db = !has_sessions_table;
 
         if is_new_db {
+            // Test-only: let a test commit another binary's schema in the race window.
+            #[cfg(test)]
+            if let Some(hook) = AFTER_NEW_DB_CHECK.with(|h| h.borrow_mut().take()) {
+                hook(db_path);
+            }
+
             // NEW DATABASE: create the complete schema AND record the version ATOMICALLY.
             //
             // Concurrency safety: `is_new_db` is read outside a transaction, so multiple
