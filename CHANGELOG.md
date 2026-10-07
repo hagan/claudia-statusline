@@ -148,7 +148,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now re-checks for an existing schema inside its initialization transaction
   and runs the normal migrations instead. Opening a database also repairs one
   already in that state: missing v7/v8 columns, the `transcript_progress`
-  table and its index are added (additive DDL only, no rows rewritten).
+  table and its index are added (additive DDL only, no rows rewritten). A
+  missing `session_archive` table is recreated empty instead of making every
+  open fail.
 - Migration 007 is idempotent: it adds only the columns that are missing
   instead of failing on a partially migrated database.
 - Databases built without `turso-sync` now get `sessions.sync_timestamp` and

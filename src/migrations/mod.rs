@@ -222,6 +222,31 @@ const SYNC_META_DDL: &str = "CREATE TABLE IF NOT EXISTS sync_meta (
                 hostname_hash TEXT
             )";
 
+/// session_archive table (migration 005 shape, same declarations as `SCHEMA`). The
+/// v8 columns are not listed here: the repair adds them from [`REQUIRED_COLUMNS`]
+/// after creating the table, so the result matches `SCHEMA` column for column.
+const SESSION_ARCHIVE_DDL: &str = "CREATE TABLE IF NOT EXISTS session_archive (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                end_time TEXT NOT NULL,
+                archived_at TEXT NOT NULL,
+                cost REAL NOT NULL,
+                lines_added INTEGER NOT NULL,
+                lines_removed INTEGER NOT NULL,
+                active_time_seconds INTEGER,
+                last_activity TEXT,
+                model_name TEXT,
+                workspace_dir TEXT,
+                device_id TEXT
+            )";
+
+/// session_archive indexes (migration 005; same text as `SCHEMA`).
+const ARCHIVE_SESSION_INDEX_DDL: &str =
+    "CREATE INDEX IF NOT EXISTS idx_archive_session ON session_archive(session_id)";
+const ARCHIVE_DATE_INDEX_DDL: &str =
+    "CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at))";
+
 /// One table or index a schema version requires (see [`REQUIRED_OBJECTS`]).
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RequiredObject {
@@ -240,6 +265,11 @@ pub(crate) struct RequiredObject {
 #[rustfmt::skip]
 pub(crate) const REQUIRED_OBJECTS: &[RequiredObject] = &[
     RequiredObject { version: 3, kind: "table", name: "sync_meta", ddl: SYNC_META_DDL },
+    // An empty archive is valid ("nothing archived yet"), so recreating it loses nothing.
+    // Tables come before their indexes: the repair runs these in order.
+    RequiredObject { version: 5, kind: "table", name: "session_archive", ddl: SESSION_ARCHIVE_DDL },
+    RequiredObject { version: 5, kind: "index", name: "idx_archive_session", ddl: ARCHIVE_SESSION_INDEX_DDL },
+    RequiredObject { version: 5, kind: "index", name: "idx_archive_date", ddl: ARCHIVE_DATE_INDEX_DDL },
     RequiredObject { version: 7, kind: "table", name: "transcript_progress", ddl: TRANSCRIPT_PROGRESS_DDL },
     RequiredObject { version: 7, kind: "index", name: "idx_transcript_progress_session", ddl: TRANSCRIPT_PROGRESS_DDL },
 ];
@@ -409,8 +439,10 @@ impl MigrationRunner {
     ///
     /// Additive DDL only (ALTER TABLE ADD COLUMN, CREATE TABLE/INDEX IF NOT EXISTS); it
     /// never changes rows or schema_migrations. The preflight is read-only, so a healthy DB
-    /// opens no transaction. A table that registry columns live on but that is absent is
-    /// an explicit schema-invariant error, and the transaction rolls back.
+    /// opens no transaction. Missing [`REQUIRED_OBJECTS`] (including `session_archive`)
+    /// are created before columns are added. A table that registry columns live on, that
+    /// is absent and that is not a [`REQUIRED_OBJECTS`] entry, is an explicit
+    /// schema-invariant error, and the transaction rolls back.
     fn repair_required_columns(&mut self) -> Result<()> {
         let current = self.current_version()?;
         if missing_required_columns(&self.conn, current)?.is_empty()
@@ -423,13 +455,16 @@ impl MigrationRunner {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         // Re-read inside the write lock: a concurrent repairer may have done the work.
-        let added_columns = add_missing_columns(&tx, |v| v <= current)?;
+        // Objects first, so a recreatable table (session_archive) exists before its
+        // registry columns are added; the invariant check in add_missing_columns then
+        // fires only for tables the repair cannot create.
         let missing_objects = missing_required_objects(&tx, current)?;
         for name in &missing_objects {
             if let Some(obj) = REQUIRED_OBJECTS.iter().find(|o| o.name == *name) {
                 tx.execute_batch(obj.ddl)?;
             }
         }
+        let added_columns = add_missing_columns(&tx, |v| v <= current)?;
         tx.commit()?;
 
         if !added_columns.is_empty() || !missing_objects.is_empty() {
@@ -1040,7 +1075,8 @@ impl Migration for AddAgentTracking {
 /// `SCHEMA`, or a concurrent opener that lost the version-record race, never
 /// hits "duplicate column name". 007 and 008 share the registry-driven idempotent
 /// helper (`add_missing_columns` over `REQUIRED_COLUMNS`) and the open-time repair
-/// (Phase 16); a missing `session_archive` is an explicit schema-invariant error.
+/// (Phase 16). During the 7 -> 8 upgrade a missing `session_archive` is an explicit
+/// schema-invariant error; once 8 is recorded, the open-time repair recreates it.
 pub struct AddAccountingBaseline;
 
 impl Migration for AddAccountingBaseline {
@@ -1828,7 +1864,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_errors_and_rolls_back_when_required_table_missing() {
+    fn repair_recreates_missing_session_archive() {
         let temp_dir = TempDir::new().unwrap();
         let db_path = stamped_v8_without_columns(&temp_dir, "no_archive_v8.db");
         Connection::open(&db_path)
@@ -1836,10 +1872,45 @@ mod tests {
             .execute("DROP TABLE session_archive", [])
             .unwrap();
 
-        let mut runner = MigrationRunner::new(&db_path).unwrap();
-        let err = runner
-            .migrate()
-            .expect_err("a missing required table must be an explicit error");
+        drop(
+            crate::database::SqliteDatabase::new(&db_path)
+                .expect("a missing session_archive must be recreated, not fail every open"),
+        );
+
+        let conn = Connection::open(&db_path).unwrap();
+        assert_eq!(missing_required_columns(&conn, 8).unwrap(), vec![]);
+        assert_eq!(
+            missing_required_objects(&conn, 8).unwrap(),
+            Vec::<&str>::new()
+        );
+        assert_eq!(recorded_versions(&conn), vec![6, 7, 8]);
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM session_archive", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "a recreated archive starts empty");
+
+        // The recreated table matches a fresh SCHEMA table column for column.
+        let fresh_dir = TempDir::new().unwrap();
+        let fresh_path = fresh_dir.path().join("fresh.db");
+        drop(crate::database::SqliteDatabase::new(&fresh_path).unwrap());
+        let fresh = Connection::open(&fresh_path).unwrap();
+        assert_eq!(
+            column_meta(&conn, "session_archive"),
+            column_meta(&fresh, "session_archive")
+        );
+    }
+
+    #[test]
+    fn add_missing_columns_errors_and_rolls_back_when_required_table_missing() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = stamped_v8_without_columns(&temp_dir, "no_archive_tx.db");
+        let mut conn = Connection::open(&db_path).unwrap();
+        conn.execute("DROP TABLE session_archive", []).unwrap();
+
+        let tx = conn.transaction().unwrap();
+        let err = add_missing_columns(&tx, |v| v <= 8)
+            .expect_err("a missing registry table must be an explicit error");
+        drop(tx);
         assert!(
             err.to_string().contains("session_archive"),
             "error must name the missing table: {err}"
@@ -1848,15 +1919,11 @@ mod tests {
             &crate::error::StatuslineError::Database(err)
         ));
         assert!(
-            !column_names(&runner.conn, "sessions")
+            !column_names(&conn, "sessions")
                 .iter()
                 .any(|c| c == "claude_version"),
-            "repair must roll back: nothing half-applied"
+            "nothing half-applied"
         );
-        assert_eq!(recorded_versions(&runner.conn), vec![6, 7, 8]);
-        drop(runner);
-
-        assert!(crate::database::SqliteDatabase::new(&db_path).is_err());
     }
 
     #[test]
