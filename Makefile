@@ -183,7 +183,7 @@ test-turso:
 .PHONY: test-sqlite
 test-sqlite: debug
 	@echo "$(BLUE)Running SQLite integration tests...$(NC)"
-	@$(TEST_ENV) $(CARGO) test sqlite_integration
+	@$(TEST_ENV) $(CARGO) test --test sqlite_integration_tests
 
 # Run installation test
 .PHONY: test-install
