@@ -438,13 +438,28 @@ impl MigrationRunner {
     /// build, or by an interleaving the fresh-init re-check does not anticipate).
     ///
     /// Additive DDL only (ALTER TABLE ADD COLUMN, CREATE TABLE/INDEX IF NOT EXISTS); it
-    /// never changes rows or schema_migrations. The preflight is read-only, so a healthy DB
+    /// never changes rows or schema_migrations. It is skipped entirely when the recorded
+    /// version is newer than this binary's latest migration. The preflight is read-only, so a healthy DB
     /// opens no transaction. Missing [`REQUIRED_OBJECTS`] (including `session_archive`)
     /// are created before columns are added. A table that registry columns live on, that
     /// is absent and that is not a [`REQUIRED_OBJECTS`] entry, is an explicit
     /// schema-invariant error, and the transaction rolls back.
     fn repair_required_columns(&mut self) -> Result<()> {
         let current = self.current_version()?;
+        // A schema recorded by a newer binary may have dropped, renamed or reshaped
+        // objects this binary would re-add, so never write to it (forward compat).
+        let latest_known = self
+            .migrations
+            .iter()
+            .map(|m| m.version())
+            .max()
+            .unwrap_or(0);
+        if current > latest_known {
+            log::debug!(
+                "schema v{current} is newer than this binary (v{latest_known}); skipping repair"
+            );
+            return Ok(());
+        }
         if missing_required_columns(&self.conn, current)?.is_empty()
             && missing_required_objects(&self.conn, current)?.is_empty()
         {
@@ -1924,6 +1939,31 @@ mod tests {
                 .any(|c| c == "claude_version"),
             "nothing half-applied"
         );
+    }
+
+    #[test]
+    fn repair_skips_schema_newer_than_binary() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = stamped_v8_without_columns(&temp_dir, "newer_v9.db");
+        let conn = Connection::open(&db_path).unwrap();
+        stamp(&conn, 9);
+        let before = column_names(&conn, "sessions");
+        drop(conn);
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner
+            .migrate()
+            .expect("a newer schema must open without repair");
+
+        assert_eq!(
+            column_names(&runner.conn, "sessions"),
+            before,
+            "an older binary must not add columns to a newer schema"
+        );
+        assert!(!missing_required_columns(&runner.conn, 8)
+            .unwrap()
+            .is_empty());
+        assert_eq!(recorded_versions(&runner.conn), vec![6, 7, 8, 9]);
     }
 
     #[test]
