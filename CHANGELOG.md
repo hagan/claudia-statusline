@@ -161,8 +161,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   subagent attribution, the accounting baseline, token totals, `device_id`,
   model and workspace, and set the daily `session_count` to 0. The pull now
   updates only the columns it carries, writes active time and last activity
-  when the remote row has them, and ignores negative or out-of-range remote
-  values.
+  when the remote row has them, and ignores a negative or out-of-range remote
+  active time. A remote row whose cost or line counts (or monthly session
+  count) are negative or not finite is skipped, leaving the local row
+  unchanged.
 - The CI test job now fails when `cargo test` fails (previously masked by
   piping through `tee`), and it runs the `turso-sync` tests. `make test-turso`
   runs them locally; `make test-full` runs every suite in sequence without

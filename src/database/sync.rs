@@ -3,6 +3,17 @@ use super::SqliteDatabase;
 #[cfg(feature = "turso-sync")]
 use rusqlite::{params, Result};
 
+/// Checked u64 -> i64 for a pulled counter: a value above i64::MAX is an error, never
+/// a wrap to a negative stored value.
+#[cfg(feature = "turso-sync")]
+fn to_sql_i64<T: TryInto<i64>>(v: T) -> Result<i64>
+where
+    T::Error: std::error::Error + Send + Sync + 'static,
+{
+    v.try_into()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+}
+
 #[cfg(feature = "turso-sync")]
 impl SqliteDatabase {
     /// Count total number of sessions
@@ -66,8 +77,8 @@ impl SqliteDatabase {
                 start_time,
                 last_updated,
                 cost,
-                lines_added as i64,
-                lines_removed as i64,
+                to_sql_i64(lines_added)?,
+                to_sql_i64(lines_removed)?,
                 active_time_seconds,
                 last_activity,
             ],
@@ -93,7 +104,12 @@ impl SqliteDatabase {
                 total_cost = excluded.total_cost,
                 total_lines_added = excluded.total_lines_added,
                 total_lines_removed = excluded.total_lines_removed",
-            params![date, total_cost, lines_added as i64, lines_removed as i64,],
+            params![
+                date,
+                total_cost,
+                to_sql_i64(lines_added)?,
+                to_sql_i64(lines_removed)?,
+            ],
         )?;
         Ok(())
     }
@@ -121,9 +137,9 @@ impl SqliteDatabase {
             params![
                 month,
                 total_cost,
-                lines_added as i64,
-                lines_removed as i64,
-                session_count as i64,
+                to_sql_i64(lines_added)?,
+                to_sql_i64(lines_removed)?,
+                to_sql_i64(session_count)?,
             ],
         )?;
         Ok(())
@@ -540,6 +556,27 @@ mod pull_upsert_tests {
         );
         assert_eq!(applied.lines_added_delta, 2);
         assert_eq!(applied.lines_removed_delta, 1);
+    }
+
+    #[test]
+    fn pull_rejects_counters_above_i64_max_without_writing() {
+        let (_dir, db) = open();
+        seed_full_session(&db, SID);
+        let before = row_snapshot(&db, "sessions", "session_id", SID);
+        assert!(db
+            .upsert_session_direct(SID, None, REMOTE_UPDATED, 7.0, u64::MAX, 4, None, None)
+            .is_err());
+        assert_eq!(row_snapshot(&db, "sessions", "session_id", SID), before);
+
+        seed_daily(&db, "2026-01-01");
+        let before = row_snapshot(&db, "daily_stats", "date", "2026-01-01");
+        assert!(db
+            .upsert_daily_stats_direct("2026-01-01", 1.0, 1, u64::MAX)
+            .is_err());
+        assert_eq!(
+            row_snapshot(&db, "daily_stats", "date", "2026-01-01"),
+            before
+        );
     }
 
     #[test]
