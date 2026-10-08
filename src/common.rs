@@ -261,4 +261,41 @@ mod tests {
         let device_id2 = get_device_id();
         assert_eq!(device_id, device_id2);
     }
+
+    #[test]
+    fn session_id_accepts_charset() {
+        let long = "a".repeat(128);
+        for ok in [
+            "0a1b2c3d-0000-4000-8000-000000000001",
+            "sess-1",
+            "A_b-9",
+            "a",
+            long.as_str(),
+        ] {
+            assert!(is_valid_session_id(ok), "{ok:?} should be accepted");
+        }
+    }
+
+    #[test]
+    fn session_id_rejects_unsafe() {
+        let too_long = "a".repeat(129);
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "/abs",
+            "a/b",
+            "a\\b",
+            "a.b",
+            "a b",
+            "a\0b",
+            "\x1b[31m",
+            "\u{e9}",
+            "\u{ff41}",
+            too_long.as_str(),
+        ] {
+            assert!(!is_valid_session_id(bad), "{bad:?} should be rejected");
+        }
+    }
 }
