@@ -37,6 +37,40 @@ pub(crate) type AfterNewDbHook = Option<Box<dyn FnOnce(&Path)>>;
 #[cfg(test)]
 thread_local! { pub(crate) static AFTER_NEW_DB_CHECK: std::cell::RefCell<AfterNewDbHook> = const { std::cell::RefCell::new(None) }; }
 
+/// Open `path` strictly read-only. This is the only database open allowed on a
+/// read-only render (`update_stats == false`, AGENT-04 / SC3); 17-07's attribution
+/// store reuses it.
+///
+/// The connection is `SQLITE_OPEN_READ_ONLY` (no `SQLITE_OPEN_CREATE`, no URI), sets
+/// `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` so closing the last connection never checkpoints a
+/// pending WAL into the main file, and runs with `query_only = ON`. It never creates the
+/// parent directory or the database, never switches the journal mode, and runs no DDL,
+/// migration or open-time repair. A missing `path` returns `SQLITE_CANTOPEN` without
+/// touching the filesystem.
+///
+/// SQLite note: on a WAL database whose `-wal`/`-shm` are absent, a read-only open may
+/// create an empty `-wal` and a non-durable `-shm` when the directory is writable; the
+/// main database file is never written.
+pub(crate) fn open_read_only_connection(path: &Path, busy_ms: u32) -> Result<Connection> {
+    if !path.exists() {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some("database not found".to_string()),
+        ));
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_millis(busy_ms as u64))?;
+    conn.pragma_update(None, "query_only", "ON")?;
+    Ok(conn)
+}
+
 pub struct SqliteDatabase {
     #[allow(dead_code)]
     path: PathBuf,
@@ -303,6 +337,19 @@ impl SqliteDatabase {
         };
 
         Ok(db)
+    }
+
+    /// Open an existing database for reads only (see [`open_read_only_connection`]).
+    ///
+    /// The on-disk schema may be older than this binary (no migration or repair runs):
+    /// queries on missing columns return `Err` and callers already degrade to "no value".
+    pub(crate) fn open_read_only(db_path: &Path) -> Result<Self> {
+        let conn =
+            open_read_only_connection(db_path, config::get_config().database.busy_timeout_ms)?;
+        Ok(Self {
+            path: db_path.to_path_buf(),
+            conn: Mutex::new(conn),
+        })
     }
 
     fn get_connection(&self) -> Result<MutexGuard<'_, Connection>> {

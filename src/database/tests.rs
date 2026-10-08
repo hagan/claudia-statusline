@@ -1724,7 +1724,10 @@ fn open_read_only_rejects_writes() {
         "INSERT INTO sessions (session_id, start_time, last_updated) VALUES ('x', 'a', 'b')",
         [],
     );
-    assert!(res.is_err(), "writes through a read-only connection must fail");
+    assert!(
+        res.is_err(),
+        "writes through a read-only connection must fail"
+    );
 }
 
 #[test]
@@ -1751,7 +1754,10 @@ fn open_read_only_does_not_checkpoint_pending_wal() {
     }
     let wal = ro_wal_path(&db_path);
     let wal_before = std::fs::read(&wal).expect("-wal must exist");
-    assert!(!wal_before.is_empty(), "precondition: pending WAL is non-empty");
+    assert!(
+        !wal_before.is_empty(),
+        "precondition: pending WAL is non-empty"
+    );
     let main_before = std::fs::read(&db_path).unwrap();
 
     {
@@ -1766,7 +1772,11 @@ fn open_read_only_does_not_checkpoint_pending_wal() {
         assert!((cost - 1.5).abs() < 1e-9, "pending WAL row must be visible");
     }
 
-    assert_eq!(std::fs::read(&db_path).unwrap(), main_before, "main db bytes");
+    assert_eq!(
+        std::fs::read(&db_path).unwrap(),
+        main_before,
+        "main db bytes"
+    );
     assert_eq!(std::fs::read(&wal).unwrap(), wal_before, "-wal bytes");
 }
 

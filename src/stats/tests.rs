@@ -1425,7 +1425,11 @@ fn load_read_only_legacy_json_is_read_not_migrated() {
         ro_db_artifacts(&data_dir).is_empty(),
         "legacy JSON must not be migrated into a new stats.db"
     );
-    assert_eq!(fs::read(&json_path).unwrap(), before, "stats.json unchanged");
+    assert_eq!(
+        fs::read(&json_path).unwrap(),
+        before,
+        "stats.json unchanged"
+    );
     assert!(!data_dir.join("stats.backup").exists(), "no backup copy");
 }
 

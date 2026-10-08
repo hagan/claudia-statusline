@@ -75,7 +75,12 @@ impl StatsData {
         }
 
         let db = SqliteDatabase::new(&db_path)?;
+        Self::from_db(&db)
+    }
 
+    /// The six SELECT-only queries shared by [`Self::load_from_sqlite`] and
+    /// [`Self::load_read_only`].
+    fn from_db(db: &SqliteDatabase) -> Result<Self> {
         // Load components
         let sessions = db.get_all_sessions()?;
         let daily = db.get_all_daily_stats()?;
@@ -100,6 +105,38 @@ impl StatsData {
         };
 
         Ok(data)
+    }
+
+    /// Read-only stats load for the `update_stats == false` render path (AGENT-04 / SC3).
+    ///
+    /// Opens an existing stats.db with [`SqliteDatabase::open_read_only`] (no create, no
+    /// migration, no repair, no checkpoint). When the database is missing or unreadable
+    /// (for example a drifted schema), it falls back to a parseable legacy stats.json
+    /// WITHOUT migrating it into SQLite and WITHOUT the corrupt-file backup copy, and
+    /// otherwise returns `Self::default()` WITHOUT saving it. `load()` and
+    /// `get_or_load_stats_data()` keep their v3.3.0 behavior for write paths and the
+    /// public API.
+    pub(crate) fn load_read_only() -> Self {
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if db_path.exists() {
+                match SqliteDatabase::open_read_only(&db_path)
+                    .map_err(StatuslineError::Database)
+                    .and_then(|db| Self::from_db(&db))
+                {
+                    Ok(data) => return data,
+                    Err(e) => log::debug!("load_read_only: read-only SQLite load failed: {}", e),
+                }
+            }
+        }
+
+        let path = Self::get_stats_file_path();
+        if let Ok(contents) = fs::read_to_string(&path) {
+            if let Ok(data) = serde_json::from_str::<Self>(&contents) {
+                return data;
+            }
+        }
+
+        Self::default()
     }
 
     /// Migrate JSON data to SQLite if not already done
