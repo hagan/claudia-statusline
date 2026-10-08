@@ -345,6 +345,38 @@ pub(crate) struct RequestUsage {
     pub order: usize,
 }
 
+/// The per-line half of the D-11/D-12 rule: parse one transcript line and
+/// return its `requestId` (if any) plus its usage, or `None` when the line does
+/// not count (malformed JSON, not an assistant message, no usage, or an
+/// all-empty usage object). `order` is stored on the result unchanged.
+///
+/// Shared by [`collect_request_usage`] (batch) and `agents::progress`
+/// (incremental, Phase 17) so both apply ONE predicate. Never panics on
+/// untrusted input.
+pub(crate) fn request_usage_of(line: &str, order: usize) -> Option<(Option<String>, RequestUsage)> {
+    let entry = serde_json::from_str::<TranscriptEntry>(line).ok()?;
+    if entry.message.role != "assistant" {
+        return None;
+    }
+    let usage = entry.message.usage?;
+    if usage.input_tokens.is_none()
+        && usage.output_tokens.is_none()
+        && usage.cache_read_input_tokens.is_none()
+        && usage.cache_creation_input_tokens.is_none()
+    {
+        return None;
+    }
+    let item = RequestUsage {
+        input: usage.input_tokens.unwrap_or(0),
+        output: usage.output_tokens.unwrap_or(0),
+        cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+        cache_creation: usage.cache_creation_input_tokens.unwrap_or(0),
+        ts: parse_iso8601_to_unix(&entry.timestamp),
+        order,
+    };
+    Some((entry.request_id, item))
+}
+
 /// Collect assistant usage from transcript lines, counting each API request once.
 ///
 /// Claude Code writes one line per content block of a response, each repeating
@@ -355,8 +387,9 @@ pub(crate) struct RequestUsage {
 ///
 /// Malformed lines are skipped; this never panics on untrusted input. The
 /// result is ordered by the winning line's position. Shared by
-/// `get_token_breakdown_from_transcript` and `get_rolling_window_rates`;
-/// Phase 17 is expected to reuse it for subagent attribution.
+/// `get_token_breakdown_from_transcript` and `get_rolling_window_rates`; the
+/// per-line predicate lives in [`request_usage_of`], which `agents::progress`
+/// reuses for incremental subagent attribution (Phase 17).
 pub(crate) fn collect_request_usage<'a, I: IntoIterator<Item = &'a str>>(
     lines: I,
 ) -> Vec<RequestUsage> {
@@ -364,31 +397,10 @@ pub(crate) fn collect_request_usage<'a, I: IntoIterator<Item = &'a str>>(
     let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
 
     for (order, line) in lines.into_iter().enumerate() {
-        let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) else {
+        let Some((request_id, item)) = request_usage_of(line, order) else {
             continue;
         };
-        if entry.message.role != "assistant" {
-            continue;
-        }
-        let Some(usage) = entry.message.usage else {
-            continue;
-        };
-        if usage.input_tokens.is_none()
-            && usage.output_tokens.is_none()
-            && usage.cache_read_input_tokens.is_none()
-            && usage.cache_creation_input_tokens.is_none()
-        {
-            continue;
-        }
-        let item = RequestUsage {
-            input: usage.input_tokens.unwrap_or(0),
-            output: usage.output_tokens.unwrap_or(0),
-            cache_read: usage.cache_read_input_tokens.unwrap_or(0),
-            cache_creation: usage.cache_creation_input_tokens.unwrap_or(0),
-            ts: parse_iso8601_to_unix(&entry.timestamp),
-            order,
-        };
-        match entry.request_id {
+        match request_id {
             Some(rid) => match index.get(&rid) {
                 Some(&slot) => out[slot] = item,
                 None => {
@@ -1952,8 +1964,7 @@ mod tests {
     #[test]
     fn request_usage_of_agrees_with_collect_on_fixture() {
         let mut out: Vec<RequestUsage> = Vec::new();
-        let mut index: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for (order, line) in FIXTURE_MULTIBLOCK.lines().enumerate() {
             let Some((rid, item)) = request_usage_of(line, order) else {
                 continue;
