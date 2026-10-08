@@ -33,6 +33,7 @@ use crate::models::TranscriptEntry;
 
 mod progress;
 #[doc(hidden)]
+#[allow(unused_imports)] // no binary-side caller until 17-07
 pub use progress::{agents_bytes_read, agents_scans, reset_agents_counters};
 
 /// Token totals over one or more transcript files, de-duplicated per request.
@@ -74,6 +75,7 @@ pub struct AgentsSummary {
     /// False while any inventoried file is not yet examined to EOF (per-render
     /// budget hit, oversized or refused file) or a needed `.meta.json` read was
     /// deferred. The display then renders the agent count only (D-04).
+    #[cfg_attr(not(test), allow(dead_code))] // read by the display layer from 17-06
     pub complete: bool,
 }
 

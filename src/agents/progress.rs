@@ -644,8 +644,76 @@ pub(crate) fn inventory(
     transcript_path: &str,
     limits: &ScanLimits,
 ) -> Option<Inventory> {
-    let _ = (session_id, transcript_path, limits);
-    todo!()
+    // a. The id is joined into a path below: validate it before anything else.
+    if !crate::common::is_valid_session_id(session_id) {
+        log::debug!("agents: invalid session id; attribution disabled");
+        return None;
+    }
+    // b. Without a pinned O_NONBLOCK, "never blocks" cannot be guaranteed.
+    #[cfg(unix)]
+    if crate::user_file::O_NONBLOCK.is_none() {
+        log::debug!("agents: no non-blocking open on this target; attribution disabled");
+        return None;
+    }
+    // c. Absolute `.jsonl` with a real parent: never resolve against the CWD.
+    let main = Path::new(transcript_path);
+    if !main.is_absolute() || main.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+        log::debug!("agents: transcript path not an absolute .jsonl; attribution disabled");
+        return None;
+    }
+    let parent = main.parent().filter(|p| !p.as_os_str().is_empty())?;
+
+    // d.
+    AGENTS_SCANS.fetch_add(1, Ordering::Relaxed);
+
+    // e. Enumerate under caps; fail closed when the count would be uncertain.
+    let dir = parent.join(session_id).join("subagents");
+    let mut agents = Vec::new();
+    let mut entries_examined = 0usize;
+    match std::fs::symlink_metadata(&dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            log::debug!("agents: cannot stat the subagents directory");
+            return None;
+        }
+        Ok(md) if md.file_type().is_symlink() || !md.is_dir() => {
+            log::debug!("agents: subagents is not a real directory; ignored");
+        }
+        Ok(_) => {
+            let rd = std::fs::read_dir(&dir).ok()?;
+            for entry in rd.take(limits.max_dir_entries + 1) {
+                let entry = entry.ok()?;
+                entries_examined += 1;
+                if entries_examined > limits.max_dir_entries {
+                    log::debug!("agents: subagents directory too large; attribution disabled");
+                    return None;
+                }
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else {
+                    continue;
+                };
+                if !(name.starts_with("agent-") && name.ends_with(".jsonl")) {
+                    continue;
+                }
+                // DirEntry::file_type does not follow symlinks.
+                let ft = entry.file_type().ok()?;
+                if !ft.is_file() {
+                    continue;
+                }
+                agents.push(entry.path());
+                if agents.len() > limits.max_agent_files {
+                    log::debug!("agents: too many agent files; attribution disabled");
+                    return None;
+                }
+            }
+        }
+    }
+    agents.sort();
+    Some(Inventory {
+        main: main.to_path_buf(),
+        agents,
+        entries_examined,
+    })
 }
 
 /// One scan's result. `files[0]` is the main transcript; each entry carries
@@ -664,8 +732,34 @@ pub(crate) fn scan_files(
     stored: &HashMap<String, FileState>,
     limits: &ScanLimits,
 ) -> Option<ScanOutcome> {
-    let _ = (inv, stored, limits);
-    todo!()
+    let mut budget = ReadBudget::new(limits.per_render);
+    let lookup = |p: &Path| stored.get(p.to_string_lossy().as_ref()).cloned();
+
+    let main_base = lookup(&inv.main);
+    let main = advance_file(&inv.main, false, main_base.as_ref(), &mut budget, limits);
+    if main.refused {
+        log::debug!("agents: main transcript refused");
+        return None;
+    }
+    let mut complete = main.caught_up;
+    let mut files = Vec::new();
+    files.push((main_base, main));
+    for agent in &inv.agents {
+        let base = lookup(agent);
+        let adv = advance_file(agent, true, base.as_ref(), &mut budget, limits);
+        complete &= adv.caught_up;
+        files.push((base, adv));
+    }
+
+    let agent_states: Vec<&FileState> = files[1..].iter().map(|(_, a)| &a.state).collect();
+    let agent_files = u32::try_from(inv.agents.len()).unwrap_or(u32::MAX);
+    let summary = summarize(&files[0].1.state, &agent_states, agent_files, complete);
+    Some(ScanOutcome {
+        files,
+        summary,
+        entries_examined: inv.entries_examined,
+        bytes_read: budget.used,
+    })
 }
 
 /// Fold per-file states into the session summary. `agent_files` comes from
@@ -676,8 +770,19 @@ pub(crate) fn summarize(
     agent_files: u32,
     complete: bool,
 ) -> AgentsSummary {
-    let _ = (main, agents, agent_files, complete);
-    todo!()
+    let mut summary = AgentsSummary {
+        main: main.totals,
+        agent_files,
+        complete,
+        ..Default::default()
+    };
+    for a in agents {
+        summary.agents.add(&a.totals);
+        if let Some(t) = &a.agent_type {
+            *summary.agent_types.entry(t.clone()).or_insert(0) += 1;
+        }
+    }
+    summary
 }
 
 /// [`inventory`] + [`scan_files`] with [`ScanLimits::DEFAULT`].
@@ -821,7 +926,10 @@ mod tests {
         text.push('\n');
         let mut st = FileState::default();
         consume_bytes(&mut st, text.as_bytes());
-        assert_eq!(st.totals.requests, 34, "beyond-window revision counts as new");
+        assert_eq!(
+            st.totals.requests, 34,
+            "beyond-window revision counts as new"
+        );
         assert_eq!(st.window.len(), REQUEST_WINDOW);
         let doc: String = include_str!("progress.rs")
             .lines()
@@ -962,7 +1070,12 @@ mod tests {
             .collect()
     }
 
-    fn adv(p: &Path, agent: bool, prior: Option<&FileState>, limits: &ScanLimits) -> (Advance, ReadBudget) {
+    fn adv(
+        p: &Path,
+        agent: bool,
+        prior: Option<&FileState>,
+        limits: &ScanLimits,
+    ) -> (Advance, ReadBudget) {
         let mut b = ReadBudget::new(limits.per_render);
         let a = advance_file(p, agent, prior, &mut b, limits);
         (a, b)
@@ -1456,7 +1569,10 @@ mod tests {
         let main = sentinel(&t.root);
         fs::write(&main, lines(1, "m", 1)).unwrap();
         for bad in ["../x", "/abs", ".", ""] {
-            assert!(inventory(bad, main.to_str().unwrap(), &L).is_none(), "{bad:?}");
+            assert!(
+                inventory(bad, main.to_str().unwrap(), &L).is_none(),
+                "{bad:?}"
+            );
         }
     }
 
@@ -1536,7 +1652,10 @@ mod tests {
             max_agent_files: 9,
             ..ScanLimits::DEFAULT
         };
-        assert_eq!(inventory(SID, main_str(&t), &limits9).unwrap().agents.len(), 9);
+        assert_eq!(
+            inventory(SID, main_str(&t), &limits9).unwrap().agents.len(),
+            9
+        );
     }
 
     #[test]
