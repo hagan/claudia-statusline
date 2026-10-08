@@ -1907,4 +1907,70 @@ mod tests {
             "a versionless display name must not match a canonical-id cache key"
         );
     }
+
+    // ---- request_usage_of: the per-line D-11/D-12 predicate (AGENT-05) ----
+
+    #[test]
+    fn request_usage_of_filters_like_collect() {
+        let ts = "2026-01-01T00:00:00.000Z";
+        let user = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"timestamp":"{ts}"}}"#
+        );
+        assert!(request_usage_of(&user, 0).is_none());
+
+        let no_usage = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":"x"}},"timestamp":"{ts}"}}"#
+        );
+        assert!(request_usage_of(&no_usage, 1).is_none());
+
+        let empty_usage = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","usage":{{}}}},"timestamp":"{ts}"}}"#
+        );
+        assert!(request_usage_of(&empty_usage, 2).is_none());
+
+        assert!(request_usage_of("{not json", 3).is_none());
+
+        let with_rid = format!(
+            r#"{{"type":"assistant","requestId":"r1","message":{{"role":"assistant","usage":{{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":11,"cache_creation_input_tokens":13}}}},"timestamp":"{ts}"}}"#
+        );
+        let (rid, u) = request_usage_of(&with_rid, 42).expect("usage line");
+        assert_eq!(rid.as_deref(), Some("r1"));
+        assert_eq!(
+            (u.input, u.output, u.cache_read, u.cache_creation, u.order),
+            (5, 7, 11, 13, 42)
+        );
+        assert_eq!(u.ts, parse_iso8601_to_unix(ts));
+
+        let no_rid = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","usage":{{"output_tokens":3}}}},"timestamp":"{ts}"}}"#
+        );
+        let (rid, u) = request_usage_of(&no_rid, 9).expect("usage line");
+        assert!(rid.is_none());
+        assert_eq!((u.input, u.output, u.order), (0, 3, 9));
+    }
+
+    #[test]
+    fn request_usage_of_agrees_with_collect_on_fixture() {
+        let mut out: Vec<RequestUsage> = Vec::new();
+        let mut index: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (order, line) in FIXTURE_MULTIBLOCK.lines().enumerate() {
+            let Some((rid, item)) = request_usage_of(line, order) else {
+                continue;
+            };
+            match rid {
+                Some(rid) => match index.get(&rid) {
+                    Some(&slot) => out[slot] = item,
+                    None => {
+                        index.insert(rid, out.len());
+                        out.push(item);
+                    }
+                },
+                None => out.push(item),
+            }
+        }
+        out.sort_by_key(|e| e.order);
+        assert_eq!(out, collect_request_usage(FIXTURE_MULTIBLOCK.lines()));
+        assert_eq!(out.len(), FIXTURE_REQUESTS);
+    }
 }
