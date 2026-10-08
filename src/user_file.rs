@@ -307,4 +307,144 @@ mod tests {
             .expect("read_regular_file_capped BLOCKED on a FIFO: it must decide from metadata");
         assert!(refused, "a FIFO must be refused as NotRegular(fifo)");
     }
+
+    // ---- Non-blocking, fd-verified ladder (AGENT-02, residual R-2) ----
+
+    /// Call the OPEN step directly on a FIFO (bypassing the lstat refusal), as
+    /// if a FIFO had been swapped in after the stat. With the right O_NONBLOCK
+    /// constant the open returns at once and the fstat refuses it; a wrong
+    /// constant blocks the worker and the watchdog fails the test.
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_refuses_fifo() {
+        use std::os::unix::fs::FileTypeExt;
+        let d = TempDir::new().unwrap();
+        let reg = d.path().join("reg.jsonl");
+        std::fs::write(&reg, "x").unwrap();
+        let regular_md = std::fs::metadata(&reg).unwrap();
+        let p = d.path().join("fifo.jsonl");
+        test_fifo::make_fifo(&p);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let r = open_fd_nonblocking_verified(&p, &regular_md);
+            let _ = tx.send(matches!(r, Err(CappedReadError::NotRegular(ft)) if ft.is_fifo()));
+        });
+        let refused = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("open_fd_nonblocking_verified BLOCKED on a FIFO: O_NONBLOCK is wrong");
+        assert!(refused, "a FIFO must be refused from fstat as NotRegular(fifo)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_refuses_fifo_from_lstat() {
+        use std::os::unix::fs::FileTypeExt;
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("fifo.jsonl");
+        test_fifo::make_fifo(&p);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ok = [false, true].iter().all(|&follow| {
+                matches!(
+                    open_regular_nonblocking(&p, follow),
+                    Err(CappedReadError::NotRegular(ft)) if ft.is_fifo()
+                )
+            });
+            let _ = tx.send(ok);
+        });
+        let refused = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("open_regular_nonblocking BLOCKED on a FIFO");
+        assert!(refused, "a FIFO must be refused as NotRegular(fifo) for both follow modes");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_refuses_symlink_when_not_following() {
+        let d = TempDir::new().unwrap();
+        let target = d.path().join("real.jsonl");
+        std::fs::write(&target, "ok").unwrap();
+        let link = d.path().join("link.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        match open_regular_nonblocking(&link, false) {
+            Err(CappedReadError::NotRegular(ft)) => assert!(ft.is_symlink()),
+            other => panic!("expected NotRegular(symlink), got {other:?}"),
+        }
+        let (_f, md) = open_regular_nonblocking(&link, true).expect("follow=true opens target");
+        assert!(md.is_file());
+        assert_eq!(md.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_detects_swapped_inode() {
+        let d = TempDir::new().unwrap();
+        let a = d.path().join("a.jsonl");
+        let b = d.path().join("b.jsonl");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let md_a = std::fs::metadata(&a).unwrap();
+        assert!(matches!(
+            open_fd_nonblocking_verified(&b, &md_a),
+            Err(CappedReadError::Read(ErrorKind::Other))
+        ));
+        // Same node: accepted.
+        assert!(open_fd_nonblocking_verified(&a, &md_a).is_ok());
+    }
+
+    #[test]
+    fn nonblocking_open_refuses_directory_and_missing() {
+        let d = TempDir::new().unwrap();
+        match open_regular_nonblocking(d.path(), true) {
+            Err(CappedReadError::NotRegular(ft)) => assert!(ft.is_dir()),
+            other => panic!("expected NotRegular(dir), got {other:?}"),
+        }
+        assert!(matches!(
+            open_regular_nonblocking(&d.path().join("nope"), false),
+            Err(CappedReadError::NotFound)
+        ));
+        #[cfg(unix)]
+        {
+            let link = d.path().join("dangling");
+            std::os::unix::fs::symlink(d.path().join("gone"), &link).unwrap();
+            assert!(matches!(
+                open_regular_nonblocking(&link, true),
+                Err(CappedReadError::DanglingSymlink)
+            ));
+        }
+    }
+
+    #[test]
+    fn read_range_capped_bounds() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("big.jsonl");
+        let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&p, &data).unwrap();
+        let (mut f, _md) = open_regular_nonblocking(&p, false).unwrap();
+
+        assert_eq!(read_range_capped(&mut f, 100, 50).unwrap(), &data[100..150]);
+        assert!(read_range_capped(&mut f, 20_000, 50).unwrap().is_empty());
+        assert_eq!(
+            read_range_capped(&mut f, 9_990, 1_000).unwrap(),
+            &data[9_990..]
+        );
+        // A huge cap never sizes the allocation from the cap or the file.
+        let all = read_range_capped(&mut f, 0, u64::MAX).unwrap();
+        assert_eq!(all, data);
+    }
+
+    #[test]
+    fn o_nonblock_constant_known_on_ci_targets() {
+        #[cfg(any(
+            target_os = "macos",
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            )
+        ))]
+        assert!(O_NONBLOCK.is_some());
+        let _ = O_NONBLOCK;
+    }
 }
