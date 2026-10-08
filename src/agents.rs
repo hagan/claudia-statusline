@@ -32,6 +32,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::models::TranscriptEntry;
 
 mod progress;
+#[doc(hidden)]
+pub use progress::{agents_bytes_read, agents_scans, reset_agents_counters};
 
 /// Token totals over one or more transcript files, de-duplicated per request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
