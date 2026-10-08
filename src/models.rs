@@ -954,4 +954,95 @@ mod tests {
         assert!(cost.total_lines_added.is_none());
         assert!(cost.total_lines_removed.is_none());
     }
+
+    // ---- Phase 17 (F2): per-field lenient prompt_cache ----
+
+    const DOCUMENTED_PROMPT_CACHE: &str = r#"{"warm":true,"caching_observed":true,"ttl":"1h","expires_at":1738429200,"requests":14,"misses":2,"expected_rebuilds":1,"hit_ratio":0.91,"cache_write_tokens":352000,"miss_recache_tokens":310200,"last_miss_at":1738425230,"last_miss_cause":{"causes":["tools_changed"],"tools_added":2,"tools_removed":0},"miss_causes":{"tools_changed":2},"recache_tokens_if_cold":45000}"#;
+
+    fn input_with_prompt_cache(prompt_cache: &str) -> StatuslineInput {
+        let json = format!(
+            r#"{{"workspace":{{"current_dir":"/tmp"}},"model":{{"display_name":"Opus 4.5"}},"prompt_cache":{}}}"#,
+            prompt_cache
+        );
+        serde_json::from_str(&json).expect("payload must parse despite prompt_cache shape")
+    }
+
+    #[test]
+    fn prompt_cache_lenient_documented_example() {
+        let pc: PromptCache = serde_json::from_str(DOCUMENTED_PROMPT_CACHE).unwrap();
+        assert_eq!(pc.warm, Some(true));
+        assert_eq!(pc.caching_observed, Some(true));
+        assert_eq!(pc.ttl.as_deref(), Some("1h"));
+        assert_eq!(pc.hit_ratio, Some(0.91));
+        assert_eq!(pc.requests, Some(14));
+        assert_eq!(pc.misses, Some(2));
+        assert_eq!(
+            pc.last_miss_cause.and_then(|c| c.causes),
+            Some(vec!["tools_changed".to_string()])
+        );
+        assert_eq!(pc.miss_causes.unwrap().get("tools_changed"), Some(&2));
+
+        // And inside a whole payload.
+        let input = input_with_prompt_cache(DOCUMENTED_PROMPT_CACHE);
+        assert_eq!(input.prompt_cache.unwrap().misses, Some(2));
+    }
+
+    #[test]
+    fn prompt_cache_lenient_wrong_typed_fields() {
+        let pc: PromptCache = serde_json::from_str(
+            r#"{"misses":"2","hit_ratio":"high","warm":"yes","ttl":"5m","requests":9,"caching_observed":1}"#,
+        )
+        .unwrap();
+        assert_eq!(pc.misses, None);
+        assert_eq!(pc.hit_ratio, None);
+        assert_eq!(pc.warm, None);
+        assert_eq!(pc.caching_observed, None);
+        assert_eq!(pc.ttl.as_deref(), Some("5m"));
+        assert_eq!(pc.requests, Some(9));
+    }
+
+    #[test]
+    fn prompt_cache_lenient_causes_elements() {
+        let c: PromptCacheMissCause =
+            serde_json::from_str(r#"{"causes":[1,"tools_changed",null]}"#).unwrap();
+        assert_eq!(c.causes, Some(vec!["tools_changed".to_string()]));
+
+        let c: PromptCacheMissCause = serde_json::from_str(r#"{"causes":"tools_changed"}"#).unwrap();
+        assert_eq!(c.causes, None);
+
+        let pc: PromptCache =
+            serde_json::from_str(r#"{"last_miss_cause":{"causes":"tools_changed"},"misses":3}"#)
+                .unwrap();
+        assert_eq!(pc.misses, Some(3));
+        assert_eq!(pc.last_miss_cause.and_then(|c| c.causes), None);
+    }
+
+    #[test]
+    fn prompt_cache_lenient_whole_object_wrong_type() {
+        for bad in [r#""garbage""#, "7", "[1,2]", "true"] {
+            let input = input_with_prompt_cache(bad);
+            assert_eq!(
+                input.workspace.as_ref().and_then(|w| w.current_dir.as_deref()),
+                Some("/tmp"),
+                "workspace lost for prompt_cache = {bad}"
+            );
+            assert_eq!(
+                input.model.as_ref().and_then(|m| m.display_name.as_deref()),
+                Some("Opus 4.5"),
+                "model lost for prompt_cache = {bad}"
+            );
+            assert!(input.prompt_cache.is_none(), "prompt_cache = {bad}");
+        }
+    }
+
+    #[test]
+    fn prompt_cache_lenient_keeps_payload() {
+        let input = input_with_prompt_cache(r#"{"misses":"2"}"#);
+        assert_eq!(
+            input.workspace.as_ref().and_then(|w| w.current_dir.as_deref()),
+            Some("/tmp")
+        );
+        let pc = input.prompt_cache.expect("object kept, bad field dropped");
+        assert_eq!(pc.misses, None);
+    }
 }
