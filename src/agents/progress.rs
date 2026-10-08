@@ -156,39 +156,133 @@ struct WindowDoc {
 
 /// Encode the request window + skip flag in the `request_window` column format.
 pub(crate) fn encode_window(window: &[WindowEntry], skipping_line: bool) -> String {
-    let _ = (window, skipping_line);
-    todo!()
+    let doc = WindowDoc {
+        v: 1,
+        skip: skipping_line,
+        w: window.to_vec(),
+    };
+    // Serializing plain strings and integers cannot fail.
+    serde_json::to_string(&doc).unwrap_or_default()
 }
 
 /// Decode the `request_window` column. `None` on any malformed or out-of-bound
 /// value (callers then reset the file).
 pub(crate) fn decode_window(s: &str) -> Option<(Vec<WindowEntry>, bool)> {
-    let _ = s;
-    todo!()
+    let doc: WindowDoc = serde_json::from_str(s).ok()?;
+    if doc.v != 1 || doc.w.len() > REQUEST_WINDOW {
+        return None;
+    }
+    if doc
+        .w
+        .iter()
+        .any(|e| e.rid.chars().count() > MAX_REQUEST_ID_CHARS + 2)
+    {
+        return None;
+    }
+    Some((doc.w, doc.skip))
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// The window key of a request ID: the ID itself, or `h:` + 16 digest bytes
+/// in hex for an over-long ID (de-duplicates like the batch path, bounded).
 fn window_key(rid: &str) -> String {
-    let _ = rid;
-    todo!()
+    if rid.chars().count() <= MAX_REQUEST_ID_CHARS {
+        rid.to_string()
+    } else {
+        let digest = Sha256::digest(rid.as_bytes());
+        format!("h:{}", hex(&digest[..16]))
+    }
 }
 
 fn apply_usage(state: &mut FileState, rid: Option<String>, u: RequestUsage) {
-    let _ = (state, rid, u);
-    todo!()
+    let entry = WindowEntry {
+        rid: String::new(),
+        input: u64::from(u.input),
+        output: u64::from(u.output),
+        cache_read: u64::from(u.cache_read),
+        cache_creation: u64::from(u.cache_creation),
+    };
+    let t = &mut state.totals;
+    let add = |t: &mut TranscriptTotals, e: &WindowEntry| {
+        t.input_tokens = t.input_tokens.saturating_add(e.input);
+        t.output_tokens = t.output_tokens.saturating_add(e.output);
+        t.cache_read_tokens = t.cache_read_tokens.saturating_add(e.cache_read);
+        t.cache_creation_tokens = t.cache_creation_tokens.saturating_add(e.cache_creation);
+    };
+    let Some(rid) = rid else {
+        // No requestId (older transcripts): every line counts (D-12).
+        add(t, &entry);
+        t.requests = t.requests.saturating_add(1);
+        return;
+    };
+    let key = window_key(&rid);
+    if let Some(slot) = state.window.iter_mut().find(|e| e.rid == key) {
+        // A later line of a request already counted: last line wins (D-11).
+        t.input_tokens = t.input_tokens.saturating_sub(slot.input);
+        t.output_tokens = t.output_tokens.saturating_sub(slot.output);
+        t.cache_read_tokens = t.cache_read_tokens.saturating_sub(slot.cache_read);
+        t.cache_creation_tokens = t.cache_creation_tokens.saturating_sub(slot.cache_creation);
+        add(t, &entry);
+        *slot = WindowEntry { rid: key, ..entry };
+        return;
+    }
+    add(t, &entry);
+    t.requests = t.requests.saturating_add(1);
+    state.window.push(WindowEntry { rid: key, ..entry });
+    while state.window.len() > REQUEST_WINDOW {
+        state.window.remove(0);
+    }
+}
+
+fn consume_line(state: &mut FileState, line: &[u8]) {
+    // Cheap pre-filter: assistant lines are a minority of a transcript; the
+    // shared predicate below is still authoritative.
+    if !line.windows(9).any(|w| w == b"assistant") {
+        return;
+    }
+    let Ok(text) = std::str::from_utf8(line) else {
+        return;
+    };
+    if let Some((rid, usage)) = crate::utils::request_usage_of(text, 0) {
+        apply_usage(state, rid, usage);
+    }
 }
 
 /// Fold the complete lines of `buf` into `state`; returns the bytes consumed
 /// (through the last newline). A trailing partial line is left for later.
+/// While `state.skipping_line` is set, bytes up to and including the next
+/// newline are discarded (an over-long line); without a newline the whole
+/// buffer is discarded and the flag stays set.
 pub(crate) fn consume_bytes(state: &mut FileState, buf: &[u8]) -> usize {
-    let _ = (state, buf);
-    todo!()
+    let mut pos = 0usize;
+    if state.skipping_line {
+        match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                pos = i + 1;
+                state.skipping_line = false;
+            }
+            None => return buf.len(),
+        }
+    }
+    while let Some(rel) = buf[pos..].iter().position(|&b| b == b'\n') {
+        let line = &buf[pos..pos + rel];
+        pos += rel + 1;
+        if !line.is_empty() {
+            consume_line(state, line);
+        }
+    }
+    pos
 }
 
 /// Change-detection fingerprint (NOT a security control): the first 8 bytes of
 /// sha256(head) then the first 8 bytes of sha256(anchor), as 32 lowercase hex.
 pub(crate) fn fingerprint(head: &[u8], anchor: &[u8]) -> String {
-    let _ = (head, anchor);
-    todo!()
+    let h = Sha256::digest(head);
+    let a = Sha256::digest(anchor);
+    format!("{}{}", hex(&h[..8]), hex(&a[..8]))
 }
 
 #[cfg(test)]
