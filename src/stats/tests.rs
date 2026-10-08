@@ -1355,3 +1355,105 @@ fn in_memory_totals_include_concurrent_writer() {
     assert!((stats.daily[&today].total_cost - 6.0).abs() < 1e-9);
     assert!((stats.monthly[&month].total_cost - 6.0).abs() < 1e-9);
 }
+
+// =============================================================================
+// AGENT-04 / SC3: StatsData::load_read_only (17-11)
+// =============================================================================
+
+fn ro_db_artifacts(dir: &Path) -> Vec<String> {
+    match fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("stats.db"))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[test]
+#[serial]
+fn load_read_only_missing_db_returns_default_and_creates_nothing() {
+    let _env = ParityEnv::new();
+    let data_dir = get_data_dir();
+
+    let loaded = StatsData::load_read_only();
+    assert!(loaded.sessions.is_empty());
+    assert!(loaded.daily.is_empty());
+    assert!(loaded.monthly.is_empty());
+    assert_eq!(loaded.all_time.total_cost, 0.0);
+
+    assert!(
+        ro_db_artifacts(&data_dir).is_empty(),
+        "no stats.db* may be created: {:?}",
+        ro_db_artifacts(&data_dir)
+    );
+}
+
+#[test]
+#[serial]
+fn load_read_only_legacy_json_is_read_not_migrated() {
+    let _env = ParityEnv::new();
+    let data_dir = get_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let json_path = data_dir.join("stats.json");
+    let json = r#"{
+        "version": "1.0",
+        "created": "2025-08-25T00:00:00Z",
+        "last_updated": "2025-08-25T01:00:00Z",
+        "sessions": {
+            "legacy-session": {
+                "last_updated": "2025-08-25T01:00:00Z",
+                "cost": 7.25,
+                "lines_added": 10,
+                "lines_removed": 5,
+                "start_time": "2025-08-25T00:00:00Z"
+            }
+        },
+        "daily": {},
+        "monthly": {},
+        "all_time": {"total_cost": 7.25, "sessions": 1, "since": "2025-08-25T00:00:00Z"}
+    }"#;
+    fs::write(&json_path, json).unwrap();
+    let before = fs::read(&json_path).unwrap();
+
+    let loaded = StatsData::load_read_only();
+    assert!(loaded.sessions.contains_key("legacy-session"));
+    assert_eq!(loaded.sessions["legacy-session"].cost, 7.25);
+
+    assert!(
+        ro_db_artifacts(&data_dir).is_empty(),
+        "legacy JSON must not be migrated into a new stats.db"
+    );
+    assert_eq!(fs::read(&json_path).unwrap(), before, "stats.json unchanged");
+    assert!(!data_dir.join("stats.backup").exists(), "no backup copy");
+}
+
+#[test]
+#[serial]
+fn load_read_only_matches_load_on_healthy_db() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    {
+        let db = crate::database::SqliteDatabase::new(&db_path).unwrap();
+        db.update_session("ro-a", parity_update(2.0, s)).unwrap();
+        db.update_session("ro-b", parity_update(3.5, s + PARITY_HOUR_MS))
+            .unwrap();
+    }
+
+    let rw = StatsData::load_from_sqlite().unwrap();
+    let ro = StatsData::load_read_only();
+
+    let j = |v: &StatsData| {
+        (
+            serde_json::to_value(&v.sessions).unwrap(),
+            serde_json::to_value(&v.daily).unwrap(),
+            serde_json::to_value(&v.monthly).unwrap(),
+            serde_json::to_value(&v.all_time).unwrap(),
+        )
+    };
+    assert_eq!(j(&ro), j(&rw));
+    assert_eq!(ro.sessions.len(), 2);
+}

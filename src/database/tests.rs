@@ -1681,3 +1681,115 @@ fn v6_upgrade_preserves_every_row_and_adds_v7_v8_columns() {
 
     assert_eq!(recorded_versions(&p), vec![6, 7, 8]);
 }
+
+// =============================================================================
+// AGENT-04 / SC3: read-only open primitives (17-11)
+// =============================================================================
+
+fn ro_wal_path(db: &std::path::Path) -> std::path::PathBuf {
+    db.with_extension("db-wal")
+}
+
+fn ro_shm_path(db: &std::path::Path) -> std::path::PathBuf {
+    db.with_extension("db-shm")
+}
+
+#[test]
+fn open_read_only_missing_path_creates_nothing() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("nodir");
+    let db_path = dir.join("stats.db");
+
+    assert!(super::open_read_only_connection(&db_path, 1000).is_err());
+    assert!(super::SqliteDatabase::open_read_only(&db_path).is_err());
+
+    assert!(!db_path.exists(), "stats.db must not be created");
+    assert!(!ro_wal_path(&db_path).exists(), "-wal must not be created");
+    assert!(!ro_shm_path(&db_path).exists(), "-shm must not be created");
+    assert!(!dir.exists(), "parent directory must not be created");
+}
+
+#[test]
+fn open_read_only_rejects_writes() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("stats.db");
+    drop(super::SqliteDatabase::new(&db_path).unwrap());
+
+    let ro = super::SqliteDatabase::open_read_only(&db_path).unwrap();
+    assert!(ro.get_all_time_total().is_ok(), "reads must succeed");
+    drop(ro);
+
+    let conn = super::open_read_only_connection(&db_path, 1000).unwrap();
+    let res = conn.execute(
+        "INSERT INTO sessions (session_id, start_time, last_updated) VALUES ('x', 'a', 'b')",
+        [],
+    );
+    assert!(res.is_err(), "writes through a read-only connection must fail");
+}
+
+#[test]
+fn open_read_only_does_not_checkpoint_pending_wal() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("stats.db");
+    drop(super::SqliteDatabase::new(&db_path).unwrap());
+
+    // Writer that leaves its commit in the WAL (no autocheckpoint, no checkpoint on close).
+    {
+        let w = Connection::open(&db_path).unwrap();
+        w.set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+        w.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        w.execute(
+            "INSERT INTO sessions (session_id, start_time, last_updated, cost)
+             VALUES ('pending', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1.5)",
+            [],
+        )
+        .unwrap();
+    }
+    let wal = ro_wal_path(&db_path);
+    let wal_before = std::fs::read(&wal).expect("-wal must exist");
+    assert!(!wal_before.is_empty(), "precondition: pending WAL is non-empty");
+    let main_before = std::fs::read(&db_path).unwrap();
+
+    {
+        let ro = super::open_read_only_connection(&db_path, 1000).unwrap();
+        let cost: f64 = ro
+            .query_row(
+                "SELECT cost FROM sessions WHERE session_id = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((cost - 1.5).abs() < 1e-9, "pending WAL row must be visible");
+    }
+
+    assert_eq!(std::fs::read(&db_path).unwrap(), main_before, "main db bytes");
+    assert_eq!(std::fs::read(&wal).unwrap(), wal_before, "-wal bytes");
+}
+
+#[test]
+fn open_read_only_does_not_repair_drift() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("stats.db");
+    drop(super::SqliteDatabase::new(&db_path).unwrap());
+    {
+        let c = Connection::open(&db_path).unwrap();
+        c.execute_batch("ALTER TABLE sessions DROP COLUMN claude_version")
+            .unwrap();
+    }
+
+    drop(super::SqliteDatabase::open_read_only(&db_path).unwrap());
+
+    let c = Connection::open(&db_path).unwrap();
+    let n: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'claude_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0, "read-only open must not repair the drifted column");
+}
