@@ -624,6 +624,72 @@ pub(crate) fn read_agent_type(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Session inventory and scan (D-04 completeness contract).
+// ---------------------------------------------------------------------------
+
+/// The files of one session: the main transcript and every regular
+/// `agent-*.jsonl` in `<project>/<session_id>/subagents/`, sorted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Inventory {
+    pub main: PathBuf,
+    pub agents: Vec<PathBuf>,
+    pub entries_examined: usize,
+}
+
+/// Locate the session's transcripts. `None` (no agent data, nothing read)
+/// whenever the id or path is unsafe or the agent count would be uncertain.
+pub(crate) fn inventory(
+    session_id: &str,
+    transcript_path: &str,
+    limits: &ScanLimits,
+) -> Option<Inventory> {
+    let _ = (session_id, transcript_path, limits);
+    todo!()
+}
+
+/// One scan's result. `files[0]` is the main transcript; each entry carries
+/// the stored base the new state was computed from (17-07 commits by CAS).
+#[derive(Debug, Clone)]
+pub(crate) struct ScanOutcome {
+    pub files: Vec<(Option<FileState>, Advance)>,
+    pub summary: AgentsSummary,
+    pub entries_examined: usize,
+    pub bytes_read: u64,
+}
+
+/// Advance every inventoried file within one per-render budget.
+pub(crate) fn scan_files(
+    inv: &Inventory,
+    stored: &HashMap<String, FileState>,
+    limits: &ScanLimits,
+) -> Option<ScanOutcome> {
+    let _ = (inv, stored, limits);
+    todo!()
+}
+
+/// Fold per-file states into the session summary. `agent_files` comes from
+/// the inventory, so refused or not-yet-read agent files are still counted.
+pub(crate) fn summarize(
+    main: &FileState,
+    agents: &[&FileState],
+    agent_files: u32,
+    complete: bool,
+) -> AgentsSummary {
+    let _ = (main, agents, agent_files, complete);
+    todo!()
+}
+
+/// [`inventory`] + [`scan_files`] with [`ScanLimits::DEFAULT`].
+pub(crate) fn scan_session(
+    session_id: &str,
+    transcript_path: &str,
+    stored: &HashMap<String, FileState>,
+) -> Option<ScanOutcome> {
+    let inv = inventory(session_id, transcript_path, &ScanLimits::DEFAULT)?;
+    scan_files(&inv, stored, &ScanLimits::DEFAULT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1324,5 +1390,342 @@ mod tests {
         let (_, b) = adv(&p, false, None, &L);
         assert!(b.used > 0);
         assert_eq!(agents_bytes_read(), b.used);
+    }
+
+    // ---------------------------------------------------------------- Task 3
+
+    const SID: &str = "sess-1";
+
+    struct Tree {
+        _d: tempfile::TempDir,
+        root: PathBuf,
+        main: PathBuf,
+        sub: PathBuf,
+    }
+
+    fn tree(main_text: &str) -> Tree {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().canonicalize().unwrap();
+        let proj = root.join("proj");
+        let sub = proj.join(SID).join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        let main = proj.join(format!("{SID}.jsonl"));
+        fs::write(&main, main_text).unwrap();
+        Tree {
+            _d: d,
+            root,
+            main,
+            sub,
+        }
+    }
+
+    fn main_str(t: &Tree) -> &str {
+        t.main.to_str().unwrap()
+    }
+
+    fn states_of(o: &ScanOutcome) -> HashMap<String, FileState> {
+        o.files
+            .iter()
+            .map(|(_, a)| (a.state.path.clone(), a.state.clone()))
+            .collect()
+    }
+
+    fn file_batch(p: &Path) -> TranscriptTotals {
+        batch_totals(&fs::read(p).unwrap())
+    }
+
+    fn sum(ts: &[TranscriptTotals]) -> TranscriptTotals {
+        let mut out = TranscriptTotals::default();
+        for t in ts {
+            out.add(t);
+        }
+        out
+    }
+
+    fn sentinel(root: &Path) -> PathBuf {
+        let sub = root.join("x").join("subagents");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("agent-a1.jsonl"), lines(1, "s", 1)).unwrap();
+        root.join("proj").join("s.jsonl")
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn invalid_session_id_disables() {
+        let t = tree(&lines(1, "m", 1));
+        let main = sentinel(&t.root);
+        fs::write(&main, lines(1, "m", 1)).unwrap();
+        for bad in ["../x", "/abs", ".", ""] {
+            assert!(inventory(bad, main.to_str().unwrap(), &L).is_none(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn invalid_session_id_disables_reads_nothing() {
+        let t = tree(&lines(1, "m", 1));
+        let main = sentinel(&t.root);
+        fs::write(&main, lines(1, "m", 1)).unwrap();
+        reset_agents_counters();
+        for bad in ["../x", "/abs", ".", ""] {
+            assert!(scan_session(bad, main.to_str().unwrap(), &HashMap::new()).is_none());
+        }
+        assert_eq!(agents_scans(), 0);
+        assert_eq!(agents_bytes_read(), 0);
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn relative_transcript_path_disabled() {
+        for rel in ["s.jsonl", "./s.jsonl", "proj/s.jsonl"] {
+            assert!(inventory("sess-1", rel, &L).is_none(), "{rel}");
+        }
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn main_transcript_must_be_jsonl() {
+        let t = tree(&lines(1, "m", 1));
+        let other = t.main.with_extension("txt");
+        fs::write(&other, lines(1, "m", 1)).unwrap();
+        assert!(inventory(SID, other.to_str().unwrap(), &L).is_none());
+        assert!(inventory(SID, main_str(&t), &L).is_some());
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn scan_files_attributes_main_and_agents() {
+        // Main with a revised multi-line request (last line wins).
+        let main_text = format!(
+            "{}\n{}\n{}",
+            aline(Some("q"), 1, 1, 1, 1),
+            aline(Some("q"), 1, 1, 1, 9),
+            lines(3, "m", 2)
+        );
+        let t = tree(&main_text);
+        let a1 = t.sub.join("agent-a1.jsonl");
+        let a2 = t.sub.join("agent-a2.jsonl");
+        fs::write(&a1, lines(2, "x", 3)).unwrap();
+        fs::write(&a2, lines(4, "y", 4)).unwrap();
+        fs::write(meta_path(&a1), r#"{"agentType":"Explore"}"#).unwrap();
+        let o = scan_session(SID, main_str(&t), &HashMap::new()).unwrap();
+        assert_eq!(o.summary.main, file_batch(&t.main));
+        assert_eq!(o.summary.main.output_tokens, 9 + 6);
+        assert_eq!(o.summary.agents, sum(&[file_batch(&a1), file_batch(&a2)]));
+        assert_eq!(o.summary.agent_files, 2);
+        let mut want = std::collections::BTreeMap::new();
+        want.insert("Explore".to_string(), 1);
+        assert_eq!(o.summary.agent_types, want);
+        assert!(o.summary.complete);
+        assert!(o.summary.has_agents());
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn caps_too_many_agent_files_returns_none() {
+        let t = tree(&lines(1, "m", 1));
+        for i in 0..9 {
+            fs::write(t.sub.join(format!("agent-{i}.jsonl")), lines(1, "a", 1)).unwrap();
+        }
+        let limits = ScanLimits {
+            max_agent_files: 8,
+            ..ScanLimits::DEFAULT
+        };
+        assert!(inventory(SID, main_str(&t), &limits).is_none());
+        let limits9 = ScanLimits {
+            max_agent_files: 9,
+            ..ScanLimits::DEFAULT
+        };
+        assert_eq!(inventory(SID, main_str(&t), &limits9).unwrap().agents.len(), 9);
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn dir_enumeration_truncated_returns_none() {
+        let t = tree(&lines(1, "m", 1));
+        for i in 0..70 {
+            fs::write(t.sub.join(format!("other-{i}.txt")), "x").unwrap();
+        }
+        fs::write(t.sub.join("agent-a.jsonl"), lines(1, "a", 1)).unwrap();
+        fs::write(t.sub.join("agent-b.jsonl"), lines(1, "b", 1)).unwrap();
+        let limits = ScanLimits {
+            max_dir_entries: 64,
+            ..ScanLimits::DEFAULT
+        };
+        assert!(inventory(SID, main_str(&t), &limits).is_none());
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn dir_enumeration_at_limit_is_complete() {
+        let t = tree(&lines(1, "m", 1));
+        for i in 0..62 {
+            fs::write(t.sub.join(format!("other-{i}.txt")), "x").unwrap();
+        }
+        fs::write(t.sub.join("agent-a.jsonl"), lines(1, "a", 1)).unwrap();
+        fs::write(t.sub.join("agent-b.jsonl"), lines(1, "b", 1)).unwrap();
+        let limits = ScanLimits {
+            max_dir_entries: 64,
+            ..ScanLimits::DEFAULT
+        };
+        let inv = inventory(SID, main_str(&t), &limits).unwrap();
+        assert_eq!(inv.entries_examined, 64);
+        assert_eq!(inv.agents.len(), 2);
+        let o = scan_files(&inv, &HashMap::new(), &limits).unwrap();
+        assert_eq!(o.summary.agent_files, 2);
+        assert_eq!(o.entries_examined, 64);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::parallel]
+    fn non_regular_entries_excluded() {
+        let t = tree(&lines(1, "m", 1));
+        crate::user_file::test_fifo::make_fifo(&t.sub.join("agent-f.jsonl"));
+        fs::create_dir(t.sub.join("agent-d.jsonl")).unwrap();
+        std::os::unix::fs::symlink("/dev/zero", t.sub.join("agent-s.jsonl")).unwrap();
+        fs::write(t.sub.join("agent-r.jsonl"), lines(1, "r", 1)).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let main = t.main.clone();
+        std::thread::spawn(move || {
+            let o = scan_session(SID, main.to_str().unwrap(), &HashMap::new());
+            let _ = tx.send(o.map(|o| (o.summary.agent_files, o.summary.complete)));
+        });
+        let got = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("scan BLOCKED on a non-regular entry");
+        assert_eq!(got, Some((1, true)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::parallel]
+    fn subagents_dir_symlink_ignored() {
+        let t = tree(&lines(1, "m", 1));
+        let elsewhere = t.root.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(elsewhere.join("agent-a.jsonl"), lines(1, "a", 1)).unwrap();
+        fs::remove_dir(&t.sub).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &t.sub).unwrap();
+        let o = scan_session(SID, main_str(&t), &HashMap::new()).unwrap();
+        assert_eq!(o.summary.agent_files, 0);
+        assert!(!o.summary.has_agents());
+    }
+
+    fn big_main(min_len: usize) -> String {
+        let mut s = String::new();
+        let mut i = 0;
+        while s.len() < min_len {
+            s.push_str(&aline(Some(&format!("m{i}")), 1, 1, 1, 1));
+            s.push('\n');
+            i += 1;
+        }
+        s
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn cold_partial_scan_counts_from_enumeration() {
+        let t = tree(&big_main(40 * 1024));
+        fs::write(t.sub.join("agent-a.jsonl"), lines(1, "a", 1)).unwrap();
+        fs::write(t.sub.join("agent-b.jsonl"), lines(1, "b", 1)).unwrap();
+        let limits = ScanLimits {
+            per_render: 8 * 1024,
+            ..ScanLimits::DEFAULT
+        };
+        let inv = inventory(SID, main_str(&t), &limits).unwrap();
+        let o = scan_files(&inv, &HashMap::new(), &limits).unwrap();
+        assert_eq!(o.summary.agent_files, 2);
+        assert!(o.summary.has_agents());
+        assert!(!o.summary.complete);
+        assert!(o.bytes_read <= 8 * 1024);
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn zero_agents_partial_scan_has_no_agents() {
+        let t = tree(&big_main(40 * 1024));
+        fs::remove_dir_all(t.sub.parent().unwrap()).unwrap();
+        let limits = ScanLimits {
+            per_render: 8 * 1024,
+            ..ScanLimits::DEFAULT
+        };
+        let inv = inventory(SID, main_str(&t), &limits).unwrap();
+        let o = scan_files(&inv, &HashMap::new(), &limits).unwrap();
+        assert_eq!(o.summary.agent_files, 0);
+        assert!(!o.summary.has_agents());
+        assert!(!o.summary.complete);
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn refused_agent_file_counted_incomplete() {
+        let t = tree(&lines(1, "m", 1));
+        fs::write(t.sub.join("agent-a.jsonl"), lines(1, "a", 1)).unwrap();
+        File::create(t.sub.join("agent-z.jsonl"))
+            .unwrap()
+            .set_len(1024 * 1024 + 1)
+            .unwrap();
+        let limits = ScanLimits {
+            max_transcript: 1024 * 1024,
+            ..ScanLimits::DEFAULT
+        };
+        let mut stored = HashMap::new();
+        for _ in 0..3 {
+            let inv = inventory(SID, main_str(&t), &limits).unwrap();
+            let o = scan_files(&inv, &stored, &limits).unwrap();
+            assert_eq!(o.summary.agent_files, 2);
+            assert!(!o.summary.complete);
+            stored = states_of(&o);
+        }
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn partial_scan_converges() {
+        let t = tree(&big_main(30 * 1024));
+        let agents: Vec<PathBuf> = (0..3)
+            .map(|i| {
+                let p = t.sub.join(format!("agent-{i}.jsonl"));
+                fs::write(&p, big_main(10 * 1024)).unwrap();
+                p
+            })
+            .collect();
+        let mut stored = HashMap::new();
+        let mut last = None;
+        for _ in 0..20 {
+            let inv = inventory(SID, main_str(&t), &SMALL).unwrap();
+            let o = scan_files(&inv, &stored, &SMALL).unwrap();
+            assert!(o.bytes_read <= 8 * 1024, "read {}", o.bytes_read);
+            assert_eq!(o.summary.agent_files, 3);
+            stored = states_of(&o);
+            let done = o.summary.complete;
+            last = Some(o);
+            if done {
+                break;
+            }
+        }
+        let o = last.unwrap();
+        assert!(o.summary.complete, "did not converge within 20 scans");
+        assert_eq!(o.summary.main, file_batch(&t.main));
+        let per: Vec<TranscriptTotals> = agents.iter().map(|p| file_batch(p)).collect();
+        assert_eq!(o.summary.agents, sum(&per));
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn stored_state_is_used() {
+        let t = tree(&lines(3, "m", 1));
+        let a = t.sub.join("agent-a.jsonl");
+        fs::write(&a, lines(2, "a", 1)).unwrap();
+        fs::write(meta_path(&a), r#"{"agentType":"Plan"}"#).unwrap();
+        fs::write(t.sub.join("agent-b.jsonl"), lines(2, "b", 1)).unwrap();
+        let first = scan_session(SID, main_str(&t), &HashMap::new()).unwrap();
+        assert!(first.bytes_read > 0);
+        let again = scan_session(SID, main_str(&t), &states_of(&first)).unwrap();
+        assert_eq!(again.bytes_read, 0);
+        assert_eq!(again.summary.main, first.summary.main);
+        assert_eq!(again.summary.agents, first.summary.agents);
+        assert!(again.files.iter().all(|(_, a)| !a.changed));
     }
 }
