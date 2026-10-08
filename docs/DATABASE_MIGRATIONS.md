@@ -15,7 +15,7 @@ A new database gets the complete schema at once. An existing database is brought
 4. `AddAdaptiveLearning` – adaptive context learning: the `learned_context_windows` table and session metadata.
 5. `AddBurnRateTracking` – burn-rate columns (`active_time_seconds`, `last_activity`) and the `session_archive` table used by `auto_reset`.
 6. `AddDailyTokenTracking` – token columns on `daily_stats` and `monthly_stats`.
-7. `AddAgentTracking` – `claude_version` and agent/main token columns on `sessions`, plus the `transcript_progress` table.
+7. `AddAgentTracking` – `claude_version` and agent/main token columns on `sessions`, plus the `transcript_progress` table with its `file_id`, `fingerprint` and `request_window` columns (incremental subagent attribution state). The three columns were added to the unreleased v7 rather than a new migration; databases created by earlier PR-branch builds (stamped v7 or v8 without them) gain them through the open-time repair below.
 8. `AddAccountingBaseline` – nullable `raw_cost`, `raw_lines_added`, `raw_lines_removed`, `process_start_ms` on `sessions` and `session_archive`; pure DDL, NULL = no baseline yet, readers use `COALESCE(raw_cost, cost)`.
 
 The CLI runs pending migrations automatically when it opens the database. Embedders can also execute them via the helper:

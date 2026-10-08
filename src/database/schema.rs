@@ -35,8 +35,14 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 -- Incremental transcript parse state (v7): one row per main/subagent transcript
 -- file. `offset` is the byte position after the last complete line consumed;
--- `last_request_id` carries requestId de-duplication across renders. Absolute
--- totals (not deltas) so a row can be recomputed by deleting it.
+-- `size` is the examined end: the byte position up to which the reader has
+-- examined the file (it equals the file size only once a render reached EOF, so a
+-- budget-limited partial read never looks caught up); `mtime` holds nanoseconds
+-- since the epoch. `last_request_id` is retained for compatibility and no longer
+-- written: it is superseded by `request_window`, a JSON object holding the last 32
+-- request contributions and a skip-line flag. `file_id` is "dev:ino" on unix;
+-- `fingerprint` is a short hex digest of the file head and the bytes before
+-- `offset`. Absolute totals (not deltas) so a row can be recomputed by deleting it.
 CREATE TABLE IF NOT EXISTS transcript_progress (
     path TEXT PRIMARY KEY,
     session_id TEXT NOT NULL,
@@ -46,6 +52,9 @@ CREATE TABLE IF NOT EXISTS transcript_progress (
     mtime INTEGER NOT NULL DEFAULT 0,
     offset INTEGER NOT NULL DEFAULT 0,
     last_request_id TEXT,
+    file_id TEXT,
+    fingerprint TEXT,
+    request_window TEXT,
     requests INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     cache_read_tokens INTEGER NOT NULL DEFAULT 0,

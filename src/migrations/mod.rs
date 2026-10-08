@@ -81,6 +81,24 @@ pub(crate) const REQUIRED_COLUMNS: &[RequiredColumn] = &[
         decl: "INTEGER DEFAULT 0",
     },
     RequiredColumn {
+        version: 7,
+        table: "transcript_progress",
+        name: "file_id",
+        decl: "TEXT",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "transcript_progress",
+        name: "fingerprint",
+        decl: "TEXT",
+    },
+    RequiredColumn {
+        version: 7,
+        table: "transcript_progress",
+        name: "request_window",
+        decl: "TEXT",
+    },
+    RequiredColumn {
         version: 8,
         table: "sessions",
         name: "raw_cost",
@@ -1036,6 +1054,9 @@ const TRANSCRIPT_PROGRESS_DDL: &str = "CREATE TABLE IF NOT EXISTS transcript_pro
                 mtime INTEGER NOT NULL DEFAULT 0,
                 offset INTEGER NOT NULL DEFAULT 0,
                 last_request_id TEXT,
+                file_id TEXT,
+                fingerprint TEXT,
+                request_window TEXT,
                 requests INTEGER NOT NULL DEFAULT 0,
                 input_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_read_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1061,8 +1082,12 @@ impl Migration for AddAgentTracking {
     }
 
     fn up(&self, tx: &Transaction) -> Result<()> {
-        add_missing_columns(tx, |v| v == 7)?;
+        // Table first: v7 registry rows target transcript_progress too, and
+        // the registry column pass errors on a missing registry table before any ALTER.
+        // On a store where the table already exists (PR-branch shape) the IF NOT EXISTS
+        // DDL is a no-op and the column pass adds file_id/fingerprint/request_window.
         tx.execute_batch(TRANSCRIPT_PROGRESS_DDL)?;
+        add_missing_columns(tx, |v| v == 7)?;
         Ok(())
     }
 
@@ -1568,7 +1593,10 @@ mod tests {
         let pr_cols: HashSet<String> = column_names(&pr_branch, "transcript_progress")
             .into_iter()
             .collect();
-        assert!(pr_cols.is_subset(&full_cols), "SCHEMA dropped a PR-branch column");
+        assert!(
+            pr_cols.is_subset(&full_cols),
+            "SCHEMA dropped a PR-branch column"
+        );
         let added: HashSet<String> = full_cols.difference(&pr_cols).cloned().collect();
         let registry: HashSet<String> = REQUIRED_COLUMNS
             .iter()
@@ -1947,6 +1975,24 @@ mod tests {
         let mut conn = Connection::open(&db_path).unwrap();
         conn.execute("DROP TABLE session_archive", []).unwrap();
 
+        // Second registry table (D-01): a missing transcript_progress is also an
+        // explicit error naming it, with nothing half-applied.
+        {
+            let tx = conn.transaction().unwrap();
+            let err = add_missing_columns(&tx, |v| v <= 8)
+                .expect_err("a missing transcript_progress must be an explicit error");
+            drop(tx);
+            assert!(
+                err.to_string().contains("transcript_progress"),
+                "error must name the missing table: {err}"
+            );
+            assert!(!column_names(&conn, "sessions")
+                .iter()
+                .any(|c| c == "claude_version"));
+        }
+        // With transcript_progress present, the remaining missing table is session_archive.
+        conn.execute_batch(TRANSCRIPT_PROGRESS_DDL).unwrap();
+
         let tx = conn.transaction().unwrap();
         let err = add_missing_columns(&tx, |v| v <= 8)
             .expect_err("a missing registry table must be an explicit error");
@@ -2123,7 +2169,17 @@ mod tests {
             );
             CREATE INDEX idx_transcript_progress_session ON transcript_progress(session_id);";
 
-    type ProgressRow = (String, String, i64, i64, i64, i64, Option<String>, i64, String);
+    type ProgressRow = (
+        String,
+        String,
+        i64,
+        i64,
+        i64,
+        i64,
+        Option<String>,
+        i64,
+        String,
+    );
 
     fn insert_synthetic_progress_row(conn: &Connection) {
         conn.execute(
@@ -2252,7 +2308,9 @@ mod tests {
         assert_eq!(before_versions, vec![6, 7, 8]);
 
         let mut runner = MigrationRunner::new(&db_path).unwrap();
-        runner.migrate().expect("open-time repair must heal, not fail");
+        runner
+            .migrate()
+            .expect("open-time repair must heal, not fail");
 
         assert_has_progress_columns(&runner.conn);
         assert_eq!(read_progress_row(&runner.conn), before_row);
