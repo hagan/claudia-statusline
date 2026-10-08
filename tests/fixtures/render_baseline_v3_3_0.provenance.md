@@ -131,3 +131,54 @@ done
 
 Do not edit or re-capture these fixtures to make a failing test pass. A mismatch means the
 working tree diverged from v3.3.0 and must be investigated.
+
+## Lib-path goldens (`*_lib.txt`)
+
+`render_baseline_v3_3_0_agents_lib.txt` and `render_baseline_v3_3_0_bad_prompt_cache_lib.txt`
+are the output of **v3.3.0's own `statusline::render_from_json(payload, false)`**, captured
+from the tag source, because v3.3.0's two render paths already differ on this payload:
+
+```
+binary: /tmp • 6% [=>--------] • O4.5 • +42 -7 • $1.23
+lib:    /tmp • 6% [=>--------] • O4.5 • +42 -7 • $1.23 ($7.41/hr)
+```
+
+Cause (v3.3.0 `src/display.rs` ~line 578): the burn-rate duration is taken from the
+session's DB row first, then the transcript, then `cost.total_duration_ms`. The spawned
+binary runs with `update_stats = true`, so it has just created the session row and its
+duration is under `burn_rate.min_duration_seconds` (no burn rate). The lib call uses
+`update_stats = false`, finds no row and falls through to the payload's 600 s duration,
+giving `$1.2345 * 3600 / 600 = $7.41/hr`. This is pre-existing v3.3.0 behavior, not a
+Phase 17 regression, so each path is pinned to what v3.3.0 itself produces on that path.
+
+Capture: `tests/agents_render_tests.rs` (the Phase 17 harness, `lib_render`) was copied into
+the extracted `v3.3.0` tree together with the fixtures, plus this capture-only test:
+
+```rust
+#[test]
+#[serial_test::serial]
+fn capture_v3_3_0_lib_goldens() {
+    let Some(dir) = std::env::var_os("CAPTURE_DIR") else { return };
+    let dir = PathBuf::from(dir);
+    std::fs::write(dir.join("agents_lib.txt"), lib_render(PAYLOAD)).unwrap();
+    std::fs::write(dir.join("bad_prompt_cache_lib.txt"), lib_render(BAD_PROMPT_CACHE_PAYLOAD)).unwrap();
+}
+```
+
+```bash
+cd "$SCRATCH/v330"
+for run in 1 2; do mkdir -p "$SCRATCH/libcap$run"; T=$(mktemp -d)
+  env CAPTURE_DIR="$SCRATCH/libcap$run" CARGO_TARGET_DIR="$SCRATCH/v330-target" \
+      XDG_CONFIG_HOME=$T/c XDG_DATA_HOME=$T/d STATUSLINE_TEST_MODE=1 \
+      cargo test --test agents_render_tests capture_v3_3_0_lib_goldens
+  [ $run = 1 ] && sleep 2
+done
+for f in agents_lib bad_prompt_cache_lib; do
+  cmp "$SCRATCH/libcap1/$f.txt" "$SCRATCH/libcap2/$f.txt"; echo "$f cmp exit=$?"
+done
+```
+
+Result on 2026-10-08: `agents_lib cmp exit=0`, `bad_prompt_cache_lib cmp exit=0`; neither
+output contains a tempdir path. Run-1 outputs were copied verbatim to
+`tests/fixtures/render_baseline_v3_3_0_<name>.txt`. Running the unmodified golden tests
+against the v3.3.0 source also showed the four binary goldens pass there.
