@@ -31,6 +31,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::models::TranscriptEntry;
 
+mod progress;
+
 /// Token totals over one or more transcript files, de-duplicated per request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TranscriptTotals {
@@ -67,6 +69,10 @@ pub struct AgentsSummary {
     pub agent_files: u32,
     /// Agent type -> count, from the `.meta.json` files (`Explore`, `general-purpose`, ...).
     pub agent_types: BTreeMap<String, u32>,
+    /// False while any inventoried file is not yet examined to EOF (per-render
+    /// budget hit, oversized or refused file) or a needed `.meta.json` read was
+    /// deferred. The display then renders the agent count only (D-04).
+    pub complete: bool,
 }
 
 impl AgentsSummary {
@@ -131,6 +137,7 @@ pub fn scan(db_path: &Path, session_id: &str, transcript_path: &str) -> Option<A
 
     let mut summary = AgentsSummary {
         main,
+        complete: true,
         ..Default::default()
     };
 
