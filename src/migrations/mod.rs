@@ -1555,6 +1555,31 @@ mod tests {
             );
         }
 
+        // transcript_progress is new in v7: SCHEMA minus its PR-branch shape (what
+        // pre-D-01 builds created) must equal the registry's transcript_progress rows,
+        // so the open-time repair can heal every PR-branch store.
+        let pr_branch = Connection::open_in_memory().unwrap();
+        pr_branch
+            .execute_batch(PR_BRANCH_TRANSCRIPT_PROGRESS_DDL)
+            .unwrap();
+        let full_cols: HashSet<String> = column_names(&full, "transcript_progress")
+            .into_iter()
+            .collect();
+        let pr_cols: HashSet<String> = column_names(&pr_branch, "transcript_progress")
+            .into_iter()
+            .collect();
+        assert!(pr_cols.is_subset(&full_cols), "SCHEMA dropped a PR-branch column");
+        let added: HashSet<String> = full_cols.difference(&pr_cols).cloned().collect();
+        let registry: HashSet<String> = REQUIRED_COLUMNS
+            .iter()
+            .filter(|r| r.table == "transcript_progress")
+            .map(|r| r.name.to_string())
+            .collect();
+        assert_eq!(
+            added, registry,
+            "transcript_progress: SCHEMA minus the PR-branch shape must equal the registry rows"
+        );
+
         // Every registry row exists in SCHEMA with exactly the declared metadata.
         for row in REQUIRED_COLUMNS {
             let schema_meta = column_meta(&full, row.table)
@@ -2073,5 +2098,227 @@ mod tests {
                 row.name
             );
         }
+    }
+
+    /// D-01: the three incremental-attribution columns amended into the unreleased v7.
+    const TRANSCRIPT_PROGRESS_V7_COLUMNS: [&str; 3] = ["file_id", "fingerprint", "request_window"];
+
+    /// transcript_progress exactly as PR-branch builds created it (before D-01): no
+    /// file_id, fingerprint or request_window.
+    const PR_BRANCH_TRANSCRIPT_PROGRESS_DDL: &str = "CREATE TABLE transcript_progress (
+                path TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                is_agent INTEGER NOT NULL DEFAULT 0,
+                agent_type TEXT,
+                size INTEGER NOT NULL DEFAULT 0,
+                mtime INTEGER NOT NULL DEFAULT 0,
+                offset INTEGER NOT NULL DEFAULT 0,
+                last_request_id TEXT,
+                requests INTEGER NOT NULL DEFAULT 0,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_transcript_progress_session ON transcript_progress(session_id);";
+
+    type ProgressRow = (String, String, i64, i64, i64, i64, Option<String>, i64, String);
+
+    fn insert_synthetic_progress_row(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO transcript_progress
+                (path, session_id, is_agent, size, mtime, offset, last_request_id, output_tokens, updated_at)
+             VALUES ('/tmp/synthetic/agent-a.jsonl', 'synthetic-session', 1, 8192, 1700000000, 4096,
+                     'req_synthetic', 77, '2026-01-01T00:00:00+00:00')",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn read_progress_row(conn: &Connection) -> ProgressRow {
+        conn.query_row(
+            "SELECT path, session_id, is_agent, size, mtime, offset, last_request_id, output_tokens, updated_at
+             FROM transcript_progress",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            },
+        )
+        .unwrap()
+    }
+
+    fn assert_new_progress_columns_null(conn: &Connection) {
+        let nulls: (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT file_id, fingerprint, request_window FROM transcript_progress",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(nulls, (None, None, None), "new columns start NULL");
+    }
+
+    fn assert_has_progress_columns(conn: &Connection) {
+        let cols = column_names(conn, "transcript_progress");
+        for col in TRANSCRIPT_PROGRESS_V7_COLUMNS {
+            assert_eq!(
+                cols.iter().filter(|c| *c == col).count(),
+                1,
+                "transcript_progress.{col} must exist exactly once (have {cols:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_has_transcript_progress_v7_columns() {
+        let rows: Vec<(u32, &str, &str, &str)> = REQUIRED_COLUMNS
+            .iter()
+            .filter(|r| r.table == "transcript_progress")
+            .map(|r| (r.version, r.table, r.name, r.decl))
+            .collect();
+        assert_eq!(
+            rows,
+            vec![
+                (7, "transcript_progress", "file_id", "TEXT"),
+                (7, "transcript_progress", "fingerprint", "TEXT"),
+                (7, "transcript_progress", "request_window", "TEXT"),
+            ]
+        );
+    }
+
+    #[test]
+    fn v6_migration_adds_transcript_progress_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = v6_fixture_db(&temp_dir, "v6_progress.db");
+        let before = seeded_rows(&Connection::open(&db_path).unwrap());
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner
+            .migrate()
+            .expect("a populated v6 DB must migrate to the latest version");
+
+        assert_eq!(recorded_versions(&runner.conn), vec![6, 7, 8]);
+        assert_has_progress_columns(&runner.conn);
+        assert_eq!(
+            seeded_rows(&runner.conn),
+            before,
+            "migration must not change any seeded v6 row"
+        );
+    }
+
+    #[test]
+    fn repair_adds_transcript_progress_columns_when_stamped_latest() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = stamped_v8_without_columns(&temp_dir, "pr_branch_v8.db");
+        let (before_row, before_seed, before_versions) = {
+            let conn = Connection::open(&db_path).unwrap();
+            // A PR-branch build ran 007 and 008: every sessions/session_archive column,
+            // but transcript_progress in its pre-D-01 shape.
+            for row in REQUIRED_COLUMNS
+                .iter()
+                .filter(|r| r.table != "transcript_progress")
+            {
+                if !column_names(&conn, row.table).iter().any(|c| c == row.name) {
+                    conn.execute(
+                        &format!(
+                            "ALTER TABLE {} ADD COLUMN {} {}",
+                            row.table, row.name, row.decl
+                        ),
+                        [],
+                    )
+                    .unwrap();
+                }
+            }
+            conn.execute_batch(PR_BRANCH_TRANSCRIPT_PROGRESS_DDL)
+                .unwrap();
+            insert_synthetic_progress_row(&conn);
+            (
+                read_progress_row(&conn),
+                seeded_rows(&conn),
+                recorded_versions(&conn),
+            )
+        };
+        assert_eq!(before_versions, vec![6, 7, 8]);
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner.migrate().expect("open-time repair must heal, not fail");
+
+        assert_has_progress_columns(&runner.conn);
+        assert_eq!(read_progress_row(&runner.conn), before_row);
+        assert_new_progress_columns_null(&runner.conn);
+        assert_eq!(seeded_rows(&runner.conn), before_seed);
+        assert_eq!(
+            recorded_versions(&runner.conn),
+            before_versions,
+            "repair must not change schema_migrations"
+        );
+    }
+
+    #[test]
+    fn v7_stamped_db_gains_transcript_progress_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = v6_fixture_db(&temp_dir, "pr_branch_v7.db");
+        let before_row = {
+            let conn = Connection::open(&db_path).unwrap();
+            // Genuine PR-branch v7 store: 007's sessions columns, pre-D-01
+            // transcript_progress, stamped 7 (no 008).
+            for row in REQUIRED_COLUMNS
+                .iter()
+                .filter(|r| r.version == 7 && r.table == "sessions")
+            {
+                conn.execute(
+                    &format!(
+                        "ALTER TABLE {} ADD COLUMN {} {}",
+                        row.table, row.name, row.decl
+                    ),
+                    [],
+                )
+                .unwrap();
+            }
+            conn.execute_batch(PR_BRANCH_TRANSCRIPT_PROGRESS_DDL)
+                .unwrap();
+            insert_synthetic_progress_row(&conn);
+            stamp(&conn, 7);
+            assert_eq!(recorded_versions(&conn), vec![6, 7]);
+            read_progress_row(&conn)
+        };
+
+        let mut runner = MigrationRunner::new(&db_path).unwrap();
+        runner
+            .migrate()
+            .expect("a PR-branch v7 store must migrate and heal");
+
+        assert_has_progress_columns(&runner.conn);
+        assert_eq!(read_progress_row(&runner.conn), before_row);
+        assert_new_progress_columns_null(&runner.conn);
+        assert_eq!(
+            recorded_versions(&runner.conn),
+            vec![6, 7, 8],
+            "008 runs exactly once"
+        );
+    }
+
+    #[test]
+    fn transcript_progress_schema_matches_ddl() {
+        let schema = Connection::open_in_memory().unwrap();
+        schema.execute_batch(crate::database::SCHEMA).unwrap();
+        let ddl = Connection::open_in_memory().unwrap();
+        ddl.execute_batch(TRANSCRIPT_PROGRESS_DDL).unwrap();
+        assert_eq!(
+            column_meta(&schema, "transcript_progress"),
+            column_meta(&ddl, "transcript_progress"),
+            "SCHEMA and TRANSCRIPT_PROGRESS_DDL must declare transcript_progress identically"
+        );
     }
 }
