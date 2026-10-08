@@ -42,7 +42,62 @@ pub struct StatuslineInput {
     pub version: Option<String>,
     /// Prompt-cache statistics for the MAIN conversation (Claude Code >= 2.1.251).
     /// Subagent requests are not counted here (documented upstream).
+    ///
+    /// Lenient: a `prompt_cache` of the wrong type becomes `None` instead of
+    /// failing the whole payload (which would fall back to
+    /// `StatuslineInput::default()` and blank workspace, model and cost).
+    #[serde(default, deserialize_with = "lenient_object")]
     pub prompt_cache: Option<PromptCache>,
+}
+
+/// Type-tolerant optional field (Phase 11 rule: a wrong-typed optional upstream
+/// dimension drops the DIMENSION, never the payload).
+///
+/// Deserializes any JSON value, then tries `T`; a value of the wrong type maps to
+/// `None`. `#[serde(default, ...)]` is required alongside it: serde only calls
+/// `deserialize_with` when the field is present.
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// [`lenient`] for struct-typed fields that must arrive as a JSON object.
+///
+/// serde's derived struct visitor also accepts a JSON array (positional
+/// fields), so `[1, 2]` would otherwise become an all-`None` struct. Anything
+/// that is not an object is `None`.
+fn lenient_object<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match value {
+        Some(v @ serde_json::Value::Object(_)) => serde_json::from_value(v).ok(),
+        _ => None,
+    })
+}
+
+/// Type-tolerant string list: keeps only the string elements of an array
+/// (`[1, "tools_changed", null]` -> `["tools_changed"]`); a non-array is `None`.
+fn lenient_str_vec<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match value {
+        Some(serde_json::Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+        ),
+        _ => None,
+    })
 }
 
 /// Reasoning effort level (`effort`).
@@ -53,25 +108,39 @@ pub struct Effort {
 }
 
 /// Prompt-cache statistics (`prompt_cache`). All fields optional: the object
-/// appears only after the first API response and its shape may grow.
+/// appears only after the first API response and its shape may grow. Every
+/// field is lenient: a wrong-typed value becomes `None` and the rest of the
+/// object is kept. Unknown fields are ignored.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PromptCache {
     /// Whether the cache is currently warm.
+    #[serde(default, deserialize_with = "lenient")]
     pub warm: Option<bool>,
+    /// Whether caching was observed at all. Upstream docs: "false means prompt
+    /// caching is off, or your provider or gateway doesn't report it".
+    #[allow(dead_code)] // Public API - consumed by {cache_warm} (17-06)
+    #[serde(default, deserialize_with = "lenient")]
+    pub caching_observed: Option<bool>,
     /// Cache lifetime tier, `5m` or `1h`.
     #[allow(dead_code)] // Public API - parsed for library consumers
+    #[serde(default, deserialize_with = "lenient")]
     pub ttl: Option<String>,
     /// Fraction of requests served from cache, 0.0..=1.0.
+    #[serde(default, deserialize_with = "lenient")]
     pub hit_ratio: Option<f64>,
     /// Requests observed this session.
     #[allow(dead_code)] // Public API - parsed for library consumers
+    #[serde(default, deserialize_with = "lenient")]
     pub requests: Option<u64>,
     /// Cache misses this session.
+    #[serde(default, deserialize_with = "lenient")]
     pub misses: Option<u64>,
     /// Why the most recent miss happened.
+    #[serde(default, deserialize_with = "lenient_object")]
     pub last_miss_cause: Option<PromptCacheMissCause>,
     /// Miss count per cause, e.g. `{"tools_changed": 2}`.
     #[allow(dead_code)] // Public API - parsed for library consumers
+    #[serde(default, deserialize_with = "lenient")]
     pub miss_causes: Option<std::collections::HashMap<String, u64>>,
 }
 
@@ -79,6 +148,8 @@ pub struct PromptCache {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PromptCacheMissCause {
     /// Cause identifiers, e.g. `tools_changed`, `system_prompt_changed`.
+    /// Non-string elements are dropped; a non-array value is `None`.
+    #[serde(default, deserialize_with = "lenient_str_vec")]
     pub causes: Option<Vec<String>>,
 }
 
@@ -1007,7 +1078,8 @@ mod tests {
             serde_json::from_str(r#"{"causes":[1,"tools_changed",null]}"#).unwrap();
         assert_eq!(c.causes, Some(vec!["tools_changed".to_string()]));
 
-        let c: PromptCacheMissCause = serde_json::from_str(r#"{"causes":"tools_changed"}"#).unwrap();
+        let c: PromptCacheMissCause =
+            serde_json::from_str(r#"{"causes":"tools_changed"}"#).unwrap();
         assert_eq!(c.causes, None);
 
         let pc: PromptCache =
@@ -1022,7 +1094,10 @@ mod tests {
         for bad in [r#""garbage""#, "7", "[1,2]", "true"] {
             let input = input_with_prompt_cache(bad);
             assert_eq!(
-                input.workspace.as_ref().and_then(|w| w.current_dir.as_deref()),
+                input
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| w.current_dir.as_deref()),
                 Some("/tmp"),
                 "workspace lost for prompt_cache = {bad}"
             );
@@ -1039,7 +1114,10 @@ mod tests {
     fn prompt_cache_lenient_keeps_payload() {
         let input = input_with_prompt_cache(r#"{"misses":"2"}"#);
         assert_eq!(
-            input.workspace.as_ref().and_then(|w| w.current_dir.as_deref()),
+            input
+                .workspace
+                .as_ref()
+                .and_then(|w| w.current_dir.as_deref()),
             Some("/tmp")
         );
         let pc = input.prompt_cache.expect("object kept, bad field dropped");
