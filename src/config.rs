@@ -121,9 +121,13 @@ pub struct DisplayConfig {
     #[serde(default)]
     pub rate_limit_reset_countdown: bool,
 
-    /// Show the subagent segment (`🤖3 30%`: agent transcript count and the agents'
-    /// share of this session's input traffic). Rendered only when the session has
-    /// spawned agents, so it costs nothing in ordinary sessions.
+    /// Show the legacy (non-layout) subagent segment (`🤖3 30%`: agent transcript
+    /// count and the agents' share of this session's input traffic). Opt-in
+    /// (default false).
+    ///
+    /// This toggles ONLY the legacy segment. In layout/template mode it has no
+    /// effect: the agents scan runs only when the effective template references
+    /// an agents variable (`{agents}`, `{agents_count}`, ...), per D-03.
     pub show_agents: bool,
 
     /// Show main-conversation prompt-cache health from the payload
@@ -1586,8 +1590,8 @@ impl Default for DisplayConfig {
             show_rate_limits: false,
             // Reset countdown opt-in (default off; *_reset template vars always available)
             rate_limit_reset_countdown: false,
-            // Agents segment on by default: it is silent unless agents exist.
-            show_agents: true,
+            // Subagent attribution is opt-in (AGENT-01)
+            show_agents: false,
             // Prompt-cache segment opt-in.
             show_prompt_cache: false,
         }
@@ -2073,7 +2077,7 @@ theme = "dark"
 # show_cost = true
 # show_rate_limits = false           # Pro/Max only: "5h:24% 7d:41%" (absent for API keys)
 # rate_limit_reset_countdown = false # Append reset countdown: "5h:24% (2h13m)"
-# show_agents = true                 # "🤖3 30%": subagent count + share of input traffic (only when agents ran)
+# show_agents = false                # Legacy mode only: "🤖3 30%" subagent count + share of input traffic
 # show_prompt_cache = false          # "cache 91% miss:2 tools_changed" (main conversation, CC >= 2.1.251)
 
 # Show token counts in context bar (e.g., "179k/1000k")
