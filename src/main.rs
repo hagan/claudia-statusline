@@ -668,27 +668,81 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Keep a copy of the last raw stdin payload so a Claude Code update that adds,
-/// renames or drops a field can be seen with `jq . <file>` instead of guessed.
+/// Optionally keep a copy of the last raw stdin payload, so a Claude Code
+/// update that adds, renames or drops a field can be seen with `jq . <file>`
+/// instead of guessed. Called before parsing so malformed payloads are kept too.
 ///
-/// Default location: `<data dir>/last-input.json` (owner-only). Set
-/// `STATUSLINE_DEBUG_INPUT=<path>` to relocate it or `STATUSLINE_DEBUG_INPUT=off`
-/// to disable. Best-effort: a failure here never affects the render.
+/// Opt-in only: the mirror is written solely when `STATUSLINE_DEBUG_INPUT` is
+/// an ABSOLUTE path. There is no default file; unset, empty, relative or
+/// non-path values (`off`, `0`) write nothing. The payload carries paths and the
+/// session id, so it is never written implicitly (PCACHE-02).
+///
+/// Safety: an existing symlink, FIFO, directory or other non-regular node at
+/// the target is refused (lstat). The payload goes into a NEW owner-only (0600)
+/// temp file in the target's directory (`create_new`), which is then renamed
+/// over the target, so the target path itself is never opened: a node swapped
+/// in after the check is replaced, never followed or blocked on. Parent
+/// directories are never created. In a sticky world-writable directory,
+/// replacing another user's file fails and the mirror is skipped.
+///
+/// Best-effort: any failure here is silent and never affects the render.
 fn mirror_input(payload: &str) {
-    let target = match env::var("STATUSLINE_DEBUG_INPUT") {
-        Ok(v) if v.eq_ignore_ascii_case("off") => return,
-        Ok(v) if !v.is_empty() => std::path::PathBuf::from(v),
-        _ => common::get_data_dir().join("last-input.json"),
+    use std::io::Write as _;
+
+    let Some(raw) = env::var_os("STATUSLINE_DEBUG_INPUT") else {
+        return;
     };
+    let target = PathBuf::from(raw);
+    if !target.is_absolute() {
+        return;
+    }
+
+    match std::fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => return, // symlink, FIFO, directory, device, socket
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return,
+    }
+
+    let (Some(parent), Some(file_name)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp = parent.join(format!(
+        ".{}.{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id(),
+        nanos
+    ));
+
     let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create(true).truncate(true);
+    opts.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    if let Ok(mut f) = opts.open(&target) {
-        let _ = std::io::Write::write_all(&mut f, payload.as_bytes());
+    let Ok(mut file) = opts.open(&tmp) else {
+        return;
+    };
+
+    // Exact 0600 regardless of umask.
+    #[cfg(unix)]
+    let perms_ok = {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .is_ok()
+    };
+    #[cfg(not(unix))]
+    let perms_ok = true;
+    let ok = perms_ok && file.write_all(payload.as_bytes()).is_ok();
+    drop(file);
+
+    if !ok || std::fs::rename(&tmp, &target).is_err() {
+        let _ = std::fs::remove_file(&tmp);
     }
 }
 
