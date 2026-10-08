@@ -402,8 +402,185 @@ pub(crate) fn advance_file(
     budget: &mut ReadBudget,
     limits: &ScanLimits,
 ) -> Advance {
-    let _ = (path, is_agent, prior, budget, limits);
-    todo!()
+    let path_str = path.to_string_lossy().into_owned();
+    let keep = |refused: bool| Advance {
+        state: prior.cloned().unwrap_or_else(|| FileState {
+            path: path_str.clone(),
+            is_agent,
+            ..Default::default()
+        }),
+        caught_up: false,
+        changed: false,
+        refused,
+    };
+
+    // a. Regular files only, never blocking; agent files must not be symlinks.
+    let (mut f, md) = match crate::user_file::open_regular_nonblocking(path, !is_agent) {
+        Ok(x) => x,
+        Err(_) => {
+            log::debug!("agents: transcript file refused");
+            return keep(true);
+        }
+    };
+
+    // b. Identity from the fstat of the opened descriptor.
+    let fsize = md.len();
+    if fsize > limits.max_transcript {
+        log::debug!("agents: transcript file over the size cap; not read");
+        return keep(true);
+    }
+    let (mtime_ns, file_id) = stat_ids(&md);
+
+    // c. Unchanged shortcut: only for a file a previous render examined to EOF
+    //    (`size` is the examined end) and fingerprinted.
+    if let Some(p) = prior {
+        if p.fingerprint.is_some()
+            && p.file_id == file_id
+            && p.mtime_ns == mtime_ns
+            && fsize == p.size
+        {
+            let mut adv = Advance {
+                state: p.clone(),
+                caught_up: true,
+                changed: false,
+                refused: false,
+            };
+            if is_agent && adv.state.agent_type.is_none() {
+                probe_meta(path, &mut adv, budget, limits);
+            }
+            return adv;
+        }
+    }
+
+    // d. Continue from the prior state, or reset on any detected replacement.
+    let mut state = match prior {
+        None => FileState::default(),
+        Some(p) => {
+            let reset = if fsize < p.offset || p.file_id != file_id || p.fingerprint.is_none() {
+                true
+            } else {
+                let need = limits.fp_head.min(p.offset) + limits.fp_anchor.min(p.offset);
+                if !budget.can_afford(need) {
+                    // Deferred, not frozen: the stored state is untouched, so
+                    // the next render retries.
+                    return keep(false);
+                }
+                match fingerprint_at(budget, &mut f, p.offset, limits) {
+                    Some(fp) => p.fingerprint.as_deref() != Some(fp.as_str()),
+                    None => return keep(false),
+                }
+            };
+            if reset {
+                FileState {
+                    agent_type: if p.file_id == file_id {
+                        p.agent_type.clone()
+                    } else {
+                        None
+                    },
+                    ..Default::default()
+                }
+            } else {
+                p.clone()
+            }
+        }
+    };
+    state.path = path_str.clone();
+    state.is_agent = is_agent;
+
+    // e. Main read, reserving room for the post-read fingerprint.
+    let reserve = limits.fp_head + limits.fp_anchor;
+    let max_chunk = limits
+        .per_file
+        .min(limits.per_render.saturating_sub(reserve));
+    let want = limits
+        .per_file
+        .min(budget.remaining().saturating_sub(reserve));
+    if want == 0 {
+        return keep(false);
+    }
+    let read_start = state.offset;
+    let Some(chunk) = budget.read(&mut f, read_start, want, false) else {
+        return keep(false);
+    };
+    let consumed = consume_bytes(&mut state, &chunk) as u64;
+    state.offset += consumed;
+    // Long-line rule: a full maximal chunk without a newline can never be
+    // consumed by any render, so skip the rest of that line.
+    let line_cap = limits.max_line.min(max_chunk);
+    if consumed == 0 && line_cap > 0 && chunk.len() as u64 >= line_cap {
+        log::debug!("agents: skipping an over-long transcript line");
+        state.skipping_line = true;
+        state.offset += chunk.len() as u64;
+    }
+    let examined_end = read_start + chunk.len() as u64;
+
+    // f. Persist the examined end (never the fstat size after a partial read).
+    state.size = examined_end;
+    state.mtime_ns = mtime_ns;
+    state.file_id = file_id;
+    state.fingerprint = fingerprint_at(budget, &mut f, state.offset, limits);
+
+    let mut adv = Advance {
+        state,
+        caught_up: examined_end >= fsize,
+        changed: true,
+        refused: false,
+    };
+    if is_agent && adv.state.agent_type.is_none() {
+        probe_meta(path, &mut adv, budget, limits);
+    }
+    adv
+}
+
+/// `(mtime_ns, file_id)` from fstat metadata. `file_id` is `dev:ino` on unix.
+fn stat_ids(md: &std::fs::Metadata) -> (i64, Option<String>) {
+    let mtime_ns = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+        .unwrap_or(0);
+    #[cfg(unix)]
+    let file_id = {
+        use std::os::unix::fs::MetadataExt;
+        Some(format!("{}:{}", md.dev(), md.ino()))
+    };
+    #[cfg(not(unix))]
+    let file_id = None;
+    (mtime_ns, file_id)
+}
+
+/// Fingerprint of `f` at `offset` (head + anchor before `offset`), with both
+/// reads charged to `budget`. `None` when a read cannot be made.
+fn fingerprint_at(
+    budget: &mut ReadBudget,
+    f: &mut File,
+    offset: u64,
+    limits: &ScanLimits,
+) -> Option<String> {
+    let head_len = limits.fp_head.min(offset);
+    let anchor_len = limits.fp_anchor.min(offset);
+    let mut read = |at: u64, len: u64| -> Option<Vec<u8>> {
+        if len == 0 {
+            Some(Vec::new())
+        } else {
+            budget.read(f, at, len, true)
+        }
+    };
+    let head = read(0, head_len)?;
+    let anchor = read(offset - anchor_len, anchor_len)?;
+    Some(fingerprint(&head, &anchor))
+}
+
+fn probe_meta(path: &Path, adv: &mut Advance, budget: &mut ReadBudget, limits: &ScanLimits) {
+    match read_agent_type(path, budget, limits) {
+        MetaProbe::Found(t) => {
+            adv.state.agent_type = Some(t);
+            adv.changed = true;
+        }
+        MetaProbe::Deferred => adv.caught_up = false,
+        MetaProbe::Absent | MetaProbe::Refused => {}
+    }
 }
 
 /// `agent-<id>.jsonl` -> `agent-<id>.meta.json` -> `agentType`, bounded and
@@ -414,8 +591,37 @@ pub(crate) fn read_agent_type(
     budget: &mut ReadBudget,
     limits: &ScanLimits,
 ) -> MetaProbe {
-    let _ = (jsonl, budget, limits);
-    todo!()
+    let meta = jsonl.with_extension("meta.json");
+    let (mut f, md) = match crate::user_file::open_regular_nonblocking(&meta, false) {
+        Ok(x) => x,
+        Err(crate::user_file::CappedReadError::NotFound) => return MetaProbe::Absent,
+        Err(_) => {
+            log::debug!("agents: agent meta refused");
+            return MetaProbe::Refused;
+        }
+    };
+    if md.len() > limits.max_meta {
+        log::debug!("agents: agent meta over the size cap");
+        return MetaProbe::Refused;
+    }
+    // One extra byte detects a file that grew past the cap since the fstat.
+    let want = (md.len() + 1).min(limits.max_meta + 1);
+    if !budget.can_afford(want) {
+        return MetaProbe::Deferred;
+    }
+    let Some(bytes) = budget.read(&mut f, 0, want, true) else {
+        return MetaProbe::Refused;
+    };
+    if bytes.len() as u64 > limits.max_meta {
+        return MetaProbe::Refused;
+    }
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return MetaProbe::Refused;
+    };
+    match v.get("agentType").and_then(|t| t.as_str()) {
+        Some(t) => MetaProbe::Found(t.chars().take(MAX_AGENT_TYPE_CHARS).collect()),
+        None => MetaProbe::Refused,
+    }
 }
 
 #[cfg(test)]
