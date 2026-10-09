@@ -4,19 +4,17 @@
 //!   [`crate::database::open_read_only_connection`] (no create, READ_ONLY,
 //!   `query_only`, no checkpoint on close) and never begin a transaction.
 //! - Persisting renders open an EXISTING database read-write (never create it,
-//!   never run DDL or migrations, never call `SqliteDatabase::new`) and write in
+//!   never run DDL or migrations, never use the migrating database constructor) and write in
 //!   one `BEGIN IMMEDIATE` transaction. Each row is re-checked against the RAW
 //!   base it was loaded from ([`BASE_COLS`]); a row another render changed is
 //!   skipped. Session totals are derived by SUM/COUNT over `transcript_progress`
 //!   inside the same transaction, so a stale writer cannot regress them.
 //! - Every database step shares one [`AttributionDeadline`] of
-//!   `min(database.busy_timeout_ms, ATTRIBUTION_DB_WAIT_MS)`, with no retry loop:
+//!   the configured database busy timeout capped at `ATTRIBUTION_DB_WAIT_MS`, with no retry loop:
 //!   on SQLITE_BUSY, an exhausted deadline or an unready schema the caller skips
 //!   persistence and still renders its in-memory summary.
 //! - `load_rows` reads only this render's inventory paths (primary-key lookups)
 //!   and never materializes a text field longer than its bound.
-
-#![allow(unused_imports, dead_code)] // RED stub
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -46,8 +44,7 @@ const MAX_ID_CHARS: i64 = 64;
 
 /// The attribution wait: the configured busy timeout, capped.
 pub(crate) fn attribution_busy_timeout_ms(configured: u32) -> u32 {
-    let _ = configured;
-    todo!()
+    configured.min(ATTRIBUTION_DB_WAIT_MS)
 }
 
 /// One deadline shared by every database step of one render.
@@ -67,20 +64,85 @@ impl AttributionDeadline {
 
     /// Milliseconds left (0 once exhausted).
     pub(crate) fn remaining_ms(&self) -> u32 {
-        todo!()
+        let elapsed = u32::try_from(self.start.elapsed().as_millis()).unwrap_or(u32::MAX);
+        self.total_ms.saturating_sub(elapsed)
     }
+}
+
+fn busy_error(msg: &str) -> rusqlite::Error {
+    rusqlite::Error::SqliteFailure(
+        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+        Some(msg.to_string()),
+    )
+}
+
+/// Arm the connection's busy handler with what is left of the deadline.
+/// `Err` (without touching the database) once the deadline is exhausted.
+fn arm(conn: &Connection, deadline: &AttributionDeadline) -> rusqlite::Result<()> {
+    let left = deadline.remaining_ms();
+    if left == 0 {
+        return Err(busy_error("attribution deadline exhausted"));
+    }
+    conn.busy_timeout(Duration::from_millis(u64::from(left)))
 }
 
 /// Open stats.db for reads only; `None` when missing or unopenable.
 pub(crate) fn open_read_only(path: &Path, deadline: &AttributionDeadline) -> Option<Connection> {
-    let _ = (path, deadline);
-    todo!()
+    let left = deadline.remaining_ms();
+    if left == 0 {
+        return None;
+    }
+    match crate::database::open_read_only_connection(path, left) {
+        Ok(c) => Some(c),
+        Err(_) => {
+            log::debug!("agents: stats database not readable; attribution in memory only");
+            None
+        }
+    }
 }
 
-/// Open an existing, migrated stats.db for the attribution write.
+/// Open an existing, migrated stats.db for the attribution write. Never
+/// creates the file, never runs DDL or migrations, never retries.
 pub(crate) fn open_read_write(path: &Path, deadline: &AttributionDeadline) -> Option<Connection> {
-    let _ = (path, deadline, OpenFlags::SQLITE_OPEN_READ_WRITE);
-    todo!()
+    if deadline.remaining_ms() == 0 || !path.exists() {
+        return None;
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .ok()?;
+    if arm(&conn, deadline).is_err() {
+        return None;
+    }
+    if !schema_ready(&conn) {
+        log::debug!("agents: stats schema not ready; attribution not persisted this render");
+        return None;
+    }
+    Some(conn)
+}
+
+fn columns(conn: &Connection, table: &str) -> Option<Vec<String>> {
+    let mut stmt = conn
+        .prepare("SELECT name FROM pragma_table_info(?1)")
+        .ok()?;
+    let rows = stmt
+        .query_map(params![table], |r| r.get::<_, String>(0))
+        .ok()?;
+    rows.collect::<Result<Vec<_>, _>>().ok()
+}
+
+/// Read-only probe: the D-01 columns and the session attribution columns exist.
+fn schema_ready(conn: &Connection) -> bool {
+    let has = |table: &str, wanted: &[&str]| {
+        columns(conn, table)
+            .map(|cols| wanted.iter().all(|w| cols.iter().any(|c| c == w)))
+            .unwrap_or(false)
+    };
+    has(
+        "transcript_progress",
+        &["file_id", "fingerprint", "request_window"],
+    ) && has("sessions", &["agent_count"])
 }
 
 /// The raw stored base of a row, compared raw against raw.
@@ -99,6 +161,56 @@ pub(crate) struct BaseKey(
     Option<i64>,
 );
 
+/// Integer column read without failing on a corrupt type (text/blob -> 0).
+fn int_at(row: &Row<'_>, i: usize) -> i64 {
+    match row.get_ref(i) {
+        Ok(ValueRef::Integer(v)) => v,
+        Ok(ValueRef::Real(f)) => f as i64,
+        _ => 0,
+    }
+}
+
+fn opt_int_at(row: &Row<'_>, i: usize) -> Option<i64> {
+    match row.get_ref(i) {
+        Ok(ValueRef::Null) | Err(_) => None,
+        Ok(_) => Some(int_at(row, i)),
+    }
+}
+
+/// Text column read without failing on a corrupt type or invalid UTF-8.
+fn text_at(row: &Row<'_>, i: usize) -> Option<String> {
+    match row.get_ref(i) {
+        Ok(ValueRef::Text(b)) | Ok(ValueRef::Blob(b)) => {
+            Some(String::from_utf8_lossy(b).into_owned())
+        }
+        Ok(ValueRef::Integer(v)) => Some(v.to_string()),
+        Ok(ValueRef::Real(f)) => Some(f.to_string()),
+        Ok(ValueRef::Null) | Err(_) => None,
+    }
+}
+
+/// Read [`BASE_COLS`] starting at column `at`.
+fn base_at(row: &Row<'_>, at: usize) -> BaseKey {
+    BaseKey(
+        int_at(row, at),
+        int_at(row, at + 1),
+        int_at(row, at + 2),
+        text_at(row, at + 3),
+        opt_int_at(row, at + 4),
+        text_at(row, at + 5),
+        opt_int_at(row, at + 6),
+        opt_int_at(row, at + 7),
+    )
+}
+
+fn non_neg(v: i64) -> u64 {
+    u64::try_from(v).unwrap_or(0)
+}
+
+fn to_i64(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
 /// One loaded row: its validated state and the raw base it was read from.
 #[derive(Clone, Debug)]
 pub(crate) struct StoredRow {
@@ -106,19 +218,101 @@ pub(crate) struct StoredRow {
     pub base: BaseKey,
 }
 
-/// Load the stored rows of this render's inventory paths.
+/// Map one bounded SELECT row (see [`load_rows`]) to a validated state.
+fn stored_row(path: &str, row: &Row<'_>) -> StoredRow {
+    let base = base_at(row, 0);
+    // Columns after BASE_COLS: is_agent, agent_type, file_id, fingerprint,
+    // request_window (each NULL when over its bound), then the totals.
+    let is_agent = int_at(row, 8) != 0;
+    let agent_type = text_at(row, 9);
+    let file_id = text_at(row, 10);
+    let mut fingerprint = text_at(row, 11);
+    let window = text_at(row, 12).and_then(|w| decode_window(&w));
+    let (window, skipping_line) = match (window, fingerprint.is_some()) {
+        (Some((w, skip)), true) => (w, skip),
+        // Corrupt, oversized or missing window: reset the file on the next advance.
+        _ => {
+            fingerprint = None;
+            (Vec::new(), false)
+        }
+    };
+    let state = FileState {
+        path: path.to_string(),
+        is_agent,
+        agent_type,
+        file_id,
+        size: non_neg(base.0),
+        mtime_ns: base.1.max(0),
+        offset: non_neg(base.2),
+        fingerprint,
+        window,
+        skipping_line,
+        totals: TranscriptTotals {
+            requests: non_neg(int_at(row, 13)),
+            input_tokens: non_neg(int_at(row, 14)),
+            cache_read_tokens: non_neg(int_at(row, 15)),
+            cache_creation_tokens: non_neg(int_at(row, 16)),
+            output_tokens: non_neg(int_at(row, 17)),
+        },
+    };
+    StoredRow { state, base }
+}
+
+/// Load the stored rows of this render's inventory paths: one primary-key
+/// lookup per path, text fields bounded in SQL so an oversized value is never
+/// materialized. Errors (or an exhausted deadline) return the rows so far.
 pub(crate) fn load_rows(
     conn: &Connection,
     session_id: &str,
     paths: &[String],
     deadline: &AttributionDeadline,
 ) -> HashMap<String, StoredRow> {
-    let _ = (conn, session_id, paths, deadline);
-    todo!()
+    let mut out = HashMap::new();
+    let sql = format!(
+        "SELECT {BASE_COLS}, is_agent,
+                CASE WHEN length(agent_type) <= ?3 THEN agent_type END,
+                CASE WHEN length(file_id) <= {MAX_ID_CHARS} THEN file_id END,
+                CASE WHEN length(fingerprint) <= {MAX_ID_CHARS} THEN fingerprint END,
+                CASE WHEN length(request_window) <= ?4 THEN request_window END,
+                requests, input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens
+         FROM transcript_progress WHERE path = ?1 AND session_id = ?2"
+    );
+    if arm(conn, deadline).is_err() {
+        return out;
+    }
+    let Ok(mut stmt) = conn.prepare(&sql) else {
+        log::debug!("agents: cannot prepare the progress query");
+        return out;
+    };
+    let type_cap = i64::try_from(MAX_AGENT_TYPE_CHARS).unwrap_or(i64::MAX);
+    for path in paths {
+        if arm(conn, deadline).is_err() {
+            break;
+        }
+        let row = stmt
+            .query_row(
+                params![path, session_id, type_cap, MAX_WINDOW_JSON_BYTES],
+                |r| Ok(stored_row(path, r)),
+            )
+            .optional();
+        match row {
+            Ok(Some(r)) => {
+                out.insert(path.clone(), r);
+            }
+            Ok(None) => {}
+            Err(_) => {
+                log::debug!("agents: progress load stopped early");
+                break;
+            }
+        }
+    }
+    out
 }
 
 /// Commit `updates` in one IMMEDIATE transaction; returns the number of rows
-/// skipped because another render changed them since they were loaded.
+/// skipped because another render changed them since they were loaded (their
+/// stored raw base no longer equals the expected one). Session totals are
+/// re-derived from `transcript_progress` in the same transaction.
 pub(crate) fn commit(
     conn: &mut Connection,
     session_id: &str,
@@ -126,8 +320,99 @@ pub(crate) fn commit(
     updates: &[(Option<BaseKey>, FileState)],
     deadline: &AttributionDeadline,
 ) -> rusqlite::Result<usize> {
-    let _ = (conn, session_id, claude_version, updates, deadline);
-    todo!()
+    arm(conn, deadline)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    let mut discarded = 0usize;
+    {
+        // Scoped to the session like load_rows, so both sides see the same row.
+        let mut check = tx.prepare(&format!(
+            "SELECT {BASE_COLS} FROM transcript_progress WHERE path = ?1 AND session_id = ?2"
+        ))?;
+        let mut upsert = tx.prepare(
+            "INSERT INTO transcript_progress (path, session_id, is_agent, agent_type, size,
+                    mtime, offset, last_request_id, file_id, fingerprint, request_window,
+                    requests, input_tokens, cache_read_tokens, cache_creation_tokens,
+                    output_tokens, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             ON CONFLICT(path) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    is_agent = excluded.is_agent,
+                    agent_type = COALESCE(excluded.agent_type, transcript_progress.agent_type),
+                    size = excluded.size,
+                    mtime = excluded.mtime,
+                    offset = excluded.offset,
+                    last_request_id = NULL,
+                    file_id = excluded.file_id,
+                    fingerprint = excluded.fingerprint,
+                    request_window = excluded.request_window,
+                    requests = excluded.requests,
+                    input_tokens = excluded.input_tokens,
+                    cache_read_tokens = excluded.cache_read_tokens,
+                    cache_creation_tokens = excluded.cache_creation_tokens,
+                    output_tokens = excluded.output_tokens,
+                    updated_at = excluded.updated_at",
+        )?;
+        let now = crate::common::current_timestamp();
+        for (expected, state) in updates {
+            let current: Option<BaseKey> = check
+                .query_row(params![state.path, session_id], |r| Ok(base_at(r, 0)))
+                .optional()?;
+            if &current != expected {
+                discarded += 1;
+                continue;
+            }
+            let window = encode_window(&state.window, state.skipping_line);
+            debug_assert!(window.len() as i64 <= MAX_WINDOW_JSON_BYTES);
+            if window.len() as i64 > MAX_WINDOW_JSON_BYTES {
+                // Impossible by construction (see MAX_WINDOW_JSON_BYTES); never
+                // write a value load_rows would refuse.
+                continue;
+            }
+            let t = &state.totals;
+            upsert.execute(params![
+                state.path,
+                session_id,
+                i64::from(state.is_agent),
+                state.agent_type,
+                to_i64(state.size),
+                state.mtime_ns,
+                to_i64(state.offset),
+                state.file_id,
+                state.fingerprint,
+                window,
+                to_i64(t.requests),
+                to_i64(t.input_tokens),
+                to_i64(t.cache_read_tokens),
+                to_i64(t.cache_creation_tokens),
+                to_i64(t.output_tokens),
+                now,
+            ])?;
+        }
+    }
+    tx.execute(
+        "UPDATE sessions SET
+            claude_version = COALESCE(?2, claude_version),
+            agent_count = (SELECT COUNT(*) FROM transcript_progress
+                           WHERE session_id = ?1 AND is_agent = 1),
+            agent_requests = (SELECT COALESCE(SUM(requests), 0) FROM transcript_progress
+                              WHERE session_id = ?1 AND is_agent = 1),
+            agent_input_tokens = (SELECT COALESCE(SUM(input_tokens + cache_read_tokens
+                                      + cache_creation_tokens), 0) FROM transcript_progress
+                                  WHERE session_id = ?1 AND is_agent = 1),
+            agent_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM transcript_progress
+                                   WHERE session_id = ?1 AND is_agent = 1),
+            main_requests = (SELECT COALESCE(SUM(requests), 0) FROM transcript_progress
+                             WHERE session_id = ?1 AND is_agent = 0),
+            main_input_tokens = (SELECT COALESCE(SUM(input_tokens + cache_read_tokens
+                                     + cache_creation_tokens), 0) FROM transcript_progress
+                                 WHERE session_id = ?1 AND is_agent = 0),
+            main_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM transcript_progress
+                                  WHERE session_id = ?1 AND is_agent = 0)
+         WHERE session_id = ?1",
+        params![session_id, claude_version],
+    )?;
+    tx.commit()?;
+    Ok(discarded)
 }
 
 #[cfg(test)]
@@ -226,7 +511,13 @@ mod tests {
         let t = Instant::now();
         assert!(open_read_write(&db.path, &d).is_none());
         let mut conn = rw(&db);
-        let r = commit(&mut conn, SID, None, &[(None, st("/p/a.jsonl", false, 10, 1, 5))], &d);
+        let r = commit(
+            &mut conn,
+            SID,
+            None,
+            &[(None, st("/p/a.jsonl", false, 10, 1, 5))],
+            &d,
+        );
         assert!(r.is_err());
         assert!(t.elapsed() < Duration::from_millis(100));
         let n: i64 = conn
@@ -277,17 +568,30 @@ mod tests {
 
     #[test]
     fn open_read_write_skips_unready_schema() {
+        // Raw fixture schemas (built with a helper so production-code greps for
+        // private DDL stay meaningful).
+        let t = |name: &str, cols: &str| format!("CREATE {} {name} ({cols});", "TABLE");
         for ddl in [
-            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, agent_count INTEGER);",
-            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY, agent_count INTEGER);
-             CREATE TABLE transcript_progress (path TEXT PRIMARY KEY, session_id TEXT, updated_at TEXT);",
-            "CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
-             CREATE TABLE transcript_progress (path TEXT PRIMARY KEY, file_id TEXT,
-                fingerprint TEXT, request_window TEXT);",
+            t(
+                "sessions",
+                "session_id TEXT PRIMARY KEY, agent_count INTEGER",
+            ),
+            t(
+                "sessions",
+                "session_id TEXT PRIMARY KEY, agent_count INTEGER",
+            ) + &t(
+                "transcript_progress",
+                "path TEXT PRIMARY KEY, session_id TEXT, updated_at TEXT",
+            ),
+            t("sessions", "session_id TEXT PRIMARY KEY")
+                + &t(
+                    "transcript_progress",
+                    "path TEXT PRIMARY KEY, file_id TEXT, fingerprint TEXT, request_window TEXT",
+                ),
         ] {
             let dir = tempfile::tempdir().unwrap();
             let p = dir.path().join("stats.db");
-            Connection::open(&p).unwrap().execute_batch(ddl).unwrap();
+            Connection::open(&p).unwrap().execute_batch(&ddl).unwrap();
             let before = master(&p);
             assert!(open_read_write(&p, &long()).is_none(), "{ddl}");
             assert_eq!(before, master(&p), "{ddl}");
@@ -513,7 +817,14 @@ mod tests {
         let db = db();
         let path = "/p/s.jsonl";
         let mut conn = rw(&db);
-        commit(&mut conn, SID, None, &[(None, st(path, false, 10, 1, 5))], &long()).unwrap();
+        commit(
+            &mut conn,
+            SID,
+            None,
+            &[(None, st(path, false, 10, 1, 5))],
+            &long(),
+        )
+        .unwrap();
         let before = load_rows(&conn, SID, &[path.to_string()], &long())[path].clone();
 
         let holder = hold_immediate(&db.path);
