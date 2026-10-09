@@ -29,9 +29,13 @@ use crate::models::StatuslineInput;
 /// The returned daily total is the one observed immediately after the cost update
 /// (the later max-token write does not change the returned figure), matching the prior
 /// behavior of both call sites. The second element is the main/agent token attribution
-/// for the session (see `agents::scan`), computed whenever a session and transcript are
-/// present. Attribution is persisted inside `agents::scan` only when `update_stats` is
-/// `true`; read-only renders open the database read-only and never write.
+/// for the session (see `agents::scan`). Attribution runs only when the user opted in
+/// (`crate::display::agents_requested`): in legacy mode via `[display].show_agents`, in
+/// layout/template mode only when the effective template references an agents variable
+/// (`show_agents` has no effect there, D-03); and only when a session and transcript are
+/// present. Otherwise it is `None` with no filesystem or database access. Attribution is
+/// persisted inside `agents::scan` only when `update_stats` is `true`; read-only renders
+/// open the database read-only and never write.
 pub fn update_stats_and_daily_total(
     input: &StatuslineInput,
     update_stats: bool,
@@ -165,12 +169,22 @@ pub fn update_stats_and_daily_total(
         }
     }
 
-    // 4. Main/agent token attribution. `agents::scan` persists its state only when
-    //    `update_stats` is true (one IMMEDIATE transaction, derived session totals);
-    //    read-only renders open stats.db read-only and never write (AGENT-04).
-    let agents = match (session_id, transcript_path) {
-        (Some(sid), Some(t)) => crate::agents::scan(sid, t, input.version.as_deref(), update_stats),
-        _ => None,
+    // 4. Main/agent token attribution, gated on opt-in (AGENT-01, D-03): without it
+    //    no agent file is read and no attribution row is touched. The gate is
+    //    evaluated before session_id/transcript_path are consulted and lives here,
+    //    not in main.rs/lib.rs, so both render roots share it (Pitfall 8).
+    //    `agents::scan` persists its state only when `update_stats` is true (one
+    //    IMMEDIATE transaction, derived session totals); read-only renders open
+    //    stats.db read-only and never write (AGENT-04).
+    let agents = if crate::display::agents_requested(config::get_config()) {
+        match (session_id, transcript_path) {
+            (Some(sid), Some(t)) => {
+                crate::agents::scan(sid, t, input.version.as_deref(), update_stats)
+            }
+            _ => None,
+        }
+    } else {
+        None
     };
 
     (daily_total, agents)

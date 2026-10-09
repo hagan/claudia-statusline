@@ -111,6 +111,13 @@ pub use version::{short_version, version_string};
 /// * `input` - The statusline input containing workspace and model information
 /// * `update_stats` - Whether to update persistent statistics (set to false for preview)
 ///
+/// With `update_stats = false` nothing is written: the stats database is opened
+/// read-only and is never created, migrated or repaired. Subagent attribution (only
+/// when opted in via `[display].show_agents` in legacy mode or an `{agents*}` variable
+/// in the effective template) reads stored state read-only and advances in memory
+/// only, so a very large cold transcript may stay incomplete (count-only `{agents}`)
+/// across repeated preview renders.
+///
 /// # Returns
 ///
 /// A formatted statusline string ready for display.

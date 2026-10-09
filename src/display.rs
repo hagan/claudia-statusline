@@ -48,7 +48,6 @@ pub struct PayloadExtras<'a> {
 /// builder silently: `agent_gate_covers_every_builder_agents_key` in
 /// `tests/ant_invariant_tests.rs` scans `src/layout/variables.rs` and fails by
 /// name when a new `agents*` key is not listed here.
-#[cfg_attr(not(test), allow(dead_code))] // gate wired into render.rs by 17-08, which removes this attribute
 pub(crate) const AGENT_VARS: &[&str] = &[
     "agents",
     "agents_count",
@@ -82,7 +81,6 @@ pub(crate) fn effective_template(layout: &config::LayoutConfig) -> String {
 ///   [`format_statusline_with_layout`] renders) references an agents
 ///   variable. The prefix half is fail-closed in the sense that matters: an
 ///   unknown `{agents_typo}` causes an unneeded scan, never a missing value.
-#[cfg_attr(not(test), allow(dead_code))] // gate wired into render.rs by 17-08, which removes this attribute
 pub(crate) fn agents_requested(cfg: &config::Config) -> bool {
     if !uses_layout_system(cfg) {
         return cfg.display.show_agents;

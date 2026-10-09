@@ -420,7 +420,10 @@ fn opted_in_template_scans_once() {
     );
     let out = run.outputs.into_iter().next().unwrap().expect("render");
     assert_eq!(run.scans, 1, "opted-in template must scan exactly once");
-    assert!(run.bytes_read > 0, "the scan must read the agent transcript");
+    assert!(
+        run.bytes_read > 0,
+        "the scan must read the agent transcript"
+    );
     assert!(out.contains('1'), "{{agents_count}} must render 1: {out:?}");
 }
 
@@ -432,7 +435,10 @@ fn opted_in_legacy_show_agents_shows_segment() {
         "legacy show_agents (binary)",
     );
     let text = String::from_utf8_lossy(&out);
-    assert!(text.contains("🤖1"), "legacy segment must show 🤖1: {text:?}");
+    assert!(
+        text.contains("🤖1"),
+        "legacy segment must show 🤖1: {text:?}"
+    );
 }
 
 #[test]
@@ -489,7 +495,10 @@ fn transcript_progress_rows(home: &Path) -> i64 {
 /// created) writes no attribution rows; opting in writes at least one.
 #[test]
 fn no_attribution_rows_when_not_opted_in_binary() {
-    for (config, expect_rows) in [(None, false), (Some("[display]\nshow_agents = true\n"), true)] {
+    for (config, expect_rows) in [
+        (None, false),
+        (Some("[display]\nshow_agents = true\n"), true),
+    ] {
         let home = tempfile::TempDir::new().expect("isolated home");
         let transcript = materialize_tree(&home.path().join("tree"));
         let body = payload(PAYLOAD, &transcript);
