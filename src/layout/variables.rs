@@ -1045,8 +1045,17 @@ impl VariableBuilder {
     /// Set subagent-attribution variables from `agents::scan`:
     /// `{agents}` (`🤖3 30%`), `{agents_count}`, `{agents_pct}` (`30%`),
     /// `{agents_tokens}` (`152M/449k` = input traffic / output),
-    /// `{agents_types}` (`Explore×2 general-purpose×1`). All absent when the
-    /// session has not spawned agents.
+    /// `{agents_types}` (`Explore×2 general-purpose×1`).
+    ///
+    /// - Nothing is inserted when `agent_files == 0`, complete or not (no `🤖0`).
+    /// - D-04: while the summary is incomplete (`complete == false`), `{agents}`
+    ///   is the count only (`🤖3`), `{agents_count}` renders, and
+    ///   `{agents_pct}` / `{agents_tokens}` are absent.
+    /// - Agent type names are untrusted: [`normalize_agent_types`] sanitizes
+    ///   them (contract rule 1), strips bidi/format controls, restricts the
+    ///   charset and caps them at 64 chars x 16 entries. Every other value is a
+    ///   crate-formatted number (rule 3). Each value is wrapped
+    ///   `{color}{inner}{reset}`; the wrapped string is never sanitized (rule 2).
     pub fn agents(
         mut self,
         summary: &crate::agents::AgentsSummary,
@@ -1057,36 +1066,38 @@ impl VariableBuilder {
             return self;
         }
         let paint = |s: String| format!("{}{}{}", color, s, reset);
-        let pct = summary.agent_share_percent().map(|p| format!("{:.0}%", p));
-        self.variables.insert(
-            "agents_count".to_string(),
-            paint(summary.agent_files.to_string()),
-        );
-        if let Some(p) = &pct {
-            self.variables
-                .insert("agents_pct".to_string(), paint(p.clone()));
-        }
-        self.variables.insert(
-            "agents_tokens".to_string(),
-            paint(format!(
-                "{}/{}",
-                crate::agents::short_tokens(summary.agents.input_traffic()),
-                crate::agents::short_tokens(summary.agents.output_tokens)
-            )),
-        );
-        let types: Vec<String> = summary
-            .agent_types
+        let n = summary.agent_files;
+        self.variables
+            .insert("agents_count".to_string(), paint(n.to_string()));
+        let combined = if summary.complete {
+            let pct = summary.agent_share_percent().map(|p| format!("{:.0}%", p));
+            if let Some(p) = &pct {
+                self.variables
+                    .insert("agents_pct".to_string(), paint(p.clone()));
+            }
+            self.variables.insert(
+                "agents_tokens".to_string(),
+                paint(format!(
+                    "{}/{}",
+                    crate::agents::short_tokens(summary.agents.input_traffic()),
+                    crate::agents::short_tokens(summary.agents.output_tokens)
+                )),
+            );
+            match pct {
+                Some(p) => format!("🤖{} {}", n, p),
+                None => format!("🤖{}", n),
+            }
+        } else {
+            format!("🤖{}", n)
+        };
+        let types: Vec<String> = normalize_agent_types(&summary.agent_types)
             .iter()
-            .map(|(t, n)| format!("{}×{}", t, n))
+            .map(|(t, c)| format!("{}×{}", t, c))
             .collect();
         if !types.is_empty() {
             self.variables
                 .insert("agents_types".to_string(), paint(types.join(" ")));
         }
-        let combined = match pct {
-            Some(p) => format!("🤖{} {}", summary.agent_files, p),
-            None => format!("🤖{}", summary.agent_files),
-        };
         self.variables.insert("agents".to_string(), paint(combined));
         self
     }
@@ -1094,6 +1105,22 @@ impl VariableBuilder {
     /// Set prompt-cache variables from the payload's `prompt_cache` object:
     /// `{cache_hit}` (`91%`), `{cache_misses}`, `{cache_miss_cause}`,
     /// `{cache_warm}` (`warm`/`cold`) and the combined `{prompt_cache}`.
+    ///
+    /// - `{cache_hit}`: only for a finite hit ratio within `0..=1`
+    ///   ([`valid_hit_ratio`]).
+    /// - `{cache_misses}`: whenever the payload has a count, including `0`.
+    /// - `{cache_miss_cause}` (D-02): up to 3 causes joined by `,`, each
+    ///   sanitized (contract rule 1), stripped of bidi/format controls,
+    ///   restricted to `[a-z0-9_-]` and capped at [`MAX_CAUSE_CHARS`]
+    ///   ([`normalize_miss_causes`]).
+    /// - `{cache_warm}`: only when `warm` is known and `caching_observed` is not
+    ///   `false` (caching off or unreported means warm/cold is meaningless).
+    /// - `{prompt_cache}`: `cache N%`, then `miss:N` and the causes when there
+    ///   was at least one miss, space-joined; absent when empty. The legacy
+    ///   segment renders the same text.
+    ///
+    /// Numbers are crate-formatted (rule 3); each value is wrapped
+    /// `{color}{inner}{reset}` and the wrapped string is never sanitized (rule 2).
     pub fn prompt_cache(
         mut self,
         pc: &crate::models::PromptCache,
@@ -1102,35 +1129,33 @@ impl VariableBuilder {
     ) -> Self {
         let paint = |s: String| format!("{}{}{}", color, s, reset);
         let mut combined = Vec::new();
-        if let Some(r) = pc.hit_ratio {
+        if let Some(r) = valid_hit_ratio(pc) {
             let s = format!("{:.0}%", r * 100.0);
             combined.push(format!("cache {}", s));
             self.variables.insert("cache_hit".to_string(), paint(s));
         }
+        let misses = pc.misses.unwrap_or(0);
         if let Some(m) = pc.misses {
             self.variables
                 .insert("cache_misses".to_string(), paint(m.to_string()));
-            if m > 0 {
-                combined.push(format!("miss:{}", m));
-            }
         }
-        if let Some(c) = pc
-            .last_miss_cause
-            .as_ref()
-            .and_then(|c| c.causes.as_ref())
-            .and_then(|v| v.first())
-        {
-            self.variables
-                .insert("cache_miss_cause".to_string(), paint(c.clone()));
-            if pc.misses.unwrap_or(0) > 0 {
-                combined.push(c.clone());
+        if misses > 0 {
+            combined.push(format!("miss:{}", misses));
+        }
+        if let Some(causes) = normalize_miss_causes(pc) {
+            if misses > 0 {
+                combined.push(causes.clone());
             }
+            self.variables
+                .insert("cache_miss_cause".to_string(), paint(causes));
         }
         if let Some(w) = pc.warm {
-            self.variables.insert(
-                "cache_warm".to_string(),
-                paint(if w { "warm" } else { "cold" }.to_string()),
-            );
+            if pc.caching_observed != Some(false) {
+                self.variables.insert(
+                    "cache_warm".to_string(),
+                    paint(if w { "warm" } else { "cold" }.to_string()),
+                );
+            }
         }
         if !combined.is_empty() {
             self.variables
@@ -1545,24 +1570,80 @@ pub(crate) const MAX_AGENT_TYPE_DISPLAY_CHARS: usize = 64;
 pub(crate) const MAX_AGENT_TYPES_SHOWN: usize = 16;
 
 /// Unicode bidi embedding/override/isolate controls and invisible format
-/// characters that can reorder or hide adjacent statusline text.
-pub(crate) fn is_bidi_or_format_control(_c: char) -> bool {
-    todo!()
+/// characters that can reorder or hide adjacent statusline text: U+061C (ALM),
+/// U+200B..=U+200F (zero-width space/joiners, LRM/RLM), U+202A..=U+202E
+/// (embeddings and overrides), U+2060..=U+2064 (word joiner, invisible
+/// operators), U+2066..=U+2069 (isolates) and U+FEFF (zero-width no-break
+/// space). [`sanitize_for_terminal`] removes ANSI and C0/C1 controls but NOT
+/// these, so every normalizer for attacker-influenced text (agent types,
+/// prompt-cache miss causes) drops them explicitly.
+pub(crate) fn is_bidi_or_format_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
 }
 
-/// Normalized `{cache_miss_cause}` text.
-pub(crate) fn normalize_miss_causes(_pc: &crate::models::PromptCache) -> Option<String> {
-    todo!()
+/// `{cache_miss_cause}` text (D-02), shared by the builder and the legacy
+/// segment so both render one rule: each cause is passed through
+/// [`sanitize_for_terminal`], stripped of [`is_bidi_or_format_control`]
+/// characters, restricted to `[a-z0-9_-]` (anything else is dropped), and
+/// truncated to [`MAX_CAUSE_CHARS`]; empty results are skipped; the first
+/// three kept causes are joined with `,`. `None` when nothing survives.
+pub(crate) fn normalize_miss_causes(pc: &crate::models::PromptCache) -> Option<String> {
+    let causes = pc.last_miss_cause.as_ref()?.causes.as_ref()?;
+    let kept: Vec<String> = causes
+        .iter()
+        .filter_map(|raw| {
+            let c: String = sanitize_for_terminal(raw)
+                .chars()
+                .filter(|&c| !is_bidi_or_format_control(c))
+                .filter(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+                .take(MAX_CAUSE_CHARS)
+                .collect();
+            (!c.is_empty()).then_some(c)
+        })
+        .take(MAX_CAUSES_SHOWN)
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(","))
 }
 
-/// Normalized agent type map.
-pub(crate) fn normalize_agent_types(_types: &BTreeMap<String, u32>) -> BTreeMap<String, u32> {
-    todo!()
+/// Display form of the agent-type map. Each name (untrusted `.meta.json`
+/// `agentType` text, possibly via the database) is passed through
+/// [`sanitize_for_terminal`], stripped of [`is_bidi_or_format_control`]
+/// characters, restricted to alphanumerics plus `-_:.` (covers `Explore`,
+/// `general-purpose`, `plugin:agent`, dotted names), truncated char-safely to
+/// [`MAX_AGENT_TYPE_DISPLAY_CHARS`]; empty names are skipped. Counts are
+/// re-aggregated because two raw names can normalize to the same key, and
+/// only the first [`MAX_AGENT_TYPES_SHOWN`] keys in sorted order are kept.
+pub(crate) fn normalize_agent_types(types: &BTreeMap<String, u32>) -> BTreeMap<String, u32> {
+    let mut out: BTreeMap<String, u32> = BTreeMap::new();
+    for (raw, n) in types {
+        let name: String = sanitize_for_terminal(raw)
+            .chars()
+            .filter(|&c| !is_bidi_or_format_control(c))
+            .filter(|&c| c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+            .take(MAX_AGENT_TYPE_DISPLAY_CHARS)
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let slot = out.entry(name).or_insert(0);
+        *slot = slot.saturating_add(*n);
+    }
+    out.into_iter().take(MAX_AGENT_TYPES_SHOWN).collect()
 }
 
-/// Hit ratio when usable.
-pub(crate) fn valid_hit_ratio(_pc: &crate::models::PromptCache) -> Option<f64> {
-    todo!()
+/// The payload hit ratio when it is usable: finite and within `0.0..=1.0`.
+/// Anything else (null, NaN, infinite, out of range) renders no hit figure.
+pub(crate) fn valid_hit_ratio(pc: &crate::models::PromptCache) -> Option<f64> {
+    pc.hit_ratio
+        .filter(|r| r.is_finite() && (0.0..=1.0).contains(r))
 }
 
 #[cfg(test)]

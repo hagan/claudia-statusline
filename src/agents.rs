@@ -75,7 +75,6 @@ pub struct AgentsSummary {
     /// False while any inventoried file is not yet examined to EOF (per-render
     /// budget hit, oversized or refused file) or a needed `.meta.json` read was
     /// deferred. The display then renders the agent count only (D-04).
-    #[cfg_attr(not(test), allow(dead_code))] // read by the display layer from 17-06
     pub complete: bool,
 }
 

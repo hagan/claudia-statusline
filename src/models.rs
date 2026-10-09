@@ -118,7 +118,6 @@ pub struct PromptCache {
     pub warm: Option<bool>,
     /// Whether caching was observed at all. Upstream docs: "false means prompt
     /// caching is off, or your provider or gateway doesn't report it".
-    #[allow(dead_code)] // Public API - consumed by {cache_warm} (17-06)
     #[serde(default, deserialize_with = "lenient")]
     pub caching_observed: Option<bool>,
     /// Cache lifetime tier, `5m` or `1h`.
