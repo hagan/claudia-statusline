@@ -14,30 +14,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`🤖N xx%` segment**: number of agent transcripts in the session and the
-  agents' share of the session's input traffic (fresh + cache read + cache
-  write). Rendered only when agents exist; `display.show_agents` (default true).
-  Template variables `{agents}`, `{agents_count}`, `{agents_pct}`,
+- **`🤖N xx%` segment (opt-in)**: number of agent transcripts in the session
+  and the agents' share of the session's input traffic (fresh + cache read +
+  cache write). Attribution is off by default. In the legacy layout
+  `display.show_agents` (default false) turns the segment on; in layout/template
+  mode the transcripts are scanned only when the template uses `{agents}`,
+  `{agents_count}`, `{agents_pct}`, `{agents_tokens}` or `{agents_types}`, and
+  `show_agents` has no effect there. The built-in presets are unchanged from
+  3.3.0. Template variables: `{agents}`, `{agents_count}`, `{agents_pct}`,
   `{agents_tokens}` (`152M/449k` = input traffic / output), `{agents_types}`
-  (`Explore×14 Plan×1`). `{agents}` appended to the `default`, `detailed` and
-  `power` presets (separator auto-hidden when empty).
+  (`Explore×14 Plan×1`). While a transcript is still being caught up (or an
+  agent file is too large to read), `{agents}` shows the count only and
+  `{agents_pct}`/`{agents_tokens}` are omitted; with more than 256 agent files,
+  or when the `subagents` directory cannot be listed completely, no agent data
+  renders. Agent types and cache causes are sanitized for the terminal,
+  including Unicode direction controls.
 - **Incremental transcript parsing** (`src/agents.rs`): each main/agent file
-  keeps a byte offset, running totals and the last `requestId` in the new
-  `transcript_progress` table (migration 007), so a render reads only what was
-  appended. Measured on a 15 MB main transcript + 15 agent files: 0.10 s cold,
-  0.05 s warm.
+  keeps a byte offset and running totals in the new `transcript_progress`
+  table (migration 007), so a render reads only what was appended. The
+  per-file state also stores a file identity, a content fingerprint and the
+  last 32 request contributions. Each request counts once, with its last
+  line's usage, when its lines are within 32 requests of each other, which is
+  how Claude Code writes them (fixes an output-token undercount in earlier
+  development builds). A file is re-read from the start when it is a new file,
+  shorter, or its first 4 KiB or the bytes before the last read position
+  changed. Reads are regular-file-only and non-blocking, and are capped per
+  file (4 MiB), per render (8 MiB in total, including fingerprint and metadata
+  reads) and per transcript (1 GiB); a large file catches up over several
+  renders. Attribution waits at most 250 ms (or the configured
+  `database.busy_timeout_ms`, if lower) for a locked database and then skips
+  saving for that render.
+- **Read-only previews**: a render with `update_stats = false` (library
+  previews via `render_statusline` / `render_from_json`) opens the stats
+  database read-only and never creates, migrates or repairs it. Attribution
+  then advances in memory only, so a very large transcript that has not been
+  read by a normal render yet can stay count-only across previews, and on a
+  database from an older build a preview may omit values until the next
+  normal render upgrades it.
 - **`statusline stats [--by-version | --sessions]`**: main requests, input
   traffic per request, output per request, agent count/requests and agent share,
   grouped by the Claude Code `version` that produced each session (now stored
   in `sessions.claude_version`). A step change between versions is the signal
-  that an update changed agent or context behaviour.
+  that an update changed agent or context behaviour. Attribution data is
+  collected only for renders that opt in to it (see the `🤖N xx%` entry).
 - **`prompt_cache` payload parsing** (Claude Code >= 2.1.251): `{prompt_cache}`,
   `{cache_hit}`, `{cache_misses}`, `{cache_miss_cause}`, `{cache_warm}`; opt-in
   segment via `display.show_prompt_cache` (`cache 91% miss:2 tools_changed`).
-- **Stdin mirror**: the raw payload of the last render is written to
-  `<data dir>/last-input.json` (mode 0600) so a new or renamed field after a
-  Claude Code update shows up in `jq .` instead of being guessed.
-  `STATUSLINE_DEBUG_INPUT=<path>` relocates it, `=off` disables it.
+  A wrong-typed or newly shaped field is ignored on its own instead of
+  discarding the whole payload. `{cache_miss_cause}` lists up to 3 causes
+  joined by `,`, each limited to `[a-z0-9_-]` and 40 characters; `{cache_warm}`
+  is omitted when Claude Code reports caching as not observed. All values are
+  sanitized for the terminal.
+- **Stdin mirror (opt-in debugging aid)**: set `STATUSLINE_DEBUG_INPUT` to an
+  absolute path and each render writes its raw payload there, so a new or
+  renamed field after a Claude Code update shows up in `jq .` instead of being
+  guessed. There is no default file; relative values (including `off`) are
+  ignored; an existing symlink or other non-regular target is refused; parent
+  directories are not created. The payload is written to a new 0600 temp file
+  and renamed over the target. `last-input.json` files created by earlier
+  development builds of this branch are not removed automatically.
 - **`statusline sessions [list | show | pick]`**: browse the sessions the
   database knows about. `list` (default) prints them newest first with an
   index, Claude Code version, model, workspace, main requests, agent count and
