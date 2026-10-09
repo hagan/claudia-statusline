@@ -37,6 +37,16 @@ pub struct PayloadExtras<'a> {
     pub prompt_cache: Option<&'a crate::models::PromptCache>,
 }
 
+/// Every `{agents*}` variable the builder can insert (D-03 gate list).
+#[cfg_attr(not(test), allow(dead_code))] // gate wired into render.rs by 17-08, which removes this attribute
+pub(crate) const AGENT_VARS: &[&str] = &[];
+
+/// Whether this render needs subagent attribution (D-03).
+#[cfg_attr(not(test), allow(dead_code))] // gate wired into render.rs by 17-08, which removes this attribute
+pub(crate) fn agents_requested(_cfg: &config::Config) -> bool {
+    todo!()
+}
+
 /// `🤖3 30%`: number of agent transcripts and the agents' share of the session's
 /// input traffic. `None` when the session has not spawned agents, so the segment
 /// costs no width in ordinary sessions.
@@ -1711,6 +1721,126 @@ fn format_token_count_for_display(count: u64) -> String {
 mod tests {
     use super::*;
     use crate::models::{ContextWindow, RateLimitWindow, RateLimits};
+
+    // ---- 17-06: D-03 gate predicate and D-02/D-04 legacy segments ----
+
+    fn cfg_with(preset: &str, format: &str, show_agents: bool) -> config::Config {
+        let mut c = config::Config::default();
+        c.layout.preset = preset.to_string();
+        c.layout.format = format.to_string();
+        c.display.show_agents = show_agents;
+        c
+    }
+
+    fn agents_summary(files: u32, complete: bool) -> crate::agents::AgentsSummary {
+        crate::agents::AgentsSummary {
+            main: crate::agents::TranscriptTotals {
+                input_tokens: 70,
+                ..Default::default()
+            },
+            agents: crate::agents::TranscriptTotals {
+                input_tokens: 30,
+                ..Default::default()
+            },
+            agent_files: files,
+            agent_types: Default::default(),
+            complete,
+        }
+    }
+
+    #[test]
+    fn agents_requested_legacy_follows_show_agents() {
+        assert!(!agents_requested(&cfg_with("default", "", false)));
+        assert!(agents_requested(&cfg_with("default", "", true)));
+    }
+
+    #[test]
+    fn agents_requested_layout_ignores_show_agents() {
+        assert!(!agents_requested(&cfg_with("detailed", "", true)));
+        assert!(!agents_requested(&cfg_with("power", "", true)));
+        assert!(!agents_requested(&cfg_with("power", "", false)));
+    }
+
+    #[test]
+    fn agents_requested_custom_format_with_agents_var() {
+        for v in [
+            "agents",
+            "agents_count",
+            "agents_pct",
+            "agents_tokens",
+            "agents_types",
+        ] {
+            let f = format!("{{directory}} {{{}}}", v);
+            assert!(agents_requested(&cfg_with("default", &f, false)), "{}", f);
+        }
+    }
+
+    #[test]
+    fn agents_requested_custom_format_without_agents_var() {
+        assert!(!agents_requested(&cfg_with(
+            "default",
+            "{directory} {model}",
+            true
+        )));
+        // Escaped literal: the oracle is the renderer's real output, not the
+        // detector. The predicate must be true exactly when render() would
+        // substitute an agents value.
+        let format = "{{agents}}";
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("agents".to_string(), "SENTINEL_AGENTS".to_string());
+        let out = LayoutRenderer::with_format(format, " ").render(&vars);
+        let substituted = out.contains("SENTINEL_AGENTS");
+        assert_eq!(
+            agents_requested(&cfg_with("default", format, false)),
+            substituted,
+            "render output: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn legacy_format_agents_incomplete_count_only() {
+        assert_eq!(
+            format_agents(&agents_summary(3, false)).as_deref(),
+            Some("🤖3")
+        );
+        assert_eq!(
+            format_agents(&agents_summary(3, true)).as_deref(),
+            Some("🤖3 30%")
+        );
+    }
+
+    #[test]
+    fn legacy_format_agents_zero_agents_absent() {
+        assert_eq!(format_agents(&agents_summary(0, false)), None);
+        assert_eq!(format_agents(&agents_summary(0, true)), None);
+    }
+
+    #[test]
+    fn legacy_format_prompt_cache_uses_normalized_causes() {
+        let pc = |causes: &[&str]| crate::models::PromptCache {
+            misses: Some(2),
+            hit_ratio: Some(0.91),
+            last_miss_cause: Some(crate::models::PromptCacheMissCause {
+                causes: Some(causes.iter().map(|s| s.to_string()).collect()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_prompt_cache(&pc(&["tools_changed", "system_prompt_changed"])).as_deref(),
+            Some("cache 91% miss:2 tools_changed,system_prompt_changed")
+        );
+        let out = format_prompt_cache(&pc(&["\u{1b}[31mtools\u{202e}_changed\u{7}"])).unwrap();
+        assert!(!out.contains('\u{1b}'), "{:?}", out);
+        assert!(!out.contains('\u{202e}'), "{:?}", out);
+        assert_eq!(out, "cache 91% miss:2 tools_changed");
+        // Invalid ratio: no hit figure, legacy agrees with the builder.
+        let bad = crate::models::PromptCache {
+            hit_ratio: Some(f64::NAN),
+            ..Default::default()
+        };
+        assert_eq!(format_prompt_cache(&bad), None);
+    }
 
     #[test]
     fn test_format_rate_limits() {
