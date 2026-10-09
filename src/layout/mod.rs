@@ -7,7 +7,7 @@ mod catalog;
 mod format;
 mod presets;
 mod template;
-mod variables;
+pub(crate) mod variables;
 
 #[cfg(test)]
 mod tests;

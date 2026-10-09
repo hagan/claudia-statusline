@@ -5,6 +5,7 @@
 
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
+use crate::layout::variables::{normalize_miss_causes, valid_hit_ratio};
 use crate::layout::{LayoutRenderer, VariableBuilder};
 use crate::models::{
     CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimitWindow, RateLimits,
@@ -38,21 +39,69 @@ pub struct PayloadExtras<'a> {
 }
 
 /// Every `{agents*}` variable the builder can insert (D-03 gate list).
+///
+/// Mirrors `PRICE_VARS` in [`format_statusline_with_layout`]: the gate is the OR
+/// of an AST half (`uses_variable_prefix_in_output("agents")`, fail-closed) and
+/// this brace-exact RAW half (`uses_variable`), which also covers templates such
+/// as `{{agents}}` whose leading `{{` the parser consumes as an escaped literal
+/// while `render()` still resolves `agents`. The list cannot drift from the
+/// builder silently: `agent_gate_covers_every_builder_agents_key` in
+/// `tests/ant_invariant_tests.rs` scans `src/layout/variables.rs` and fails by
+/// name when a new `agents*` key is not listed here.
 #[cfg_attr(not(test), allow(dead_code))] // gate wired into render.rs by 17-08, which removes this attribute
-pub(crate) const AGENT_VARS: &[&str] = &[];
+pub(crate) const AGENT_VARS: &[&str] = &[
+    "agents",
+    "agents_count",
+    "agents_pct",
+    "agents_tokens",
+    "agents_types",
+];
+
+/// Whether the layout-template system renders this statusline (a non-empty
+/// `[layout].format` or a non-default preset); otherwise the legacy segment
+/// renderer runs.
+pub(crate) fn uses_layout_system(cfg: &config::Config) -> bool {
+    !cfg.layout.format.is_empty() || cfg.layout.preset.to_lowercase() != "default"
+}
+
+/// The template the layout renderer actually renders: `[layout].format` when
+/// set, otherwise the named preset's format.
+pub(crate) fn effective_template(layout: &config::LayoutConfig) -> String {
+    if layout.format.is_empty() {
+        crate::layout::get_preset_format(&layout.preset).to_string()
+    } else {
+        layout.format.clone()
+    }
+}
 
 /// Whether this render needs subagent attribution (D-03).
+///
+/// - Legacy mode: `[display].show_agents`.
+/// - Layout/template mode: `show_agents` has NO effect on scanning. The scan
+///   runs only when the effective template (the same one
+///   [`format_statusline_with_layout`] renders) references an agents
+///   variable. The prefix half is fail-closed in the sense that matters: an
+///   unknown `{agents_typo}` causes an unneeded scan, never a missing value.
 #[cfg_attr(not(test), allow(dead_code))] // gate wired into render.rs by 17-08, which removes this attribute
-pub(crate) fn agents_requested(_cfg: &config::Config) -> bool {
-    todo!()
+pub(crate) fn agents_requested(cfg: &config::Config) -> bool {
+    if !uses_layout_system(cfg) {
+        return cfg.display.show_agents;
+    }
+    let r = LayoutRenderer::with_format(&effective_template(&cfg.layout), &cfg.layout.separator);
+    r.uses_variable_prefix_in_output("agents") || AGENT_VARS.iter().any(|v| r.uses_variable(v))
 }
 
 /// `🤖3 30%`: number of agent transcripts and the agents' share of the session's
-/// input traffic. `None` when the session has not spawned agents, so the segment
-/// costs no width in ordinary sessions.
+/// input traffic. `None` when the session has not spawned agents (`agent_files
+/// == 0`, complete or not: never `🤖0`), so the segment costs no width in
+/// ordinary sessions. While the summary is incomplete the count is shown alone
+/// (`🤖3`, D-04), matching the `{agents}` builder variable.
 fn format_agents(summary: &crate::agents::AgentsSummary) -> Option<String> {
     if !summary.has_agents() {
         return None;
+    }
+    if !summary.complete {
+        return Some(format!("🤖{}", summary.agent_files));
     }
     let pct = summary
         .agent_share_percent()
@@ -61,22 +110,21 @@ fn format_agents(summary: &crate::agents::AgentsSummary) -> Option<String> {
     Some(format!("🤖{}{}", summary.agent_files, pct))
 }
 
-/// `cache 91% miss:2 tools_changed`: hit ratio, miss count, latest miss cause.
-/// Each piece is omitted when the payload lacks it; `None` when nothing is known.
+/// `cache 91% miss:2 tools_changed`: hit ratio, miss count, latest miss causes.
+/// Same rule as the `{prompt_cache}` builder variable: the hit figure only for
+/// a valid ratio ([`valid_hit_ratio`]), `miss:N` and the causes only when there
+/// was a miss, causes normalized by [`normalize_miss_causes`] (D-02: up to 3,
+/// `[a-z0-9_-]`, sanitized, bidi/format controls stripped, 40 chars each).
+/// `None` when nothing is known.
 fn format_prompt_cache(pc: &crate::models::PromptCache) -> Option<String> {
     let mut parts = Vec::new();
-    if let Some(r) = pc.hit_ratio {
+    if let Some(r) = valid_hit_ratio(pc) {
         parts.push(format!("cache {:.0}%", r * 100.0));
     }
     if let Some(m) = pc.misses.filter(|&m| m > 0) {
         parts.push(format!("miss:{}", m));
-        if let Some(c) = pc
-            .last_miss_cause
-            .as_ref()
-            .and_then(|c| c.causes.as_ref())
-            .and_then(|v| v.first())
-        {
-            parts.push(c.clone());
+        if let Some(c) = normalize_miss_causes(pc) {
+            parts.push(c);
         }
     }
     if parts.is_empty() {
@@ -769,11 +817,7 @@ fn format_statusline_with_layout(
     // the preset file is resolved at most once, and the pricing gate below
     // queries the SAME renderer that will produce the output — it cannot drift
     // from the template actually rendered.
-    let effective_template = if layout_config.format.is_empty() {
-        crate::layout::get_preset_format(&layout_config.preset).to_string()
-    } else {
-        layout_config.format.clone()
-    };
+    let effective_template = effective_template(layout_config);
     let renderer = LayoutRenderer::with_format(&effective_template, &layout_config.separator);
 
     // Build variables using VariableBuilder with component configs
@@ -969,8 +1013,9 @@ fn format_statusline_with_layout(
     }
 
     // Subagent attribution: {agents}, {agents_count}, {agents_pct}, {agents_tokens},
-    // {agents_types}. All absent in sessions without agents (clean_separators then
-    // drops the separator in front of {agents} in the presets).
+    // {agents_types}. Opt-in: no preset references them (17-01), so they render
+    // only from a custom format. All absent in sessions without agents
+    // (clean_separators then drops an adjacent separator).
     if let Some(summary) = extras.agents {
         builder = builder.agents(summary, &Colors::light_gray(), &reset);
     }
@@ -1282,8 +1327,7 @@ fn format_output_with_config(
     let full_config = config::get_config();
 
     // Check if custom layout is configured (non-empty format OR non-default preset)
-    let use_layout_system = !full_config.layout.format.is_empty()
-        || full_config.layout.preset.to_lowercase() != "default";
+    let use_layout_system = uses_layout_system(full_config);
 
     let output = if use_layout_system {
         format_statusline_with_layout(
@@ -1344,8 +1388,7 @@ pub fn format_output_to_string(
     // the shared `api_usage`/`session_meta` wiring — a main↔lib divergence
     // (CLAUDE.md high-blast-radius note). Routing identically here is what makes
     // the single display.rs wiring reach BOTH render paths (Pitfall 6).
-    let use_layout_system = !full_config.layout.format.is_empty()
-        || full_config.layout.preset.to_lowercase() != "default";
+    let use_layout_system = uses_layout_system(full_config);
 
     if use_layout_system {
         format_statusline_with_layout(
