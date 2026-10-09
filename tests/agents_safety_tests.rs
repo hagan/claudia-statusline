@@ -317,6 +317,7 @@ struct LibEnv {
     temp: TempDir,
     data_root: PathBuf,
     saved: Vec<(&'static str, Option<OsString>)>,
+    restored: bool,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
@@ -357,12 +358,41 @@ impl LibEnv {
             temp,
             data_root,
             saved,
+            restored: false,
             _lock: lock,
         }
     }
 
     fn root(&self) -> &Path {
         self.temp.path()
+    }
+
+    /// Restore the process env and reset the config cache (before asserting).
+    /// The TempDir and the env lock stay held until Drop.
+    fn restore(&mut self) {
+        if self.restored {
+            return;
+        }
+        self.restored = true;
+        for (k, v) in &self.saved {
+            match v {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+        statusline::config::reset_config();
+    }
+
+    /// Point XDG_DATA_HOME at a fresh root and copy the (checkpointed) store
+    /// there. The new canonical path is not in this process's `MIGRATED_DBS`
+    /// cache, so a writable open would migrate and repair it (17-11 deviation 2).
+    fn relocate_store(&mut self) {
+        let old = self.db_path();
+        self.data_root = self.temp.path().join("data_relocated");
+        std::fs::create_dir_all(self.data_dir()).expect("create relocated data dir");
+        std::fs::copy(&old, self.db_path()).expect("copy store");
+        std::env::set_var("XDG_DATA_HOME", &self.data_root);
+        statusline::config::reset_config();
     }
 
     fn data_dir(&self) -> PathBuf {
@@ -376,13 +406,7 @@ impl LibEnv {
 
 impl Drop for LibEnv {
     fn drop(&mut self) {
-        for (k, v) in &self.saved {
-            match v {
-                Some(v) => std::env::set_var(k, v),
-                None => std::env::remove_var(k),
-            }
-        }
-        statusline::config::reset_config();
+        self.restore();
     }
 }
 
@@ -513,7 +537,10 @@ fn invalid_session_id_disables_attribution() {
         let main = sentinel_tree(&home.path().join("t"));
         let body = payload("../x", &main, true);
         let text = hostile_render(home.path(), LEGACY_OPT_IN, &body, "session id ../x");
-        assert!(!text.contains('🤖'), "invalid id: no agent segment: {text:?}");
+        assert!(
+            !text.contains('🤖'),
+            "invalid id: no agent segment: {text:?}"
+        );
     }
 
     // In-process lib render: attribution builds no path and reads nothing.
@@ -530,4 +557,432 @@ fn invalid_session_id_disables_attribution() {
         assert_eq!(scans, 0, "{bad_id}: attribution must not scan");
         assert_eq!(bytes, 0, "{bad_id}: attribution must read zero bytes");
     }
+}
+
+// ============================================================================
+// Task 2: SC3 read-only proof, configured DB path, locked-DB budget
+// ============================================================================
+
+use rusqlite::types::ValueRef;
+use rusqlite::{Connection, OpenFlags};
+
+/// Full opt-in: all 10 agents / prompt-cache variables templated.
+const FULL_OPT_IN: &str = "[layout]\nformat = \"{agents}|{agents_count}|{agents_pct}|{agents_tokens}|{agents_types}|{prompt_cache}|{cache_hit}|{cache_misses}|{cache_miss_cause}|{cache_warm}\"\n";
+
+/// D-01 registry column the open-time repair would re-add.
+const DRIFT_COLUMN: &str = "request_window";
+
+fn wal_path(db: &Path) -> PathBuf {
+    db.with_extension("db-wal")
+}
+
+fn shm_path(db: &Path) -> PathBuf {
+    db.with_extension("db-shm")
+}
+
+/// Bytes of stats.db and stats.db-wal (None when absent).
+fn db_files(db: &Path) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+    (std::fs::read(db).ok(), std::fs::read(wal_path(db)).ok())
+}
+
+/// Read-only connection that can neither write nor checkpoint on close.
+fn ro_conn(path: &Path) -> Connection {
+    let c = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .expect("open read-only");
+    c.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )
+    .expect("NO_CKPT_ON_CLOSE");
+    c.pragma_update(None, "query_only", "ON")
+        .expect("query_only");
+    c
+}
+
+/// Logical dump of every table in sqlite_master, rows ordered by rowid. Take
+/// byte snapshots BEFORE calling this.
+fn logical_dump(path: &Path) -> String {
+    let c = ro_conn(path);
+    let tables: Vec<String> = {
+        let mut st = c
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap();
+        let rows = st.query_map([], |r| r.get::<_, String>(0)).unwrap();
+        rows.map(|r| r.unwrap()).collect()
+    };
+    let mut out = String::new();
+    for t in tables {
+        out.push_str(&format!("== {t}\n"));
+        let mut st = c
+            .prepare(&format!("SELECT * FROM \"{t}\" ORDER BY rowid"))
+            .unwrap();
+        let ncol = st.column_count();
+        let mut rows = st.query([]).unwrap();
+        while let Some(row) = rows.next().unwrap() {
+            let cells: Vec<String> = (0..ncol)
+                .map(|i| match row.get_ref(i).unwrap() {
+                    ValueRef::Null => "NULL".to_string(),
+                    ValueRef::Integer(v) => v.to_string(),
+                    ValueRef::Real(v) => format!("{v:?}"),
+                    ValueRef::Text(v) => format!("{:?}", String::from_utf8_lossy(v)),
+                    ValueRef::Blob(v) => format!("x{v:02x?}"),
+                })
+                .collect();
+            out.push_str(&cells.join("|"));
+            out.push('\n');
+        }
+    }
+    out
+}
+
+fn checkpoint_truncate(db: &Path) {
+    let c = Connection::open(db).expect("open for checkpoint");
+    let (busy, _log, _ckpt): (i64, i64, i64) = c
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .expect("checkpoint");
+    assert_eq!(busy, 0, "checkpoint must not be blocked");
+}
+
+fn wal_absent_or_empty(db: &Path) -> bool {
+    std::fs::metadata(wal_path(db)).map_or(true, |m| m.len() == 0)
+}
+
+fn column_present(db: &Path, table: &str, column: &str) -> bool {
+    let n: i64 = ro_conn(db)
+        .query_row(
+            &format!("SELECT COUNT(*) FROM pragma_table_info('{table}') WHERE name = ?1"),
+            [column],
+            |r| r.get(0),
+        )
+        .unwrap();
+    n > 0
+}
+
+/// `transcript_progress` rows for `SID`; `None` when the DB file is absent.
+fn progress_rows(db: &Path) -> Option<i64> {
+    if !db.is_file() {
+        return None;
+    }
+    Some(
+        ro_conn(db)
+            .query_row(
+                "SELECT COUNT(*) FROM transcript_progress WHERE session_id = ?1",
+                [SID],
+                |r| r.get(0),
+            )
+            .expect("count transcript_progress"),
+    )
+}
+
+fn lib_render(tree: &Tree, update_stats: bool) -> String {
+    statusline::render_from_json(&payload(SID, &tree.main, true), update_stats)
+        .expect("render_from_json must not fail")
+}
+
+/// The `{agents}` field (first of the ten) still renders from in-memory attribution.
+fn assert_agents_rendered(out: &str, what: &str) {
+    let first = out.split('|').next().unwrap_or_default();
+    assert!(
+        first.starts_with("🤖1"),
+        "{what}: {{agents}} must render 🤖1 from in-memory attribution: {out:?}"
+    );
+    assert_eq!(out.split('|').count(), 10, "{what}: ten fields: {out:?}");
+}
+
+/// Seed the store with a persisting opt-in render (creates stats.db and the
+/// transcript_progress rows).
+fn seed(env: &LibEnv, tree: &Tree) {
+    let out = lib_render(tree, true);
+    assert!(!out.is_empty(), "seed render");
+    assert!(env.db_path().is_file(), "seed render must create stats.db");
+    assert!(
+        progress_rows(&env.db_path()).unwrap_or(0) >= 1,
+        "seed render must persist attribution rows"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn read_only_opt_in_missing_db_creates_nothing() {
+    let mut env = LibEnv::new(FULL_OPT_IN);
+    let tree = Tree::new(&env.root().join("t"));
+    let db = env.db_path();
+
+    let out = lib_render(&tree, false);
+    env.restore();
+
+    assert_agents_rendered(&out, "missing DB");
+    assert!(!db.exists(), "stats.db must not be created");
+    assert!(!wal_path(&db).exists(), "stats.db-wal must not be created");
+    assert!(!shm_path(&db).exists(), "stats.db-shm must not be created");
+}
+
+#[test]
+#[serial_test::serial]
+fn read_only_opt_in_checkpointed_db_unchanged() {
+    let mut env = LibEnv::new(FULL_OPT_IN);
+    let tree = Tree::new(&env.root().join("t"));
+    seed(&env, &tree);
+    let db = env.db_path();
+    checkpoint_truncate(&db);
+
+    let main_before = db_files(&db).0.expect("stats.db bytes");
+    let dump_before = logical_dump(&db);
+
+    tree.append_agent_request(1);
+    let out = lib_render(&tree, false);
+    env.restore();
+
+    assert_agents_rendered(&out, "checkpointed DB");
+    assert!(
+        db_files(&db).0.expect("stats.db") == main_before,
+        "stats.db bytes changed"
+    );
+    assert!(
+        wal_absent_or_empty(&db),
+        "stats.db-wal must be absent or empty"
+    );
+    assert_eq!(logical_dump(&db), dump_before, "logical dump");
+}
+
+#[test]
+#[serial_test::serial]
+fn read_only_opt_in_pending_wal_unchanged() {
+    let mut env = LibEnv::new(FULL_OPT_IN);
+    let tree = Tree::new(&env.root().join("t"));
+    seed(&env, &tree);
+    let db = env.db_path();
+    checkpoint_truncate(&db);
+    {
+        let w = Connection::open(&db).unwrap();
+        w.set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+        w.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        let n = w
+            .execute(
+                // A real byte change: SQLite's overwrite optimization skips
+                // dirtying a page when the new cell is identical, which would
+                // leave the WAL empty.
+                "UPDATE transcript_progress SET updated_at = updated_at || 'Z'",
+                [],
+            )
+            .unwrap();
+        assert!(n >= 1, "precondition: rows updated");
+    }
+    let (main_before, wal_before) = db_files(&db);
+    let main_before = main_before.expect("stats.db bytes");
+    let wal_before = wal_before.expect("stats.db-wal bytes");
+    assert!(
+        !wal_before.is_empty(),
+        "precondition: pending WAL non-empty"
+    );
+    let dump_before = logical_dump(&db);
+
+    tree.append_agent_request(1);
+    let out = lib_render(&tree, false);
+    env.restore();
+
+    assert_agents_rendered(&out, "pending WAL");
+    let (main_after, wal_after) = db_files(&db);
+    assert!(
+        main_after.expect("stats.db") == main_before,
+        "stats.db bytes changed"
+    );
+    assert!(
+        wal_after.expect("stats.db-wal") == wal_before,
+        "stats.db-wal bytes changed"
+    );
+    assert_eq!(logical_dump(&db), dump_before, "logical dump");
+}
+
+#[test]
+#[serial_test::serial]
+fn read_only_opt_in_drifted_schema_unchanged() {
+    let mut env = LibEnv::new(FULL_OPT_IN);
+    let tree = Tree::new(&env.root().join("t"));
+    seed(&env, &tree);
+    {
+        let c = Connection::open(env.db_path()).unwrap();
+        c.execute_batch(&format!(
+            "ALTER TABLE transcript_progress DROP COLUMN {DRIFT_COLUMN}"
+        ))
+        .unwrap();
+    }
+    checkpoint_truncate(&env.db_path());
+    env.relocate_store();
+    let db = env.db_path();
+    assert!(
+        !column_present(&db, "transcript_progress", DRIFT_COLUMN),
+        "precondition: drifted"
+    );
+
+    let main_before = db_files(&db).0.expect("stats.db bytes");
+    let dump_before = logical_dump(&db);
+
+    tree.append_agent_request(1);
+    let out = lib_render(&tree, false);
+    env.restore();
+
+    assert!(out.contains("🤖1"), "drifted DB still renders 🤖1: {out:?}");
+    assert_agents_rendered(&out, "drifted schema");
+    assert!(
+        db_files(&db).0.expect("stats.db") == main_before,
+        "stats.db bytes changed"
+    );
+    assert!(
+        wal_absent_or_empty(&db),
+        "stats.db-wal must be absent or empty"
+    );
+    assert_eq!(logical_dump(&db), dump_before, "logical dump");
+    assert!(
+        !column_present(&db, "transcript_progress", DRIFT_COLUMN),
+        "read-only render must not repair the drifted column"
+    );
+}
+
+#[test]
+fn uses_test_mode_db_path() {
+    let home = TempDir::new().unwrap();
+    let tree = Tree::new(&home.path().join("t"));
+    let body = payload(SID, &tree.main, true);
+    let mut cmd = isolated_cmd(home.path(), LEGACY_OPT_IN);
+    cmd.arg("--test-mode");
+    let (text, _) = render_spawned(cmd, &body, "--test-mode render");
+    assert!(text.contains("🤖1"), "{text:?}");
+
+    let test_db = home
+        .path()
+        .join(".local/share-test")
+        .join("claudia-statusline")
+        .join("stats.db");
+    assert!(
+        progress_rows(&test_db).unwrap_or(0) >= 1,
+        "attribution rows must land in the test-mode database"
+    );
+    let normal_db = home
+        .path()
+        .join("d")
+        .join("claudia-statusline")
+        .join("stats.db");
+    assert_eq!(
+        progress_rows(&normal_db).unwrap_or(0),
+        0,
+        "the normal data dir must get no attribution rows"
+    );
+}
+
+#[test]
+fn xdg_data_home_selects_attribution_db() {
+    let home = TempDir::new().unwrap();
+    let tree = Tree::new(&home.path().join("t"));
+    let body = payload(SID, &tree.main, true);
+    let (text, _) = render_spawned(
+        isolated_cmd(home.path(), LEGACY_OPT_IN),
+        &body,
+        "XDG_DATA_HOME render",
+    );
+    assert!(text.contains("🤖1"), "{text:?}");
+    let db = home
+        .path()
+        .join("d")
+        .join("claudia-statusline")
+        .join("stats.db");
+    assert!(
+        progress_rows(&db).unwrap_or(0) >= 1,
+        "attribution rows must land in $XDG_DATA_HOME/claudia-statusline/stats.db"
+    );
+    assert!(
+        !home.path().join(".local/share-test").exists(),
+        "no test-mode store without --test-mode"
+    );
+}
+
+/// AGENT-07 at render level: with stats.db write-locked, opting in adds only
+/// attribution's bounded wait (shared 250 ms deadline), never the configured
+/// busy_timeout_ms, and persists nothing.
+#[test]
+fn locked_db_render_stays_in_budget() {
+    // The plan's fallback values (busy_timeout_ms = 1000, delta 750 ms, ceiling
+    // 4 s). At busy_timeout_ms = 2000 the agents-off render alone measured
+    // T0 = 4.22 s (the stats step waits once per write step: cost update and
+    // max-token update), leaving T1 < 5 s with under 0.5 s of margin. The delta
+    // bound stays below the configured busy timeout, so an attribution
+    // connection that waited the configured 1000 ms would still fail it.
+    const BUSY_MS: u64 = 1000;
+    const DELTA_BOUND: Duration = Duration::from_millis(750);
+    const CEILING: Duration = Duration::from_millis(4000);
+
+    let home = TempDir::new().unwrap();
+    let tree = Tree::new(&home.path().join("t"));
+    let body = payload(SID, &tree.main, true);
+    // Config A: agents off. Config B: A + legacy opt-in.
+    let cfg_a =
+        format!("[database]\nbusy_timeout_ms = {BUSY_MS}\n\n[retry.db_ops]\nmax_attempts = 1\n");
+    let cfg_b = format!("{cfg_a}\n[display]\nshow_agents = true\n");
+
+    let db = home
+        .path()
+        .join("d")
+        .join("claudia-statusline")
+        .join("stats.db");
+    render_spawned(
+        isolated_cmd(home.path(), &cfg_a),
+        &body,
+        "seed (agents off)",
+    );
+    assert_eq!(
+        progress_rows(&db),
+        Some(0),
+        "seed: stats.db exists with no attribution rows"
+    );
+    checkpoint_truncate(&db);
+
+    let lock = Connection::open(&db).expect("open lock connection");
+    lock.execute_batch("BEGIN IMMEDIATE")
+        .expect("take write lock");
+
+    let (text_a, t0) = render_spawned(
+        isolated_cmd(home.path(), &cfg_a),
+        &body,
+        "locked, agents off",
+    );
+    let (text_b, t1) = render_spawned(
+        isolated_cmd(home.path(), &cfg_b),
+        &body,
+        "locked, agents on",
+    );
+
+    lock.execute_batch("ROLLBACK").expect("release write lock");
+    drop(lock);
+
+    eprintln!(
+        "locked_db_render_stays_in_budget: T0 = {t0:?} (agents off), T1 = {t1:?} (agents on)"
+    );
+    assert!(!text_a.contains('🤖'), "agents off: no segment: {text_a:?}");
+    assert!(
+        text_b.contains('🤖'),
+        "agents on: segment renders under the lock: {text_b:?}"
+    );
+    assert!(
+        t1 < t0 + DELTA_BOUND,
+        "attribution added {:?} over the agents-off render (T0 {t0:?}, T1 {t1:?}); bound {DELTA_BOUND:?}",
+        t1.saturating_sub(t0)
+    );
+    assert!(
+        t1 < CEILING,
+        "locked opt-in render took {t1:?}, ceiling {CEILING:?}"
+    );
+    assert_eq!(
+        progress_rows(&db),
+        Some(0),
+        "no transcript_progress row may be persisted under the lock"
+    );
 }
