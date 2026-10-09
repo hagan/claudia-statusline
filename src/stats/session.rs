@@ -344,7 +344,9 @@ impl StatsData {
 // ── Burn rate duration functions ──────────────────────────────────────────
 
 pub fn get_session_duration(session_id: &str) -> Option<u64> {
-    let data = super::persistence::get_or_load_stats_data();
+    // Pure read on the render path (display burn rate, token rates): load read-only so a
+    // preview render never creates, migrates or repairs stats.db (AGENT-04).
+    let data = StatsData::load_read_only();
 
     data.sessions.get(session_id).and_then(|session| {
         session.start_time.as_ref().and_then(|start_time| {
@@ -378,7 +380,8 @@ pub fn get_session_duration_by_mode(session_id: &str) -> Option<u64> {
             // Query database for active_time_seconds via SqliteDatabase
             if let Ok(db_path) = StatsData::get_sqlite_path() {
                 if db_path.exists() {
-                    if let Ok(db) = SqliteDatabase::new(&db_path) {
+                    // Read-only open (AGENT-04): only reads active_time_seconds.
+                    if let Ok(db) = SqliteDatabase::open_read_only(&db_path) {
                         if let Some((Some(t), _last_activity)) =
                             db.get_session_active_time(session_id)
                         {

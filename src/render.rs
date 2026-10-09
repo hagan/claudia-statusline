@@ -20,8 +20,11 @@ use crate::models::StatuslineInput;
 ///    available (independent of cost), and
 /// 3. runs adaptive context learning when it is enabled in config.
 ///
-/// When `update_stats` is `false`, or no session/cost is present, it performs no writes
-/// for that step and simply reads back today's accumulated daily total.
+/// When `update_stats` is `false`, it performs no database writes at all: today's daily
+/// total is read through a read-only open (`StatsData::load_read_only`) that never
+/// creates, migrates, repairs or checkpoints stats.db (AGENT-04). When `update_stats` is
+/// `true` but no session/cost is present, that step performs no write and reads back the
+/// existing daily total.
 ///
 /// The returned daily total is the one observed immediately after the cost update
 /// (the later max-token write does not change the returned figure), matching the prior
@@ -95,8 +98,9 @@ pub fn update_stats_and_daily_total(
             stats::get_daily_total(&stats::get_or_load_stats_data())
         }
     } else {
-        // Not updating stats — just read back today's accumulated daily total.
-        stats::get_daily_total(&stats::get_or_load_stats_data())
+        // Not updating stats — read back today's accumulated daily total through a
+        // read-only open (AGENT-04): never creates, migrates or repairs stats.db.
+        stats::get_daily_total(&crate::stats::StatsData::load_read_only())
     };
 
     // 2. Track max_tokens_observed for compaction detection.
@@ -160,14 +164,14 @@ pub fn update_stats_and_daily_total(
         }
     }
 
-    // 4. Main/agent token attribution. Read whenever we can (the lib path renders
-    //    with update_stats=false too); written to the session row only when the
-    //    caller updates stats. Skipped when no stats.db exists yet so a read-only
-    //    render never creates one.
+    // 4. Main/agent token attribution. Computed only when the caller updates stats
+    //    (interim AGENT-04 guard below) and written to the session row. Skipped when
+    //    no stats.db exists yet.
     let agents = match (session_id, transcript_path) {
         (Some(sid), Some(transcript)) => {
             let db_path = common::get_data_dir().join("stats.db");
-            if db_path.exists() {
+            // AGENT-04: PR #76 scan opens stats.db writable; read-only renders skip it until 17-07 replaces this block with a read-only-capable scan.
+            if update_stats && db_path.exists() {
                 crate::agents::scan(&db_path, sid, transcript)
             } else {
                 None

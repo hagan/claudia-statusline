@@ -488,7 +488,8 @@ fn format_statusline_string(
         if !db_path.exists() {
             return None;
         }
-        match crate::database::SqliteDatabase::new(&db_path) {
+        // Read-only open (AGENT-04): this handle only reads token rates.
+        match crate::database::SqliteDatabase::open_read_only(&db_path) {
             Ok(db) => Some(db),
             Err(e) => {
                 log::debug!("Display: failed to open SQLite db at {:?}: {}", db_path, e);
@@ -1205,13 +1206,16 @@ fn format_statusline_with_layout(
         if let Some(db) = crate::stats::StatsData::get_sqlite_path()
             .ok()
             .filter(|p| p.exists())
-            .and_then(|p| match crate::database::SqliteDatabase::new(&p) {
-                Ok(db) => Some(db),
-                Err(e) => {
-                    log::debug!("Display: failed to open SQLite db at {:?}: {}", p, e);
-                    None
-                }
-            })
+            // Read-only open (AGENT-04): this handle only reads token rates.
+            .and_then(
+                |p| match crate::database::SqliteDatabase::open_read_only(&p) {
+                    Ok(db) => Some(db),
+                    Err(e) => {
+                        log::debug!("Display: failed to open SQLite db at {:?}: {}", p, e);
+                        None
+                    }
+                },
+            )
         {
             if let Some(token_rates) = crate::stats::calculate_token_rates_with_db_and_transcript(
                 sid,

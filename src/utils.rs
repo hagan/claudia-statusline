@@ -158,8 +158,10 @@ fn get_learned_context_window(
     use crate::context_learning::ContextLearner;
     use crate::database::SqliteDatabase;
 
+    // Read-only open (AGENT-04): a missing DB returns Err ("no learned value") instead
+    // of creating one; no migration or repair runs on the render path.
     let db_path = get_data_dir().join("stats.db");
-    let db = SqliteDatabase::new(&db_path)?;
+    let db = SqliteDatabase::open_read_only(&db_path)?;
     let learner = ContextLearner::new(db);
 
     learner.get_learned_window(model_name, config.context.learning_confidence_threshold)
@@ -541,7 +543,8 @@ fn detect_compaction_state(
     let last_known_tokens = if let Some(sid) = session_id {
         let db_path = get_data_dir().join("stats.db");
         if db_path.exists() {
-            if let Ok(db) = SqliteDatabase::new(&db_path) {
+            // Read-only open (AGENT-04): only reads max_tokens_observed.
+            if let Ok(db) = SqliteDatabase::open_read_only(&db_path) {
                 db.get_session_max_tokens(sid)
             } else {
                 None
