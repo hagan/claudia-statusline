@@ -32,6 +32,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use crate::models::TranscriptEntry;
 
 mod progress;
+mod store;
 #[doc(hidden)]
 #[allow(unused_imports)] // no binary-side caller until 17-07
 pub use progress::{agents_bytes_read, agents_scans, reset_agents_counters};
