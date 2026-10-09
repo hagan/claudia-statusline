@@ -586,3 +586,67 @@ fn test_render_with_context_usage() {
 
     std::env::remove_var("NO_COLOR");
 }
+
+#[test]
+#[serial_test::serial]
+fn render_from_json_agents_opt_in_lib_path() {
+    // Pitfall 8: the D-03 gate lives in the shared render function, so the lib
+    // root must show agent values when a template opts in.
+    let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
+
+    let home = tempfile::tempdir().unwrap();
+    let sid = "0a1b2c3d-0000-4000-8000-0000000000aa";
+    let main = home.path().join(format!("{sid}.jsonl"));
+    let sub = home.path().join(sid).join("subagents");
+    std::fs::create_dir_all(&sub).unwrap();
+    let usage = |side: bool| {
+        format!(
+            r#"{{"type":"assistant","isSidechain":{side},"sessionId":"{sid}","message":{{"id":"msg_{side}","role":"assistant","model":"claude-opus-4-5","usage":{{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":10}}}},"timestamp":"2026-01-01T00:00:00.000Z"}}"#
+        ) + "\n"
+    };
+    std::fs::write(&main, usage(false)).unwrap();
+    std::fs::write(sub.join("agent-a1.jsonl"), usage(true)).unwrap();
+    std::fs::write(sub.join("agent-a1.meta.json"), r#"{"agentType":"Explore"}"#).unwrap();
+
+    let cfg = home.path().join("config.toml");
+    std::fs::write(&cfg, "[layout]\nformat = \"agents={agents_count}\"\n").unwrap();
+
+    let keys = [
+        "HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_CACHE_HOME",
+        "STATUSLINE_CONFIG",
+        "STATUSLINE_CONFIG_PATH",
+        "NO_COLOR",
+    ];
+    let saved: Vec<_> = keys.iter().map(|k| (*k, std::env::var_os(k))).collect();
+    std::env::set_var("HOME", home.path());
+    std::env::set_var("XDG_CONFIG_HOME", home.path().join("c"));
+    std::env::set_var("XDG_DATA_HOME", home.path().join("d"));
+    std::env::set_var("XDG_CACHE_HOME", home.path().join("cache"));
+    std::env::set_var("STATUSLINE_CONFIG", &cfg);
+    std::env::remove_var("STATUSLINE_CONFIG_PATH");
+    std::env::set_var("NO_COLOR", "1");
+    statusline::config::reset_config();
+
+    let json = serde_json::json!({
+        "session_id": sid,
+        "transcript_path": main.to_str().unwrap(),
+        "workspace": {"current_dir": "/tmp"},
+        "model": {"display_name": "Opus 4.5"},
+    })
+    .to_string();
+    let result = render_from_json(&json, false);
+
+    for (k, v) in saved {
+        match v {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+    statusline::config::reset_config();
+
+    let output = result.expect("render must succeed");
+    assert_eq!(output, "agents=1", "lib path must render {{agents_count}}");
+}

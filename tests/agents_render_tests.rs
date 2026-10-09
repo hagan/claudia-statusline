@@ -214,6 +214,27 @@ fn spawned_render(template: &str, config_toml: Option<&str>, what: &str) -> Vec<
 /// (and the other leaky vars), resets the cached config, renders, then restores
 /// the env and resets the config again BEFORE the caller asserts.
 fn lib_render(template: &str) -> String {
+    let run = lib_render_with(template, None, &[false]);
+    run.outputs
+        .into_iter()
+        .next()
+        .expect("one render")
+        .expect("render_from_json must not fail")
+}
+
+/// Result of [`lib_render_with`]: one output per render plus the agents counters
+/// observed after all renders (read while the env lock is still held).
+struct LibRun {
+    outputs: Vec<statusline::Result<String>>,
+    scans: u64,
+    bytes_read: u64,
+}
+
+/// Lib-path render harness: isolated env, optional config (via `STATUSLINE_CONFIG`,
+/// with `STATUSLINE_CONFIG_PATH` removed because it outranks it), counters reset
+/// before the first render, one `render_from_json` per entry of `update_stats`.
+/// The env is restored and the config cache reset before returning.
+fn lib_render_with(template: &str, config_toml: Option<&str>, update_stats: &[bool]) -> LibRun {
     let _guard = test_support::init();
     let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
 
@@ -221,14 +242,22 @@ fn lib_render(template: &str) -> String {
     let transcript = materialize_tree(&home.path().join("tree"));
     let body = payload(template, &transcript);
 
-    let set: Vec<(&str, OsString)> = vec![
+    let mut set: Vec<(&str, OsString)> = vec![
         ("HOME", home.path().into()),
         ("XDG_CONFIG_HOME", home.path().join("c").into()),
         ("XDG_DATA_HOME", home.path().join("d").into()),
         ("XDG_CACHE_HOME", home.path().join("cache").into()),
         ("NO_COLOR", "1".into()),
     ];
-    let mut removed: Vec<&str> = vec!["STATUSLINE_CONFIG", "STATUSLINE_CONFIG_PATH"];
+    let mut removed: Vec<&str> = vec!["STATUSLINE_CONFIG_PATH"];
+    match config_toml {
+        Some(cfg_body) => {
+            let cfg = home.path().join("config.toml");
+            std::fs::write(&cfg, cfg_body).expect("write isolated config");
+            set.push(("STATUSLINE_CONFIG", cfg.into()));
+        }
+        None => removed.push("STATUSLINE_CONFIG"),
+    }
     removed.extend(LEAKY_ENV.iter().copied());
 
     let mut saved: Vec<(&str, Option<OsString>)> = Vec::new();
@@ -243,8 +272,14 @@ fn lib_render(template: &str) -> String {
         std::env::remove_var(k);
     }
     statusline::config::reset_config();
+    statusline::agents::reset_agents_counters();
 
-    let result = statusline::render_from_json(&body, false);
+    let outputs = update_stats
+        .iter()
+        .map(|&u| statusline::render_from_json(&body, u))
+        .collect();
+    let scans = statusline::agents::agents_scans();
+    let bytes_read = statusline::agents::agents_bytes_read();
 
     for (k, v) in saved.into_iter().rev() {
         match v {
@@ -254,7 +289,11 @@ fn lib_render(template: &str) -> String {
     }
     statusline::config::reset_config();
 
-    result.expect("render_from_json must not fail")
+    LibRun {
+        outputs,
+        scans,
+        bytes_read,
+    }
 }
 
 // ============================================================================
@@ -336,4 +375,136 @@ fn golden_v3_3_0_power_binary() {
         &fixture("render_baseline_v3_3_0_power.txt"),
         "preset power (binary)",
     );
+}
+
+// ============================================================================
+// 17-08: D-03 opt-in gate (AGENT-01) and opt-in values (PCACHE-01)
+// ============================================================================
+
+/// Default config: neither render root may scan or read a single agent byte,
+/// with or without stats updates (T-17-32).
+#[test]
+#[serial_test::serial]
+fn no_scan_when_not_opted_in() {
+    let run = lib_render_with(PAYLOAD, None, &[false, true]);
+    for out in &run.outputs {
+        assert!(out.is_ok(), "render must succeed: {out:?}");
+    }
+    assert_eq!(run.scans, 0, "default config must not scan");
+    assert_eq!(run.bytes_read, 0, "default config must read no agent bytes");
+}
+
+/// D-03: in layout mode `show_agents` has no effect; the detailed preset
+/// references no agents variable, so nothing is scanned.
+#[test]
+#[serial_test::serial]
+fn no_scan_in_layout_mode_with_show_agents() {
+    let run = lib_render_with(
+        PAYLOAD,
+        Some("[display]\nshow_agents = true\n\n[layout]\npreset = \"detailed\"\n"),
+        &[false],
+    );
+    assert!(run.outputs[0].is_ok(), "render must succeed");
+    assert_eq!(run.scans, 0, "layout mode ignores show_agents (D-03)");
+    assert_eq!(run.bytes_read, 0);
+}
+
+/// A template referencing an agents variable opts in: exactly one scan.
+#[test]
+#[serial_test::serial]
+fn opted_in_template_scans_once() {
+    let run = lib_render_with(
+        PAYLOAD,
+        Some("[layout]\nformat = \"{agents_count}\"\n"),
+        &[false],
+    );
+    let out = run.outputs.into_iter().next().unwrap().expect("render");
+    assert_eq!(run.scans, 1, "opted-in template must scan exactly once");
+    assert!(run.bytes_read > 0, "the scan must read the agent transcript");
+    assert!(out.contains('1'), "{{agents_count}} must render 1: {out:?}");
+}
+
+#[test]
+fn opted_in_legacy_show_agents_shows_segment() {
+    let out = spawned_render(
+        PAYLOAD,
+        Some("[display]\nshow_agents = true\n"),
+        "legacy show_agents (binary)",
+    );
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.contains("🤖1"), "legacy segment must show 🤖1: {text:?}");
+}
+
+#[test]
+fn opted_in_template_shows_all_agent_vars() {
+    let out = spawned_render(
+        PAYLOAD,
+        Some(
+            "[layout]\nformat = \"{agents}|{agents_count}|{agents_pct}|{agents_tokens}|{agents_types}\"\n",
+        ),
+        "all agent vars (binary)",
+    );
+    let text = String::from_utf8(out).expect("utf-8 stdout");
+    let line = text.trim_end_matches('\n');
+    let fields: Vec<&str> = line.split('|').collect();
+    assert_eq!(fields.len(), 5, "five fields: {line:?}");
+    for (i, f) in fields.iter().enumerate() {
+        assert!(!f.is_empty(), "field {} must be non-empty: {line:?}", i + 1);
+    }
+    assert!(fields[0].starts_with("🤖1"), "{{agents}}: {line:?}");
+    assert_eq!(fields[1], "1", "{{agents_count}}: {line:?}");
+    assert_eq!(fields[4], "Explore×1", "{{agents_types}}: {line:?}");
+}
+
+#[test]
+fn opted_in_prompt_cache_vars() {
+    let out = spawned_render(
+        PAYLOAD,
+        Some(
+            "[layout]\nformat = \"{prompt_cache}|{cache_hit}|{cache_misses}|{cache_miss_cause}|{cache_warm}\"\n",
+        ),
+        "prompt cache vars (binary)",
+    );
+    let text = String::from_utf8(out).expect("utf-8 stdout");
+    assert_eq!(
+        text.trim_end_matches('\n'),
+        "cache 91% miss:2 tools_changed|91%|2|tools_changed|warm"
+    );
+}
+
+/// Count `transcript_progress` rows in the isolated home's stats.db.
+fn transcript_progress_rows(home: &Path) -> i64 {
+    let db = home.join("d").join("claudia-statusline").join("stats.db");
+    assert!(db.is_file(), "stats step must create {}", db.display());
+    let conn = rusqlite::Connection::open_with_flags(
+        &db,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .expect("open stats.db read-only");
+    conn.query_row("SELECT COUNT(*) FROM transcript_progress", [], |r| r.get(0))
+        .expect("count transcript_progress")
+}
+
+/// Binary-level zero-work evidence: a default render (with cost, so stats.db is
+/// created) writes no attribution rows; opting in writes at least one.
+#[test]
+fn no_attribution_rows_when_not_opted_in_binary() {
+    for (config, expect_rows) in [(None, false), (Some("[display]\nshow_agents = true\n"), true)] {
+        let home = tempfile::TempDir::new().expect("isolated home");
+        let transcript = materialize_tree(&home.path().join("tree"));
+        let body = payload(PAYLOAD, &transcript);
+        let out = spawn_with_budget(
+            isolated_cmd(home.path(), config),
+            body.as_bytes(),
+            SPAWN_BUDGET,
+            "attribution rows (binary)",
+        );
+        assert!(out.status.success(), "render must exit 0");
+        let rows = transcript_progress_rows(home.path());
+        if expect_rows {
+            assert!(rows >= 1, "opted-in render must persist attribution rows");
+        } else {
+            assert_eq!(rows, 0, "default render must write no attribution rows");
+        }
+    }
 }
