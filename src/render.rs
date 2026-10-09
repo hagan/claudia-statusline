@@ -30,7 +30,8 @@ use crate::models::StatuslineInput;
 /// (the later max-token write does not change the returned figure), matching the prior
 /// behavior of both call sites. The second element is the main/agent token attribution
 /// for the session (see `agents::scan`), computed whenever a session and transcript are
-/// present and persisted to the session row when `update_stats` is `true`.
+/// present. Attribution is persisted inside `agents::scan` only when `update_stats` is
+/// `true`; read-only renders open the database read-only and never write.
 pub fn update_stats_and_daily_total(
     input: &StatuslineInput,
     update_stats: bool,
@@ -164,31 +165,13 @@ pub fn update_stats_and_daily_total(
         }
     }
 
-    // 4. Main/agent token attribution. Computed only when the caller updates stats
-    //    (interim AGENT-04 guard below) and written to the session row. Skipped when
-    //    no stats.db exists yet.
+    // 4. Main/agent token attribution. `agents::scan` persists its state only when
+    //    `update_stats` is true (one IMMEDIATE transaction, derived session totals);
+    //    read-only renders open stats.db read-only and never write (AGENT-04).
     let agents = match (session_id, transcript_path) {
-        (Some(sid), Some(transcript)) => {
-            let db_path = common::get_data_dir().join("stats.db");
-            // AGENT-04: PR #76 scan opens stats.db writable; read-only renders skip it until 17-07 replaces this block with a read-only-capable scan.
-            if update_stats && db_path.exists() {
-                crate::agents::scan(&db_path, sid, transcript)
-            } else {
-                None
-            }
-        }
+        (Some(sid), Some(t)) => crate::agents::scan(sid, t, input.version.as_deref(), update_stats),
         _ => None,
     };
-    if update_stats {
-        if let (Some(sid), Some(summary)) = (session_id, agents.as_ref()) {
-            let db_path = common::get_data_dir().join("stats.db");
-            if let Ok(db) = crate::database::SqliteDatabase::new(&db_path) {
-                if let Err(e) = db.update_session_agents(sid, input.version.as_deref(), summary) {
-                    log::debug!("agents: session update failed: {}", e);
-                }
-            }
-        }
-    }
 
     (daily_total, agents)
 }

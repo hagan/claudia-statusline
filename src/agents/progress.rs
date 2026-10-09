@@ -1,10 +1,10 @@
-#![cfg_attr(not(test), allow(dead_code))] // wired into agents::scan by 17-07, which removes this attribute
 //! Incremental, bounded subagent-attribution core (file-system only).
 //!
 //! This layer reads the main transcript and the session's agent transcripts
 //! and folds their assistant usage into [`TranscriptTotals`]. It never touches
-//! the database: callers (17-07) load a [`FileState`] per file from
-//! `transcript_progress`, pass it in, and persist what comes back.
+//! the database: `agents::scan` loads a [`FileState`] per file from
+//! `transcript_progress` (via `agents::store`), passes it in, and persists
+//! what comes back.
 //!
 //! # Persisted state semantics
 //!
@@ -785,7 +785,8 @@ pub(crate) fn summarize(
     summary
 }
 
-/// [`inventory`] + [`scan_files`] with [`ScanLimits::DEFAULT`].
+/// [`inventory`] + [`scan_files`] with [`ScanLimits::DEFAULT`] (test helper).
+#[cfg(test)]
 pub(crate) fn scan_session(
     session_id: &str,
     transcript_path: &str,

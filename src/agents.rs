@@ -13,29 +13,49 @@
 //! <project>/<session_id>/subagents/agent-*.meta.json  {"agentType": "Explore", ...}
 //! ```
 //!
-//! Cost model: the statusline renders on every tool call, so a full re-parse is
-//! out of the question (the main transcript reaches tens of MB). Each file gets a
-//! row in `transcript_progress` holding the byte offset after the last complete
-//! line, running totals, and the last `requestId` seen; a render reads only the
-//! bytes appended since. A response is written as one line per content block,
-//! all sharing a `requestId` and the same `usage`, and those lines are contiguous
-//! within one file, so carrying the last id across renders de-duplicates exactly.
-//! Truncation or rotation (size < offset) resets the row.
+//! # Incremental state
+//!
+//! The statusline renders on every tool call, so a full re-parse is out of the
+//! question. Each file has a `transcript_progress` row (D-01 columns) holding
+//! its identity (`dev:ino` file id, examined-end size, mtime in ns), a
+//! head/anchor fingerprint, the consumed offset, running totals and a
+//! 32-entry request window; a render reads only bytes past the stored offset
+//! (see [`progress`] for the exact semantics). Each request counts once with
+//! its LAST line's usage (Phase 15 D-11) via `utils::request_usage_of`, exact
+//! within the documented window bound. Directory, file, line and per-render
+//! byte caps bound every render; a truncated, replaced or unfingerprinted file
+//! is re-parsed from offset 0.
+//!
+//! # Persistence
+//!
+//! - `update_stats == false`: stats.db is opened read-only (never created),
+//!   new bytes are attributed in memory only, nothing is written.
+//! - `update_stats == true`: every changed row and the session's
+//!   `agent_*`/`main_*` columns are written in ONE `BEGIN IMMEDIATE`
+//!   transaction that re-checks each row against the raw base it was loaded
+//!   from and skips rows another render changed ([`store`]). The database is
+//!   never created here (that is the stats step's job) and an unready schema,
+//!   a lock or an exhausted deadline (`min(configured busy timeout, 250 ms)`
+//!   shared across open, load and commit) only skips persistence.
+//! - The displayed summary is always this render's own outcome (inventory,
+//!   states, completeness); it is never rebuilt from database rows.
+//! - `sessions.agent_*` are derived from the persisted rows (files whose bytes
+//!   were read), so a refused file is counted on screen but not in
+//!   `sessions.agent_count`.
 
-use std::collections::BTreeMap;
-use std::fs::{self, File};
-use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension};
-
-use crate::models::TranscriptEntry;
+use rusqlite::Connection;
 
 mod progress;
 mod store;
 #[doc(hidden)]
-#[allow(unused_imports)] // no binary-side caller until 17-07
+#[allow(unused_imports)] // binary target: only the library API and tests read the counters
 pub use progress::{agents_bytes_read, agents_scans, reset_agents_counters};
+
+use progress::{FileState, ScanLimits, ScanOutcome};
+use store::{AttributionDeadline, StoredRow};
 
 /// Token totals over one or more transcript files, de-duplicated per request.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -96,333 +116,214 @@ impl AgentsSummary {
     }
 }
 
-/// Directory holding the session's agent transcripts.
-pub fn subagents_dir(main_transcript: &Path, session_id: &str) -> Option<PathBuf> {
-    Some(main_transcript.parent()?.join(session_id).join("subagents"))
-}
-
-const CREATE_PROGRESS_TABLE: &str = "CREATE TABLE IF NOT EXISTS transcript_progress (
-    path TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    is_agent INTEGER NOT NULL DEFAULT 0,
-    agent_type TEXT,
-    size INTEGER NOT NULL DEFAULT 0,
-    mtime INTEGER NOT NULL DEFAULT 0,
-    offset INTEGER NOT NULL DEFAULT 0,
-    last_request_id TEXT,
-    requests INTEGER NOT NULL DEFAULT 0,
-    input_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
-    output_tokens INTEGER NOT NULL DEFAULT 0,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_transcript_progress_session ON transcript_progress(session_id);";
-
-/// Scan the main transcript and every agent transcript of `session_id`,
-/// advancing the per-file parse state stored in `db_path`.
+/// Scan the session's main and agent transcripts and return this render's
+/// attribution summary.
 ///
-/// Returns `None` when the main transcript cannot be read or the database cannot
-/// be opened; the statusline then renders without the agents segment. Never
-/// panics on a malformed line: unparsable lines are skipped.
-pub fn scan(db_path: &Path, session_id: &str, transcript_path: &str) -> Option<AgentsSummary> {
-    let main_path = crate::common::validate_path_security(transcript_path).ok()?;
-    if !main_path.is_file() {
-        return None;
-    }
-
-    let conn = open_progress_db(db_path)
-        .map_err(|e| log::debug!("agents: cannot open {}: {}", db_path.display(), e))
-        .ok()?;
-
-    let (main, _) = advance(&conn, &main_path, session_id, false)
-        .map_err(|e| log::debug!("agents: main transcript {}: {}", main_path.display(), e))
-        .ok()?;
-
-    let mut summary = AgentsSummary {
-        main,
-        complete: true,
-        ..Default::default()
-    };
-
-    let Some(dir) = subagents_dir(&main_path, session_id) else {
-        return Some(summary);
-    };
-    let Ok(entries) = fs::read_dir(&dir) else {
-        return Some(summary); // no agents spawned yet
-    };
-
-    let mut files: Vec<PathBuf> = entries
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("jsonl"))
-        .collect();
-    files.sort();
-
-    for file in files {
-        match advance(&conn, &file, session_id, true) {
-            Ok((totals, agent_type)) => {
-                summary.agents.add(&totals);
-                summary.agent_files += 1;
-                *summary
-                    .agent_types
-                    .entry(agent_type.unwrap_or_else(|| "unknown".to_string()))
-                    .or_insert(0) += 1;
-            }
-            Err(e) => log::debug!("agents: skipping {}: {}", file.display(), e),
-        }
-    }
-
-    Some(summary)
-}
-
-fn open_progress_db(db_path: &Path) -> rusqlite::Result<Connection> {
-    let conn = Connection::open(db_path)?;
-    conn.pragma_update(None, "busy_timeout", 10000)?;
-    // Idempotent; migration 007 creates it for existing databases and the full
-    // SCHEMA for new ones, but a database written by an older binary may lack it.
-    conn.execute_batch(CREATE_PROGRESS_TABLE)?;
-    Ok(conn)
-}
-
-/// Cached parse state for one file.
-#[derive(Debug, Default)]
-struct Progress {
-    size: u64,
-    mtime: i64,
-    offset: u64,
-    last_request_id: Option<String>,
-    totals: TranscriptTotals,
-    agent_type: Option<String>,
-}
-
-/// Advance the parse state of `path` to the end of its last complete line and
-/// return its totals plus the agent type (for agent files).
-fn advance(
-    conn: &Connection,
-    path: &Path,
+/// The database path comes from the `StatsData` SQLite path resolver (honors
+/// `XDG_DATA_HOME` and test mode); every attribution database step shares one
+/// deadline of `min(database.busy_timeout_ms, 250 ms)`. State is persisted only
+/// when `update_stats` is true. Returns `None` when the session id or
+/// transcript path is unsafe, the main transcript is refused, or the agent
+/// count would be uncertain; the statusline then renders without the agents
+/// segment. Never panics on malformed input.
+pub fn scan(
     session_id: &str,
-    is_agent: bool,
-) -> rusqlite::Result<(TranscriptTotals, Option<String>)> {
-    let meta = fs::metadata(path).map_err(io_err)?;
-    let size = meta.len();
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let key = path.to_string_lossy().into_owned();
-
-    let stored: Option<Progress> = conn
-        .query_row(
-            "SELECT size, mtime, offset, last_request_id, requests, input_tokens,
-                    cache_read_tokens, cache_creation_tokens, output_tokens, agent_type
-             FROM transcript_progress WHERE path = ?1",
-            params![key],
-            |row| {
-                Ok(Progress {
-                    size: row.get::<_, i64>(0)? as u64,
-                    mtime: row.get(1)?,
-                    offset: row.get::<_, i64>(2)? as u64,
-                    last_request_id: row.get(3)?,
-                    totals: TranscriptTotals {
-                        requests: row.get::<_, i64>(4)? as u64,
-                        input_tokens: row.get::<_, i64>(5)? as u64,
-                        cache_read_tokens: row.get::<_, i64>(6)? as u64,
-                        cache_creation_tokens: row.get::<_, i64>(7)? as u64,
-                        output_tokens: row.get::<_, i64>(8)? as u64,
-                    },
-                    agent_type: row.get(9)?,
-                })
-            },
-        )
-        .optional()?;
-
-    let mut state = match stored {
-        // Unchanged since last render: nothing to read.
-        Some(p) if p.size == size && p.mtime == mtime => {
-            return Ok((p.totals, p.agent_type));
-        }
-        // Truncated or replaced: start over.
-        Some(p) if size < p.offset => Progress::default(),
-        Some(p) => p,
-        None => Progress::default(),
-    };
-
-    if is_agent && state.agent_type.is_none() {
-        state.agent_type = read_agent_type(path);
-    }
-
-    // Read only what was appended since the stored offset.
-    let mut file = File::open(path).map_err(io_err)?;
-    file.seek(SeekFrom::Start(state.offset)).map_err(io_err)?;
-    let mut buf = Vec::with_capacity((size - state.offset) as usize);
-    file.read_to_end(&mut buf).map_err(io_err)?;
-
-    // Only complete lines: a line still being written is picked up next render.
-    if let Some(end) = buf.iter().rposition(|&b| b == b'\n') {
-        let complete = &buf[..=end];
-        for line in complete.split(|&b| b == b'\n') {
-            if line.is_empty() {
-                continue;
-            }
-            consume_line(line, &mut state);
-        }
-        state.offset += complete.len() as u64;
-    }
-    state.size = size;
-    state.mtime = mtime;
-
-    conn.execute(
-        "INSERT INTO transcript_progress (path, session_id, is_agent, agent_type, size, mtime,
-                offset, last_request_id, requests, input_tokens, cache_read_tokens,
-                cache_creation_tokens, output_tokens, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-         ON CONFLICT(path) DO UPDATE SET
-                session_id = excluded.session_id,
-                is_agent = excluded.is_agent,
-                agent_type = COALESCE(excluded.agent_type, transcript_progress.agent_type),
-                size = excluded.size,
-                mtime = excluded.mtime,
-                offset = excluded.offset,
-                last_request_id = excluded.last_request_id,
-                requests = excluded.requests,
-                input_tokens = excluded.input_tokens,
-                cache_read_tokens = excluded.cache_read_tokens,
-                cache_creation_tokens = excluded.cache_creation_tokens,
-                output_tokens = excluded.output_tokens,
-                updated_at = excluded.updated_at",
-        params![
-            key,
-            session_id,
-            is_agent as i64,
-            state.agent_type,
-            state.size as i64,
-            state.mtime,
-            state.offset as i64,
-            state.last_request_id,
-            state.totals.requests as i64,
-            state.totals.input_tokens as i64,
-            state.totals.cache_read_tokens as i64,
-            state.totals.cache_creation_tokens as i64,
-            state.totals.output_tokens as i64,
-            crate::common::current_timestamp(),
-        ],
-    )?;
-
-    Ok((state.totals, state.agent_type))
-}
-
-/// Fold one transcript line into the running state.
-fn consume_line(line: &[u8], state: &mut Progress) {
-    // Cheap pre-filter: assistant lines are a minority of a transcript and the
-    // full parse of a tool-result line (its `content` value) is what costs time.
-    // The role check after parsing is still authoritative.
-    if !line.windows(9).any(|w| w == b"assistant") {
-        return;
-    }
-    let Ok(entry) = serde_json::from_slice::<TranscriptEntry>(line) else {
-        return;
-    };
-    if entry.message.role != "assistant" {
-        return;
-    }
-    if let Some(rid) = &entry.request_id {
-        if state.last_request_id.as_deref() == Some(rid.as_str()) {
-            return; // another content block of the same response
-        }
-        state.last_request_id = Some(rid.clone());
-    }
-    let Some(usage) = entry.message.usage else {
-        return;
-    };
-    state.totals.requests += 1;
-    state.totals.input_tokens += u64::from(usage.input_tokens.unwrap_or(0));
-    state.totals.cache_read_tokens += u64::from(usage.cache_read_input_tokens.unwrap_or(0));
-    state.totals.cache_creation_tokens += u64::from(usage.cache_creation_input_tokens.unwrap_or(0));
-    state.totals.output_tokens += u64::from(usage.output_tokens.unwrap_or(0));
-}
-
-/// `agent-<id>.jsonl` -> `agent-<id>.meta.json` -> `agentType`.
-fn read_agent_type(jsonl: &Path) -> Option<String> {
-    let meta = jsonl.with_extension("meta.json");
-    let text = fs::read_to_string(meta).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("agentType")?.as_str().map(|s| s.to_string())
-}
-
-fn io_err(e: std::io::Error) -> rusqlite::Error {
-    rusqlite::Error::SqliteFailure(
-        rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_IOERR),
-        Some(e.to_string()),
+    transcript_path: &str,
+    claude_version: Option<&str>,
+    update_stats: bool,
+) -> Option<AgentsSummary> {
+    let db_path = crate::stats::StatsData::get_sqlite_path().ok()?;
+    let wait_ms =
+        store::attribution_busy_timeout_ms(crate::config::get_config().database.busy_timeout_ms);
+    scan_at(
+        &db_path,
+        wait_ms,
+        session_id,
+        transcript_path,
+        claude_version,
+        update_stats,
     )
 }
 
-// RED stubs (17-07 Task 2): replaced by the store-backed scan.
-#[allow(dead_code)]
-pub(crate) struct Prepared {
-    conn: Option<Connection>,
-    rows: std::collections::HashMap<String, store::StoredRow>,
-    pub(crate) outcome: progress::ScanOutcome,
-    deadline: store::AttributionDeadline,
-}
-
-#[allow(dead_code)]
+/// [`scan`] against an explicit database path and wait budget.
 pub(crate) fn scan_at(
-    _db_path: &Path,
-    _wait_ms: u32,
-    _session_id: &str,
-    _transcript_path: &str,
-    _claude_version: Option<&str>,
-    _update_stats: bool,
+    db_path: &Path,
+    wait_ms: u32,
+    session_id: &str,
+    transcript_path: &str,
+    claude_version: Option<&str>,
+    update_stats: bool,
 ) -> Option<AgentsSummary> {
-    todo!()
+    scan_at_detailed(
+        db_path,
+        wait_ms,
+        session_id,
+        transcript_path,
+        claude_version,
+        update_stats,
+    )
+    .map(|(outcome, _)| outcome.summary)
 }
 
-#[allow(dead_code)]
+/// [`scan_at`] returning the full outcome and the number of rows discarded by
+/// the commit's base re-check (`None` when nothing was persisted).
 pub(crate) fn scan_at_detailed(
-    _db_path: &Path,
-    _wait_ms: u32,
-    _session_id: &str,
-    _transcript_path: &str,
-    _claude_version: Option<&str>,
-    _update_stats: bool,
-) -> Option<(progress::ScanOutcome, Option<usize>)> {
-    todo!()
+    db_path: &Path,
+    wait_ms: u32,
+    session_id: &str,
+    transcript_path: &str,
+    claude_version: Option<&str>,
+    update_stats: bool,
+) -> Option<(ScanOutcome, Option<usize>)> {
+    scan_with_limits(
+        db_path,
+        wait_ms,
+        session_id,
+        transcript_path,
+        claude_version,
+        update_stats,
+        &ScanLimits::DEFAULT,
+    )
 }
 
-#[allow(dead_code)]
 fn scan_with_limits(
-    _db_path: &Path,
-    _wait_ms: u32,
-    _session_id: &str,
-    _transcript_path: &str,
-    _claude_version: Option<&str>,
-    _update_stats: bool,
-    _limits: &progress::ScanLimits,
-) -> Option<(progress::ScanOutcome, Option<usize>)> {
-    todo!()
+    db_path: &Path,
+    wait_ms: u32,
+    session_id: &str,
+    transcript_path: &str,
+    claude_version: Option<&str>,
+    update_stats: bool,
+    limits: &ScanLimits,
+) -> Option<(ScanOutcome, Option<usize>)> {
+    let prepared = prepare(
+        db_path,
+        wait_ms,
+        session_id,
+        transcript_path,
+        update_stats,
+        limits,
+    )?;
+    Some(finish(prepared, session_id, claude_version))
 }
 
-#[allow(dead_code)]
+/// A scan that has read the files but not yet persisted anything.
+pub(crate) struct Prepared {
+    /// Read-write connection; `Some` only when persisting this render.
+    conn: Option<Connection>,
+    rows: HashMap<String, StoredRow>,
+    pub(crate) outcome: ScanOutcome,
+    deadline: AttributionDeadline,
+}
+
+/// Inventory the session, load its stored rows (read-only connection unless
+/// `update_stats`) and advance every file in memory.
 fn prepare(
-    _db_path: &Path,
-    _wait_ms: u32,
-    _session_id: &str,
-    _transcript_path: &str,
-    _update_stats: bool,
-    _limits: &progress::ScanLimits,
+    db_path: &Path,
+    wait_ms: u32,
+    session_id: &str,
+    transcript_path: &str,
+    update_stats: bool,
+    limits: &ScanLimits,
 ) -> Option<Prepared> {
-    todo!()
+    let deadline = AttributionDeadline::new(wait_ms);
+    // The id/path gates run before any database access.
+    let inv = progress::inventory(session_id, transcript_path, limits)?;
+    let conn = if update_stats {
+        store::open_read_write(db_path, &deadline)
+    } else {
+        store::open_read_only(db_path, &deadline)
+    };
+    let mut paths = Vec::with_capacity(inv.agents.len() + 1);
+    paths.push(inv.main.to_string_lossy().into_owned());
+    paths.extend(inv.agents.iter().map(|p| p.to_string_lossy().into_owned()));
+    let rows = conn
+        .as_ref()
+        .map(|c| store::load_rows(c, session_id, &paths, &deadline))
+        .unwrap_or_default();
+    // A read-only connection is closed before any file I/O.
+    let conn = if update_stats { conn } else { None };
+    let stored: HashMap<String, FileState> = rows
+        .iter()
+        .map(|(k, r)| (k.clone(), r.state.clone()))
+        .collect();
+    let outcome = progress::scan_files(&inv, &stored, limits)?;
+    Some(Prepared {
+        conn,
+        rows,
+        outcome,
+        deadline,
+    })
 }
 
-#[allow(dead_code)]
+/// Persist a prepared scan (when it holds a read-write connection) and return
+/// its own outcome unchanged.
 fn finish(
-    _p: Prepared,
-    _session_id: &str,
-    _claude_version: Option<&str>,
-) -> (progress::ScanOutcome, Option<usize>) {
-    todo!()
+    prepared: Prepared,
+    session_id: &str,
+    claude_version: Option<&str>,
+) -> (ScanOutcome, Option<usize>) {
+    let Prepared {
+        conn,
+        rows,
+        outcome,
+        deadline,
+    } = prepared;
+    log::debug!(
+        "agents: scan examined {} directory entries and read {} bytes",
+        outcome.entries_examined,
+        outcome.bytes_read
+    );
+    let discarded = conn.and_then(|mut c| {
+        persist(
+            &mut c,
+            session_id,
+            claude_version,
+            &outcome,
+            &rows,
+            &deadline,
+        )
+    });
+    (outcome, discarded)
+}
+
+/// Commit the changed files of `outcome`, each checked against the raw base
+/// it was loaded from. `None` when the commit failed (busy, deadline, error);
+/// otherwise the number of rows another render had already changed. The
+/// caller always displays `outcome.summary`, whatever happens here.
+pub(crate) fn persist(
+    conn: &mut Connection,
+    session_id: &str,
+    claude_version: Option<&str>,
+    outcome: &ScanOutcome,
+    rows: &HashMap<String, StoredRow>,
+    deadline: &AttributionDeadline,
+) -> Option<usize> {
+    let updates: Vec<_> = outcome
+        .files
+        .iter()
+        .filter(|(_, adv)| adv.changed)
+        .map(|(_, adv)| {
+            (
+                rows.get(&adv.state.path).map(|r| r.base.clone()),
+                adv.state.clone(),
+            )
+        })
+        .collect();
+    if updates.is_empty() {
+        return Some(0);
+    }
+    match store::commit(conn, session_id, claude_version, &updates, deadline) {
+        Ok(discarded) => {
+            if discarded > 0 {
+                log::debug!("agents: rows changed by a concurrent render were not overwritten");
+            }
+            Some(discarded)
+        }
+        Err(_) => {
+            log::debug!("agents: attribution not persisted this render");
+            None
+        }
+    }
 }
 
 /// Compact token count for the statusline: `449k`, `1.2M`.
@@ -771,7 +672,10 @@ mod tests {
         assert_eq!(s.agents.requests, 2);
         assert_eq!(s.agents.output_tokens, 32);
 
-        assert!(fs::read(&fx.db).unwrap() == before_bytes, "stats.db bytes changed");
+        assert!(
+            fs::read(&fx.db).unwrap() == before_bytes,
+            "stats.db bytes changed"
+        );
         assert_eq!(dump(&fx.db), before_dump);
         let wal = PathBuf::from(format!("{}-wal", fx.db.display()));
         assert!(!wal.exists() || fs::metadata(&wal).unwrap().len() == 0);
@@ -814,7 +718,10 @@ mod tests {
         fs::write(&meta, r#"{"agentType":"Plan"}"#).unwrap();
         let s = sa(&fx, true);
         assert_eq!(s.agent_types.get("Plan"), Some(&1));
-        assert_eq!(stored(&fx.db, &fx.agent).unwrap().3.as_deref(), Some("Plan"));
+        assert_eq!(
+            stored(&fx.db, &fx.agent).unwrap().3.as_deref(),
+            Some("Plan")
+        );
     }
 
     fn insert_raw(fx: &Fixture, path: &Path, fingerprint: Option<&str>, window: Option<&str>) {
@@ -886,8 +793,8 @@ mod tests {
             let deadline = store::AttributionDeadline::new(WAIT);
             let mut conn = store::open_read_write(&fx.db, &deadline).unwrap();
             let key = fx.main_str().to_string();
-            let base = store::load_rows(&conn, SID, std::slice::from_ref(&key), &deadline)[&key]
-                .clone();
+            let base =
+                store::load_rows(&conn, SID, std::slice::from_ref(&key), &deadline)[&key].clone();
             let competitor = if more_progressed {
                 FileState {
                     offset: base.state.offset + 4096,

@@ -789,7 +789,7 @@ mod tests {
         assert_eq!(c[6], 13);
 
         // None keeps the stored version.
-        let base = load_rows(&conn, SID, &[m.path.clone()], &long())[&m.path]
+        let base = load_rows(&conn, SID, std::slice::from_ref(&m.path), &long())[&m.path]
             .base
             .clone();
         commit(

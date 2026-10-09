@@ -226,7 +226,6 @@ pub(crate) fn open_fd_nonblocking_verified(
 /// Read at most `cap` bytes of `file` starting at `offset`. The allocation is
 /// bounded by `min(cap, 64 KiB)` up front and by `cap` overall; it is never
 /// sized from the file length. An offset at or past EOF yields an empty Vec.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by agents::progress (17-05/17-07)
 pub fn read_range_capped(
     file: &mut File,
     offset: u64,

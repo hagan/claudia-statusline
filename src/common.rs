@@ -192,7 +192,6 @@ pub fn get_device_id() -> String {
 /// are impossible, as are separators, NUL and control bytes.
 ///
 /// Callers must never log or echo a rejected value.
-#[cfg_attr(not(test), allow(dead_code))] // consumed by agents::progress (17-05/17-07)
 pub fn is_valid_session_id(id: &str) -> bool {
     (1..=128).contains(&id.len())
         && id
