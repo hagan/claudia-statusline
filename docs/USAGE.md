@@ -91,10 +91,37 @@ statusline health --json
 ### Token Attribution per Claude Code Version
 
 Claude Code's cost figure includes subagents, but every token field it sends
-describes the main conversation only. The statusline reads the agent
-transcripts (`<project>/<session>/subagents/agent-*.jsonl`) and stores the
-result per session, so the `🤖N xx%` segment and the `stats` view can show how
-much of a session's input traffic went to agents.
+describes the main conversation only. When you opt in, the statusline reads
+the agent transcripts (`<project>/<session>/subagents/agent-*.jsonl`) and stores
+the result per session, so the `🤖N xx%` segment and the `stats` view can show
+how much of a session's input traffic went to agents.
+
+Attribution is off by default. In the legacy layout, set
+`display.show_agents = true` (default false). In a custom layout, using any of
+`{agents}`, `{agents_count}`, `{agents_pct}`, `{agents_tokens}` or
+`{agents_types}` turns it on, and `show_agents` has no effect there. The
+built-in presets do not include these variables.
+
+While a transcript is still being caught up, or an agent file is too large to
+read, `{agents}` shows the count only (`🤖3`) and `{agents_pct}` /
+`{agents_tokens}` are omitted. A render reads at most 8 MiB in total (4 MiB per
+file), so a large transcript catches up over several renders; with more than
+256 agent files, or when the `subagents` directory cannot be listed completely,
+no agent data is shown. Each request is counted once, with its last line's
+usage, when its lines are within 32 requests of each other (how Claude Code
+writes them). Attribution waits at most 250 ms for a locked database and then
+skips saving for that render. It uses the same stats database as the rest of
+statusline (the data directory, `XDG_DATA_HOME`, or the test store under
+`--test-mode`).
+
+`statusline stats` and `statusline sessions` show attribution only for sessions
+that were rendered with attribution on, and count only agent files that a
+render has read and saved.
+
+The prompt-cache variables (`{prompt_cache}`, `{cache_hit}`, `{cache_misses}`,
+`{cache_miss_cause}`, `{cache_warm}`; segment toggle `display.show_prompt_cache`)
+come from Claude Code's `prompt_cache` payload field. `{cache_miss_cause}` lists
+up to 3 causes joined by `,`, each at most 40 characters of `[a-z0-9_-]`.
 
 ```bash
 statusline stats                 # per Claude Code version (default)
@@ -149,10 +176,14 @@ An index always refers to the default ordering (all sessions, newest first),
 independent of `--limit`. An ambiguous prefix is refused with the matching ids;
 `pick` refuses to run without a terminal on stdin so it never hangs a script.
 
-The raw payload of the last render is mirrored to
-`~/.local/share/claudia-statusline/last-input.json` (mode 0600); inspect it
-with `jq .` after a Claude Code update to spot new or renamed fields.
-`STATUSLINE_DEBUG_INPUT=<path>` relocates the mirror, `=off` disables it.
+The raw payload mirror is off by default. Set
+`STATUSLINE_DEBUG_INPUT=/absolute/path.json` to write the raw payload of each
+render there (mode 0600, replaced atomically via a temp file and rename), then
+inspect it with `jq .` after a Claude Code update to spot new or renamed
+fields. Relative paths and values like `off` are ignored. An existing symlink,
+directory, FIFO or other non-regular file at that path is refused and nothing
+is written; parent directories are not created. `last-input.json` files left
+in the data directory by earlier development builds can be deleted by hand.
 
 ### Database Maintenance
 
@@ -805,7 +836,8 @@ let json = r#"{
   "model": {"display_name": "Claude 3.5 Sonnet"}
 }"#;
 
-// Preview mode: does not update persistent stats
+// Preview mode: does not update persistent stats. The stats database is
+// opened read-only and is never created, migrated or repaired.
 let line = render_from_json(json, false).expect("render");
 println!("{}", line);
 
@@ -827,6 +859,11 @@ let line = render_statusline(&input, true).expect("render");
 ```
 
 See `examples/embedding_example.rs` for complete example.
+
+Previews with `update_stats = false` open the stats database read-only and
+never create, migrate or repair it. Attribution then advances in memory only,
+so a very large transcript that no normal render has read yet can stay
+count-only across previews.
 
 ## Performance
 

@@ -220,9 +220,9 @@ FROM sessions GROUP BY strftime('%Y-%m', start_time, 'localtime');
 <summary><b>Subagent Attribution & Session Browser</b></summary>
 
 Claude Code's cost includes subagents, but its token fields describe the main
-conversation only. The statusline reads the agent transcripts and shows
-`🤖3 30%` (agent count, share of input traffic) whenever a session has spawned
-agents. The same data feeds two commands:
+conversation only. When you opt in, the statusline reads the agent transcripts
+and shows `🤖3 30%` (agent count, share of input traffic) for sessions that
+have spawned agents. The same data feeds two commands:
 
 ```bash
 statusline stats                 # per Claude Code version: spot drift after an update
@@ -234,8 +234,10 @@ statusline sessions show fe2e    # ... or by session id prefix
 statusline sessions pick         # interactive picker
 ```
 
-Segment toggle: `display.show_agents` (default `true`). Template variables:
-`{agents}`, `{agents_count}`, `{agents_pct}`, `{agents_tokens}`, `{agents_types}`.
+Segment toggle: `display.show_agents` (default false; legacy layout only).
+Template variables: `{agents}`, `{agents_count}`, `{agents_pct}`,
+`{agents_tokens}`, `{agents_types}`. In a custom layout, using any `{agents*}`
+variable turns attribution on, and `show_agents` has no effect there.
 Details in [docs/USAGE.md](docs/USAGE.md#session-browser).
 
 </details>
