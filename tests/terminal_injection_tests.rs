@@ -48,19 +48,34 @@ const INJECTED_META_PAYLOAD: &str = r#"{"workspace":{"current_dir":"/tmp","repo"
 /// Render `payload` through the built binary against a throwaway HOME/XDG tree
 /// and the given config body, returning the child's raw stdout bytes.
 fn render_bytes(config_toml: &str, payload: &str) -> Vec<u8> {
+    render_bytes_with(config_toml, payload, false)
+}
+
+/// [`render_bytes`] with an explicit `NO_COLOR` choice. The ONLY place a child
+/// is spawned, so the hermetic env below covers every test: host
+/// `STATUSLINE_CONFIG_PATH` (which outranks `STATUSLINE_CONFIG`) and
+/// `STATUSLINE_DEBUG_INPUT` (which would write the payload mirror outside the
+/// tempdir) are removed for every child.
+fn render_bytes_with(config_toml: &str, payload: &str, no_color: bool) -> Vec<u8> {
     let home = tempfile::TempDir::new().expect("isolated home");
     let cfg_path = home.path().join("config.toml");
     std::fs::write(&cfg_path, config_toml).expect("write config");
 
-    let output = Command::new(test_support::test_binary())
-        .env("HOME", home.path())
+    let mut cmd = Command::new(test_support::test_binary());
+    cmd.env("HOME", home.path())
         .env("XDG_CONFIG_HOME", home.path().join("config"))
         .env("XDG_DATA_HOME", home.path().join("data"))
         .env("XDG_CACHE_HOME", home.path().join("cache"))
         .env("STATUSLINE_CONFIG", &cfg_path)
+        .env_remove("STATUSLINE_CONFIG_PATH")
+        .env_remove("STATUSLINE_DEBUG_INPUT")
         .env_remove("NO_COLOR")
         .env_remove("STATUSLINE_THEME")
-        .env_remove("STATUSLINE_TEST_MODE")
+        .env_remove("STATUSLINE_TEST_MODE");
+    if no_color {
+        cmd.env("NO_COLOR", "1");
+    }
+    let output = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -201,4 +216,118 @@ fn session_meta_fields_never_emit_an_attacker_escape_byte() {
             String::from_utf8_lossy(&out)
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Prompt-cache miss causes (17-06: AGENT-06 / PCACHE-01 / D-02, T-17-23/25)
+// ---------------------------------------------------------------------------
+
+/// `prompt_cache.last_miss_cause.causes` carrying an OSC 52 clipboard write, an
+/// SGR and a U+202E right-to-left override, all as JSON escapes.
+const INJECTED_CAUSE_PAYLOAD: &str = r#"{"workspace":{"current_dir":"/tmp"},"model":{"id":"claude-opus-4-8"},"prompt_cache":{"misses":2,"hit_ratio":0.5,"last_miss_cause":{"causes":["\u001b]52;c;cHdu\u0007tools_changed","\u001b[31mx","\u202eevil"]}}}"#;
+
+/// U+202E RIGHT-TO-LEFT OVERRIDE, UTF-8 encoded.
+const RLO_BYTES: &[u8] = b"\xe2\x80\xae";
+
+fn cause_payload(causes_json: &str) -> String {
+    format!(
+        r#"{{"workspace":{{"current_dir":"/tmp"}},"model":{{"id":"claude-opus-4-8"}},"prompt_cache":{{"misses":2,"hit_ratio":0.5,"last_miss_cause":{{"causes":{causes_json}}}}}}}"#
+    )
+}
+
+#[test]
+fn cache_miss_cause_never_emits_attacker_bytes() {
+    let out = render_bytes(
+        "[layout]\nformat = \"{cache_miss_cause}|{prompt_cache}\"\n",
+        INJECTED_CAUSE_PAYLOAD,
+    );
+    let shown = String::from_utf8_lossy(&out);
+    assert_no_attacker_bytes(&out, "cache_miss_cause");
+    assert!(!contains(&out, b"\x1b]"), "OSC reached stdout: {shown:?}");
+    assert!(
+        !contains(&out, RLO_BYTES),
+        "U+202E reached stdout: {shown:?}"
+    );
+    // The builder's own color opens the line ({cache_miss_cause} is first).
+    assert!(
+        out.starts_with(b"\x1b["),
+        "the builder color wrapper must survive: {shown:?}"
+    );
+    // Positional: the reset closes the sanitized inner value, right before `|`.
+    assert!(
+        contains(&out, b"evil\x1b[0m|"),
+        "the reset must follow the sanitized cause list: {shown:?}"
+    );
+    assert!(contains(&out, RESET), "reset must survive: {shown:?}");
+    assert!(
+        contains(&out, b"tools_changed"),
+        "the cause text must still render: {shown:?}"
+    );
+}
+
+#[test]
+fn cache_miss_cause_legacy_segment_sanitized() {
+    let out = render_bytes(
+        "[display]\nshow_prompt_cache = true\n",
+        INJECTED_CAUSE_PAYLOAD,
+    );
+    let shown = String::from_utf8_lossy(&out);
+    assert_no_attacker_bytes(&out, "legacy prompt_cache");
+    assert!(!contains(&out, b"\x1b]"), "OSC reached stdout: {shown:?}");
+    assert!(
+        !contains(&out, RLO_BYTES),
+        "U+202E reached stdout: {shown:?}"
+    );
+    assert!(
+        contains(&out, b"miss:2"),
+        "legacy segment must render: {shown:?}"
+    );
+    assert!(
+        contains(&out, b"tools_changed"),
+        "the cause text must still render: {shown:?}"
+    );
+}
+
+#[test]
+fn cache_miss_cause_joined_max_three_in_binary() {
+    let payload = cause_payload(
+        r#"["tools_changed","system_prompt_changed","ttl_expired_5m","likely_server_side"]"#,
+    );
+    let out = render_bytes_with(
+        "[layout]\nformat = \"{cache_miss_cause}\"\n",
+        &payload,
+        true,
+    );
+    let shown = String::from_utf8_lossy(&out);
+    assert!(
+        contains(&out, b"tools_changed,system_prompt_changed,ttl_expired_5m"),
+        "D-02 join: {shown:?}"
+    );
+    assert!(
+        !contains(&out, b"likely_server_side"),
+        "max three: {shown:?}"
+    );
+}
+
+#[test]
+fn cache_miss_cause_long_value_bounded_in_binary() {
+    let payload = cause_payload(&format!(r#"["{}"]"#, "a".repeat(5_000)));
+    let out = render_bytes_with(
+        "[layout]\nformat = \"{cache_miss_cause}\"\n",
+        &payload,
+        true,
+    );
+    let text = String::from_utf8(out).expect("utf-8 stdout");
+    let line = text.strip_suffix('\n').unwrap_or(&text);
+    assert!(!line.contains('\n'), "single line: {text:?}");
+    assert!(
+        line.chars().count() <= 40,
+        "cause must be capped at 40 chars, got {}: {line:?}",
+        line.chars().count()
+    );
+    assert_eq!(
+        line,
+        "a".repeat(40),
+        "non-vacuity: the capped cause renders"
+    );
 }
