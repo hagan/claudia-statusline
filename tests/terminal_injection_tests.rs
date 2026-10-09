@@ -26,7 +26,8 @@
 
 mod test_support;
 
-use std::io::Write;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// The attacker's escape, as it appears in the rendered bytes.
@@ -58,14 +59,23 @@ fn render_bytes(config_toml: &str, payload: &str) -> Vec<u8> {
 /// tempdir) are removed for every child.
 fn render_bytes_with(config_toml: &str, payload: &str, no_color: bool) -> Vec<u8> {
     let home = tempfile::TempDir::new().expect("isolated home");
-    let cfg_path = home.path().join("config.toml");
+    render_in_home(home.path(), config_toml, payload, no_color)
+}
+
+/// Spawn budget: a render (including an agents scan) must finish well inside it.
+const SPAWN_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Render against a caller-owned isolated `home` (so a test can render twice
+/// against the same data dir). Per-child env only, no process-global env.
+fn render_in_home(home: &Path, config_toml: &str, payload: &str, no_color: bool) -> Vec<u8> {
+    let cfg_path = home.join("config.toml");
     std::fs::write(&cfg_path, config_toml).expect("write config");
 
     let mut cmd = Command::new(test_support::test_binary());
-    cmd.env("HOME", home.path())
-        .env("XDG_CONFIG_HOME", home.path().join("config"))
-        .env("XDG_DATA_HOME", home.path().join("data"))
-        .env("XDG_CACHE_HOME", home.path().join("cache"))
+    cmd.env("HOME", home)
+        .env("XDG_CONFIG_HOME", home.join("config"))
+        .env("XDG_DATA_HOME", home.join("data"))
+        .env("XDG_CACHE_HOME", home.join("cache"))
         .env("STATUSLINE_CONFIG", &cfg_path)
         .env_remove("STATUSLINE_CONFIG_PATH")
         .env_remove("STATUSLINE_DEBUG_INPUT")
@@ -75,28 +85,53 @@ fn render_bytes_with(config_toml: &str, payload: &str, no_color: bool) -> Vec<u8
     if no_color {
         cmd.env("NO_COLOR", "1");
     }
-    let output = cmd
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .and_then(|mut child| {
-            child
-                .stdin
-                .as_mut()
-                .expect("child stdin")
-                .write_all(payload.as_bytes())?;
-            child.wait_with_output()
-        })
         .expect("failed to execute the statusline binary");
+    {
+        let mut stdin = child.stdin.take().expect("child stdin");
+        // EPIPE only means the child already exited; the budget loop decides.
+        let _ = stdin.write_all(payload.as_bytes());
+    }
+    let mut out_pipe = child.stdout.take().expect("child stdout");
+    let mut err_pipe = child.stderr.take().expect("child stderr");
+    let out_t = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = out_pipe.read_to_end(&mut v);
+        v
+    });
+    let err_t = std::thread::spawn(move || {
+        let mut v = Vec::new();
+        let _ = err_pipe.read_to_end(&mut v);
+        v
+    });
+    let deadline = std::time::Instant::now() + SPAWN_BUDGET;
+    let status = loop {
+        match child.try_wait().expect("try_wait on the child") {
+            Some(status) => break status,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("the binary did not exit within {SPAWN_BUDGET:?}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    };
+    let stdout = out_t.join().expect("stdout reader");
+    let stderr = err_t.join().expect("stderr reader");
 
     assert!(
-        output.status.success(),
+        status.success(),
         "the render must never fail: status={:?} stderr={:?}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
+        status,
+        String::from_utf8_lossy(&stderr)
     );
-    output.stdout
+    stdout
 }
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -329,5 +364,172 @@ fn cache_miss_cause_long_value_bounded_in_binary() {
         line,
         "a".repeat(40),
         "non-vacuity: the capped cause renders"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Subagent types (17-08: AGENT-06 / SC5, T-17-33)
+// ---------------------------------------------------------------------------
+
+const INJECT_SESSION: &str = "sess-inject-1";
+
+/// OSC 52 clipboard write + SGR around a real type name, as JSON escapes.
+const MALICIOUS_TYPE_JSON: &str = r#""\u001b]52;c;cHdu\u0007Explore\u001b[31m""#;
+
+fn usage_line(sidechain: bool, id: &str) -> String {
+    format!(
+        r#"{{"type":"assistant","isSidechain":{sidechain},"sessionId":"{INJECT_SESSION}","message":{{"id":"{id}","role":"assistant","model":"claude-opus-4-8","usage":{{"input_tokens":100,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":10}}}},"timestamp":"2026-01-01T00:00:00.000Z"}}"#
+    ) + "\n"
+}
+
+/// Build `<home>/tree/{sess}.jsonl` + `subagents/agent-a1.{jsonl,meta.json}` with
+/// the given (JSON-encoded) agentType. Returns (main transcript, meta path).
+fn agent_tree(home: &Path, agent_type_json: &str) -> (PathBuf, PathBuf) {
+    let tree = home.join("tree");
+    let sub = tree.join(INJECT_SESSION).join("subagents");
+    std::fs::create_dir_all(&sub).expect("create subagents dir");
+    let main = tree.join(format!("{INJECT_SESSION}.jsonl"));
+    std::fs::write(&main, usage_line(false, "msg_main_1")).expect("write main");
+    std::fs::write(sub.join("agent-a1.jsonl"), usage_line(true, "msg_agent_1"))
+        .expect("write agent");
+    let meta = sub.join("agent-a1.meta.json");
+    std::fs::write(&meta, format!(r#"{{"agentType":{agent_type_json}}}"#)).expect("write meta");
+    (main, meta)
+}
+
+/// Payload pointing at the tree; `with_cost` makes the stats step create stats.db.
+fn agent_payload(main: &Path, with_cost: bool) -> String {
+    let mut v = serde_json::json!({
+        "session_id": INJECT_SESSION,
+        "transcript_path": main.to_str().expect("UTF-8 temp path"),
+        "workspace": {"current_dir": "/tmp"},
+        "model": {"id": "claude-opus-4-8"},
+    });
+    if with_cost {
+        v["cost"] = serde_json::json!({"total_cost_usd": 0.5, "total_duration_ms": 60000});
+    }
+    v.to_string()
+}
+
+fn assert_no_osc_or_bidi(out: &[u8], ctx: &str) {
+    let shown = String::from_utf8_lossy(out);
+    assert!(
+        !contains(out, b"\x1b]"),
+        "{ctx}: OSC reached stdout: {shown:?}"
+    );
+    assert!(
+        !contains(out, RLO_BYTES),
+        "{ctx}: U+202E reached stdout: {shown:?}"
+    );
+}
+
+const TYPES_TEMPLATE: &str = "[layout]\nformat = \"{agents_types}|{agents}\"\n";
+
+#[test]
+fn agents_types_never_emit_attacker_bytes() {
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let (main, _) = agent_tree(home.path(), MALICIOUS_TYPE_JSON);
+    let out = render_in_home(
+        home.path(),
+        TYPES_TEMPLATE,
+        &agent_payload(&main, false),
+        false,
+    );
+    let shown = String::from_utf8_lossy(&out);
+    assert_no_attacker_bytes(&out, "agents_types");
+    assert_no_osc_or_bidi(&out, "agents_types");
+    // {agents_types} is first, so its own color wrapper opens the line.
+    assert!(
+        out.starts_with(b"\x1b["),
+        "builder color must survive: {shown:?}"
+    );
+    // Positional: the reset closes the sanitized type list, right before `|`.
+    assert!(
+        contains(&out, "Explore×1\x1b[0m|".as_bytes()),
+        "reset must follow the sanitized type list: {shown:?}"
+    );
+    assert!(
+        contains(&out, "Explore×1".as_bytes()),
+        "type must render: {shown:?}"
+    );
+}
+
+#[test]
+fn agents_types_bidi_dropped() {
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let (main, _) = agent_tree(home.path(), r#""Exp\u202elore""#);
+    let out = render_in_home(
+        home.path(),
+        TYPES_TEMPLATE,
+        &agent_payload(&main, false),
+        false,
+    );
+    let shown = String::from_utf8_lossy(&out);
+    assert_no_osc_or_bidi(&out, "agents_types bidi");
+    assert!(contains(&out, b"Explore"), "type must render: {shown:?}");
+}
+
+#[test]
+fn agents_types_from_stored_row_sanitized() {
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let (main, meta) = agent_tree(home.path(), MALICIOUS_TYPE_JSON);
+    let body = agent_payload(&main, true);
+
+    // First render persists the raw attacker value (update_stats on the binary).
+    let first = render_in_home(home.path(), TYPES_TEMPLATE, &body, false);
+    assert_no_attacker_bytes(&first, "first render");
+    assert_no_osc_or_bidi(&first, "first render");
+
+    let db = home
+        .path()
+        .join("data")
+        .join("claudia-statusline")
+        .join("stats.db");
+    let stored: String = {
+        let conn = rusqlite::Connection::open_with_flags(
+            &db,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )
+        .expect("open stats.db read-only");
+        conn.query_row(
+            "SELECT agent_type FROM transcript_progress WHERE is_agent = 1 AND session_id = ?1",
+            [INJECT_SESSION],
+            |r| r.get(0),
+        )
+        .expect("stored agent row")
+    };
+    assert!(
+        stored.contains('\u{1b}'),
+        "the raw attacker value must have been persisted: {stored:?}"
+    );
+
+    // Second render: meta gone, transcript unchanged, so the type comes from the row.
+    std::fs::remove_file(&meta).expect("delete meta");
+    let second = render_in_home(home.path(), TYPES_TEMPLATE, &body, false);
+    let shown = String::from_utf8_lossy(&second);
+    assert_no_attacker_bytes(&second, "stored row");
+    assert_no_osc_or_bidi(&second, "stored row");
+    assert!(
+        contains(&second, "Explore×1".as_bytes()),
+        "the stored type must render sanitized, not be dropped: {shown:?}"
+    );
+}
+
+#[test]
+fn agents_legacy_segment_never_emits_attacker_bytes() {
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let (main, _) = agent_tree(home.path(), MALICIOUS_TYPE_JSON);
+    let out = render_in_home(
+        home.path(),
+        "[display]\nshow_agents = true\n",
+        &agent_payload(&main, false),
+        false,
+    );
+    let shown = String::from_utf8_lossy(&out);
+    assert_no_attacker_bytes(&out, "legacy agents segment");
+    assert_no_osc_or_bidi(&out, "legacy agents segment");
+    assert!(
+        contains(&out, "🤖1".as_bytes()),
+        "legacy segment must render: {shown:?}"
     );
 }
