@@ -78,7 +78,9 @@ pub(crate) fn effective_template(layout: &config::LayoutConfig) -> String {
 /// - Legacy mode: `[display].show_agents`.
 /// - Layout/template mode: `show_agents` has NO effect on scanning. The scan
 ///   runs only when the effective template (the same one
-///   [`format_statusline_with_layout`] renders) references an agents
+///   [`format_statusline_with_layout`] renders, resolved separately here, so
+///   a user preset file edited between the two reads can make them disagree
+///   for one render) references an agents
 ///   variable. The prefix half is fail-closed in the sense that matters: an
 ///   unknown `{agents_typo}` causes an unneeded scan, never a missing value.
 pub(crate) fn agents_requested(cfg: &config::Config) -> bool {
@@ -807,14 +809,20 @@ fn format_statusline_with_layout(
     let reset = Colors::reset();
     let components = &layout_config.components;
 
-    // Resolve the effective template ONCE per render, then build the ONE
-    // renderer this function will use. `LayoutRenderer`'s `from_config` is
-    // identical to `with_format` apart from where the template string comes
-    // from (empty `format` => the named preset), so computing it here and
-    // calling `with_format` is behavior-preserving while giving us two things:
-    // the preset file is resolved at most once, and the pricing gate below
-    // queries the SAME renderer that will produce the output — it cannot drift
-    // from the template actually rendered.
+    // Resolve the effective template once in this function, then build the
+    // ONE renderer it will use. `LayoutRenderer`'s `from_config` is identical
+    // to `with_format` apart from where the template string comes from (empty
+    // `format` => the named preset), so computing it here and calling
+    // `with_format` is behavior-preserving, and the pricing gate below queries
+    // the SAME renderer that will produce the output: it cannot drift from the
+    // template actually rendered.
+    //
+    // This is not the only resolution per render. The D-03 agents gate
+    // (`agents_requested`, called earlier from `render.rs`) resolves the
+    // effective template separately, so a user preset file is read twice. If
+    // that file changes between the two reads, the gate and this renderer can
+    // disagree for one render. The only effect is a missing or empty
+    // `{agents}` value for that render; it never blocks or fails the line.
     let effective_template = effective_template(layout_config);
     let renderer = LayoutRenderer::with_format(&effective_template, &layout_config.separator);
 
