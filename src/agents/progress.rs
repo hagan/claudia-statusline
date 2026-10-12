@@ -48,7 +48,8 @@
 //! All reads go through one [`ReadBudget`] per render (transcript chunks,
 //! fingerprint reads and `.meta.json` reads alike), so `PER_RENDER_READ_CAP` is
 //! a true cap. Agent files and meta files must be regular files (symlinks are
-//! refused) and are opened non-blocking.
+//! refused) and are opened non-blocking. The `<session_id>` and `subagents`
+//! directories are lstat'ed and ignored when either is a symlink.
 
 use std::collections::HashMap;
 use std::fs::File;
@@ -667,10 +668,25 @@ pub(crate) fn inventory(
     AGENTS_SCANS.fetch_add(1, Ordering::Relaxed);
 
     // e. Enumerate under caps; fail closed when the count would be uncertain.
-    let dir = parent.join(session_id).join("subagents");
+    //    Both `<session_id>` and `subagents` are lstat'ed: a symlink at either
+    //    level is ignored (no agents), the same stance as for agent files.
+    let session_dir = parent.join(session_id);
+    let dir = session_dir.join("subagents");
     let mut agents = Vec::new();
     let mut entries_examined = 0usize;
-    match std::fs::symlink_metadata(&dir) {
+    let dir_md = match std::fs::symlink_metadata(&session_dir) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(e),
+        Err(_) => {
+            log::debug!("agents: cannot stat the session directory");
+            return None;
+        }
+        Ok(md) if md.file_type().is_symlink() || !md.is_dir() => {
+            log::debug!("agents: session directory is not a real directory; ignored");
+            Err(std::io::Error::from(std::io::ErrorKind::NotFound))
+        }
+        Ok(_) => std::fs::symlink_metadata(&dir),
+    };
+    match dir_md {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => {
             log::debug!("agents: cannot stat the subagents directory");
@@ -1727,6 +1743,30 @@ mod tests {
         fs::write(elsewhere.join("agent-a.jsonl"), lines(1, "a", 1)).unwrap();
         fs::remove_dir(&t.sub).unwrap();
         std::os::unix::fs::symlink(&elsewhere, &t.sub).unwrap();
+        let o = scan_session(SID, main_str(&t), &HashMap::new()).unwrap();
+        assert_eq!(o.summary.agent_files, 0);
+        assert!(!o.summary.has_agents());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::parallel]
+    fn session_dir_symlink_ignored() {
+        let t = tree(&lines(1, "m", 1));
+        // A real `<elsewhere>/subagents/agent-a.jsonl`, reachable only through
+        // a symlinked `<session_id>` directory.
+        let elsewhere = t.root.join("elsewhere");
+        fs::create_dir_all(elsewhere.join("subagents")).unwrap();
+        fs::write(
+            elsewhere.join("subagents").join("agent-a.jsonl"),
+            lines(1, "a", 1),
+        )
+        .unwrap();
+        let session_dir = t.sub.parent().unwrap().to_path_buf();
+        fs::remove_dir_all(&session_dir).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, &session_dir).unwrap();
+        // Sanity: following the link would find the agent file.
+        assert!(t.sub.join("agent-a.jsonl").is_file());
         let o = scan_session(SID, main_str(&t), &HashMap::new()).unwrap();
         assert_eq!(o.summary.agent_files, 0);
         assert!(!o.summary.has_agents());
