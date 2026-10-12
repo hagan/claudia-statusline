@@ -129,6 +129,42 @@ pub fn test_binary() -> &'static str {
     env!("CARGO_BIN_EXE_statusline")
 }
 
+/// Set once the binary under test has been exec'd one time in this process.
+static BINARY_WARMED: OnceLock<()> = OnceLock::new();
+
+/// Exec the binary under test once (`--version`, untimed) before any timed
+/// spawn.
+///
+/// On some hosts (notably macOS with exec-time scanning) the FIRST exec of a
+/// freshly built binary stalls in `_dyld_start`, before `main`, for tens of
+/// seconds, while later execs take milliseconds. A wall-clock watchdog around
+/// that first spawn then reports a false "render blocked". Warming here keeps
+/// the budgets measuring the render itself. It does not loosen them: every
+/// timed spawn still has its full budget, and a render that really blocks
+/// still fails. Concurrent callers wait for the one warm-up exec to finish.
+///
+/// The warm-up runs with HOME/XDG pointed at a throwaway directory, so it
+/// can never touch a real config or stats store. Its outcome is ignored.
+#[allow(dead_code)]
+pub fn warm_test_binary() {
+    BINARY_WARMED.get_or_init(|| {
+        use std::process::{Command, Stdio};
+        let Ok(dir) = TempDir::new() else {
+            return;
+        };
+        let _ = Command::new(test_binary())
+            .arg("--version")
+            .env("HOME", dir.path())
+            .env("XDG_CONFIG_HOME", dir.path().join("c"))
+            .env("XDG_DATA_HOME", dir.path().join("d"))
+            .env("XDG_CACHE_HOME", dir.path().join("cache"))
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    });
+}
+
 /// Get the base temp directory path (for tests that need to create files)
 #[allow(dead_code)]
 pub fn get_temp_base() -> PathBuf {

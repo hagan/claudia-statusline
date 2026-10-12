@@ -133,6 +133,8 @@ fn isolated_cmd(home: &Path, config_toml: Option<&str>) -> Command {
 /// Spawn `cmd`, feed `stdin_bytes`, and wait at most `budget`; kill + panic on timeout.
 #[allow(dead_code)]
 fn spawn_with_budget(mut cmd: Command, stdin_bytes: &[u8], budget: Duration, what: &str) -> Output {
+    // Untimed first exec, so a slow pre-main launch is not charged to `budget`.
+    test_support::warm_test_binary();
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

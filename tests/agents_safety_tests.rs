@@ -233,6 +233,9 @@ fn spawn_with_budget(
     budget: Duration,
     what: &str,
 ) -> (Output, Duration) {
+    // Untimed first exec, so a slow pre-main launch is charged neither to
+    // `budget` nor to the wall-clock deltas compared across spawns.
+    test_support::warm_test_binary();
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
