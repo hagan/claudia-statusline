@@ -1461,3 +1461,51 @@ fn load_read_only_matches_load_on_healthy_db() {
     assert_eq!(j(&ro), j(&rw));
     assert_eq!(ro.sessions.len(), 2);
 }
+
+/// WR-02: an existing but unreadable stats.db (older/drifted schema) must yield
+/// "no values", never the stale legacy stats.json kept on disk after migration.
+#[test]
+#[serial]
+fn load_read_only_unreadable_db_ignores_legacy_json() {
+    let _env = ParityEnv::new();
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    let data_dir = db_path.parent().unwrap().to_path_buf();
+    fs::create_dir_all(&data_dir).unwrap();
+    {
+        let db = crate::database::SqliteDatabase::new(&db_path).unwrap();
+        db.update_session("ro-current", parity_update(2.0, PARITY_START_MS))
+            .unwrap();
+    }
+    {
+        // Simulate an older schema the read path's SELECT cannot satisfy.
+        let c = rusqlite::Connection::open(&db_path).unwrap();
+        c.execute_batch("ALTER TABLE sessions DROP COLUMN raw_cost")
+            .unwrap();
+    }
+    let json = r#"{
+        "version": "1.0",
+        "created": "2025-08-25T00:00:00Z",
+        "last_updated": "2025-08-25T01:00:00Z",
+        "sessions": {
+            "stale-legacy": {
+                "last_updated": "2025-08-25T01:00:00Z",
+                "cost": 99.0,
+                "lines_added": 1,
+                "lines_removed": 1,
+                "start_time": "2025-08-25T00:00:00Z"
+            }
+        },
+        "daily": {},
+        "monthly": {},
+        "all_time": {"total_cost": 99.0, "sessions": 1, "since": "2025-08-25T00:00:00Z"}
+    }"#;
+    fs::write(data_dir.join("stats.json"), json).unwrap();
+
+    let ro = StatsData::load_read_only();
+    assert!(
+        !ro.sessions.contains_key("stale-legacy"),
+        "stale legacy stats.json must not be used when stats.db exists"
+    );
+    assert!(ro.sessions.is_empty());
+    assert_eq!(ro.all_time.total_cost, 0.0);
+}
