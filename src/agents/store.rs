@@ -314,7 +314,8 @@ pub(crate) fn load_rows(
 
 /// Commit `updates` in one IMMEDIATE transaction; returns the number of rows
 /// skipped because another render changed them since they were loaded (their
-/// stored raw base no longer equals the expected one). Session totals are
+/// stored raw base no longer equals the expected one) or because the path's row
+/// belongs to a different session (never taken over). Session totals are
 /// re-derived from `transcript_progress` in the same transaction.
 pub(crate) fn commit(
     conn: &mut Connection,
@@ -327,9 +328,14 @@ pub(crate) fn commit(
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let mut discarded = 0usize;
     {
-        // Scoped to the session like load_rows, so both sides see the same row.
+        // Keyed on the upsert's conflict target (`path`, the PRIMARY KEY), so the
+        // check sees exactly the row the upsert would hit. A row owned by another
+        // session is never overwritten: load_rows (session-scoped) could not have
+        // loaded it, so this render's base says nothing about it, and taking it
+        // over would leave the previous owner's `sessions.agent_*`/`main_*`
+        // totals counting a row it no longer owns.
         let mut check = tx.prepare(&format!(
-            "SELECT {BASE_COLS} FROM transcript_progress WHERE path = ?1 AND session_id = ?2"
+            "SELECT session_id, {BASE_COLS} FROM transcript_progress WHERE path = ?1"
         ))?;
         let mut upsert = tx.prepare(
             "INSERT INTO transcript_progress (path, session_id, is_agent, agent_type, size,
@@ -357,9 +363,18 @@ pub(crate) fn commit(
         )?;
         let now = crate::common::current_timestamp();
         for (expected, state) in updates {
-            let current: Option<BaseKey> = check
-                .query_row(params![state.path, session_id], |r| Ok(base_at(r, 0)))
+            let row: Option<(Option<String>, BaseKey)> = check
+                .query_row(params![state.path], |r| Ok((text_at(r, 0), base_at(r, 1))))
                 .optional()?;
+            let current = match row {
+                None => None,
+                Some((owner, base)) if owner.as_deref() == Some(session_id) => Some(base),
+                Some(_) => {
+                    log::debug!("agents: progress row owned by another session; not taken over");
+                    discarded += 1;
+                    continue;
+                }
+            };
             if &current != expected {
                 discarded += 1;
                 continue;
@@ -739,6 +754,47 @@ mod tests {
             let stored = load_rows(&conn, SID, &[path.to_string()], &long());
             assert_eq!(&stored[path].state, first);
         }
+    }
+
+    /// WR-03: the CAS check is keyed like the upsert's conflict target, so a
+    /// row for the same path owned by another session is never overwritten.
+    #[test]
+    fn other_sessions_row_is_not_taken_over() {
+        const OTHER: &str = "sess-other";
+        let db = db();
+        let mut conn = rw(&db);
+        conn.execute(
+            "INSERT INTO sessions (session_id, start_time, last_updated) VALUES (?1, 'x', 'x')",
+            params![OTHER],
+        )
+        .unwrap();
+        let path = "/p/shared.jsonl";
+        let theirs = st(path, false, 100, 4, 40);
+        assert_eq!(
+            commit(&mut conn, OTHER, None, &[(None, theirs.clone())], &long()).unwrap(),
+            0
+        );
+        let other_totals = |c: &Connection| -> i64 {
+            c.query_row(
+                "SELECT main_requests FROM sessions WHERE session_id = ?1",
+                params![OTHER],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(other_totals(&conn), 4);
+
+        // Our session-scoped load sees nothing for the shared path.
+        assert!(load_rows(&conn, SID, &[path.to_string()], &long()).is_empty());
+        let ours = st(path, false, 10, 1, 5);
+        let n = commit(&mut conn, SID, None, &[(None, ours)], &long()).unwrap();
+        assert_eq!(n, 1, "foreign row must be discarded, not overwritten");
+
+        let kept = load_rows(&conn, OTHER, &[path.to_string()], &long());
+        assert_eq!(kept[path].state, theirs);
+        assert_eq!(other_totals(&conn), 4);
+        let (_, c) = session_cols(&conn);
+        assert_eq!(c[4], 0, "our main_requests must not count the foreign row");
     }
 
     fn session_cols(conn: &Connection) -> (Option<String>, [i64; 7]) {
