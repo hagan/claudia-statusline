@@ -1621,6 +1621,16 @@ pub(crate) fn normalize_miss_causes(pc: &crate::models::PromptCache) -> Option<S
 /// [`MAX_AGENT_TYPE_DISPLAY_CHARS`]; empty names are skipped. Counts are
 /// re-aggregated because two raw names can normalize to the same key, and
 /// only the first [`MAX_AGENT_TYPES_SHOWN`] keys in sorted order are kept.
+///
+/// Unicode is allowed on purpose (17-06 plan choice), unlike the ASCII-only
+/// cause charset: agent types are names that can be non-English (`é`, CJK).
+/// The accepted residual is that `char::is_alphanumeric` also admits
+/// combining marks, strong RTL letters and double-width glyphs. These carry no
+/// terminal escapes and no explicit bidi controls (both stripped above), and
+/// their volume is bounded by the 64-char x 16-entry caps, but they can still
+/// shift alignment or reorder adjacent text in bidi-aware or width-sensitive
+/// terminals. Tightening to `is_ascii_alphanumeric` would trade that for
+/// dropping legitimate non-ASCII names.
 pub(crate) fn normalize_agent_types(types: &BTreeMap<String, u32>) -> BTreeMap<String, u32> {
     let mut out: BTreeMap<String, u32> = BTreeMap::new();
     for (raw, n) in types {
