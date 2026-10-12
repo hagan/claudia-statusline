@@ -9,8 +9,10 @@
 //!   base it was loaded from ([`BASE_COLS`]); a row another render changed is
 //!   skipped. Session totals are derived by SUM/COUNT over `transcript_progress`
 //!   inside the same transaction, so a stale writer cannot regress them.
-//! - Every database step shares one [`AttributionDeadline`] of
-//!   the configured database busy timeout capped at `ATTRIBUTION_DB_WAIT_MS`, with no retry loop:
+//! - Every database step shares one budget of the configured database busy
+//!   timeout capped at `ATTRIBUTION_DB_WAIT_MS` (an [`AttributionDeadline`] for
+//!   open + load, then a fresh one sized to what was left for the commit, so
+//!   the file scan in between is not charged to it), with no retry loop:
 //!   on SQLITE_BUSY, an exhausted deadline or an unready schema the caller skips
 //!   persistence and still renders its in-memory summary.
 //! - `load_rows` reads only this render's inventory paths (primary-key lookups)
@@ -27,7 +29,8 @@ use super::progress::{decode_window, encode_window, FileState, MAX_AGENT_TYPE_CH
 use super::TranscriptTotals;
 
 /// Upper bound on the time attribution may wait for the database per render,
-/// across open, load and commit together (no retry loop).
+/// across open, load and commit together (no retry loop). Transcript file
+/// I/O between load and commit is not counted.
 pub(crate) const ATTRIBUTION_DB_WAIT_MS: u32 = 250;
 
 /// Largest `request_window` value that is ever materialized or written.
@@ -47,7 +50,7 @@ pub(crate) fn attribution_busy_timeout_ms(configured: u32) -> u32 {
     configured.min(ATTRIBUTION_DB_WAIT_MS)
 }
 
-/// One deadline shared by every database step of one render.
+/// A database-wait deadline (open + load, or the commit) of one render.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AttributionDeadline {
     start: Instant,

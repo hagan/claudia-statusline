@@ -36,7 +36,8 @@
 //!   from and skips rows another render changed ([`store`]). The database is
 //!   never created here (that is the stats step's job) and an unready schema,
 //!   a lock or an exhausted deadline (`min(configured busy timeout, 250 ms)`
-//!   shared across open, load and commit) only skips persistence.
+//!   shared across open, load and commit; time spent reading transcript files
+//!   between load and commit is not charged to it) only skips persistence.
 //! - The displayed summary is always this render's own outcome (inventory,
 //!   states, completeness); it is never rebuilt from database rows.
 //! - `sessions.agent_*` are derived from the persisted rows (files whose bytes
@@ -121,7 +122,8 @@ impl AgentsSummary {
 ///
 /// The database path comes from the `StatsData` SQLite path resolver (honors
 /// `XDG_DATA_HOME` and test mode); every attribution database step shares one
-/// deadline of `min(database.busy_timeout_ms, 250 ms)`. State is persisted only
+/// database-wait budget of `min(database.busy_timeout_ms, 250 ms)` (file
+/// scanning between load and commit is not charged to it). State is persisted only
 /// when `update_stats` is true. Returns `None` when the session id or
 /// transcript path is unsafe, the main transcript is refused, or the agent
 /// count would be uncertain; the statusline then renders without the agents
@@ -212,7 +214,11 @@ pub(crate) struct Prepared {
     conn: Option<Connection>,
     rows: HashMap<String, StoredRow>,
     pub(crate) outcome: ScanOutcome,
-    deadline: AttributionDeadline,
+    /// What is left of the database wait after open and load, measured BEFORE
+    /// the file scan: the commit gets a fresh deadline of this size, so file
+    /// I/O time is never charged to the database wait (and a slow scan cannot
+    /// keep progress from ever being saved).
+    commit_budget_ms: u32,
 }
 
 /// Inventory the session, load its stored rows (read-only connection unless
@@ -225,6 +231,8 @@ fn prepare(
     update_stats: bool,
     limits: &ScanLimits,
 ) -> Option<Prepared> {
+    // Database budget for open + load only; the file scan below is not timed
+    // against it (see `Prepared::commit_budget_ms`).
     let deadline = AttributionDeadline::new(wait_ms);
     // The id/path gates run before any database access.
     let inv = progress::inventory(session_id, transcript_path, limits)?;
@@ -242,6 +250,8 @@ fn prepare(
         .unwrap_or_default();
     // A read-only connection is closed before any file I/O.
     let conn = if update_stats { conn } else { None };
+    // Freeze the remaining database wait before the (untimed) file scan.
+    let commit_budget_ms = deadline.remaining_ms();
     let stored: HashMap<String, FileState> = rows
         .iter()
         .map(|(k, r)| (k.clone(), r.state.clone()))
@@ -251,7 +261,7 @@ fn prepare(
         conn,
         rows,
         outcome,
-        deadline,
+        commit_budget_ms,
     })
 }
 
@@ -266,8 +276,12 @@ fn finish(
         conn,
         rows,
         outcome,
-        deadline,
+        commit_budget_ms,
     } = prepared;
+    // A fresh deadline for the commit: open + load + commit together still
+    // wait at most `wait_ms` for the database, but the file scan in between
+    // is excluded.
+    let deadline = AttributionDeadline::new(commit_budget_ms);
     log::debug!(
         "agents: scan examined {} directory entries and read {} bytes",
         outcome.entries_examined,
@@ -837,6 +851,27 @@ mod tests {
             assert_eq!(outcome.summary.agents, own.agents);
             assert_eq!(outcome.summary.agent_files, own.agent_files);
         }
+    }
+
+    /// WR-01: time spent between load and commit (the file scan) is not
+    /// charged to the database wait, so a slow scan still persists.
+    #[test]
+    #[serial_test::parallel]
+    fn slow_scan_does_not_exhaust_commit_budget() {
+        let fx = fixture();
+        sa(&fx, true);
+        append(&fx.main, &[line("assistant", "req-3", 1, 1, 1, 9)]);
+        let wait = 100;
+        let prepared =
+            prepare(&fx.db, wait, SID, fx.main_str(), true, &ScanLimits::DEFAULT).unwrap();
+        // Simulate a scan slower than the whole database wait.
+        std::thread::sleep(std::time::Duration::from_millis(u64::from(wait) + 150));
+        let (_, discarded) = finish(prepared, SID, None);
+        assert_eq!(
+            discarded,
+            Some(0),
+            "progress must persist after a slow scan"
+        );
     }
 
     #[test]
