@@ -457,3 +457,28 @@ fn mirror_leaves_no_temp_files() {
     assert_eq!(entries, vec!["mirror.json".to_string()]);
     assert_eq!(fs::read(&target).expect("read"), b"{not json");
 }
+
+#[cfg(unix)]
+#[test]
+fn mirror_target_name_near_name_max_still_written() {
+    // IN-04: the temp name must not be derived from the target name, or a
+    // target name near NAME_MAX (255 bytes) would overflow it and silently
+    // disable the mirror.
+    let env = Env::new();
+    let dir = tempfile::TempDir::new().expect("target dir");
+    let name = format!("{}.json", "m".repeat(250));
+    assert_eq!(name.len(), 255);
+    let target = dir.path().join(&name);
+    render(
+        env.command(Some(target.as_os_str())),
+        PAYLOAD,
+        "long target name",
+    );
+    assert_eq!(
+        fs::read(&target).expect("mirror file exists"),
+        PAYLOAD.as_bytes(),
+        "a 255-byte target name must still be mirrored"
+    );
+    assert_eq!(mode_of(&target), 0o600);
+    assert_no_tmp_files(dir.path(), "long target name");
+}

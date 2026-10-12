@@ -685,6 +685,11 @@ fn main() -> Result<()> {
 /// directories are never created. In a sticky world-writable directory,
 /// replacing another user's file fails and the mirror is skipped.
 ///
+/// The temp file is named `.slmirror.<pid>.<nanos>.tmp`. A failed write or
+/// rename removes it, but the release profile uses `panic = "abort"`, so a
+/// crash or kill between create and rename can leave that 0600 file (holding
+/// the payload) next to the target; it is safe to delete by hand.
+///
 /// Best-effort: any failure here is silent and never affects the render.
 fn mirror_input(payload: &str) {
     use std::io::Write as _;
@@ -704,19 +709,17 @@ fn mirror_input(payload: &str) {
         Err(_) => return,
     }
 
-    let (Some(parent), Some(file_name)) = (target.parent(), target.file_name()) else {
+    let (Some(parent), Some(_)) = (target.parent(), target.file_name()) else {
         return;
     };
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    let tmp = parent.join(format!(
-        ".{}.{}.{}.tmp",
-        file_name.to_string_lossy(),
-        std::process::id(),
-        nanos
-    ));
+    // Short fixed-format name (at most ~50 bytes), independent of the target
+    // name, so a target name near NAME_MAX cannot make `create_new` fail with
+    // ENAMETOOLONG and silently disable the mirror.
+    let tmp = parent.join(format!(".slmirror.{}.{}.tmp", std::process::id(), nanos));
 
     let mut opts = std::fs::OpenOptions::new();
     opts.write(true).create_new(true);

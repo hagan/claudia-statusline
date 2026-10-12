@@ -182,8 +182,11 @@ render there (mode 0600, replaced atomically via a temp file and rename), then
 inspect it with `jq .` after a Claude Code update to spot new or renamed
 fields. Relative paths and values like `off` are ignored. An existing symlink,
 directory, FIFO or other non-regular file at that path is refused and nothing
-is written; parent directories are not created. `last-input.json` files left
-in the data directory by earlier development builds can be deleted by hand.
+is written; parent directories are not created. If the process is killed
+between creating the temp file and renaming it, a `.slmirror.<pid>.<nanos>.tmp`
+file (mode 0600, holding the payload) can be left next to the target; delete it
+by hand. `last-input.json` files left in the data directory by earlier
+development builds can be deleted by hand.
 
 ### Database Maintenance
 

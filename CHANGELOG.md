@@ -71,8 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guessed. There is no default file; relative values (including `off`) are
   ignored; an existing symlink or other non-regular target is refused; parent
   directories are not created. The payload is written to a new 0600 temp file
-  and renamed over the target. `last-input.json` files created by earlier
-  development builds of this branch are not removed automatically.
+  and renamed over the target; a process killed in between can leave a 0600
+  `.slmirror.<pid>.<nanos>.tmp` file beside the target, safe to delete.
+  `last-input.json` files created by earlier development builds of this branch
+  are not removed automatically.
 - **`statusline sessions [list | show | pick]`**: browse the sessions the
   database knows about. `list` (default) prints them newest first with an
   index, Claude Code version, model, workspace, main requests, agent count and
