@@ -104,9 +104,13 @@ built-in presets do not include these variables.
 
 While a transcript is still being caught up, or an agent file is too large to
 read, `{agents}` shows the count only (`🤖3`) and `{agents_pct}` /
-`{agents_tokens}` are omitted. A render reads at most 8 MiB in total (4 MiB per
-file), so a large transcript catches up over several renders; with more than
-256 agent files, or when the `subagents` directory cannot be listed completely,
+`{agents_tokens}` are omitted. An agent file that can never be read (over
+1 GiB, or permission denied) keeps the session count-only for as long as it
+stays that way. That looks the same as catching up; run with `RUST_LOG=debug`
+and look for `agents: transcript file refused` or `agents: transcript file over
+the size cap` to tell them apart. A render reads at most 8 MiB in total
+(4 MiB per file), so a large transcript catches up over several renders; with
+more than 256 agent files, or when the `subagents` directory cannot be listed completely,
 no agent data is shown. Each request is counted once, with its last line's
 usage, when its lines are within 32 requests of each other (how Claude Code
 writes them). Attribution waits at most 250 ms for a locked database and then
