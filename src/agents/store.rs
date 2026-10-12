@@ -7,7 +7,7 @@
 //!   never run DDL or migrations, never use the migrating database constructor) and write in
 //!   one `BEGIN IMMEDIATE` transaction. Each row is re-checked against the RAW
 //!   base it was loaded from ([`BASE_COLS`]); a row another render changed is
-//!   skipped. Session totals are derived by SUM/COUNT over `transcript_progress`
+//!   skipped. Session totals are derived by TOTAL/COUNT over `transcript_progress`
 //!   inside the same transaction, so a stale writer cannot regress them.
 //! - Every database step shares one budget of the configured database busy
 //!   timeout capped at `ATTRIBUTION_DB_WAIT_MS` (an [`AttributionDeadline`] for
@@ -407,24 +407,31 @@ pub(crate) fn commit(
             ])?;
         }
     }
+    // TOTAL() (always REAL, never raises "integer overflow" like SUM()) and a
+    // saturating CAST back to INTEGER: stored totals are untrusted and one
+    // corrupt row must not make every later commit for the session fail.
     tx.execute(
         "UPDATE sessions SET
             claude_version = COALESCE(?2, claude_version),
             agent_count = (SELECT COUNT(*) FROM transcript_progress
                            WHERE session_id = ?1 AND is_agent = 1),
-            agent_requests = (SELECT COALESCE(SUM(requests), 0) FROM transcript_progress
+            agent_requests = (SELECT CAST(TOTAL(requests) AS INTEGER) FROM transcript_progress
                               WHERE session_id = ?1 AND is_agent = 1),
-            agent_input_tokens = (SELECT COALESCE(SUM(input_tokens + cache_read_tokens
-                                      + cache_creation_tokens), 0) FROM transcript_progress
+            agent_input_tokens = (SELECT CAST(TOTAL(input_tokens + cache_read_tokens
+                                      + cache_creation_tokens) AS INTEGER)
+                                  FROM transcript_progress
                                   WHERE session_id = ?1 AND is_agent = 1),
-            agent_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM transcript_progress
+            agent_output_tokens = (SELECT CAST(TOTAL(output_tokens) AS INTEGER)
+                                   FROM transcript_progress
                                    WHERE session_id = ?1 AND is_agent = 1),
-            main_requests = (SELECT COALESCE(SUM(requests), 0) FROM transcript_progress
+            main_requests = (SELECT CAST(TOTAL(requests) AS INTEGER) FROM transcript_progress
                              WHERE session_id = ?1 AND is_agent = 0),
-            main_input_tokens = (SELECT COALESCE(SUM(input_tokens + cache_read_tokens
-                                     + cache_creation_tokens), 0) FROM transcript_progress
+            main_input_tokens = (SELECT CAST(TOTAL(input_tokens + cache_read_tokens
+                                     + cache_creation_tokens) AS INTEGER)
+                                 FROM transcript_progress
                                  WHERE session_id = ?1 AND is_agent = 0),
-            main_output_tokens = (SELECT COALESCE(SUM(output_tokens), 0) FROM transcript_progress
+            main_output_tokens = (SELECT CAST(TOTAL(output_tokens) AS INTEGER)
+                                  FROM transcript_progress
                                   WHERE session_id = ?1 AND is_agent = 0)
          WHERE session_id = ?1",
         params![session_id, claude_version],
@@ -819,6 +826,61 @@ mod tests {
             },
         )
         .unwrap()
+    }
+
+    /// WR-04: corrupt stored totals near `i64::MAX` must not make the session
+    /// re-derivation fail ("integer overflow") on every later commit, nor
+    /// overflow the in-memory aggregates.
+    #[test]
+    fn overflowing_stored_totals_do_not_fail_commit() {
+        let db = db();
+        let mut conn = rw(&db);
+        let a1 = st("/p/s/subagents/agent-1.jsonl", true, 10, 2, 7);
+        let a2 = st("/p/s/subagents/agent-2.jsonl", true, 20, 3, 11);
+        commit(
+            &mut conn,
+            SID,
+            None,
+            &[(None, a1.clone()), (None, a2.clone())],
+            &long(),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE transcript_progress SET requests = ?1, input_tokens = ?1,
+                    cache_read_tokens = ?1, cache_creation_tokens = ?1, output_tokens = ?1",
+            params![i64::MAX],
+        )
+        .unwrap();
+
+        // In-memory: loaded totals saturate instead of overflowing.
+        let rows = load_rows(&conn, SID, &[a1.path.clone(), a2.path.clone()], &long());
+        let mut sum = TranscriptTotals::default();
+        for r in rows.values() {
+            sum.add(&r.state.totals);
+        }
+        assert_eq!(sum.requests, 2 * (i64::MAX as u64));
+        assert_eq!(sum.input_traffic(), u64::MAX);
+        let mut twice = sum;
+        twice.add(&sum);
+        assert_eq!(twice.requests, u64::MAX);
+        assert_eq!(twice.output_tokens, u64::MAX);
+
+        // SQL: the session re-derivation still commits and saturates.
+        let base = rows[&a1.path].base.clone();
+        let n = commit(
+            &mut conn,
+            SID,
+            None,
+            &[(Some(base), st(&a1.path, true, 30, 4, 9))],
+            &long(),
+        )
+        .expect("commit must not fail on overflowing stored totals");
+        assert_eq!(n, 0);
+        let (_, c) = session_cols(&conn);
+        assert_eq!(c[0], 2);
+        assert_eq!(c[1], i64::MAX);
+        assert_eq!(c[2], i64::MAX);
+        assert_eq!(c[3], i64::MAX);
     }
 
     #[test]

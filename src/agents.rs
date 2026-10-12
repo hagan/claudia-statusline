@@ -72,16 +72,26 @@ impl TranscriptTotals {
     /// Everything sent to the model: fresh input + cache reads + cache writes.
     /// This is the quantity that grows with context size and is what an
     /// unexpected change in agent behaviour shows up in first.
+    ///
+    /// Saturating: totals loaded from the database are untrusted (any column can
+    /// load as up to `i64::MAX`), and an overflow must never panic the render.
     pub fn input_traffic(&self) -> u64 {
-        self.input_tokens + self.cache_read_tokens + self.cache_creation_tokens
+        self.input_tokens
+            .saturating_add(self.cache_read_tokens)
+            .saturating_add(self.cache_creation_tokens)
     }
 
+    /// Saturating, for the same reason as [`Self::input_traffic`].
     fn add(&mut self, other: &TranscriptTotals) {
-        self.requests += other.requests;
-        self.input_tokens += other.input_tokens;
-        self.cache_read_tokens += other.cache_read_tokens;
-        self.cache_creation_tokens += other.cache_creation_tokens;
-        self.output_tokens += other.output_tokens;
+        self.requests = self.requests.saturating_add(other.requests);
+        self.input_tokens = self.input_tokens.saturating_add(other.input_tokens);
+        self.cache_read_tokens = self
+            .cache_read_tokens
+            .saturating_add(other.cache_read_tokens);
+        self.cache_creation_tokens = self
+            .cache_creation_tokens
+            .saturating_add(other.cache_creation_tokens);
+        self.output_tokens = self.output_tokens.saturating_add(other.output_tokens);
     }
 }
 
@@ -108,7 +118,10 @@ impl AgentsSummary {
     /// Agents' share of the session's total input traffic, 0..=100.
     /// `None` when nothing has been sent yet.
     pub fn agent_share_percent(&self) -> Option<f64> {
-        let total = self.main.input_traffic() + self.agents.input_traffic();
+        let total = self
+            .main
+            .input_traffic()
+            .saturating_add(self.agents.input_traffic());
         if total == 0 {
             None
         } else {
