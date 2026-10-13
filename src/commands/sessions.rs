@@ -931,6 +931,237 @@ mod tests {
         assert!(resolve(&rows, "  ").is_err());
     }
 
+    /// Pins burn_rate to auto_reset with a 60-minute threshold for the lifetime of
+    /// the guard; `Drop` removes the overrides even when an assertion fails, so
+    /// auto_reset cannot leak into later tests. Use only under `#[serial]`.
+    struct BurnRateEnv;
+
+    impl BurnRateEnv {
+        fn auto_reset() -> Self {
+            std::env::set_var("STATUSLINE_BURN_RATE_MODE", "auto_reset");
+            std::env::set_var("STATUSLINE_BURN_RATE_THRESHOLD", "60");
+            crate::config::reset_config();
+            BurnRateEnv
+        }
+    }
+
+    impl Drop for BurnRateEnv {
+        fn drop(&mut self) {
+            std::env::remove_var("STATUSLINE_BURN_RATE_MODE");
+            std::env::remove_var("STATUSLINE_BURN_RATE_THRESHOLD");
+            crate::config::reset_config();
+        }
+    }
+
+    fn upd(db: &crate::database::SqliteDatabase, id: &str, cost: f64) {
+        db.update_session(
+            id,
+            crate::database::SessionUpdate {
+                cost,
+                lines_added: 1,
+                lines_removed: 0,
+                model_name: Some("M".into()),
+                workspace_dir: Some("/w/a".into()),
+                device_id: None,
+                token_breakdown: None,
+                max_tokens_observed: None,
+                active_time_seconds: None,
+                last_activity: None,
+                inferred_start_ms: None,
+            },
+        )
+        .unwrap();
+    }
+
+    fn backdate_activity(conn: &Connection, id: &str) {
+        let two_hours_ago = (chrono::Local::now() - chrono::Duration::hours(2)).to_rfc3339();
+        conn.execute(
+            "UPDATE sessions SET last_activity = ?1 WHERE session_id = ?2",
+            rusqlite::params![two_hours_ago, id],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn ordinal_survives_real_auto_reset() {
+        let _env = BurnRateEnv::auto_reset();
+        let (_d, path, conn) = temp_db();
+        let db = crate::database::SqliteDatabase::new(&path).unwrap();
+        let archive_count = |id: &str| -> i64 {
+            conn.query_row(
+                "SELECT COUNT(*) FROM session_archive WHERE session_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+
+        upd(&db, "rst-a", 1.0);
+        upd(&db, "rst-b", 1.0);
+        upd(&db, "rst-c", 1.0);
+        for (id, start) in [
+            ("rst-a", "2026-01-01T10:00:00-07:00"),
+            ("rst-b", "2026-01-02T10:00:00-07:00"),
+            ("rst-c", "2026-01-03T10:00:00-07:00"),
+        ] {
+            conn.execute(
+                "UPDATE sessions SET start_time = ?1 WHERE session_id = ?2",
+                rusqlite::params![start, id],
+            )
+            .unwrap();
+        }
+        let before = ordinals(&conn);
+        assert_eq!(before["rst-a"], 1);
+        assert_eq!(before["rst-b"], 2);
+        assert_eq!(before["rst-c"], 3);
+
+        // First real reset, through the production update path.
+        backdate_activity(&conn, "rst-a");
+        upd(&db, "rst-a", 2.0);
+        assert_eq!(
+            archive_count("rst-a"),
+            1,
+            "auto_reset did not fire: this test is vacuous unless update_session archived rst-a"
+        );
+        let live = |id: &str| -> String {
+            conn.query_row(
+                "SELECT start_time FROM sessions WHERE session_id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let a_live = live("rst-a");
+        assert_ne!(
+            a_live, "2026-01-01T10:00:00-07:00",
+            "reset must recreate the row"
+        );
+        assert!(
+            parse_instant(&a_live).unwrap() > parse_instant(&live("rst-c")).unwrap(),
+            "ranking by the live start alone would have renumbered rst-a"
+        );
+        assert_eq!(ordinals(&conn), before, "auto_reset renumbered a session");
+        let rows = load_numbered(&conn).unwrap();
+        let a = rows.iter().find(|(_, r)| r.session_id == "rst-a").unwrap();
+        assert_eq!(a.1.first_start, "2026-01-01T10:00:00-07:00");
+
+        // Second reset: still unchanged.
+        backdate_activity(&conn, "rst-a");
+        upd(&db, "rst-a", 3.0);
+        assert_eq!(
+            archive_count("rst-a"),
+            2,
+            "second auto_reset did not fire: this test is vacuous without it"
+        );
+        assert_eq!(
+            ordinals(&conn),
+            before,
+            "a repeated auto_reset renumbered a session"
+        );
+    }
+
+    /// Six sessions: mixed attribution, workspaces /w/a, /w/a/sub, /w/b, NULL,
+    /// and one with an earlier archived start.
+    fn round_trip_fixture() -> (tempfile::TempDir, Connection) {
+        let (d, _p, conn) = temp_db();
+        insert_session(
+            &conn,
+            "rt-1",
+            "2026-01-01T10:00:00Z",
+            "2026-03-01T00:00:00Z",
+            3,
+            Some("/w/a"),
+        );
+        insert_session(
+            &conn,
+            "rt-2",
+            "2026-01-02T10:00:00Z",
+            "2026-01-02T11:00:00Z",
+            0,
+            Some("/w/a/sub"),
+        );
+        insert_session(
+            &conn,
+            "rt-3",
+            "2026-01-03T10:00:00Z",
+            "2026-01-03T11:00:00Z",
+            3,
+            Some("/w/b"),
+        );
+        insert_session(
+            &conn,
+            "rt-4",
+            "2026-01-04T10:00:00Z",
+            "2026-01-04T11:00:00Z",
+            0,
+            None,
+        );
+        insert_session(
+            &conn,
+            "rt-5",
+            "2026-01-05T10:00:00Z",
+            "2026-01-05T11:00:00Z",
+            3,
+            Some("/w/a/sub"),
+        );
+        // Live start is the newest, but the archive holds the oldest start of all.
+        insert_session(
+            &conn,
+            "rt-6",
+            "2026-02-01T10:00:00Z",
+            "2026-02-01T11:00:00Z",
+            3,
+            Some("/w/a"),
+        );
+        insert_archive(&conn, "rt-6", "2025-12-01T10:00:00Z");
+        (d, conn)
+    }
+
+    fn assert_round_trip(attributed: bool, ws: Option<&str>) {
+        let (_d, conn) = round_trip_fixture();
+        let rows = load_numbered(&conn).unwrap();
+        let global = ordinals(&conn);
+        assert_eq!(global["rt-6"], 1, "archived start must rank rt-6 first");
+        let view = index_and_filter(&rows, attributed, ws, 0);
+        assert!(
+            !view.is_empty(),
+            "fixture must leave rows under this filter"
+        );
+        for (n, r) in &view {
+            // `show <#>` and the `pick` prompt both call resolve on load_numbered rows.
+            let got = resolve(&rows, &n.to_string()).unwrap();
+            assert_eq!(
+                got.session_id, r.session_id,
+                "# {n} opened the wrong session"
+            );
+            assert_eq!(
+                *n, global[&r.session_id],
+                "# under a filter differs from the global #"
+            );
+        }
+    }
+
+    #[test]
+    fn ordinal_round_trip_unfiltered() {
+        assert_round_trip(false, None);
+    }
+
+    #[test]
+    fn ordinal_round_trip_attributed() {
+        assert_round_trip(true, None);
+    }
+
+    #[test]
+    fn ordinal_round_trip_workspace() {
+        assert_round_trip(false, Some("/w/a"));
+    }
+
+    #[test]
+    fn ordinal_round_trip_attributed_and_workspace() {
+        assert_round_trip(true, Some("/w/a"));
+    }
+
     #[test]
     fn helpers() {
         assert_eq!(hms(3725), "1h02m");
