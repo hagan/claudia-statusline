@@ -11,6 +11,7 @@
 
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
+use std::collections::HashMap;
 use std::io::{self, BufRead, IsTerminal};
 use std::path::Path;
 
@@ -19,6 +20,9 @@ use std::path::Path;
 pub(crate) struct SessionRow {
     pub session_id: String,
     pub start_time: String,
+    /// Raw stored text of the start that defines this session's rank key (D-01a):
+    /// equal to `start_time` unless an auto-reset archived an earlier start.
+    pub first_start: String,
     pub last_updated: String,
     pub cost: f64,
     pub lines_added: i64,
@@ -64,9 +68,11 @@ const SESSION_COLUMNS: &str =
     COALESCE(main_output_tokens, 0)";
 
 fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
+    let start_time: String = r.get(1)?;
     Ok(SessionRow {
         session_id: r.get(0)?,
-        start_time: r.get(1)?,
+        first_start: start_time.clone(),
+        start_time,
         last_updated: r.get(2)?,
         cost: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
         lines_added: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
@@ -105,29 +111,105 @@ fn open_db() -> Result<Option<Connection>> {
     )?))
 }
 
-/// Sessions newest first. `attributed_only` keeps the rows with attribution
-/// data (`main_requests > 0`), `limit` 0 means all.
-pub(crate) fn load_sessions(
-    conn: &Connection,
-    attributed_only: bool,
-    limit: usize,
-) -> Result<Vec<SessionRow>> {
-    let filter = if attributed_only {
-        "WHERE main_requests > 0"
-    } else {
-        ""
-    };
-    let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions {filter} ORDER BY last_updated DESC");
-    let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map([], map_session)?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row?);
-        if limit > 0 && out.len() >= limit {
-            break;
-        }
+/// Parse a stored start timestamp into a full-precision UTC instant.
+///
+/// Accepts the same shapes as `utils::parse_iso8601_to_unix` (RFC 3339 with an
+/// offset, or a naive `%Y-%m-%dT%H:%M:%S%.f` read as UTC), but keeps nanosecond
+/// precision and the offset, so the order is the real chronological order across
+/// DST and UTC-offset changes. `parse_iso8601_to_unix` is not reused because it
+/// truncates to whole seconds; SQLite julian-day ranking was rejected because it rounds to
+/// milliseconds and its text fallback inverts sub-millisecond pairs (review
+/// concern 4).
+fn parse_instant(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
+        return Some(dt.with_timezone(&chrono::Utc));
     }
-    Ok(out)
+    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f")
+        .ok()
+        .map(|dt| dt.and_utc())
+}
+
+/// Every session paired with its stable session number (`#`), oldest first.
+///
+/// This is the ONLY source of `#`: `list`, `show` and `pick` all number through
+/// it, so a number printed under any filter resolves to the same session.
+///
+/// The rank key is the session's earliest-ever start: the minimum of
+/// `sessions.start_time` and every `session_archive.start_time` with the same
+/// `session_id` (D-01a). `auto_reset` archives the row (keeping its original
+/// start), DELETEs it and recreates it with `start_time = now`; the archived start
+/// still holds the minimum, so a reset never moves a session. Archive rows with
+/// no live `sessions` row are ignored: the numbered population is the `sessions`
+/// table (D-01).
+///
+/// Unparseable starts (only from the legacy JSON migration, which stored `''`, or
+/// from synced / hand-edited rows) make the first start unknown; such sessions
+/// rank before every parseable one, so new sessions and resets cannot shift them.
+/// Ties (equal instants, even in different offset spellings, and equal unknown
+/// keys) break on `session_id` ascending, so the order is total.
+///
+/// What CAN still shift numbers: `db-maintain` pruning removes sessions whose
+/// `last_updated` is older than the retention window (it does not delete
+/// `session_archive` rows, but a pruned session leaves the numbered population);
+/// a Turso pull inserting earlier sessions or overwriting a row's `start_time`;
+/// and inserting a row whose start instant equals an existing one with a smaller
+/// `session_id`.
+pub(crate) fn load_numbered(conn: &Connection) -> Result<Vec<(usize, SessionRow)>> {
+    let sql = format!("SELECT {SESSION_COLUMNS} FROM sessions");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows: Vec<SessionRow> = stmt
+        .query_map([], map_session)?
+        .map(|r| r.map_err(StatuslineError::from))
+        .collect::<Result<_>>()?;
+
+    let mut archived: HashMap<String, Vec<String>> = HashMap::new();
+    let mut astmt = conn.prepare("SELECT session_id, start_time FROM session_archive")?;
+    let arows = astmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    for a in arows {
+        let (id, start) = a?;
+        archived.entry(id).or_default().push(start);
+    }
+
+    let mut keyed: Vec<(Option<chrono::DateTime<chrono::Utc>>, SessionRow)> = rows
+        .into_iter()
+        .map(|mut row| {
+            let mut candidates: Vec<&str> = vec![row.start_time.as_str()];
+            if let Some(a) = archived.get(&row.session_id) {
+                candidates.extend(a.iter().map(String::as_str));
+            }
+            let parsed: Option<Vec<(chrono::DateTime<chrono::Utc>, &str)>> = candidates
+                .iter()
+                .map(|c| parse_instant(c).map(|t| (t, *c)))
+                .collect();
+            let key = match parsed {
+                Some(list) => {
+                    // First candidate holding the minimum instant.
+                    let mut best = list[0];
+                    for item in &list[1..] {
+                        if item.0 < best.0 {
+                            best = *item;
+                        }
+                    }
+                    let (t, raw) = best;
+                    let raw = raw.to_string();
+                    row.first_start = raw;
+                    Some(t)
+                }
+                None => {
+                    row.first_start = row.start_time.clone();
+                    None
+                }
+            };
+            (key, row)
+        })
+        .collect();
+
+    keyed.sort_by(|(ka, ra), (kb, rb)| ka.cmp(kb).then_with(|| ra.session_id.cmp(&rb.session_id)));
+    Ok(keyed
+        .into_iter()
+        .enumerate()
+        .map(|(i, (_, r))| (i + 1, r))
+        .collect())
 }
 
 fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<TranscriptRow>> {
@@ -153,32 +235,33 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
     rows.map(|r| r.map_err(StatuslineError::from)).collect()
 }
 
-/// Resolve `sel` against `rows`: a 1-based index into the list, or a session
-/// id prefix (case-insensitive). Ambiguous prefixes are an error naming the
-/// candidates so the user can lengthen the prefix.
-pub(crate) fn resolve<'a>(rows: &'a [SessionRow], sel: &str) -> Result<&'a SessionRow> {
+/// Resolve `sel` against the numbered `rows` from [`load_numbered`]: a session
+/// number (`#` column), or a session id prefix (case-insensitive). Ambiguous
+/// prefixes are an error naming the candidates so the user can lengthen the prefix.
+pub(crate) fn resolve<'a>(rows: &'a [(usize, SessionRow)], sel: &str) -> Result<&'a SessionRow> {
     let sel = sel.trim();
     if sel.is_empty() {
         return Err(StatuslineError::Other("empty selection".into()));
     }
-    if let Ok(idx) = sel.parse::<usize>() {
-        // Index first: a pure number is far likelier a list position than a
-        // hex prefix; an id prefix that is all digits still works via `#`-less
-        // fallback below when the index is out of range.
-        if idx >= 1 && idx <= rows.len() {
-            return Ok(&rows[idx - 1]);
+    let max = rows.last().map_or(0, |(o, _)| *o);
+    if let Ok(n) = sel.parse::<usize>() {
+        // Number first: a pure number is far likelier a session number than a
+        // hex prefix; an all-digit id prefix still works via the fallback below
+        // when no session carries that number.
+        if let Some((_, r)) = rows.iter().find(|(o, _)| *o == n) {
+            return Ok(r);
         }
     }
     let lower = sel.to_ascii_lowercase();
     let hits: Vec<&SessionRow> = rows
         .iter()
+        .map(|(_, r)| r)
         .filter(|r| r.session_id.to_ascii_lowercase().starts_with(&lower))
         .collect();
     match hits.len() {
         1 => Ok(hits[0]),
         0 => Err(StatuslineError::Other(format!(
-            "no session matches '{sel}' (index 1..{} or id prefix)",
-            rows.len()
+            "no session matches '{sel}' (# 1..{max} or id prefix)"
         ))),
         n => {
             let list = hits
@@ -264,30 +347,29 @@ fn under_workspace(dir: Option<&String>, filter: &str) -> bool {
     d == f || d.strip_prefix(f).is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// Pair every session with its 1-based position in the *unfiltered* newest-first
-/// ordering, then keep only the ones under `filter`.
+/// The display view of the numbered rows: descending `#` (newest first-start
+/// first, so the column counts down; D-03 read under D-01a), then the filters.
 ///
-/// The index deliberately stays the global one, so `sessions show <#>` — which
-/// always resolves against the full list — keeps working on a number copied
-/// from a filtered listing. That makes the printed `#` column non-contiguous
-/// when a filter is active, which is the intended trade: a stable identifier is
-/// worth more than pretty numbering, and the alternative (renumbering per
-/// filter) would make `show` silently open the wrong session.
+/// `#` is the stable global session number (D-01/D-01a) assigned by
+/// [`load_numbered`]; the filters (`attributed` keeps `main_requests > 0`, `ws`
+/// keeps sessions under that workspace) run after numbering (D-02), so the column
+/// is non-contiguous under a filter and `sessions show <#>` still opens the right
+/// session. `limit` (0 = all) is applied last, after both filters, so it keeps the
+/// highest numbers that pass them (RESEARCH Pitfall 4).
 fn index_and_filter<'a>(
-    rows: &'a [SessionRow],
-    filter: Option<&str>,
+    rows: &'a [(usize, SessionRow)],
+    attributed: bool,
+    ws: Option<&str>,
     limit: usize,
 ) -> Vec<(usize, &'a SessionRow)> {
     let mut out: Vec<(usize, &SessionRow)> = rows
         .iter()
-        .enumerate()
-        .map(|(i, r)| (i + 1, r))
-        .filter(|(_, r)| match filter {
-            Some(f) => under_workspace(r.workspace_dir.as_ref(), f),
-            None => true,
-        })
+        .rev()
+        .filter(|(_, r)| !attributed || r.main_requests > 0)
+        .filter(|(_, r)| ws.is_none_or(|f| under_workspace(r.workspace_dir.as_ref(), f)))
+        .map(|(n, r)| (*n, r))
         .collect();
-    if limit > 0 && out.len() > limit {
+    if limit > 0 {
         out.truncate(limit);
     }
     out
@@ -458,8 +540,13 @@ pub(crate) fn list(
     // workspace filter, or asking for 25 sessions in one project would first
     // take the newest 25 overall and then show only the handful of those that
     // happen to be in it.
-    let rows = load_sessions(&conn, attributed, 0)?;
-    let view = index_and_filter(&rows, workspace.as_deref(), if all { 0 } else { limit });
+    let rows = load_numbered(&conn)?;
+    let view = index_and_filter(
+        &rows,
+        attributed,
+        workspace.as_deref(),
+        if all { 0 } else { limit },
+    );
     if view.is_empty() {
         match &workspace {
             Some(w) => cli_println!("(no sessions recorded under {w})"),
@@ -480,7 +567,7 @@ pub(crate) fn show(selector: &str) -> Result<()> {
     let Some(conn) = open_db()? else {
         return Ok(());
     };
-    let rows = load_sessions(&conn, false, 0)?;
+    let rows = load_numbered(&conn)?;
     let r = resolve(&rows, selector)?;
     print_show(&conn, r)
 }
@@ -499,8 +586,13 @@ pub(crate) fn pick(all: bool, limit: usize, workspace: Option<String>) -> Result
     };
     // Full set for resolve(), so a `#` typed at the prompt means the same
     // global position it does in the printed list (and in `sessions show`).
-    let rows = load_sessions(&conn, false, 0)?;
-    let view = index_and_filter(&rows, workspace.as_deref(), if all { 0 } else { limit });
+    let rows = load_numbered(&conn)?;
+    let view = index_and_filter(
+        &rows,
+        false,
+        workspace.as_deref(),
+        if all { 0 } else { limit },
+    );
     if view.is_empty() {
         match &workspace {
             Some(w) => cli_println!("(no sessions recorded under {w})"),
@@ -530,6 +622,7 @@ mod tests {
         SessionRow {
             session_id: id.to_string(),
             start_time: "2026-09-16T00:00:00Z".into(),
+            first_start: "2026-09-16T00:00:00Z".into(),
             last_updated: "2026-09-16T00:00:00Z".into(),
             cost: 0.0,
             lines_added: 0,
@@ -553,13 +646,279 @@ mod tests {
         }
     }
 
+    fn numbered(ids: &[&str]) -> Vec<(usize, SessionRow)> {
+        ids.iter()
+            .enumerate()
+            .map(|(i, id)| (i + 1, row(id)))
+            .collect()
+    }
+
+    /// Migrated temp-file stats.db plus a plain connection for fixtures.
+    fn temp_db() -> (tempfile::TempDir, std::path::PathBuf, Connection) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("stats.db");
+        let _ = crate::database::SqliteDatabase::new(&path).unwrap();
+        let conn = Connection::open(&path).unwrap();
+        (dir, path, conn)
+    }
+
+    fn insert_session(
+        conn: &Connection,
+        id: &str,
+        start: &str,
+        last: &str,
+        main_requests: i64,
+        workspace: Option<&str>,
+    ) {
+        conn.execute(
+            "INSERT INTO sessions (session_id, start_time, last_updated, main_requests, workspace_dir)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![id, start, last, main_requests, workspace],
+        )
+        .unwrap();
+    }
+
+    fn insert_archive(conn: &Connection, id: &str, start: &str) {
+        conn.execute(
+            "INSERT INTO session_archive (session_id, start_time, end_time, archived_at, cost,
+                                          lines_added, lines_removed)
+             VALUES (?1, ?2, ?2, ?2, 0, 0, 0)",
+            rusqlite::params![id, start],
+        )
+        .unwrap();
+    }
+
+    fn ordinals(conn: &Connection) -> HashMap<String, usize> {
+        load_numbered(conn)
+            .unwrap()
+            .into_iter()
+            .map(|(n, r)| (r.session_id, n))
+            .collect()
+    }
+
     #[test]
-    fn resolve_by_index_and_prefix() {
-        let rows = vec![
-            row("e0490618-aaaa"),
-            row("fe2e3416-bbbb"),
-            row("fe2e0000-cccc"),
-        ];
+    fn ordinal_stable_when_last_updated_changes() {
+        let (_d, _p, conn) = temp_db();
+        insert_session(
+            &conn,
+            "s-a",
+            "2026-01-01T10:00:00Z",
+            "2026-01-01T11:00:00Z",
+            0,
+            None,
+        );
+        insert_session(
+            &conn,
+            "s-b",
+            "2026-01-02T10:00:00Z",
+            "2026-01-02T11:00:00Z",
+            0,
+            None,
+        );
+        insert_session(
+            &conn,
+            "s-c",
+            "2026-01-03T10:00:00Z",
+            "2026-01-03T11:00:00Z",
+            0,
+            None,
+        );
+        let before = ordinals(&conn);
+        assert_eq!(before["s-a"], 1);
+        assert_eq!(before["s-b"], 2);
+        assert_eq!(before["s-c"], 3);
+        conn.execute(
+            "UPDATE sessions SET last_updated = '2026-02-01T00:00:00Z' WHERE session_id = 's-a'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(ordinals(&conn), before, "render activity must not renumber");
+    }
+
+    #[test]
+    fn ordinal_stable_when_newer_session_inserted() {
+        let (_d, _p, conn) = temp_db();
+        insert_session(
+            &conn,
+            "s-a",
+            "2026-01-01T10:00:00Z",
+            "2026-01-01T11:00:00Z",
+            0,
+            None,
+        );
+        insert_session(
+            &conn,
+            "s-b",
+            "2026-01-02T10:00:00Z",
+            "2026-01-02T11:00:00Z",
+            0,
+            None,
+        );
+        insert_session(
+            &conn,
+            "s-c",
+            "2026-01-03T10:00:00Z",
+            "2026-01-03T11:00:00Z",
+            0,
+            None,
+        );
+        let before = ordinals(&conn);
+        insert_session(
+            &conn,
+            "a-new",
+            "2026-01-04T10:00:00Z",
+            "2026-01-04T10:00:00Z",
+            0,
+            None,
+        );
+        let after = ordinals(&conn);
+        for id in ["s-a", "s-b", "s-c"] {
+            assert_eq!(after[id], before[id], "{id} renumbered by a newer session");
+        }
+        assert_eq!(after["a-new"], 4);
+    }
+
+    #[test]
+    fn ordinal_orders_by_full_precision_instant() {
+        // (a) DST fall-back pair: text order and id order are both wrong.
+        let (_d, _p, conn) = temp_db();
+        insert_session(
+            &conn,
+            "zzz-older",
+            "2026-11-01T01:30:00.123456789-06:00",
+            "x",
+            0,
+            None,
+        );
+        insert_session(
+            &conn,
+            "aaa-newer",
+            "2026-11-01T01:10:00.5-07:00",
+            "x",
+            0,
+            None,
+        );
+        let o = ordinals(&conn);
+        assert_eq!(o["zzz-older"], 1);
+        assert_eq!(o["aaa-newer"], 2);
+
+        // (b) sub-millisecond pair in different offsets.
+        let (_d2, _p2, conn2) = temp_db();
+        insert_session(
+            &conn2,
+            "zzz-earlier",
+            "2026-10-13T10:00:00.000100000+01:00",
+            "x",
+            0,
+            None,
+        );
+        insert_session(
+            &conn2,
+            "aaa-later",
+            "2026-10-13T09:00:00.000200000Z",
+            "x",
+            0,
+            None,
+        );
+        let o = ordinals(&conn2);
+        assert!(
+            o["zzz-earlier"] < o["aaa-later"],
+            "full-precision instants must order sub-ms pairs: {o:?}"
+        );
+    }
+
+    #[test]
+    fn ordinal_ranks_unparseable_start_time_first() {
+        let (_d, _p, conn) = temp_db();
+        insert_session(&conn, "v-1", "2026-01-01T10:00:00Z", "x", 0, None);
+        insert_session(&conn, "u-2", "x", "x", 0, None);
+        insert_session(&conn, "v-2", "2026-01-02T10:00:00Z", "x", 0, None);
+        insert_session(&conn, "u-1", "", "x", 0, None);
+        let o = ordinals(&conn);
+        assert_eq!(o["u-1"], 1);
+        assert_eq!(o["u-2"], 2);
+        assert_eq!(o["v-1"], 3);
+        assert_eq!(o["v-2"], 4);
+        insert_session(&conn, "v-0", "2025-01-01T10:00:00Z", "x", 0, None);
+        let o = ordinals(&conn);
+        assert_eq!(o["u-1"], 1, "unknown first starts must not shift");
+        assert_eq!(o["u-2"], 2, "unknown first starts must not shift");
+    }
+
+    #[test]
+    fn ordinal_tie_break_is_session_id() {
+        let (_d, _p, conn) = temp_db();
+        insert_session(&conn, "b-2", "2026-10-13T10:00:00Z", "x", 0, None);
+        insert_session(&conn, "a-1", "2026-10-13T03:00:00-07:00", "x", 0, None);
+        let o = ordinals(&conn);
+        assert_eq!(o["a-1"], 1);
+        assert_eq!(o["b-2"], 2);
+        // Accepted edge case (documented in USAGE.md): an equal-instant row with a
+        // smaller id ranks first and shifts the tied rows.
+        insert_session(&conn, "0-tie", "2026-10-13T10:00:00+00:00", "x", 0, None);
+        let o = ordinals(&conn);
+        assert_eq!(o["0-tie"], 1);
+        assert_eq!(o["a-1"], 2);
+        assert_eq!(o["b-2"], 3);
+    }
+
+    #[test]
+    fn rank_key_is_earliest_of_live_and_archive() {
+        let (_d, _p, conn) = temp_db();
+        insert_session(&conn, "arch-x", "2026-09-01T10:00:00Z", "x", 0, None);
+        insert_archive(&conn, "arch-x", "2026-05-01T10:00:00Z");
+        insert_archive(&conn, "arch-x", "2026-03-01T10:00:00Z");
+        insert_session(&conn, "plain-y", "2026-04-01T10:00:00Z", "x", 0, None);
+        insert_archive(&conn, "ghost", "2020-01-01T00:00:00Z");
+
+        let rows = load_numbered(&conn).unwrap();
+        assert_eq!(rows.len(), 2, "archive-only ids are not numbered");
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[0].1.session_id, "arch-x");
+        assert_eq!(rows[0].1.first_start, "2026-03-01T10:00:00Z");
+        assert_eq!(rows[1].0, 2);
+        assert_eq!(rows[1].1.session_id, "plain-y");
+        assert_eq!(rows[1].1.first_start, rows[1].1.start_time);
+
+        insert_session(&conn, "arch-bad", "2026-10-01T10:00:00Z", "x", 0, None);
+        insert_archive(&conn, "arch-bad", "");
+        let o = ordinals(&conn);
+        assert_eq!(o["arch-bad"], 1, "an unknown archived start ranks first");
+        assert_eq!(o["arch-x"], 2);
+        assert_eq!(o["plain-y"], 3);
+    }
+
+    #[test]
+    fn index_and_filter_orders_newest_first_and_limits_after_filters() {
+        let mut rows = numbered(&["a", "b", "c", "d", "e"]);
+        // main_requests: a=3, b=0, c=3, d=3, e=0
+        for (i, (_, r)) in rows.iter_mut().enumerate() {
+            r.main_requests = if i == 1 || i == 4 { 0 } else { 3 };
+        }
+        rows[2].1.workspace_dir = Some("/elsewhere".into()); // c
+        rows[3].1.workspace_dir = None; // d
+        let ws = Some("/home/x/Claude");
+        let nums = |v: Vec<(usize, &SessionRow)>| v.iter().map(|(n, _)| *n).collect::<Vec<_>>();
+
+        assert_eq!(
+            nums(index_and_filter(&rows, false, None, 0)),
+            vec![5, 4, 3, 2, 1]
+        );
+        assert_eq!(nums(index_and_filter(&rows, true, None, 0)), vec![4, 3, 1]);
+        assert_eq!(nums(index_and_filter(&rows, false, ws, 0)), vec![5, 2, 1]);
+        assert_eq!(nums(index_and_filter(&rows, true, ws, 0)), vec![1]);
+        assert_eq!(
+            nums(index_and_filter(&rows, true, None, 2)),
+            vec![4, 3],
+            "limit keeps the highest numbers after the filter"
+        );
+        assert_eq!(nums(index_and_filter(&rows, false, ws, 2)), vec![5, 2]);
+        assert_eq!(nums(index_and_filter(&rows, false, None, 2)), vec![5, 4]);
+    }
+
+    #[test]
+    fn resolve_by_ordinal_and_prefix() {
+        let rows = numbered(&["e0490618-aaaa", "fe2e3416-bbbb", "fe2e0000-cccc"]);
         assert_eq!(resolve(&rows, "2").unwrap().session_id, "fe2e3416-bbbb");
         assert_eq!(resolve(&rows, "E049").unwrap().session_id, "e0490618-aaaa");
         assert!(
@@ -600,30 +959,6 @@ mod tests {
         );
         assert!(!under_workspace(Some(&"/home/x".into()), f));
         assert!(!under_workspace(None, f));
-    }
-
-    #[test]
-    fn index_and_filter_keeps_global_index_and_limits_after_filter() {
-        let mut rows = vec![row("a"), row("b"), row("c"), row("d")];
-        rows[1].workspace_dir = Some("/elsewhere".into());
-        rows[3].workspace_dir = None;
-        let f = Some("/home/x/Claude");
-
-        let all: Vec<usize> = index_and_filter(&rows, None, 0)
-            .iter()
-            .map(|(i, _)| *i)
-            .collect();
-        assert_eq!(all, vec![1, 2, 3, 4]);
-
-        let view = index_and_filter(&rows, f, 0);
-        let idx: Vec<usize> = view.iter().map(|(i, _)| *i).collect();
-        assert_eq!(idx, vec![1, 3], "# stays the unfiltered position");
-        assert_eq!(view[1].1.session_id, "c");
-
-        let limited = index_and_filter(&rows, f, 1);
-        assert_eq!(limited.len(), 1);
-        assert_eq!(limited[0].0, 1);
-        assert_eq!(index_and_filter(&rows, None, 2).len(), 2);
     }
 
     #[test]
