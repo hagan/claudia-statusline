@@ -114,7 +114,7 @@ pub(crate) struct Cli {
 
 #[derive(Subcommand)]
 enum SessionsAction {
-    /// List sessions newest first with an index for `show` (default)
+    /// List sessions newest first, each with its stable session number (#) for `show` (default)
     List {
         /// Show every session instead of the newest 25
         #[arg(long)]
@@ -132,9 +132,9 @@ enum SessionsAction {
         #[arg(long, conflicts_with = "workspace")]
         here: bool,
     },
-    /// Print all parameters of one session: `#` from the list or a session id prefix
+    /// Print all parameters of one session: its # from the list (or `#N`) or a session id prefix
     Show {
-        /// List index (1-based) or session id prefix
+        /// Session number (# column of `list`; `#N` = number only) or session id prefix
         selector: String,
     },
     /// Interactive: list, read a selection from the terminal, show it
@@ -142,6 +142,9 @@ enum SessionsAction {
         /// Show every session instead of the newest 25
         #[arg(long)]
         all: bool,
+        /// Only sessions with attribution data (main_requests > 0)
+        #[arg(long)]
+        attributed: bool,
         /// Number of sessions to show
         #[arg(long, default_value_t = 25)]
         limit: usize,
@@ -553,11 +556,12 @@ fn main() -> Result<()> {
                     SessionsAction::Show { selector } => commands::sessions::show(&selector),
                     SessionsAction::Pick {
                         all,
+                        attributed,
                         limit,
                         workspace,
                         here,
                     } => commands::sessions::workspace_filter(workspace, here)
-                        .and_then(|ws| commands::sessions::pick(all, limit, ws)),
+                        .and_then(|ws| commands::sessions::pick(all, attributed, limit, ws)),
                 };
                 // Selection mistakes are user-facing: plain text, not Debug.
                 if let Err(e) = res {

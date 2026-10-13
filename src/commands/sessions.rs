@@ -2,12 +2,14 @@
 //!
 //! `stats --sessions` is a drift-detection table (ratios per session). This
 //! command is the browsing side: every session the database knows about,
-//! newest first, with an index for quick selection, and a `show` view that
-//! prints all stored columns of one session plus its transcripts (main and
+//! newest first, each with its stable session number (`#`), and a `show` view
+//! that prints all stored columns of one session plus its transcripts (main and
 //! agents) from `transcript_progress`, and the `claude --resume` line.
 //!
-//! Selection accepts a 1-based index from the last `list` output or a prefix
-//! of the session id; an ambiguous prefix is refused with the candidates.
+//! Selection accepts the stable session number (rank by earliest start, oldest =
+//! 1, unchanged by auto-reset, the same under every filter), `#N` for a number
+//! only, or a prefix of the session id; an ambiguous prefix is refused with the
+//! candidates.
 
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
@@ -235,15 +237,43 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
     rows.map(|r| r.map_err(StatuslineError::from)).collect()
 }
 
-/// Resolve `sel` against the numbered `rows` from [`load_numbered`]: a session
-/// number (`#` column), or a session id prefix (case-insensitive). Ambiguous
-/// prefixes are an error naming the candidates so the user can lengthen the prefix.
+/// One piece of untrusted text made safe for an error line: control characters
+/// and SGR sequences removed by `sanitize_for_terminal`, tabs turned into spaces.
+/// Applied per piece, before the layout is assembled, so intended `\n` stay.
+fn safe(s: &str) -> String {
+    crate::utils::sanitize_for_terminal(s).replace('\t', " ")
+}
+
+/// Resolve `sel` against the numbered `rows` from [`load_numbered`].
+///
+/// - `#N`: session number only, never an id prefix. Valid ids never contain `#`
+///   (charset `[A-Za-z0-9_-]`), so this removes the collision between large
+///   numbers and all-digit id prefixes. Shells treat an unquoted leading `#`
+///   after whitespace as a comment, so on the command line write `'#1432'`; the
+///   `pick` prompt needs no quoting.
+/// - a bare number: the session with that number when it exists, otherwise an
+///   id prefix (unchanged precedence).
+/// - anything else: a session id prefix (case-insensitive). An ambiguous prefix
+///   is an error naming the candidates so the user can lengthen it.
+///
+/// The selector and candidate ids are echoed only through [`safe`] (D-12).
 pub(crate) fn resolve<'a>(rows: &'a [(usize, SessionRow)], sel: &str) -> Result<&'a SessionRow> {
     let sel = sel.trim();
     if sel.is_empty() {
         return Err(StatuslineError::Other("empty selection".into()));
     }
     let max = rows.last().map_or(0, |(o, _)| *o);
+    if let Some(rest) = sel.strip_prefix('#') {
+        let rest = rest.trim();
+        return rest
+            .parse::<usize>()
+            .ok()
+            .and_then(|n| rows.iter().find(|(o, _)| *o == n))
+            .map(|(_, r)| r)
+            .ok_or_else(|| {
+                StatuslineError::Other(format!("no session #{} (numbers run 1..{max})", safe(rest)))
+            });
+    }
     if let Ok(n) = sel.parse::<usize>() {
         // Number first: a pure number is far likelier a session number than a
         // hex prefix; an all-digit id prefix still works via the fallback below
@@ -261,17 +291,19 @@ pub(crate) fn resolve<'a>(rows: &'a [(usize, SessionRow)], sel: &str) -> Result<
     match hits.len() {
         1 => Ok(hits[0]),
         0 => Err(StatuslineError::Other(format!(
-            "no session matches '{sel}' (# 1..{max} or id prefix)"
+            "no session matches '{}' (# 1..{max} or id prefix)",
+            safe(sel)
         ))),
         n => {
             let list = hits
                 .iter()
                 .take(8)
-                .map(|r| r.session_id.as_str())
+                .map(|r| safe(&r.session_id))
                 .collect::<Vec<_>>()
                 .join("\n  ");
             Err(StatuslineError::Other(format!(
-                "'{sel}' matches {n} sessions, lengthen the prefix:\n  {list}"
+                "'{}' matches {n} sessions, lengthen the prefix:\n  {list}",
+                safe(sel)
             )))
         }
     }
@@ -556,13 +588,13 @@ pub(crate) fn list(
     }
     print_list(&view);
     if workspace.is_some() {
-        cli_println!("\nfiltered by workspace; # is the position in the unfiltered list, so `sessions show <#>` still works");
+        cli_println!("\nfiltered by workspace; # is the stable session number, so `sessions show <#>` still works");
     }
     Ok(())
 }
 
-/// `sessions show <#|id-prefix>` — the index refers to the default list
-/// ordering (newest first, all sessions), independent of any `--limit`.
+/// `sessions show <#|#N|id-prefix>`: the number is the stable session number
+/// printed by `list` under any filter or `--limit` (see [`load_numbered`]).
 pub(crate) fn show(selector: &str) -> Result<()> {
     let Some(conn) = open_db()? else {
         return Ok(());
@@ -572,10 +604,16 @@ pub(crate) fn show(selector: &str) -> Result<()> {
     print_show(&conn, r)
 }
 
-/// `sessions pick [--all] [--limit N]` — print the list, read one selection
-/// from the terminal, show it. Refuses to run without a terminal on stdin so
-/// it never hangs a pipeline.
-pub(crate) fn pick(all: bool, limit: usize, workspace: Option<String>) -> Result<()> {
+/// `sessions pick [--all] [--attributed] [--limit N] [--workspace PATH|--here]`:
+/// print the list, read one selection from the terminal, show it. A `#` typed at
+/// the prompt is the stable session number the list printed. Refuses to run
+/// without a terminal on stdin so it never hangs a pipeline.
+pub(crate) fn pick(
+    all: bool,
+    attributed: bool,
+    limit: usize,
+    workspace: Option<String>,
+) -> Result<()> {
     if !io::stdin().is_terminal() {
         return Err(StatuslineError::Other(
             "sessions pick needs a terminal on stdin; use `sessions show <#|id>` in scripts".into(),
@@ -584,12 +622,12 @@ pub(crate) fn pick(all: bool, limit: usize, workspace: Option<String>) -> Result
     let Some(conn) = open_db()? else {
         return Ok(());
     };
-    // Full set for resolve(), so a `#` typed at the prompt means the same
-    // global position it does in the printed list (and in `sessions show`).
+    // Full numbered set for resolve(), so a `#` typed at the prompt means the
+    // same session number it does in the printed list (and in `sessions show`).
     let rows = load_numbered(&conn)?;
     let view = index_and_filter(
         &rows,
-        false,
+        attributed,
         workspace.as_deref(),
         if all { 0 } else { limit },
     );
@@ -1160,6 +1198,37 @@ mod tests {
     #[test]
     fn ordinal_round_trip_attributed_and_workspace() {
         assert_round_trip(true, Some("/w/a"));
+    }
+
+    #[test]
+    fn resolve_hash_form_is_ordinal_only() {
+        let rows = numbered(&["1aaa-x", "e049-y", "fe2e-z"]);
+        assert_eq!(resolve(&rows, "#2").unwrap().session_id, "e049-y");
+        assert_eq!(resolve(&rows, "# 3").unwrap().session_id, "fe2e-z");
+        assert!(
+            resolve(&rows, "#9").is_err(),
+            "#N never falls back to a prefix"
+        );
+        assert!(resolve(&rows, "#abc").is_err());
+        assert!(resolve(&rows, "#1aaa").is_err(), "#N is number only");
+        assert_eq!(resolve(&rows, "1").unwrap().session_id, "1aaa-x");
+        assert_eq!(resolve(&rows, "1aaa").unwrap().session_id, "1aaa-x");
+    }
+
+    #[test]
+    fn resolve_error_sanitized() {
+        let rows = numbered(&["ab\x1b[31mX-1", "ab\x1b]0;t\x07-2"]);
+        let msg = resolve(&rows, "ab").unwrap_err().to_string();
+        assert!(!msg.contains('\x1b'), "ESC in ambiguous error: {msg:?}");
+        assert!(!msg.contains('\x07'), "BEL in ambiguous error: {msg:?}");
+        assert!(msg.contains("\n  "), "candidate layout lost: {msg:?}");
+
+        let msg = resolve(&rows, "zz\x1b[2J\r").unwrap_err().to_string();
+        assert!(!msg.contains('\x1b'), "ESC in no-match error: {msg:?}");
+        assert!(!msg.contains('\r'), "CR in no-match error: {msg:?}");
+
+        let msg = resolve(&rows, "#9\x1b[2J").unwrap_err().to_string();
+        assert!(!msg.contains('\x1b'), "ESC in #N error: {msg:?}");
     }
 
     #[test]
