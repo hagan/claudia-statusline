@@ -507,6 +507,21 @@ fn list_lines(rows: &[(usize, &SessionRow)]) -> Vec<String> {
     lines
 }
 
+/// The line `list` / `pick` print when the filtered view is empty, worded from
+/// the active filters so `--attributed` never claims nothing was recorded
+/// (WR-06). The workspace is echoed only through [`safe`].
+fn empty_message(attributed: bool, workspace: Option<&str>) -> String {
+    let what = if attributed {
+        "no attributed sessions"
+    } else {
+        "no sessions recorded"
+    };
+    match workspace {
+        Some(w) => format!("({what} under {})", safe(w)),
+        None => format!("({what})"),
+    }
+}
+
 fn print_list(rows: &[(usize, &SessionRow)]) {
     for l in list_lines(rows) {
         cli_println!("{l}");
@@ -691,10 +706,7 @@ pub(crate) fn list(
         if all { 0 } else { limit },
     );
     if view.is_empty() {
-        match &workspace {
-            Some(w) => cli_println!("(no sessions recorded under {})", safe(w)),
-            None => cli_println!("(no sessions recorded)"),
-        }
+        cli_println!("{}", empty_message(attributed, workspace.as_deref()));
         return Ok(());
     }
     print_list(&view);
@@ -744,10 +756,7 @@ pub(crate) fn pick(
         if all { 0 } else { limit },
     );
     if view.is_empty() {
-        match &workspace {
-            Some(w) => cli_println!("(no sessions recorded under {})", safe(w)),
-            None => cli_println!("(no sessions recorded)"),
-        }
+        cli_println!("{}", empty_message(attributed, workspace.as_deref()));
         return Ok(());
     }
     print_list(&view);
@@ -1080,6 +1089,19 @@ mod tests {
         assert!(resolve(&rows, "4").is_err());
         assert!(resolve(&rows, "zzz").is_err());
         assert!(resolve(&rows, "  ").is_err());
+    }
+
+    #[test]
+    fn empty_message_reflects_filters() {
+        assert_eq!(empty_message(false, None), "(no sessions recorded)");
+        assert_eq!(empty_message(true, None), "(no attributed sessions)");
+        let m = empty_message(true, Some("/w\x1b[31mx\n"));
+        assert!(m.starts_with("(no attributed sessions under /w"), "{m:?}");
+        assert!(!has_control(&m), "{m:?}");
+        assert_eq!(
+            empty_message(false, Some("/w")),
+            "(no sessions recorded under /w)"
+        );
     }
 
     #[test]

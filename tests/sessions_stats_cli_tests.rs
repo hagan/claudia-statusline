@@ -817,6 +817,26 @@ fn empty_filter_message_is_clean() {
 }
 
 #[test]
+fn empty_attributed_message_is_honest() {
+    let env = seeded();
+    let (code, out, err) = env.run(&[
+        "sessions",
+        "list",
+        "--all",
+        "--attributed",
+        "--workspace",
+        "/w/beta",
+    ]);
+    assert_eq!(code, Some(0), "empty attributed listing failed: {}", err);
+    assert!(
+        out.contains("(no attributed sessions under /w/beta)"),
+        "stdout: {}",
+        out
+    );
+    assert!(!out.contains("no sessions recorded"), "stdout: {}", out);
+}
+
+#[test]
 fn invalid_utf8_cell_does_not_abort_browser() {
     let env = seeded();
     let conn = env.db();
