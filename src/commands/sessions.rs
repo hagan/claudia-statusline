@@ -468,72 +468,91 @@ fn print_list(rows: &[(usize, &SessionRow)]) {
     }
 }
 
-fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
-    let transcripts = load_transcripts(conn, &r.session_id)?;
+/// The `sessions show` view of one session, one entry per line.
+///
+/// Pure apart from `Path::exists` on the main transcript path. Every stored
+/// string (id, version, model, workspace, timestamps, transcript paths, agent
+/// file names and types) goes through [`safe`] / [`trunc`] before layout
+/// (D-12). The resume line is gated on the RAW stored id (D-05..D-07).
+fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow]) -> Vec<String> {
+    let mut lines = Vec::new();
     let main_path = transcripts
         .iter()
         .find(|t| !t.is_agent)
         .map(|t| t.path.clone());
 
-    cli_println!("session_id        {}", r.session_id);
-    cli_println!(
-        "claude_version    {}",
-        r.claude_version.as_deref().unwrap_or("?")
-    );
-    cli_println!(
+    // The sanitized full id is shown even when it is not a valid Claude Code id,
+    // so the row stays identifiable; only the resume line is barred from it.
+    lines.push(format!("session_id        {}", safe(&r.session_id)));
+    lines.push(format!(
+        "claude_version    {} (latest seen)",
+        safe(r.claude_version.as_deref().unwrap_or("?"))
+    ));
+    lines.push(format!(
         "model             {}",
-        r.model_name.as_deref().unwrap_or("?")
-    );
-    cli_println!(
+        safe(r.model_name.as_deref().unwrap_or("?"))
+    ));
+    lines.push(format!(
         "workspace         {}",
-        r.workspace_dir.as_deref().unwrap_or("?")
-    );
-    cli_println!("start             {}", r.start_time);
-    cli_println!("last_updated      {}", r.last_updated);
-    cli_println!(
+        safe(r.workspace_dir.as_deref().unwrap_or("?"))
+    ));
+    if r.first_start != r.start_time {
+        lines.push(format!(
+            "first_start       {}  (ranks the #; start is the period after an auto-reset)",
+            safe(&r.first_start)
+        ));
+    }
+    lines.push(format!("start             {}", safe(&r.start_time)));
+    lines.push(format!("last_updated      {}", safe(&r.last_updated)));
+    lines.push(format!(
         "active_time       {} ({} s)",
         hms(r.active_time_seconds),
         r.active_time_seconds
-    );
-    cli_println!("cost*             ${:.2}", r.cost);
-    cli_println!(
+    ));
+    lines.push(format!(
+        "cost*             ${:.2}  = session total across all CLI processes (resumes included), as accounted into daily/monthly totals",
+        r.cost
+    ));
+    lines.push(format!(
         "lines             +{} / -{}",
-        r.lines_added,
-        r.lines_removed
-    );
-    cli_println!("max_context_seen  {} tokens", r.max_tokens_observed);
-    cli_println!();
-    cli_println!("payload totals (main conversation, as reported by Claude Code)");
-    cli_println!(
+        r.lines_added, r.lines_removed
+    ));
+    lines.push(format!(
+        "max_context_seen  {} tokens",
+        r.max_tokens_observed
+    ));
+    lines.push(String::new());
+    lines.push("payload totals (main conversation, as reported by Claude Code)".into());
+    lines.push(format!(
         "  input {}  output {}  cache_read {}  cache_write {}",
         r.total_input_tokens,
         r.total_output_tokens,
         r.total_cache_read_tokens,
         r.total_cache_creation_tokens
-    );
-    cli_println!();
-    cli_println!("attribution (from transcripts, requestId-deduped)");
-    cli_println!(
+    ));
+    lines.push(String::new());
+    lines.push("attribution (from transcripts, requestId-deduped)".into());
+    lines.push(format!(
         "  main    requests {:>6}  in {:>12}  out {:>10}  in_k/req {:>7.1}  out/req {:>6.0}",
         r.main_requests,
         r.main_input_tokens,
         r.main_output_tokens,
         div(r.main_input_tokens, r.main_requests) / 1000.0,
         div(r.main_output_tokens, r.main_requests)
-    );
-    cli_println!(
+    ));
+    lines.push(format!(
         "  agents  requests {:>6}  in {:>12}  out {:>10}  files {:>4}  share {:>5.1}%",
         r.agent_requests,
         r.agent_input_tokens,
         r.agent_output_tokens,
         r.agent_count,
         share(r.agent_input_tokens, r.main_input_tokens)
-    );
+    ));
 
     let agents: Vec<&TranscriptRow> = transcripts.iter().filter(|t| t.is_agent).collect();
     if !agents.is_empty() {
-        cli_println!();
-        cli_println!(
+        lines.push(String::new());
+        lines.push(format!(
             "agent transcripts ({}):  {:<18} {:>6} {:>10} {:>10} {:>9} {:>8}",
             agents.len(),
             "type",
@@ -542,40 +561,62 @@ fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
             "cache_rd",
             "out",
             "size_kB"
-        );
+        ));
         for t in agents {
             let name = Path::new(&t.path)
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
                 .unwrap_or_else(|| t.path.clone());
-            cli_println!(
+            lines.push(format!(
                 "  {:<28} {:<18} {:>6} {:>10} {:>10} {:>9} {:>8}",
-                name.trim_end_matches(".jsonl"),
-                t.agent_type.as_deref().unwrap_or("?"),
+                trunc(name.trim_end_matches(".jsonl"), 28),
+                trunc(t.agent_type.as_deref().unwrap_or("?"), 18),
                 t.requests,
                 t.input_tokens + t.cache_creation_tokens,
                 t.cache_read_tokens,
                 t.output_tokens,
                 t.size / 1024
-            );
+            ));
         }
     }
 
-    cli_println!();
+    lines.push(String::new());
     match main_path {
         Some(p) => {
+            // exists() on the raw stored path; only the display is sanitized.
             let exists = Path::new(&p).exists();
-            cli_println!(
+            lines.push(format!(
                 "transcript        {}{}",
-                p,
+                safe(&p),
                 if exists { "" } else { "  (missing on disk)" }
-            );
+            ));
         }
-        None => {
-            cli_println!("transcript        (not scanned yet: renders before attribution existed)")
-        }
+        None => lines
+            .push("transcript        (not scanned yet: renders before attribution existed)".into()),
     }
-    cli_println!("resume            claude --resume {}", r.session_id);
+    // Validate the RAW stored id, never the sanitized one: sanitizing can turn
+    // "abc\ndef" into the valid-looking "abcdef". is_valid_session_id's contract:
+    // "Callers must never log or echo a rejected value", so the fallback line
+    // carries no part of the id and no shell quoting is attempted (D-07).
+    if crate::common::is_valid_session_id(&r.session_id) {
+        lines.push(format!(
+            "resume            claude --resume {}",
+            r.session_id
+        ));
+    } else {
+        lines.push(
+            "resume            (unavailable: stored session id is not a valid Claude Code id)"
+                .into(),
+        );
+    }
+    lines
+}
+
+fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
+    let transcripts = load_transcripts(conn, &r.session_id)?;
+    for l in show_lines(r, &transcripts) {
+        cli_println!("{l}");
+    }
     Ok(())
 }
 
@@ -1400,5 +1441,132 @@ mod tests {
         }
         assert!(lines[1].starts_with("12345  "), "row: {:?}", lines[1]);
         assert!(lines[2].starts_with("    3  "), "row: {:?}", lines[2]);
+    }
+
+    fn transcript(path: &str, is_agent: bool, agent_type: Option<&str>) -> TranscriptRow {
+        TranscriptRow {
+            path: path.into(),
+            is_agent,
+            agent_type: agent_type.map(str::to_string),
+            size: 2048,
+            requests: 1,
+            input_tokens: 10,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            output_tokens: 5,
+        }
+    }
+
+    const RESUME_UNAVAILABLE: &str =
+        "resume            (unavailable: stored session id is not a valid Claude Code id)";
+
+    #[test]
+    fn resume_line_valid_id() {
+        let r = row("e0490618-aaaa_BBBB");
+        let lines = show_lines(&r, &[]);
+        assert_eq!(
+            lines.last().unwrap(),
+            "resume            claude --resume e0490618-aaaa_BBBB"
+        );
+    }
+
+    #[test]
+    fn resume_line_invalid_ids_never_echoed() {
+        let long = "a".repeat(129);
+        let ids: [&str; 8] = [
+            "a b",
+            "x;rm -rf ~",
+            "$(id)",
+            "caf\u{e9}",
+            "id\x1b[2J",
+            "abc\ndef",
+            "",
+            &long,
+        ];
+        for id in ids {
+            let lines = show_lines(&row(id), &[]);
+            assert_eq!(lines.last().unwrap(), RESUME_UNAVAILABLE, "id {id:?}");
+            assert!(
+                !lines.iter().any(|l| l.contains("claude --resume")),
+                "id {id:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn show_lines_session_id_line_shows_sanitized_invalid_id() {
+        let lines = show_lines(&row("id\x1b[2Jx"), &[]);
+        assert_eq!(lines[0], "session_id        id[2Jx");
+    }
+
+    #[test]
+    fn show_lines_sanitizes_every_field() {
+        let mut r = row("ok-id");
+        r.claude_version = Some("2.1\x1b[31m\u{9b}".into());
+        r.model_name = Some("M\x1b[2J\nFAKE".into());
+        r.workspace_dir = Some("/w/a/b\n\x1b[1AFAKE".into());
+        r.start_time = "2026\x1b[2J-10-13T09:00".into();
+        r.first_start = "2026-01\r-01T10:00".into();
+        r.last_updated = "2026-10\x07-13T10:00".into();
+        let ts = [
+            transcript("/nope/\x1b[2Jmain.jsonl", false, None),
+            transcript(
+                "/tmp/agent-\x1b]0;t\x07x.jsonl",
+                true,
+                Some("Expl\x1b[31more\n"),
+            ),
+        ];
+        let lines = show_lines(&r, &ts);
+        for l in &lines {
+            assert!(!has_control(l), "control char in {l:?}");
+        }
+        let tl = lines
+            .iter()
+            .find(|l| l.starts_with("transcript "))
+            .expect("transcript line");
+        assert!(tl.contains("(missing on disk)"), "{tl:?}");
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("agent-") && l.contains("Explore")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn show_lines_first_start_only_when_reset() {
+        let r = row("same-start");
+        let lines = show_lines(&r, &[]);
+        assert!(!lines.iter().any(|l| l.starts_with("first_start")));
+
+        let mut r = row("after-reset");
+        r.first_start = "2026-01-01T10:00:00-07:00".into();
+        r.start_time = "2026-10-13T09:00:00-07:00".into();
+        let lines = show_lines(&r, &[]);
+        let fs: Vec<&String> = lines
+            .iter()
+            .filter(|l| l.starts_with("first_start"))
+            .collect();
+        assert_eq!(fs.len(), 1, "{lines:?}");
+        assert!(fs[0].contains("2026-01-01T10:00:00-07:00"));
+    }
+
+    #[test]
+    fn show_lines_labels() {
+        let mut r = row("labels");
+        r.claude_version = Some("2.1.0".into());
+        let lines = show_lines(&r, &[]);
+        assert!(lines
+            .iter()
+            .any(|l| l.starts_with("claude_version") && l.contains("(latest seen)")));
+        let cost = lines
+            .iter()
+            .find(|l| l.starts_with("cost*"))
+            .expect("cost line");
+        assert!(cost.contains("session total across all CLI processes (resumes included)"));
+        for l in &lines {
+            assert!(!l.contains("resets on"), "{l:?}");
+            assert!(!l.contains("raw_cost"), "{l:?}");
+        }
     }
 }
