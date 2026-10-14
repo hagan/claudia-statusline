@@ -138,16 +138,26 @@ traffic per main request in thousands: fresh + cache read + cache write),
 traffic / (agent + main)). A step change between two versions is the signal
 that an update changed agent or context behaviour.
 
+The version in `statusline stats` and `stats --sessions` (`version†`) is the
+latest Claude Code version observed for each session. The by-version view
+therefore groups a session's entire history under its newest version: a session
+that spanned an upgrade counts entirely under that newest version (true
+per-version attribution is not recorded). `cost*` in `stats --sessions` is the
+session total across all CLI processes (resumes included), as accounted into
+daily/monthly totals.
+
 ### Session Browser
 
 ```bash
-statusline sessions                        # list: newest 25, index + short id
+statusline sessions                        # list: newest 25, session number + short id
 statusline sessions list --all             # every recorded session
 statusline sessions list --attributed      # only sessions with attribution data
 statusline sessions list --limit 50
-statusline sessions show 2                 # by index from the default list
+statusline sessions show 1432              # by session number (# column)
+statusline sessions show '#1432'           # number only, never an id prefix (quote the #)
 statusline sessions show fe2e              # by session id prefix
 statusline sessions pick                   # interactive: list, type a selection, show
+statusline sessions pick --attributed      # interactive, attributed sessions only
 statusline sessions list --here            # only this project: workspace == $PWD or below
 statusline sessions list --workspace ~/src # only that directory tree
 statusline sessions pick --here            # same filter, interactive
@@ -161,23 +171,52 @@ because the stored workspace is absolute — a path that does not exist is still
 queried verbatim, so a since-deleted workspace remains listable. The two flags
 are mutually exclusive.
 
-Under a filter the `#` column keeps the position from the **unfiltered** list
-and therefore goes non-contiguous (`1 3 4`). That is deliberate: `show <#>`
-always resolves against the full ordering, so a number copied out of a filtered
-listing opens the session you actually looked at. A session's workspace is the
-last one Claude Code reported for it, so a session that moved between
-directories is listed under the most recent one only.
+`#` is the session's stable number: its rank over all recorded sessions by the
+session's first start (oldest = 1). The first start is the earliest of the
+session's current start time and any start kept in the auto-reset archive, so an
+auto-reset (`burn_rate.mode = "auto_reset"`, which restarts a session's work
+period after an idle gap) does not change the number, and the list's `start`
+column shows that first start. Starts are compared as exact instants, so DST and
+UTC-offset changes do not reorder them. Render activity, new sessions and
+auto-resets never change an existing number, and a long-lived session that keeps
+auto-resetting stays at its first-start position in the list.
 
-`show` prints the full session id, Claude Code version, model, workspace,
-start and last-update times, active time, the cost counter of the last CLI
-process (resets on `--resume`; daily money lives in `daily_stats`), lines
+What can still shift numbers:
+
+- `statusline db-maintain` prunes sessions whose last update is older than
+  `retention_days_sessions` (default 90 days). A pruned session leaves the
+  numbering, so sessions that started after it move down by one. Pruning does
+  not delete the auto-reset archive.
+- In Turso builds, `statusline sync --pull` can add sessions from another device
+  that started earlier, or replace a session's start time with the remote one;
+  both can shift numbers.
+- Two sessions with the identical start instant are ordered by session id.
+- Sessions whose stored start time cannot be read (legacy records) are numbered
+  first.
+
+The list shows newest first, so `#` counts down. Under any filter
+(`--attributed`, `--here`, `--workspace`) the global number is kept, so the
+column goes non-contiguous, and `show <#>` or the `pick` prompt opens the
+session you looked at. A session's workspace is the last one Claude Code
+reported for it, so a session that moved between directories is listed under
+the most recent one only.
+
+`show` prints the full session id, latest observed Claude Code version, model,
+workspace, start and last-update times (plus a `first_start` line after an
+auto-reset), active time, the session cost (`cost*`: total across all CLI
+processes, resumes included, as accounted into daily/monthly totals), lines
 added/removed, the largest context seen, the payload token totals, main vs
 agent attribution, one row per agent transcript (type, requests, input,
-cache reads, output, size), the main transcript path and a ready
-`claude --resume <session_id>` line.
+cache reads, output, size), the main transcript path, and a
+`claude --resume <session_id>` line when the stored id matches the Claude Code
+id charset (`[A-Za-z0-9_-]`, up to 128 characters); otherwise a note says no
+resume command is available (the stored id is not printed there). Every string
+these commands print, including their error messages, is stripped of terminal
+control and escape sequences.
 
-An index always refers to the default ordering (all sessions, newest first),
-independent of `--limit`. An ambiguous prefix is refused with the matching ids;
+A bare number is read as a session number when one exists, otherwise as an id
+prefix; `#N` is number-only. Numbers are independent of `--limit` and filters.
+An ambiguous prefix is refused with the matching ids;
 `pick` refuses to run without a terminal on stdin so it never hangs a script.
 
 The raw payload mirror is off by default. Set

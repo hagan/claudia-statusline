@@ -815,3 +815,36 @@ fn empty_filter_message_is_clean() {
     assert_clean("empty filter stdout", &out);
     assert_clean("empty filter stderr", &err);
 }
+
+// ---------------------------------------------------------------------------
+// D-14: docs/USAGE.md matches the shipped behaviour
+// ---------------------------------------------------------------------------
+
+fn repo_file(rel: &str) -> String {
+    std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(rel))
+        .unwrap_or_else(|e| panic!("read {}: {}", rel, e))
+}
+
+#[test]
+fn usage_doc_describes_stable_numbers_and_honest_labels() {
+    let doc = repo_file("docs/USAGE.md");
+    for stale in [
+        "resets on `--resume`",
+        "position from the **unfiltered** list",
+        "by index from the default list",
+    ] {
+        assert!(!doc.contains(stale), "docs/USAGE.md still says {:?}", stale);
+    }
+    for needed in [
+        "pick --attributed",
+        "'#1432'",
+        "oldest = 1",
+        "auto-reset",
+        "retention_days_sessions",
+        "sync --pull",
+        "latest observed Claude Code version",
+        "resumes included",
+    ] {
+        assert!(doc.contains(needed), "docs/USAGE.md lacks {:?}", needed);
+    }
+}
