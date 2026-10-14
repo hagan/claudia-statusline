@@ -177,16 +177,19 @@ session's current start time and any start kept in the auto-reset archive, so an
 auto-reset (`burn_rate.mode = "auto_reset"`, which restarts a session's work
 period after an idle gap) does not change the number, and the list's `start`
 column shows that first start. Starts are compared as exact instants, so DST and
-UTC-offset changes do not reorder them. Render activity, new sessions and
-auto-resets never change an existing number, and a long-lived session that keeps
-auto-resetting stays at its first-start position in the list.
+UTC-offset changes do not reorder them. While the recorded sessions stay
+present, render activity, new sessions and auto-resets never change an existing
+number, and a long-lived session that keeps auto-resetting stays at its
+first-start position in the list.
 
 What can still shift numbers:
 
 - `statusline db-maintain` prunes sessions whose last update is older than
   `retention_days_sessions` (default 90 days). A pruned session leaves the
   numbering, so sessions that started after it move down by one. Pruning does
-  not delete the auto-reset archive.
+  not delete the auto-reset archive, so if a pruned session that has archived
+  starts is later resumed, it re-enters at its old rank and the sessions that
+  started after it move back up by one.
 - In Turso builds, `statusline sync --pull` can add sessions from another device
   that started earlier, or replace a session's start time with the remote one;
   both can shift numbers.

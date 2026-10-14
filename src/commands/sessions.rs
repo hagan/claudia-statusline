@@ -162,6 +162,9 @@ fn parse_instant(s: &str) -> Option<chrono::DateTime<chrono::Utc>> {
 /// What CAN still shift numbers: `db-maintain` pruning removes sessions whose
 /// `last_updated` is older than the retention window (it does not delete
 /// `session_archive` rows, but a pruned session leaves the numbered population);
+/// resuming such a pruned session recreates its `sessions` row, and its
+/// surviving archived starts put it back at its old rank, so every later session
+/// moves up by one again (an ordinary render can cause this, WR-05);
 /// a Turso pull inserting earlier sessions or overwriting a row's `start_time`;
 /// and inserting a row whose start instant equals an existing one with a smaller
 /// `session_id`.
