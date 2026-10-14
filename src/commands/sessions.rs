@@ -275,7 +275,12 @@ fn safe(s: &str) -> String {
 ///   after whitespace as a comment, so on the command line write `'#1432'`; the
 ///   `pick` prompt needs no quoting.
 /// - a bare number: the session with that number when it exists, otherwise an
-///   id prefix (unchanged precedence).
+///   id prefix. If the number exists AND it is the prefix of exactly one id of
+///   a *different* session, the selector is refused as ambiguous (WR-04): an
+///   all-digit unique prefix is a plausible id prefix and must not silently
+///   open another session. A digit string matching several ids is not a usable
+///   prefix anyway, so the number wins there; otherwise every small number
+///   would be refused once the store holds a few dozen hex ids.
 /// - anything else: a session id prefix (case-insensitive). An ambiguous prefix
 ///   is an error naming the candidates so the user can lengthen it.
 ///
@@ -297,20 +302,29 @@ pub(crate) fn resolve<'a>(rows: &'a [(usize, SessionRow)], sel: &str) -> Result<
                 StatuslineError::Other(format!("no session #{} (numbers run 1..{max})", safe(rest)))
             });
     }
-    if let Ok(n) = sel.parse::<usize>() {
-        // Number first: a pure number is far likelier a session number than a
-        // hex prefix; an all-digit id prefix still works via the fallback below
-        // when no session carries that number.
-        if let Some((_, r)) = rows.iter().find(|(o, _)| *o == n) {
-            return Ok(r);
-        }
-    }
     let lower = sel.to_ascii_lowercase();
     let hits: Vec<&SessionRow> = rows
         .iter()
         .map(|(_, r)| r)
         .filter(|r| r.session_id.to_ascii_lowercase().starts_with(&lower))
         .collect();
+    if let Ok(n) = sel.parse::<usize>() {
+        // Number first: a pure number is far likelier a session number than a
+        // hex prefix; an all-digit id prefix still works via the fallback below
+        // when no session carries that number.
+        if let Some((_, r)) = rows.iter().find(|(o, _)| *o == n) {
+            if let [other] = hits.as_slice() {
+                if other.session_id != r.session_id {
+                    return Err(StatuslineError::Other(format!(
+                        "'{sel}' is both session #{n} and the id prefix of {}; use '#{n}' for the number or a longer id prefix",
+                        safe(&other.session_id),
+                        sel = safe(sel),
+                    )));
+                }
+            }
+            return Ok(r);
+        }
+    }
     match hits.len() {
         1 => Ok(hits[0]),
         0 => Err(StatuslineError::Other(format!(
@@ -1063,6 +1077,28 @@ mod tests {
         assert!(resolve(&rows, "4").is_err());
         assert!(resolve(&rows, "zzz").is_err());
         assert!(resolve(&rows, "  ").is_err());
+    }
+
+    #[test]
+    fn resolve_refuses_number_shadowing_a_unique_digit_prefix() {
+        let rows = numbered(&["aaaa-1", "bbbb-2", "1432abcd-x", "1234-a", "1299-b"]);
+        // #2 exists and "2" prefixes no id: the number.
+        assert_eq!(resolve(&rows, "2").unwrap().session_id, "bbbb-2");
+        // #3 is 1432abcd-x and "3" prefixes nothing: the number.
+        assert_eq!(resolve(&rows, "3").unwrap().session_id, "1432abcd-x");
+        // "1" is #1 and prefixes several ids: not a usable prefix, number wins.
+        assert_eq!(resolve(&rows, "1").unwrap().session_id, "aaaa-1");
+        // "#N" always means the number.
+        assert_eq!(resolve(&rows, "#1").unwrap().session_id, "aaaa-1");
+        // Unique digit prefix of a different session than the number: refused.
+        let rows = numbered(&["aaaa-1", "bbbb-2", "cccc-3", "dddd-4", "4e1-x"]);
+        let msg = resolve(&rows, "4").unwrap_err().to_string();
+        assert!(msg.contains("#4") && msg.contains("4e1-x"), "{msg}");
+        assert_eq!(resolve(&rows, "#4").unwrap().session_id, "dddd-4");
+        assert_eq!(resolve(&rows, "4e").unwrap().session_id, "4e1-x");
+        // The number and the unique prefix are the same session: no ambiguity.
+        let rows = numbered(&["aaaa-1", "2bbb-2"]);
+        assert_eq!(resolve(&rows, "2").unwrap().session_id, "2bbb-2");
     }
 
     /// Pins burn_rate to auto_reset with a 60-minute threshold for the lifetime of
