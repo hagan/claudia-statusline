@@ -842,6 +842,26 @@ fn invalid_utf8_cell_does_not_abort_browser() {
     assert_clean("invalid utf-8 show", &out);
 }
 
+#[test]
+fn stats_survive_null_cost_and_invalid_utf8() {
+    let env = seeded();
+    let conn = env.db();
+    conn.execute(
+        "UPDATE sessions SET cost = NULL, model_name = CAST(X'41ff42' AS TEXT),
+                             claude_version = CAST(X'32ff' AS TEXT)
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store NULL cost and invalid utf-8 cells");
+    drop(conn);
+    for args in [vec!["stats"], vec!["stats", "--sessions"]] {
+        let (code, out, err) = env.run(&args);
+        assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
+        assert!(out.contains("aaaa1111") || args.len() == 1, "{}", out);
+        assert_clean("stats stdout", &out);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // D-14: docs/USAGE.md matches the shipped behaviour
 // ---------------------------------------------------------------------------

@@ -10,9 +10,12 @@
 //! groups each session's whole history under its newest version. Money per day
 //! lives in `daily_stats`; use `statusline health` for that.
 //!
-//! Every TEXT cell read from the database is sanitized for the terminal first
-//! and only then truncated by chars (never bytes) in Rust.
+//! Every TEXT cell read from the database is read lossily (one non-UTF-8 cell
+//! must not fail the command), sanitized for the terminal, and only then
+//! truncated by chars (never bytes) in Rust. Nullable numeric columns are
+//! COALESCEd in SQL for the same reason.
 
+use super::text_lossy;
 use crate::error::Result;
 use rusqlite::{Connection, OpenFlags};
 
@@ -82,10 +85,10 @@ fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
-            r.get::<_, String>(0)?,
+            text_lossy(r, 0)?.unwrap_or_default(),
             r.get::<_, i64>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
+            text_lossy(r, 2)?.unwrap_or_default(),
+            text_lossy(r, 3)?.unwrap_or_default(),
             r.get::<_, i64>(4)?,
             r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?,
@@ -156,7 +159,7 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
                 start_time, COALESCE(model_name, ''),
                 COALESCE(main_requests, 0), COALESCE(main_input_tokens, 0),
                 COALESCE(main_output_tokens, 0), COALESCE(agent_count, 0),
-                COALESCE(agent_input_tokens, 0), cost
+                COALESCE(agent_input_tokens, 0), COALESCE(cost, 0.0)
          FROM sessions
          WHERE main_requests > 0
          ORDER BY last_updated DESC
@@ -164,10 +167,10 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, String>(3)?,
+            text_lossy(r, 0)?.unwrap_or_default(),
+            text_lossy(r, 1)?.unwrap_or_default(),
+            text_lossy(r, 2)?.unwrap_or_default(),
+            text_lossy(r, 3)?.unwrap_or_default(),
             r.get::<_, i64>(4)?,
             r.get::<_, i64>(5)?,
             r.get::<_, i64>(6)?,
