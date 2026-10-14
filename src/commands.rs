@@ -23,6 +23,40 @@ pub(crate) mod stats;
 #[cfg(feature = "turso-sync")]
 pub(crate) mod sync;
 
+// Terminal-safety helpers shared by the `sessions` and `stats` handlers and
+// by `error_for_terminal`. This is the single D-12/D-13 boundary: harden it
+// here and every command picks the change up (WR-07).
+
+/// One piece of untrusted text made terminal-safe: control characters and
+/// escape sequences removed by `sanitize_for_terminal`, tabs turned into spaces
+/// so they cannot break a column layout. Applied per piece, before the layout
+/// is assembled, so intended `\n` between pieces stay.
+pub(crate) fn safe(s: &str) -> String {
+    crate::utils::sanitize_for_terminal(s).replace('\t', " ")
+}
+
+/// Sanitize first (D-12), then keep at most `n` chars, never bytes (D-13).
+/// Truncating first could cut an escape sequence in half and leave its tail for
+/// the terminal; a byte slice through a multi-byte char panics, and under
+/// `panic = "abort"` that kills the process.
+pub(crate) fn trunc(s: &str, n: usize) -> String {
+    safe(s).chars().take(n).collect()
+}
+
+/// `a / b` as `f64`, `0.0` when `b == 0`.
+pub(crate) fn div(a: i64, b: i64) -> f64 {
+    if b == 0 {
+        0.0
+    } else {
+        a as f64 / b as f64
+    }
+}
+
+/// Agent share in percent of `agent + main`.
+pub(crate) fn share(agent: i64, main: i64) -> f64 {
+    div(agent * 100, agent + main)
+}
+
 /// Read a TEXT column lossily: `None` for NULL, invalid UTF-8 replaced by
 /// U+FFFD, numbers rendered as text.
 ///
@@ -56,14 +90,11 @@ pub(crate) fn text_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<Op
 /// env_logger diagnostics (`RUST_LOG` / `--log-level`), which may still carry a
 /// raw path (threat T-18-20, accepted).
 pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
-    fn clean(s: &str) -> String {
-        crate::utils::sanitize_for_terminal(s).replace('\t', " ")
-    }
     match e {
         crate::error::StatuslineError::Other(msg) => {
-            msg.split('\n').map(clean).collect::<Vec<_>>().join("\n")
+            msg.split('\n').map(safe).collect::<Vec<_>>().join("\n")
         }
-        other => clean(&other.to_string()),
+        other => safe(&other.to_string()),
     }
 }
 

@@ -11,7 +11,7 @@
 //! only, or a prefix of the session id; an ambiguous prefix is refused with the
 //! candidates.
 
-use super::text_lossy;
+use super::{div, safe, share, text_lossy, trunc};
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
@@ -263,13 +263,6 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
     rows.map(|r| r.map_err(StatuslineError::from)).collect()
 }
 
-/// One piece of untrusted text made safe for an error line: control characters
-/// and SGR sequences removed by `sanitize_for_terminal`, tabs turned into spaces.
-/// Applied per piece, before the layout is assembled, so intended `\n` stay.
-fn safe(s: &str) -> String {
-    crate::utils::sanitize_for_terminal(s).replace('\t', " ")
-}
-
 /// Resolve `sel` against the numbered `rows` from [`load_numbered`].
 ///
 /// - `#N`: session number only, never an id prefix. Valid ids never contain `#`
@@ -349,27 +342,8 @@ pub(crate) fn resolve<'a>(rows: &'a [(usize, SessionRow)], sel: &str) -> Result<
     }
 }
 
-fn div(a: i64, b: i64) -> f64 {
-    if b == 0 {
-        0.0
-    } else {
-        a as f64 / b as f64
-    }
-}
-
-fn share(agent: i64, main: i64) -> f64 {
-    div(agent * 100, agent + main)
-}
-
 fn hms(secs: i64) -> String {
     format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
-}
-
-/// Sanitize first (D-12), then truncate by chars, never bytes (D-13): a byte
-/// slice through a multi-byte char panics, and under `panic = "abort"` that
-/// kills the process.
-fn trunc(s: &str, n: usize) -> String {
-    safe(s).chars().take(n).collect()
 }
 
 fn short(s: &Option<String>, n: usize) -> String {

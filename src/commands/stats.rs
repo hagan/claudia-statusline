@@ -15,7 +15,7 @@
 //! truncated by chars (never bytes) in Rust. Nullable numeric columns are
 //! COALESCEd in SQL for the same reason.
 
-use super::text_lossy;
+use super::{div, safe, share, text_lossy, trunc};
 use crate::error::Result;
 use rusqlite::{Connection, OpenFlags};
 
@@ -36,30 +36,6 @@ pub(crate) fn show_stats(by_version: bool, sessions: bool) -> Result<()> {
     } else {
         show_by_version(&conn)
     }
-}
-
-fn div(a: i64, b: i64) -> f64 {
-    if b == 0 {
-        0.0
-    } else {
-        a as f64 / b as f64
-    }
-}
-
-fn share(agent: i64, main: i64) -> f64 {
-    div(agent * 100, agent + main)
-}
-
-/// Terminal-safe text: strips escape sequences and control characters, and
-/// turns tabs into spaces so they cannot break the column layout.
-fn safe(s: &str) -> String {
-    crate::utils::sanitize_for_terminal(s).replace('\t', " ")
-}
-
-/// Sanitize first, then keep at most `n` chars. Truncating first could cut an
-/// escape sequence in half and leave its tail for the terminal to interpret.
-fn trunc(s: &str, n: usize) -> String {
-    safe(s).chars().take(n).collect()
 }
 
 fn show_by_version(conn: &Connection) -> Result<()> {
