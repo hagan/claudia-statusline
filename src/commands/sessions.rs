@@ -1261,8 +1261,22 @@ mod tests {
         assert!(!under_workspace(None, f));
     }
 
+    // Serial, with its own live HOME: several #[serial] tests point HOME at a
+    // TempDir and never restore it, so the inherited HOME may already be deleted.
     #[test]
+    #[serial_test::serial]
     fn workspace_filter_expands_tilde_and_relative_paths() {
+        let home_dir = tempfile::TempDir::new().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", home_dir.path());
+        check_workspace_filter_expansion();
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+    }
+
+    fn check_workspace_filter_expansion() {
         assert_eq!(workspace_filter(None, false).unwrap(), None);
 
         let cwd = std::env::current_dir().unwrap();
