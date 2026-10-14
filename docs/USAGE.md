@@ -191,8 +191,10 @@ What can still shift numbers:
   that started earlier, or replace a session's start time with the remote one;
   both can shift numbers.
 - Two sessions with the identical start instant are ordered by session id.
-- Sessions whose stored start time cannot be read (legacy records) are numbered
-  first.
+- Sessions whose stored start time cannot be read (legacy records, including a
+  legacy start kept in the auto-reset archive) are numbered first; their first
+  start is unknown, so the list's `start` column shows the unreadable stored
+  value (`?` when it is empty) and `show` prints `first_start unknown`.
 
 The list shows newest first, so `#` counts down. Under any filter
 (`--attributed`, `--here`, `--workspace`) the global number is kept, so the

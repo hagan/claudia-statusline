@@ -26,6 +26,10 @@ pub(crate) struct SessionRow {
     /// Raw stored text of the start that defines this session's rank key (D-01a):
     /// equal to `start_time` unless an auto-reset archived an earlier start.
     pub first_start: String,
+    /// True when some candidate start (live or archived) could not be parsed:
+    /// the first start is then unknown and the session ranks first (WR-03).
+    /// `first_start` then holds the first unreadable candidate's raw text.
+    pub first_start_unknown: bool,
     pub last_updated: String,
     pub cost: f64,
     pub lines_added: i64,
@@ -77,6 +81,7 @@ fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     Ok(SessionRow {
         session_id: text_lossy(r, 0)?.unwrap_or_default(),
         first_start: start_time.clone(),
+        first_start_unknown: false,
         start_time,
         last_updated: text_lossy(r, 2)?.unwrap_or_default(),
         cost: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
@@ -188,6 +193,10 @@ pub(crate) fn load_numbered(conn: &Connection) -> Result<Vec<(usize, SessionRow)
             if let Some(a) = archived.get(&row.session_id) {
                 candidates.extend(a.iter().map(String::as_str));
             }
+            let unreadable = candidates
+                .iter()
+                .find(|c| parse_instant(c).is_none())
+                .map(|c| c.to_string());
             let parsed: Option<Vec<(chrono::DateTime<chrono::Utc>, &str)>> = candidates
                 .iter()
                 .map(|c| parse_instant(c).map(|t| (t, *c)))
@@ -207,7 +216,12 @@ pub(crate) fn load_numbered(conn: &Connection) -> Result<Vec<(usize, SessionRow)
                     Some(t)
                 }
                 None => {
-                    row.first_start = row.start_time.clone();
+                    // Unknown first start: show the unreadable record (or `?`),
+                    // never the live start, which after an auto-reset is the
+                    // reset time and would break the descending `start`
+                    // column (WR-03).
+                    row.first_start = unreadable.unwrap_or_default();
+                    row.first_start_unknown = true;
                     None
                 }
             };
@@ -428,7 +442,9 @@ fn index_and_filter<'a>(
 /// Every stored string is sanitized and then char-truncated per cell (D-12,
 /// D-13) before the layout is assembled, so no cell can carry a control or
 /// escape sequence and no multi-byte char can be split. The `start` column is
-/// the rank-defining first start (D-01a), so it descends with `#`.
+/// the rank-defining first start (D-01a), so it descends with `#`; for an
+/// unknown first start (those sessions rank first) it shows the unreadable
+/// stored text, or `?` when that is empty.
 fn list_lines(rows: &[(usize, &SessionRow)]) -> Vec<String> {
     let mut lines = Vec::with_capacity(rows.len() + 6);
     lines.push(format!(
@@ -450,7 +466,11 @@ fn list_lines(rows: &[(usize, &SessionRow)]) -> Vec<String> {
             "{:>5}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>5.1}% {:>8.2}",
             i,
             trunc(&r.session_id, 8),
-            trunc(&r.first_start, 16),
+            if r.first_start_unknown && r.first_start.trim().is_empty() {
+                "?".to_string()
+            } else {
+                trunc(&r.first_start, 16)
+            },
             trunc(&r.last_updated, 16),
             short(&r.claude_version, 9),
             short(&r.model_name, 18),
@@ -504,7 +524,11 @@ fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow]) -> Vec<String> {
         "workspace         {}",
         safe(r.workspace_dir.as_deref().unwrap_or("?"))
     ));
-    if r.first_start != r.start_time {
+    if r.first_start_unknown {
+        lines.push(
+            "first_start       unknown (legacy or unreadable start record; ranks first)".into(),
+        );
+    } else if r.first_start != r.start_time {
         lines.push(format!(
             "first_start       {}  (ranks the #; start is the period after an auto-reset)",
             safe(&r.first_start)
@@ -732,6 +756,7 @@ mod tests {
             session_id: id.to_string(),
             start_time: "2026-09-16T00:00:00Z".into(),
             first_start: "2026-09-16T00:00:00Z".into(),
+            first_start_unknown: false,
             last_updated: "2026-09-16T00:00:00Z".into(),
             cost: 0.0,
             lines_added: 0,
@@ -1557,6 +1582,33 @@ mod tests {
             .collect();
         assert_eq!(fs.len(), 1, "{lines:?}");
         assert!(fs[0].contains("2026-01-01T10:00:00-07:00"));
+    }
+
+    #[test]
+    fn unknown_first_start_is_marked_not_shown_as_live_start() {
+        let (_d, _p, conn) = temp_db();
+        // Legacy session: archived start '' and a valid live start after a reset.
+        insert_session(&conn, "legacy01", "2026-10-14T10:00:00Z", "x", 0, None);
+        insert_archive(&conn, "legacy01", "");
+        insert_session(&conn, "12345678", "2019-01-01T00:00:00Z", "x", 0, None);
+        let rows = load_numbered(&conn).unwrap();
+        assert_eq!(rows[0].1.session_id, "legacy01");
+        assert!(rows[0].1.first_start_unknown);
+        assert!(!rows[1].1.first_start_unknown);
+
+        let view: Vec<(usize, &SessionRow)> = rows.iter().map(|(n, r)| (*n, r)).collect();
+        let lines = list_lines(&view);
+        let legacy = lines.iter().find(|l| l.contains("legacy01")).unwrap();
+        assert!(!legacy.contains("2026-10-14"), "{legacy:?}");
+        assert_eq!(legacy.split_whitespace().nth(2), Some("?"), "{legacy:?}");
+
+        let shown = show_lines(&rows[0].1, &[]);
+        let fs: Vec<&String> = shown
+            .iter()
+            .filter(|l| l.starts_with("first_start"))
+            .collect();
+        assert_eq!(fs.len(), 1, "{shown:?}");
+        assert!(fs[0].contains("unknown"), "{shown:?}");
     }
 
     #[test]
