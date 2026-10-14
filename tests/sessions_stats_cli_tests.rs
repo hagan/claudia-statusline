@@ -563,3 +563,255 @@ fn number_survives_real_auto_reset() {
         first
     );
 }
+
+// ---------------------------------------------------------------------------
+// SESS-04 / D-05..D-07: the resume line is gated on the raw stored id
+// ---------------------------------------------------------------------------
+
+#[test]
+fn resume_line_gated_on_id_validity() {
+    let env = seeded();
+    let rows = env.rows(&[]);
+
+    let valid = env.show(&number_of(&rows, "aaaa1111").to_string());
+    assert!(
+        valid
+            .lines()
+            .any(|l| l == "resume            claude --resume aaaa1111-valid-old"),
+        "valid id must get a resume line:\n{}",
+        valid
+    );
+
+    for prefix in ["evil]0;p", "1234567\u{e9}"] {
+        let out = env.show(&number_of(&rows, prefix).to_string());
+        assert!(
+            out.contains("(unavailable: stored session id is not a valid Claude Code id)"),
+            "{}: missing unavailable note:\n{}",
+            prefix,
+            out
+        );
+        assert!(
+            !out.contains("claude --resume"),
+            "{}: resume command printed for an invalid id:\n{}",
+            prefix,
+            out
+        );
+        let resume = out
+            .lines()
+            .find(|l| l.starts_with("resume"))
+            .expect("resume line");
+        assert!(
+            !resume.contains("pwn"),
+            "resume line echoes the id: {}",
+            resume
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SESS-03 / D-13: multi-byte stored strings never panic and are cut by chars
+// ---------------------------------------------------------------------------
+
+#[test]
+fn multibyte_strings_do_not_panic() {
+    let env = seeded();
+    let (code, list, err) = env.run(&["sessions", "list", "--all"]);
+    assert_eq!(code, Some(0), "list failed: {}", err);
+    assert!(!err.contains("panicked"), "list panicked: {}", err);
+    for cell in [
+        "1234567\u{e9}",
+        "2020-03-01T10:0\u{20ac}",
+        "2020-03-01T10:0\u{e9}",
+    ] {
+        assert!(
+            list.contains(cell),
+            "list lacks char-cut cell {:?}:\n{}",
+            cell,
+            list
+        );
+    }
+
+    let mb = number_of(&list_rows(&list), "1234567\u{e9}").to_string();
+    for args in [
+        vec!["sessions", "show", mb.as_str()],
+        vec!["stats"],
+        vec!["stats", "--sessions"],
+    ] {
+        let (code, _, err) = env.run(&args);
+        assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
+        assert!(!err.contains("panicked"), "{:?} panicked: {}", args, err);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SESS-02 / D-04: `pick --attributed` parses
+// ---------------------------------------------------------------------------
+
+/// Proves only flag parsing and the non-TTY refusal; interactive selection
+/// needs a terminal and stays a manual check (18-04 verification).
+#[test]
+fn pick_accepts_attributed_flag() {
+    let env = seeded();
+    let (code, _, err) = env.run(&["sessions", "pick", "--attributed"]);
+    assert_eq!(code, Some(1), "pick without a TTY must refuse: {}", err);
+    assert!(err.contains("needs a terminal"), "stderr: {}", err);
+    assert!(
+        !err.contains("unexpected argument"),
+        "clap rejected the flag: {}",
+        err
+    );
+    assert!(!err.contains("Usage:"), "clap usage error: {}", err);
+}
+
+// ---------------------------------------------------------------------------
+// SESS-05 / D-08..D-10: honest version and cost labels
+// ---------------------------------------------------------------------------
+
+#[test]
+fn honest_version_and_cost_labels() {
+    let env = seeded();
+    let mut outputs = Vec::new();
+
+    let (code, stats, err) = env.run(&["stats"]);
+    assert_eq!(code, Some(0), "stats failed: {}", err);
+    assert!(
+        stats.contains("latest observed Claude Code version"),
+        "stats lacks the version grouping note:\n{}",
+        stats
+    );
+    outputs.push(stats);
+
+    for args in [
+        vec!["stats", "--sessions"],
+        vec!["sessions", "list", "--all"],
+    ] {
+        let (code, out, err) = env.run(&args);
+        assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
+        assert!(
+            out.contains("version\u{2020}"),
+            "{:?} lacks version†:\n{}",
+            args,
+            out
+        );
+        assert!(
+            out.contains("session total across all CLI processes (resumes included)"),
+            "{:?} lacks the cumulative cost note:\n{}",
+            args,
+            out
+        );
+        outputs.push(out);
+    }
+
+    let rows = env.rows(&[]);
+    let show = env.show(&number_of(&rows, "aaaa1111").to_string());
+    assert!(
+        show.contains("(latest seen)"),
+        "show lacks (latest seen):\n{}",
+        show
+    );
+    outputs.push(show);
+
+    for out in &outputs {
+        assert!(
+            !out.contains("resets on resume"),
+            "stale label in:\n{}",
+            out
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SESS-01 / D-12: error and empty output paths are clean too
+// ---------------------------------------------------------------------------
+
+#[test]
+fn missing_db_message_is_clean() {
+    let env = Env::new();
+    let data = env.home.path().join("d\x1b[31mX\x07");
+    std::fs::create_dir_all(&data).expect("create hostile data dir");
+    for args in [
+        vec!["sessions", "list"],
+        vec!["stats"],
+        vec!["stats", "--sessions"],
+    ] {
+        let (code, out, err) = run_cmd(env.cmd_with(&data, &args));
+        let label = format!("{:?}", args);
+        assert_eq!(code, Some(0), "{} without a DB must exit 0: {}", label, err);
+        assert!(
+            out.contains("No statistics database at"),
+            "{} stdout: {}",
+            label,
+            out
+        );
+        assert_clean(&format!("{} stdout", label), &out);
+        assert_clean(&format!("{} stderr", label), &err);
+    }
+}
+
+#[test]
+fn db_open_error_is_clean() {
+    let env = Env::new();
+    let data = env.home.path().join("e\x1b[31mX\x1b]0;t\x07");
+    // stats.db is a directory: the open fails with an error naming the path.
+    std::fs::create_dir_all(data.join("claudia-statusline").join("stats.db"))
+        .expect("create stats.db as a directory");
+    for args in [
+        vec!["sessions", "list"],
+        vec!["sessions", "show", "1"],
+        vec!["stats"],
+        vec!["stats", "--sessions"],
+    ] {
+        let (code, out, err) = run_cmd(env.cmd_with(&data, &args));
+        let label = format!("{:?}", args);
+        assert_eq!(
+            code,
+            Some(1),
+            "{} must fail: stdout {:?} stderr {:?}",
+            label,
+            out,
+            err
+        );
+        assert!(out.is_empty(), "{} printed to stdout: {:?}", label, out);
+        assert!(err.starts_with("error: "), "{} stderr: {:?}", label, err);
+        assert_clean(&format!("{} stderr", label), &err);
+        assert_eq!(
+            err.lines().count(),
+            1,
+            "{} stderr is not one line: {:?}",
+            label,
+            err
+        );
+        assert!(
+            !err.contains("SqliteFailure"),
+            "{} Debug dump: {:?}",
+            label,
+            err
+        );
+        assert!(
+            !err.contains("Database("),
+            "{} Debug dump: {:?}",
+            label,
+            err
+        );
+    }
+}
+
+#[test]
+fn empty_filter_message_is_clean() {
+    let env = seeded();
+    let (code, out, err) = env.run(&[
+        "sessions",
+        "list",
+        "--all",
+        "--workspace",
+        "/nope/\x1b[2J\x1b[31mX\nFAKE",
+    ]);
+    assert_eq!(code, Some(0), "empty filtered listing failed: {}", err);
+    assert!(
+        out.contains("(no sessions recorded under"),
+        "stdout: {}",
+        out
+    );
+    assert_clean("empty filter stdout", &out);
+    assert_clean("empty filter stderr", &err);
+}
