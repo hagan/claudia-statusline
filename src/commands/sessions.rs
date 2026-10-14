@@ -101,7 +101,8 @@ fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
 fn open_db() -> Result<Option<Connection>> {
     let db_path = crate::stats::StatsData::get_sqlite_path()?;
     if !db_path.exists() {
-        cli_println!("No statistics database at {}", db_path.display());
+        let shown = db_path.display().to_string();
+        cli_println!("No statistics database at {}", safe(&shown));
         return Ok(None);
     }
     // Opening through SqliteDatabase applies pending migrations; the queries
@@ -325,8 +326,15 @@ fn hms(secs: i64) -> String {
     format!("{}h{:02}m", secs / 3600, (secs % 3600) / 60)
 }
 
+/// Sanitize first (D-12), then truncate by chars, never bytes (D-13): a byte
+/// slice through a multi-byte char panics, and under `panic = "abort"` that
+/// kills the process.
+fn trunc(s: &str, n: usize) -> String {
+    safe(s).chars().take(n).collect()
+}
+
 fn short(s: &Option<String>, n: usize) -> String {
-    s.as_deref().unwrap_or("").chars().take(n).collect()
+    trunc(s.as_deref().unwrap_or(""), n)
 }
 
 /// Workspace tail: last two path components, so `~/Claude/addons/x` reads as
@@ -407,44 +415,57 @@ fn index_and_filter<'a>(
     out
 }
 
-fn print_list(rows: &[(usize, &SessionRow)]) {
-    cli_println!(
-        "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>6} {:>8}",
+/// The `sessions list` table (also printed by `pick`), one entry per line.
+///
+/// Every stored string is sanitized and then char-truncated per cell (D-12,
+/// D-13) before the layout is assembled, so no cell can carry a control or
+/// escape sequence and no multi-byte char can be split. The `start` column is
+/// the rank-defining first start (D-01a), so it descends with `#`.
+fn list_lines(rows: &[(usize, &SessionRow)]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(rows.len() + 6);
+    lines.push(format!(
+        "{:>5}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>6} {:>8}",
         "#",
         "session",
         "start",
         "last",
-        "version",
+        "version†",
         "model",
         "workspace",
         "main_req",
         "agents",
         "share%",
         "cost*"
-    );
+    ));
     for (i, r) in rows.iter() {
-        cli_println!(
-            "{:>3}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>5.1}% {:>8.2}",
+        lines.push(format!(
+            "{:>5}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>5.1}% {:>8.2}",
             i,
-            &r.session_id[..r.session_id.len().min(8)],
-            &r.start_time[..r.start_time.len().min(16)],
-            &r.last_updated[..r.last_updated.len().min(16)],
+            trunc(&r.session_id, 8),
+            trunc(&r.first_start, 16),
+            trunc(&r.last_updated, 16),
             short(&r.claude_version, 9),
             short(&r.model_name, 18),
-            ws_tail(&r.workspace_dir)
-                .chars()
-                .take(22)
-                .collect::<String>(),
+            trunc(&ws_tail(&r.workspace_dir), 22),
             r.main_requests,
             r.agent_count,
             share(r.agent_input_tokens, r.main_input_tokens),
             r.cost,
-        );
+        ));
     }
-    cli_println!();
-    cli_println!("cost* = counter of the last CLI process for the session; resets on resume");
-    cli_println!("main_req/agents/share% = 0 for sessions recorded before attribution existed");
-    cli_println!("select with: statusline sessions show <#|id-prefix>   (or: sessions pick)");
+    lines.push(String::new());
+    lines.push("cost*    = session total across all CLI processes (resumes included), as accounted into daily/monthly totals".into());
+    lines.push("version† = latest Claude Code version observed for the session; a session that spanned an upgrade shows only its newest version".into());
+    lines
+        .push("main_req/agents/share% = 0 for sessions recorded before attribution existed".into());
+    lines.push("select with: statusline sessions show <#|id-prefix>   (or: sessions pick)".into());
+    lines
+}
+
+fn print_list(rows: &[(usize, &SessionRow)]) {
+    for l in list_lines(rows) {
+        cli_println!("{l}");
+    }
 }
 
 fn print_show(conn: &Connection, r: &SessionRow) -> Result<()> {
@@ -581,14 +602,15 @@ pub(crate) fn list(
     );
     if view.is_empty() {
         match &workspace {
-            Some(w) => cli_println!("(no sessions recorded under {w})"),
+            Some(w) => cli_println!("(no sessions recorded under {})", safe(w)),
             None => cli_println!("(no sessions recorded)"),
         }
         return Ok(());
     }
     print_list(&view);
-    if workspace.is_some() {
-        cli_println!("\nfiltered by workspace; # is the stable session number, so `sessions show <#>` still works");
+    if workspace.is_some() || attributed {
+        cli_println!();
+        cli_println!("filtered view; # is the stable session number (rank by first start over all sessions), so `sessions show <#>` opens the same session");
     }
     Ok(())
 }
@@ -633,7 +655,7 @@ pub(crate) fn pick(
     );
     if view.is_empty() {
         match &workspace {
-            Some(w) => cli_println!("(no sessions recorded under {w})"),
+            Some(w) => cli_println!("(no sessions recorded under {})", safe(w)),
             None => cli_println!("(no sessions recorded)"),
         }
         return Ok(());
@@ -1304,5 +1326,79 @@ mod tests {
                 "~user is not expanded"
             );
         }
+    }
+
+    /// Any C0 control, DEL or C1 control.
+    fn has_control(s: &str) -> bool {
+        s.chars()
+            .any(|c| (c as u32) < 0x20 || (0x7F..=0x9F).contains(&(c as u32)))
+    }
+
+    #[test]
+    fn list_lines_sanitizes_every_field() {
+        let mut r = row("ev\x1b]0;pwn\x07il");
+        r.start_time = "2020\x1b[2J-01-01T10:00".into();
+        r.first_start = r.start_time.clone();
+        r.last_updated = "2020-01\r-02T10:00".into();
+        r.claude_version = Some("2.1\x1b[31m\u{9b}".into());
+        r.model_name = Some("M\x1b[2J\nFAKE".into());
+        r.workspace_dir = Some("/w/a/b\n\x1b[1AFAKE".into());
+        let lines = list_lines(&[(7, &r)]);
+        for l in &lines {
+            assert!(!has_control(l), "control char in {l:?}");
+        }
+        let data = &lines[1];
+        assert!(data.contains("ev]0;pwn"), "data: {data:?}");
+        assert!(data.contains("2020-01-02T10:00"), "data: {data:?}");
+    }
+
+    #[test]
+    fn list_lines_multibyte_no_panic() {
+        let mut r = row("1234567\u{e9}-aaaa");
+        r.start_time = "2026-09-16T00:0\u{20ac}:00Z".into();
+        r.first_start = r.start_time.clone();
+        r.last_updated = "2026-09-16T00:0\u{e9}0:00Z".into();
+        let lines = list_lines(&[(1, &r)]);
+        let data = &lines[1];
+        assert!(data.contains("1234567\u{e9}"), "data: {data:?}");
+        assert!(data.contains("2026-09-16T00:0\u{20ac}"), "data: {data:?}");
+        assert!(data.contains("2026-09-16T00:0\u{e9}"), "data: {data:?}");
+    }
+
+    #[test]
+    fn list_lines_start_column_is_first_start() {
+        let mut r = row("abcdef01");
+        r.first_start = "2026-01-01T10:00:00-07:00".into();
+        r.start_time = "2026-10-13T09:00:00-07:00".into();
+        let lines = list_lines(&[(1, &r)]);
+        assert!(
+            lines[1].contains("2026-01-01T10:00"),
+            "data: {:?}",
+            lines[1]
+        );
+        assert!(
+            !lines[1].contains("2026-10-13T09:00"),
+            "data: {:?}",
+            lines[1]
+        );
+    }
+
+    #[test]
+    fn list_lines_labels_and_wide_ordinal() {
+        let a = row("aaaaaaaa");
+        let b = row("bbbbbbbb");
+        let lines = list_lines(&[(12345, &a), (3, &b)]);
+        assert!(lines[0].contains("version†"), "header: {:?}", lines[0]);
+        assert!(lines[0].contains("cost*"), "header: {:?}", lines[0]);
+        assert!(lines
+            .iter()
+            .any(|l| l.contains("session total across all CLI processes (resumes included)")));
+        assert!(lines.iter().any(|l| l.starts_with("version†")));
+        for l in &lines {
+            assert!(!l.contains("resets on resume"), "{l:?}");
+            assert!(!l.contains("last CLI process"), "{l:?}");
+        }
+        assert!(lines[1].starts_with("12345  "), "row: {:?}", lines[1]);
+        assert!(lines[2].starts_with("    3  "), "row: {:?}", lines[2]);
     }
 }
