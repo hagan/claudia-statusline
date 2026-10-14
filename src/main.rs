@@ -535,7 +535,11 @@ fn main() -> Result<()> {
                 by_version,
                 sessions,
             } => {
-                return commands::stats::show_stats(by_version, sessions);
+                if let Err(e) = commands::stats::show_stats(by_version, sessions) {
+                    cli_eprintln!("error: {}", commands::error_for_terminal(&e));
+                    std::process::exit(1);
+                }
+                return Ok(());
             }
             Commands::Sessions { action } => {
                 let res = match action.unwrap_or(SessionsAction::List {
@@ -563,9 +567,10 @@ fn main() -> Result<()> {
                     } => commands::sessions::workspace_filter(workspace, here)
                         .and_then(|ws| commands::sessions::pick(all, attributed, limit, ws)),
                 };
-                // Selection mistakes are user-facing: plain text, not Debug.
+                // Selection mistakes are user-facing: plain text, not Debug, and
+                // sanitized (errors can embed env-derived paths or stored text).
                 if let Err(e) = res {
-                    cli_eprintln!("error: {e}");
+                    cli_eprintln!("error: {}", commands::error_for_terminal(&e));
                     std::process::exit(1);
                 }
                 return Ok(());
