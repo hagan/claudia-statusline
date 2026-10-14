@@ -23,6 +23,23 @@ pub(crate) mod stats;
 #[cfg(feature = "turso-sync")]
 pub(crate) mod sync;
 
+/// Read a TEXT column lossily: `None` for NULL, invalid UTF-8 replaced by
+/// U+FFFD, numbers rendered as text.
+///
+/// A strict `Row::get::<String>` fails on a single malformed cell (Turso pull,
+/// hand edit, damaged store), and because the `sessions` / `stats` handlers load
+/// every row up front, that one cell would abort the whole command. Reading
+/// lossily keeps the row; its text is still sanitized before it is printed.
+pub(crate) fn text_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<Option<String>> {
+    use rusqlite::types::ValueRef;
+    Ok(match r.get_ref(i)? {
+        ValueRef::Null => None,
+        ValueRef::Text(b) | ValueRef::Blob(b) => Some(String::from_utf8_lossy(b).into_owned()),
+        ValueRef::Integer(n) => Some(n.to_string()),
+        ValueRef::Real(f) => Some(f.to_string()),
+    })
+}
+
 /// Render an error from a `sessions` / `stats` handler for the terminal (D-12).
 ///
 /// - `StatuslineError::Other(msg)`: messages assembled by the command handlers

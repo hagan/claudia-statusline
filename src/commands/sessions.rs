@@ -11,6 +11,7 @@
 //! only, or a prefix of the session id; an ambiguous prefix is refused with the
 //! candidates.
 
+use super::text_lossy;
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
@@ -69,25 +70,27 @@ const SESSION_COLUMNS: &str =
     COALESCE(agent_output_tokens, 0), COALESCE(main_requests, 0), COALESCE(main_input_tokens, 0),
     COALESCE(main_output_tokens, 0)";
 
+/// TEXT cells are read through [`text_lossy`] (WR-01): one non-UTF-8 cell must
+/// not make `load_numbered`, and with it every `sessions` subcommand, fail.
 fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
-    let start_time: String = r.get(1)?;
+    let start_time = text_lossy(r, 1)?.unwrap_or_default();
     Ok(SessionRow {
-        session_id: r.get(0)?,
+        session_id: text_lossy(r, 0)?.unwrap_or_default(),
         first_start: start_time.clone(),
         start_time,
-        last_updated: r.get(2)?,
+        last_updated: text_lossy(r, 2)?.unwrap_or_default(),
         cost: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
         lines_added: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
         lines_removed: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
         max_tokens_observed: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
-        model_name: r.get(7)?,
-        workspace_dir: r.get(8)?,
+        model_name: text_lossy(r, 7)?,
+        workspace_dir: text_lossy(r, 8)?,
         total_input_tokens: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
         total_output_tokens: r.get::<_, Option<i64>>(10)?.unwrap_or(0),
         total_cache_read_tokens: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
         total_cache_creation_tokens: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
         active_time_seconds: r.get::<_, Option<i64>>(13)?.unwrap_or(0),
-        claude_version: r.get(14)?,
+        claude_version: text_lossy(r, 14)?,
         agent_count: r.get(15)?,
         agent_requests: r.get(16)?,
         agent_input_tokens: r.get(17)?,
@@ -167,7 +170,12 @@ pub(crate) fn load_numbered(conn: &Connection) -> Result<Vec<(usize, SessionRow)
 
     let mut archived: HashMap<String, Vec<String>> = HashMap::new();
     let mut astmt = conn.prepare("SELECT session_id, start_time FROM session_archive")?;
-    let arows = astmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+    let arows = astmt.query_map([], |r| {
+        Ok((
+            text_lossy(r, 0)?.unwrap_or_default(),
+            text_lossy(r, 1)?.unwrap_or_default(),
+        ))
+    })?;
     for a in arows {
         let (id, start) = a?;
         archived.entry(id).or_default().push(start);
@@ -224,9 +232,9 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
     )?;
     let rows = stmt.query_map([session_id], |r| {
         Ok(TranscriptRow {
-            path: r.get(0)?,
+            path: text_lossy(r, 0)?.unwrap_or_default(),
             is_agent: r.get::<_, i64>(1)? != 0,
-            agent_type: r.get(2)?,
+            agent_type: text_lossy(r, 2)?,
             size: r.get(3)?,
             requests: r.get(4)?,
             input_tokens: r.get(5)?,

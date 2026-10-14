@@ -816,6 +816,32 @@ fn empty_filter_message_is_clean() {
     assert_clean("empty filter stderr", &err);
 }
 
+#[test]
+fn invalid_utf8_cell_does_not_abort_browser() {
+    let env = seeded();
+    let conn = env.db();
+    conn.execute(
+        "UPDATE sessions SET model_name = CAST(X'41ff42' AS TEXT),
+                             workspace_dir = CAST(X'2f77ff2f78' AS TEXT)
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store invalid utf-8 cells");
+    conn.execute(
+        "INSERT INTO transcript_progress (path, session_id, is_agent, updated_at)
+         VALUES (CAST(X'2f6eff2e6a736f6e6c' AS TEXT), 'aaaa1111-valid-old', 0, 'x')",
+        [],
+    )
+    .expect("store invalid utf-8 transcript path");
+    drop(conn);
+
+    let rows = env.rows(&[]);
+    let n = number_of(&rows, "aaaa1111").to_string();
+    let out = env.show(&n);
+    assert!(out.contains("A\u{fffd}B"), "lossy model cell: {}", out);
+    assert_clean("invalid utf-8 show", &out);
+}
+
 // ---------------------------------------------------------------------------
 // D-14: docs/USAGE.md matches the shipped behaviour
 // ---------------------------------------------------------------------------
