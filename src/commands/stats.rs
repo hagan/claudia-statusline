@@ -493,4 +493,48 @@ mod tests {
         assert!(row.contains(&format!("{cell} ")), "row: {row:?}");
         assert!(!row.contains(&model.chars().take(19).collect::<String>()));
     }
+
+    #[test]
+    fn sessions_lines_caps_at_25_kept_rows_and_skipped_rows_take_no_slot() {
+        let (_dir, path) = temp_db();
+        // 26 attributed sessions, oldest first.
+        for i in 0..26 {
+            let ts = format!("2020-01-01T00:00:{i:02}");
+            insert(
+                &path,
+                &format!("ok-{i:02}"),
+                &ts,
+                &ts,
+                "2.0",
+                "",
+                1,
+                100,
+                0.0,
+            );
+        }
+        // Newer sessions whose counter reads as 0 in Rust: they pass the SQL
+        // prefilter ('5x' stays TEXT under INTEGER affinity) and sort first,
+        // but must not use up any of the 25 slots.
+        let conn = Connection::open(&path).unwrap();
+        for i in 0..3 {
+            let ts = format!("2020-01-02T00:00:{i:02}");
+            conn.execute(
+                "INSERT INTO sessions (session_id, start_time, last_updated, main_requests)
+                 VALUES (?1, ?2, ?2, '5x')",
+                params![format!("bad-{i}"), ts],
+            )
+            .unwrap();
+        }
+        drop(conn);
+
+        let lines = sessions_lines(&ro(&path)).unwrap();
+        let blank = lines.iter().position(String::is_empty).unwrap();
+        let rows = &lines[1..blank];
+        assert_eq!(rows.len(), 25, "{rows:?}");
+        assert!(rows.iter().all(|r| r.starts_with("ok-")), "{rows:?}");
+        // Newest first; the oldest valid session is the one cut.
+        assert!(rows[0].starts_with("ok-25 "), "{rows:?}");
+        assert!(rows[24].starts_with("ok-01 "), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.starts_with("ok-00 ")), "{rows:?}");
+    }
 }
