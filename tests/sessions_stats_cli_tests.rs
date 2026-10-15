@@ -1142,6 +1142,8 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
         "sync --pull",
         "latest observed Claude Code version",
         "resumes included",
+        "A *bare* selector",
+        "`'#0021'` is",
     ] {
         assert!(doc.contains(needed), "docs/USAGE.md lacks {:?}", needed);
     }

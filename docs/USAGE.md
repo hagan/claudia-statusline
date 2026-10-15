@@ -224,9 +224,10 @@ prefix; `#N` is number-only. If a bare number is both an existing session number
 and the prefix of *other* sessions' ids, it is refused as ambiguous when it
 prefixes exactly one other id, or when it has 3 or more digits and prefixes
 several; use `'#N'` for the number or a longer prefix for the id. A 1-2 digit
-number that prefixes several ids still means the number. A selector with a
-leading zero (`0021`) is only ever an id prefix, since `list` never prints
-numbers that way. Numbers are independent of `--limit` and filters.
+number that prefixes several ids still means the number. A *bare* selector
+with a leading zero (`0021`) is only ever an id prefix, since `list` never
+prints numbers that way; after `#` leading zeros are ignored (`'#0021'` is
+session #21). Numbers are independent of `--limit` and filters.
 An ambiguous prefix is refused with the matching ids;
 `pick` refuses to run without a terminal on stdin so it never hangs a script.
 

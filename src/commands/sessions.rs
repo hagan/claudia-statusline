@@ -267,9 +267,9 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
 
 /// Resolve `sel` against the numbered `rows` from [`load_numbered`].
 ///
-/// - `#N`: session number only, never an id prefix. Valid ids never contain `#`
-///   (charset `[A-Za-z0-9_-]`), so this removes the collision between large
-///   numbers and all-digit id prefixes. Shells treat an unquoted leading `#`
+/// - `#N`: session number only, never an id prefix (`#0021` = #21). Valid ids
+///   never contain `#` (charset `[A-Za-z0-9_-]`), so this removes the collision
+///   between large numbers and all-digit id prefixes. Shells treat an unquoted leading `#`
 ///   after whitespace as a comment, so on the command line write `'#1432'`; the
 ///   `pick` prompt needs no quoting.
 /// - a bare number: the session with that number when it exists, otherwise an
@@ -280,8 +280,9 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
 ///   id prefix and must not silently open another session. A 1-2 digit number
 ///   that prefixes several ids still means the number; otherwise every small
 ///   number would be refused once the store holds a few dozen hex ids.
-/// - a digit string with a leading zero (`0021`): an id prefix only, because
-///   `list` never prints a number that way (WR-02).
+/// - a *bare* digit string with a leading zero (`0021`): an id prefix only,
+///   because `list` never prints a number that way (WR-02). After `#` leading
+///   zeros are ignored: `#0021` is session #21.
 /// - anything else: a session id prefix (case-insensitive). An ambiguous prefix
 ///   is an error naming the candidates so the user can lengthen it.
 ///
@@ -1161,6 +1162,13 @@ mod tests {
         let rows = many(25, &[]);
         assert!(resolve(&rows, "0021").is_err());
         assert_eq!(resolve(&rows, "21").unwrap().session_id, "f21");
+        // Only a *bare* leading zero means a prefix: after `#` it is the
+        // number (IN-03, iteration 4), as docs/USAGE.md says.
+        assert_eq!(resolve(&rows, "#0021").unwrap().session_id, "f21");
+        let rows = many(25, &["0021-x"]);
+        let n21 = &rows.iter().find(|(o, _)| *o == 21).unwrap().1.session_id;
+        assert_eq!(&resolve(&rows, "#0021").unwrap().session_id, n21);
+        assert_ne!(n21, "0021-x");
     }
 
     #[test]
