@@ -52,9 +52,18 @@ pub(crate) fn div(a: i64, b: i64) -> f64 {
     }
 }
 
-/// Agent share in percent of `agent + main`.
+/// Agent share in percent of `agent + main`, `0.0` when both are 0.
+///
+/// Computed in `f64`: [`int_lossy`] saturates a huge or non-finite cell at
+/// `i64::MAX`, and `agent * 100` / `agent + main` in `i64` would then panic in a
+/// debug build and wrap to a wrong percentage in release.
 pub(crate) fn share(agent: i64, main: i64) -> f64 {
-    div(agent * 100, agent + main)
+    let total = agent as f64 + main as f64;
+    if total == 0.0 {
+        0.0
+    } else {
+        agent as f64 * 100.0 / total
+    }
 }
 
 /// Read a TEXT column lossily: `None` for NULL, invalid UTF-8 replaced by
@@ -142,7 +151,7 @@ pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{error_for_terminal, int_lossy, real_lossy};
+    use super::{error_for_terminal, int_lossy, real_lossy, share};
     use crate::error::StatuslineError;
 
     #[test]
@@ -168,6 +177,18 @@ mod tests {
             reals,
             [7.0, 1.5, -2.9, 0.0, 12.0, 3.7, 0.0, 0.0, 1e300, 0.0]
         );
+    }
+
+    #[test]
+    fn share_survives_saturated_counters() {
+        assert_eq!(share(25, 75), 25.0);
+        assert_eq!(share(0, 0), 0.0);
+        let s = share(i64::MAX, 100);
+        assert!((99.99..=100.0).contains(&s), "{s}");
+        assert_eq!(share(i64::MAX, i64::MAX), 50.0);
+        assert!(share(100, i64::MAX) < 1e-10);
+        // Negative counters (a damaged store) that cancel out do not divide by 0.
+        assert_eq!(share(-5, 5), 0.0);
     }
 
     /// Any C0 control (including '\n'), DEL or C1 control.

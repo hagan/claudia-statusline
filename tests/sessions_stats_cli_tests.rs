@@ -920,6 +920,71 @@ fn stats_survive_null_cost_and_invalid_utf8() {
     }
 }
 
+/// The data line of `out` that contains `needle`.
+fn line_with<'a>(out: &'a str, needle: &str) -> &'a str {
+    out.lines()
+        .find(|l| l.contains(needle))
+        .unwrap_or_else(|| panic!("no line with {:?} in:\n{}", needle, out))
+}
+
+#[test]
+fn saturated_counter_does_not_panic_and_shares_sanely() {
+    // int_lossy saturates 1e300 at i64::MAX; the share% and the agent
+    // in-traffic sum must not overflow (WR-01, iteration 3). `make test` builds
+    // debug, so an unchecked i64 `*` / `+` here would panic with exit 101.
+    let env = seeded();
+    let conn = env.db();
+    conn.execute(
+        "UPDATE sessions SET main_requests = 5, main_input_tokens = 100,
+                             agent_input_tokens = 1e300
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store saturating agent input");
+    conn.execute(
+        "INSERT INTO transcript_progress (path, session_id, is_agent, agent_type, updated_at,
+                                          input_tokens, cache_creation_tokens)
+         VALUES ('/tmp/agent-big.jsonl', 'aaaa1111-valid-old', 1, 'Explore', 'x',
+                 9223372036854775807, 1e300)",
+        [],
+    )
+    .expect("store saturating agent transcript");
+    drop(conn);
+
+    let (code, out, err) = env.run(&["sessions", "list", "--all"]);
+    assert_eq!(code, Some(0), "sessions list --all failed: {}", err);
+    assert!(
+        line_with(&out, "aaaa1111").contains("100.0%"),
+        "list: {}",
+        out
+    );
+
+    let (code, out, err) = env.run(&["stats"]);
+    assert_eq!(code, Some(0), "stats failed: {}", err);
+    assert!(line_with(&out, "2.1.0").contains("100.0%"), "stats: {}", out);
+
+    let (code, out, err) = env.run(&["stats", "--sessions"]);
+    assert_eq!(code, Some(0), "stats --sessions failed: {}", err);
+    assert!(
+        line_with(&out, "aaaa1111").contains("100.0%"),
+        "stats --sessions: {}",
+        out
+    );
+
+    let n = number_of(&env.rows(&[]), "aaaa1111").to_string();
+    let out = env.show(&n);
+    assert!(
+        line_with(&out, "  agents  requests").contains("share 100.0%"),
+        "show: {}",
+        out
+    );
+    assert!(
+        line_with(&out, "agent-big").contains(&i64::MAX.to_string()),
+        "show agent row: {}",
+        out
+    );
+}
+
 // ---------------------------------------------------------------------------
 // D-14: docs/USAGE.md matches the shipped behaviour
 // ---------------------------------------------------------------------------

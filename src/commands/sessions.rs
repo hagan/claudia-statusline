@@ -643,7 +643,8 @@ fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow]) -> Vec<String> {
                 trunc(name.trim_end_matches(".jsonl"), 28),
                 trunc(t.agent_type.as_deref().unwrap_or("?"), 18),
                 t.requests,
-                t.input_tokens + t.cache_creation_tokens,
+                // Saturating: int_lossy reads a huge cell as i64::MAX (WR-01).
+                t.input_tokens.saturating_add(t.cache_creation_tokens),
                 t.cache_read_tokens,
                 t.output_tokens,
                 t.size / 1024
