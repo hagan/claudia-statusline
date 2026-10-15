@@ -1035,7 +1035,7 @@ fn negative_and_non_finite_counters_read_as_zero() {
 #[test]
 fn stats_survive_overflowing_version_totals() {
     // SQLite's SUM() over all-INTEGER inputs raises "integer overflow" from
-    // step, before int_lossy sees a row; TOTAL() never raises (WR-02).
+    // step; the by-version sums are now saturating Rust adds (WR-02, IN-02).
     let env = seeded();
     let conn = env.db();
     conn.execute(
@@ -1065,6 +1065,53 @@ fn stats_survive_overflowing_version_totals() {
     assert_eq!(cells[4], "7", "row: {}", row);
     assert!(row.ends_with("100.0%"), "row: {}", row);
     assert_clean("overflowing stats", &out);
+}
+
+#[test]
+fn damaged_counter_cells_agree_across_views() {
+    // One coercion for every view (IN-02, iteration 4): a TEXT counter with a
+    // numeric prefix ('5x', '12abc') reads as 0 everywhere, so `stats`,
+    // `stats --sessions` and `sessions list --attributed` count the same
+    // sessions and the same totals.
+    let env = seeded();
+    let conn = env.db();
+    conn.execute(
+        "UPDATE sessions SET claude_version = '7.7.7', main_requests = '5x'
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store a prefix-numeric main_requests");
+    conn.execute(
+        "UPDATE sessions SET claude_version = '7.7.7', main_requests = 2,
+                             main_input_tokens = '12abc', agent_input_tokens = 4
+         WHERE session_id = ?1",
+        params![MULTIBYTE_ID],
+    )
+    .expect("store a prefix-numeric main_input_tokens");
+    drop(conn);
+
+    let (code, out, err) = env.run(&["stats"]);
+    assert_eq!(code, Some(0), "stats failed: {}", err);
+    let cells: Vec<String> = line_with(&out, "7.7.7")
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    // One session (the '5x' one is unattributed), 2 main requests, and the
+    // '12abc' input reads 0, so the agents hold 100% of the input traffic.
+    assert_eq!(cells[1], "1", "stats: {}", out);
+    assert_eq!(cells[4], "2", "stats: {}", out);
+    assert_eq!(cells.last().unwrap(), "100.0%", "stats: {}", out);
+
+    let (code, out, err) = env.run(&["stats", "--sessions"]);
+    assert_eq!(code, Some(0), "stats --sessions failed: {}", err);
+    assert!(!out.contains("aaaa1111"), "stats --sessions: {}", out);
+    let row = line_with(&out, "1234567");
+    assert!(row.contains("100.0%"), "stats --sessions: {}", row);
+
+    let (code, out, err) = env.run(&["sessions", "list", "--all", "--attributed"]);
+    assert_eq!(code, Some(0), "sessions list --attributed failed: {}", err);
+    assert!(!out.contains("aaaa1111"), "list --attributed: {}", out);
+    assert!(out.contains("1234567"), "list --attributed: {}", out);
 }
 
 // ---------------------------------------------------------------------------

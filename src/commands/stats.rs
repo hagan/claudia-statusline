@@ -17,16 +17,20 @@
 //! or a non-numeric TEXT cell reads as a number instead of failing, and a
 //! negative or non-finite counter reads as 0.
 //!
-//! The by-version aggregates use `TOTAL()`, not `SUM()`: SQLite's `SUM()` over
-//! all-INTEGER inputs raises "integer overflow" from `step` (before any row
-//! reaches `int_lossy`), so one corrupt near-`i64::MAX` cell would abort the
-//! whole command. `TOTAL()` never raises and returns REAL (0.0 for an empty or
-//! all-NULL group); `int_lossy` truncates it back to an integer, saturating at
-//! the `i64` bounds. A REAL is exact up to 2^53, far beyond any real total.
+//! The by-version aggregates are summed in Rust from per-session rows read
+//! through `count_lossy`, not in SQL (IN-02). SQLite's `SUM()` over all-INTEGER
+//! inputs raises "integer overflow" from `step`, so one corrupt near-`i64::MAX`
+//! cell would abort the whole command, and `TOTAL()` coerces a TEXT cell by its
+//! numeric prefix (`'5x'` = 5) where `count_lossy` reads it as 0, so the
+//! by-version row would disagree with `stats --sessions` and
+//! `sessions list --attributed`. Summing in Rust applies one coercion and one
+//! `main_requests > 0` predicate to every view and saturates at `i64::MAX`
+//! instead of failing.
 
-use super::{count_lossy, div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
+use super::{count_lossy, div, real_lossy, safe, share, text_lossy, trunc};
 use crate::error::Result;
 use rusqlite::{Connection, OpenFlags};
+use std::collections::HashMap;
 
 pub(crate) fn show_stats(by_version: bool, sessions: bool) -> Result<()> {
     let db_path = crate::stats::StatsData::get_sqlite_path()?;
@@ -54,35 +58,86 @@ fn show_by_version(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// One by-version row, aggregated in Rust from per-session rows.
+#[derive(Default)]
+struct VersionAgg {
+    sessions: i64,
+    first: Option<String>,
+    last: Option<String>,
+    mreq: i64,
+    min: i64,
+    mout: i64,
+    acount: i64,
+    areq: i64,
+    ain: i64,
+    aout: i64,
+}
+
 fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
+    // `main_requests > 0` in SQL is only a cheap superset (TEXT and BLOB cells
+    // sort above every number); the real filter is the Rust one below, on the
+    // value `count_lossy` reads, the same predicate `stats --sessions` and
+    // `sessions list --attributed` apply.
     let mut stmt = conn.prepare(
-        "SELECT COALESCE(claude_version, '?') AS v,
-                COUNT(*),
-                MIN(start_time), MAX(last_updated),
-                TOTAL(main_requests), TOTAL(main_input_tokens),
-                TOTAL(main_output_tokens),
-                TOTAL(agent_count), TOTAL(agent_requests),
-                TOTAL(agent_input_tokens), TOTAL(agent_output_tokens)
+        "SELECT COALESCE(claude_version, '?'), start_time, last_updated,
+                main_requests, main_input_tokens, main_output_tokens,
+                agent_count, agent_requests, agent_input_tokens, agent_output_tokens
          FROM sessions
-         WHERE main_requests > 0
-         GROUP BY v
-         ORDER BY MIN(start_time)",
+         WHERE main_requests > 0",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
             text_lossy(r, 0)?.unwrap_or_default(),
-            r.get::<_, i64>(1)?,
-            text_lossy(r, 2)?.unwrap_or_default(),
-            text_lossy(r, 3)?.unwrap_or_default(),
-            int_lossy(r, 4)?,
-            int_lossy(r, 5)?,
-            int_lossy(r, 6)?,
-            int_lossy(r, 7)?,
-            int_lossy(r, 8)?,
-            int_lossy(r, 9)?,
-            int_lossy(r, 10)?,
+            text_lossy(r, 1)?,
+            text_lossy(r, 2)?,
+            [
+                count_lossy(r, 3)?,
+                count_lossy(r, 4)?,
+                count_lossy(r, 5)?,
+                count_lossy(r, 6)?,
+                count_lossy(r, 7)?,
+                count_lossy(r, 8)?,
+                count_lossy(r, 9)?,
+            ],
         ))
     })?;
+
+    let mut groups: Vec<(String, VersionAgg)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for row in rows {
+        let (v, start, last, [mreq, min, mout, acount, areq, ain, aout]) = row?;
+        if mreq <= 0 {
+            continue;
+        }
+        let i = *index.entry(v.clone()).or_insert_with(|| {
+            groups.push((v, VersionAgg::default()));
+            groups.len() - 1
+        });
+        let g = &mut groups[i].1;
+        g.sessions = g.sessions.saturating_add(1);
+        // MIN / MAX ignore NULL, as in SQL.
+        if let Some(s) = start {
+            if g.first.as_ref().is_none_or(|f| s < *f) {
+                g.first = Some(s);
+            }
+        }
+        if let Some(l) = last {
+            if g.last.as_ref().is_none_or(|m| l > *m) {
+                g.last = Some(l);
+            }
+        }
+        // Counters are >= 0 (count_lossy), so saturating at i64::MAX is the
+        // only overflow case.
+        g.mreq = g.mreq.saturating_add(mreq);
+        g.min = g.min.saturating_add(min);
+        g.mout = g.mout.saturating_add(mout);
+        g.acount = g.acount.saturating_add(acount);
+        g.areq = g.areq.saturating_add(areq);
+        g.ain = g.ain.saturating_add(ain);
+        g.aout = g.aout.saturating_add(aout);
+    }
+    // ORDER BY MIN(start_time): a group with no start sorts first, like NULL.
+    groups.sort_by(|a, b| a.1.first.cmp(&b.1.first));
 
     let mut lines = vec![format!(
         "{:<10} {:>5}  {:<10} {:<10} {:>8} {:>9} {:>8} {:>7} {:>9} {:>9} {:>7}",
@@ -98,16 +153,28 @@ fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
         "ag_out/rq",
         "share%"
     )];
-    let mut any = false;
-    for row in rows {
-        let (v, n, first, last, mreq, min, mout, acount, areq, ain, aout) = row?;
-        any = true;
+    let any = !groups.is_empty();
+    for (v, g) in &groups {
+        let VersionAgg {
+            sessions: n,
+            ref first,
+            ref last,
+            mreq,
+            min,
+            mout,
+            acount,
+            areq,
+            ain,
+            aout,
+        } = *g;
+        let first = first.as_deref().unwrap_or_default();
+        let last = last.as_deref().unwrap_or_default();
         lines.push(format!(
             "{:<10} {:>5}  {:<10} {:<10} {:>8} {:>9.1} {:>8.0} {:>7} {:>9} {:>9.0} {:>6.1}%",
-            trunc(&v, 10),
+            trunc(v, 10),
             n,
-            trunc(&first, 10),
-            trunc(&last, 10),
+            trunc(first, 10),
+            trunc(last, 10),
             mreq,
             div(min, mreq) / 1000.0,
             div(mout, mreq),
@@ -147,8 +214,7 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
                 COALESCE(agent_input_tokens, 0), COALESCE(cost, 0.0)
          FROM sessions
          WHERE main_requests > 0
-         ORDER BY last_updated DESC
-         LIMIT 25",
+         ORDER BY last_updated DESC",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -177,8 +243,19 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
         "share%",
         "cost*"
     )];
+    // The SQL `main_requests > 0` is a superset (TEXT sorts above every
+    // number); keep the rows whose counter reads > 0, as the by-version view
+    // and `sessions list --attributed` do, then take the newest 25.
+    let mut shown = 0;
     for row in rows {
         let (sid, v, start, model, mreq, min, mout, acount, ain, cost) = row?;
+        if mreq <= 0 {
+            continue;
+        }
+        if shown == 25 {
+            break;
+        }
+        shown += 1;
         lines.push(format!(
             "{:<8} {:<9} {:<16} {:<18} {:>8} {:>9.1} {:>8.0} {:>6} {:>6.1}% {:>9.2}",
             trunc(&sid, 8),
@@ -328,8 +405,8 @@ mod tests {
             let row = lines.iter().find(|l| l.starts_with(v)).unwrap();
             row.split_whitespace().map(str::to_string).collect()
         };
-        // TOTAL() returns REAL; the main_req cell still prints as an integer,
-        // and the overflowing group saturates instead of failing the query.
+        // The main_req cell prints as an integer, and the overflowing group
+        // saturates instead of failing the query.
         assert_eq!(cells("4.0")[4], "3");
         assert_eq!(cells("3.0")[4], i64::MAX.to_string());
     }
