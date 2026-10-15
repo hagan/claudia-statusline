@@ -54,9 +54,13 @@ pub(crate) fn div(a: i64, b: i64) -> f64 {
 
 /// Agent share in percent of `agent + main`, `0.0` when both are 0.
 ///
-/// Computed in `f64`: [`int_lossy`] saturates a huge or non-finite cell at
-/// `i64::MAX`, and `agent * 100` / `agent + main` in `i64` would then panic in a
-/// debug build and wrap to a wrong percentage in release.
+/// The callers pass counters read through [`count_lossy`], which never returns
+/// a negative value, so the `0.0` guard only fires for `0 / 0` and the result
+/// is always within `0..=100`.
+///
+/// Computed in `f64`: [`count_lossy`] saturates a huge cell at `i64::MAX`, and
+/// `agent * 100` / `agent + main` in `i64` would then panic in a debug build and
+/// wrap to a wrong percentage in release.
 pub(crate) fn share(agent: i64, main: i64) -> f64 {
     let total = agent as f64 + main as f64;
     if total == 0.0 {
@@ -83,8 +87,9 @@ pub(crate) fn text_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<Op
     })
 }
 
-/// Read an INTEGER column lossily: NULL, a BLOB or text that is not a number
-/// read as `0`, a REAL truncated toward zero (saturating at the `i64` bounds).
+/// Read an INTEGER column lossily: NULL, a BLOB, text that is not a number and
+/// a non-finite value (`inf`, `'1e999'`, NaN) read as `0`, a finite REAL
+/// truncated toward zero (saturating at the `i64` bounds).
 ///
 /// SQLite's INTEGER affinity keeps a non-integral REAL (`1.5`) or non-numeric
 /// TEXT (`'abc'`) as stored, and `SUM()` returns REAL as soon as one input is
@@ -95,18 +100,39 @@ pub(crate) fn int_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<i64
     use rusqlite::types::ValueRef;
     Ok(match r.get_ref(i)? {
         ValueRef::Integer(n) => n,
-        // `as` saturates and maps NaN to 0.
-        ValueRef::Real(f) => f as i64,
+        ValueRef::Real(f) => finite_to_i64(f),
         ValueRef::Text(b) => {
             let s = String::from_utf8_lossy(b);
             let s = s.trim();
             s.parse::<i64>()
                 .ok()
-                .or_else(|| s.parse::<f64>().ok().map(|f| f as i64))
+                .or_else(|| s.parse::<f64>().ok().map(finite_to_i64))
                 .unwrap_or(0)
         }
         ValueRef::Null | ValueRef::Blob(_) => 0,
     })
+}
+
+/// A finite `f64` truncated toward zero (`as` saturates at the `i64` bounds),
+/// `0` for a non-finite one: an infinite cell is damage, not a huge count.
+fn finite_to_i64(f: f64) -> i64 {
+    if f.is_finite() {
+        f as i64
+    } else {
+        0
+    }
+}
+
+/// Read a counter column (tokens, requests, lines, seconds, sizes) lossily:
+/// [`int_lossy`], clamped at `0`.
+///
+/// No counter is ever negative; a negative cell can only come from a damaged
+/// or hand-edited store, and rendering it would print nonsense such as
+/// `lines +0 / --5`, `0h-1m` or an agent share above 100% (IN-01). This is the
+/// single coercion every `sessions` / `stats` view applies to a counter cell,
+/// so the views agree on the same store (IN-02).
+pub(crate) fn count_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<i64> {
+    Ok(int_lossy(r, i)?.max(0))
 }
 
 /// Read a REAL column lossily: NULL, a BLOB, text that is not a number and a
@@ -151,31 +177,43 @@ pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{error_for_terminal, int_lossy, real_lossy, share};
+    use super::{count_lossy, error_for_terminal, int_lossy, real_lossy, share};
     use crate::error::StatuslineError;
 
     #[test]
     fn numeric_readers_tolerate_any_cell() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let (ints, reals): (Vec<i64>, Vec<f64>) = conn
+        let (ints, counts, reals): (Vec<i64>, Vec<i64>, Vec<f64>) = conn
             .query_row(
-                "SELECT 7, 1.5, -2.9, 'abc', ' 12 ', '3.7', NULL, X'00ff', 1e300, '1e999'",
+                "SELECT 7, 1.5, -2.9, 'abc', ' 12 ', '3.7', NULL, X'00ff', 1e300, '1e999',
+                        9e999, -9e999, '-1e999', -5, ' -7 '",
                 [],
                 |r| {
                     let mut ints = Vec::new();
+                    let mut counts = Vec::new();
                     let mut reals = Vec::new();
-                    for i in 0..10 {
+                    for i in 0..15 {
                         ints.push(int_lossy(r, i)?);
+                        counts.push(count_lossy(r, i)?);
                         reals.push(real_lossy(r, i)?);
                     }
-                    Ok((ints, reals))
+                    Ok((ints, counts, reals))
                 },
             )
             .unwrap();
-        assert_eq!(ints, [7, 1, -2, 0, 12, 3, 0, 0, i64::MAX, i64::MAX]);
+        // Finite but huge saturates; non-finite (inf, -inf, '1e999') reads 0.
+        assert_eq!(
+            ints,
+            [7, 1, -2, 0, 12, 3, 0, 0, i64::MAX, 0, 0, 0, 0, -5, -7]
+        );
+        // Counters additionally never go negative (IN-01).
+        assert_eq!(
+            counts,
+            [7, 1, 0, 0, 12, 3, 0, 0, i64::MAX, 0, 0, 0, 0, 0, 0]
+        );
         assert_eq!(
             reals,
-            [7.0, 1.5, -2.9, 0.0, 12.0, 3.7, 0.0, 0.0, 1e300, 0.0]
+            [7.0, 1.5, -2.9, 0.0, 12.0, 3.7, 0.0, 0.0, 1e300, 0.0, 0.0, 0.0, 0.0, -5.0, -7.0]
         );
     }
 
@@ -187,8 +225,10 @@ mod tests {
         assert!((99.99..=100.0).contains(&s), "{s}");
         assert_eq!(share(i64::MAX, i64::MAX), 50.0);
         assert!(share(100, i64::MAX) < 1e-10);
-        // Negative counters (a damaged store) that cancel out do not divide by 0.
-        assert_eq!(share(-5, 5), 0.0);
+        // Counters reach share() through count_lossy, so they are >= 0: the
+        // guard fires only for 0/0 and the share never exceeds 100%.
+        assert_eq!(share(0, 5), 0.0);
+        assert_eq!(share(5, 0), 100.0);
     }
 
     /// Any C0 control (including '\n'), DEL or C1 control.

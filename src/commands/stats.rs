@@ -13,8 +13,9 @@
 //! Every TEXT cell read from the database is read lossily (one non-UTF-8 cell
 //! must not fail the command), sanitized for the terminal, and only then
 //! truncated by chars (never bytes) in Rust. Numeric cells are read through
-//! `int_lossy` / `real_lossy` for the same reason: a NULL, a non-integral REAL
-//! or a non-numeric TEXT cell reads as a number instead of failing.
+//! `count_lossy` / `real_lossy` for the same reason: a NULL, a non-integral REAL
+//! or a non-numeric TEXT cell reads as a number instead of failing, and a
+//! negative or non-finite counter reads as 0.
 //!
 //! The by-version aggregates use `TOTAL()`, not `SUM()`: SQLite's `SUM()` over
 //! all-INTEGER inputs raises "integer overflow" from `step` (before any row
@@ -23,7 +24,7 @@
 //! all-NULL group); `int_lossy` truncates it back to an integer, saturating at
 //! the `i64` bounds. A REAL is exact up to 2^53, far beyond any real total.
 
-use super::{div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
+use super::{count_lossy, div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
 use crate::error::Result;
 use rusqlite::{Connection, OpenFlags};
 
@@ -155,11 +156,11 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
             text_lossy(r, 1)?.unwrap_or_default(),
             text_lossy(r, 2)?.unwrap_or_default(),
             text_lossy(r, 3)?.unwrap_or_default(),
-            int_lossy(r, 4)?,
-            int_lossy(r, 5)?,
-            int_lossy(r, 6)?,
-            int_lossy(r, 7)?,
-            int_lossy(r, 8)?,
+            count_lossy(r, 4)?,
+            count_lossy(r, 5)?,
+            count_lossy(r, 6)?,
+            count_lossy(r, 7)?,
+            count_lossy(r, 8)?,
             real_lossy(r, 9)?,
         ))
     })?;

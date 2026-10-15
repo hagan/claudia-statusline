@@ -11,7 +11,7 @@
 //! only, or a prefix of the session id; an ambiguous prefix is refused with the
 //! candidates.
 
-use super::{div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
+use super::{count_lossy, div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
@@ -75,9 +75,9 @@ const SESSION_COLUMNS: &str =
     COALESCE(main_output_tokens, 0)";
 
 /// TEXT cells are read through [`text_lossy`] and numeric cells through
-/// [`int_lossy`] / [`real_lossy`] (WR-01): one non-UTF-8, non-integer or
+/// [`count_lossy`] / [`real_lossy`] (WR-01): one non-UTF-8, non-integer or
 /// non-numeric cell must not make `load_numbered`, and with it every
-/// `sessions` subcommand, fail.
+/// `sessions` subcommand, fail. Counters are clamped at 0 (IN-01).
 fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     let start_time = text_lossy(r, 1)?.unwrap_or_default();
     Ok(SessionRow {
@@ -87,24 +87,24 @@ fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         start_time,
         last_updated: text_lossy(r, 2)?.unwrap_or_default(),
         cost: real_lossy(r, 3)?,
-        lines_added: int_lossy(r, 4)?,
-        lines_removed: int_lossy(r, 5)?,
-        max_tokens_observed: int_lossy(r, 6)?,
+        lines_added: count_lossy(r, 4)?,
+        lines_removed: count_lossy(r, 5)?,
+        max_tokens_observed: count_lossy(r, 6)?,
         model_name: text_lossy(r, 7)?,
         workspace_dir: text_lossy(r, 8)?,
-        total_input_tokens: int_lossy(r, 9)?,
-        total_output_tokens: int_lossy(r, 10)?,
-        total_cache_read_tokens: int_lossy(r, 11)?,
-        total_cache_creation_tokens: int_lossy(r, 12)?,
-        active_time_seconds: int_lossy(r, 13)?,
+        total_input_tokens: count_lossy(r, 9)?,
+        total_output_tokens: count_lossy(r, 10)?,
+        total_cache_read_tokens: count_lossy(r, 11)?,
+        total_cache_creation_tokens: count_lossy(r, 12)?,
+        active_time_seconds: count_lossy(r, 13)?,
         claude_version: text_lossy(r, 14)?,
-        agent_count: int_lossy(r, 15)?,
-        agent_requests: int_lossy(r, 16)?,
-        agent_input_tokens: int_lossy(r, 17)?,
-        agent_output_tokens: int_lossy(r, 18)?,
-        main_requests: int_lossy(r, 19)?,
-        main_input_tokens: int_lossy(r, 20)?,
-        main_output_tokens: int_lossy(r, 21)?,
+        agent_count: count_lossy(r, 15)?,
+        agent_requests: count_lossy(r, 16)?,
+        agent_input_tokens: count_lossy(r, 17)?,
+        agent_output_tokens: count_lossy(r, 18)?,
+        main_requests: count_lossy(r, 19)?,
+        main_input_tokens: count_lossy(r, 20)?,
+        main_output_tokens: count_lossy(r, 21)?,
     })
 }
 
@@ -254,12 +254,12 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
             path: text_lossy(r, 0)?.unwrap_or_default(),
             is_agent: int_lossy(r, 1)? != 0,
             agent_type: text_lossy(r, 2)?,
-            size: int_lossy(r, 3)?,
-            requests: int_lossy(r, 4)?,
-            input_tokens: int_lossy(r, 5)?,
-            cache_read_tokens: int_lossy(r, 6)?,
-            cache_creation_tokens: int_lossy(r, 7)?,
-            output_tokens: int_lossy(r, 8)?,
+            size: count_lossy(r, 3)?,
+            requests: count_lossy(r, 4)?,
+            input_tokens: count_lossy(r, 5)?,
+            cache_read_tokens: count_lossy(r, 6)?,
+            cache_creation_tokens: count_lossy(r, 7)?,
+            output_tokens: count_lossy(r, 8)?,
         })
     })?;
     rows.map(|r| r.map_err(StatuslineError::from)).collect()
@@ -643,7 +643,7 @@ fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow]) -> Vec<String> {
                 trunc(name.trim_end_matches(".jsonl"), 28),
                 trunc(t.agent_type.as_deref().unwrap_or("?"), 18),
                 t.requests,
-                // Saturating: int_lossy reads a huge cell as i64::MAX (WR-01).
+                // Saturating: count_lossy reads a huge cell as i64::MAX (WR-01).
                 t.input_tokens.saturating_add(t.cache_creation_tokens),
                 t.cache_read_tokens,
                 t.output_tokens,

@@ -990,6 +990,49 @@ fn saturated_counter_does_not_panic_and_shares_sanely() {
 }
 
 #[test]
+fn negative_and_non_finite_counters_read_as_zero() {
+    // A damaged store can hold negative or infinite counters; every view
+    // clamps them at 0 so no share exceeds 100% and no line reads `--5`
+    // (IN-01, iteration 4).
+    let env = seeded();
+    let conn = env.db();
+    conn.execute(
+        "UPDATE sessions SET agent_input_tokens = -10, main_input_tokens = 5,
+                             lines_added = '1e999', lines_removed = -5,
+                             active_time_seconds = -61
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store negative counters");
+    drop(conn);
+
+    let (code, out, err) = env.run(&["sessions", "list", "--all"]);
+    assert_eq!(code, Some(0), "sessions list --all failed: {}", err);
+    let row = line_with(&out, "aaaa1111");
+    assert!(row.contains(" 0.0%"), "list: {}", out);
+    assert!(!row.contains("200.0%"), "list: {}", out);
+
+    let (code, out, err) = env.run(&["stats", "--sessions"]);
+    assert_eq!(code, Some(0), "stats --sessions failed: {}", err);
+    let row = line_with(&out, "aaaa1111");
+    assert!(row.contains(" 0.0%"), "stats --sessions: {}", row);
+
+    let n = number_of(&env.rows(&[]), "aaaa1111").to_string();
+    let out = env.show(&n);
+    assert!(
+        line_with(&out, "  agents  requests").contains("share   0.0%"),
+        "show: {}",
+        out
+    );
+    assert!(out.contains("lines             +0 / -0"), "show: {}", out);
+    assert!(
+        out.contains("active_time       0h00m (0 s)"),
+        "show: {}",
+        out
+    );
+}
+
+#[test]
 fn stats_survive_overflowing_version_totals() {
     // SQLite's SUM() over all-INTEGER inputs raises "integer overflow" from
     // step, before int_lossy sees a row; TOTAL() never raises (WR-02).
