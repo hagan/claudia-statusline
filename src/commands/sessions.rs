@@ -273,12 +273,15 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
 ///   after whitespace as a comment, so on the command line write `'#1432'`; the
 ///   `pick` prompt needs no quoting.
 /// - a bare number: the session with that number when it exists, otherwise an
-///   id prefix. If the number exists AND it is the prefix of exactly one id of
-///   a *different* session, the selector is refused as ambiguous (WR-04): an
-///   all-digit unique prefix is a plausible id prefix and must not silently
-///   open another session. A digit string matching several ids is not a usable
-///   prefix anyway, so the number wins there; otherwise every small number
-///   would be refused once the store holds a few dozen hex ids.
+///   id prefix. If the number exists AND it is also the prefix of a
+///   *different* session's id, the selector is refused as ambiguous, naming
+///   the ids, when it prefixes exactly one other id (WR-04) or when it has 3+
+///   digits and prefixes several (WR-02): such a digit string is a plausible
+///   id prefix and must not silently open another session. A 1-2 digit number
+///   that prefixes several ids still means the number; otherwise every small
+///   number would be refused once the store holds a few dozen hex ids.
+/// - a digit string with a leading zero (`0021`): an id prefix only, because
+///   `list` never prints a number that way (WR-02).
 /// - anything else: a session id prefix (case-insensitive). An ambiguous prefix
 ///   is an error naming the candidates so the user can lengthen it.
 ///
@@ -306,19 +309,47 @@ pub(crate) fn resolve<'a>(rows: &'a [(usize, SessionRow)], sel: &str) -> Result<
         .map(|(_, r)| r)
         .filter(|r| r.session_id.to_ascii_lowercase().starts_with(&lower))
         .collect();
-    if let Ok(n) = sel.parse::<usize>() {
+    // `list` never prints a number with a leading zero, so `0021` can only be
+    // an id prefix (WR-02).
+    let leading_zero = sel.len() > 1 && sel.starts_with('0');
+    if let (false, Ok(n)) = (leading_zero, sel.parse::<usize>()) {
         // Number first: a pure number is far likelier a session number than a
         // hex prefix; an all-digit id prefix still works via the fallback below
         // when no session carries that number.
         if let Some((_, r)) = rows.iter().find(|(o, _)| *o == n) {
-            if let [other] = hits.as_slice() {
-                if other.session_id != r.session_id {
-                    return Err(StatuslineError::Other(format!(
+            let others: Vec<&SessionRow> = hits
+                .iter()
+                .copied()
+                .filter(|h| h.session_id != r.session_id)
+                .collect();
+            let shadows = match others.len() {
+                0 => false,
+                1 => true,
+                // 1-2 digits: a number (otherwise every small number would be
+                // refused once the store holds a few dozen hex ids); 3+ digits
+                // that prefix several ids read as a deliberate prefix.
+                _ => sel.len() >= 3,
+            };
+            if shadows {
+                let sel = safe(sel);
+                let msg = if let [other] = others.as_slice() {
+                    format!(
                         "'{sel}' is both session #{n} and the id prefix of {}; use '#{n}' for the number or a longer id prefix",
                         safe(&other.session_id),
-                        sel = safe(sel),
-                    )));
-                }
+                    )
+                } else {
+                    let list = others
+                        .iter()
+                        .take(8)
+                        .map(|o| safe(&o.session_id))
+                        .collect::<Vec<_>>()
+                        .join("\n  ");
+                    format!(
+                        "'{sel}' is both session #{n} and the id prefix of {} sessions; use '#{n}' for the number or a longer id prefix:\n  {list}",
+                        others.len(),
+                    )
+                };
+                return Err(StatuslineError::Other(msg));
             }
             return Ok(r);
         }
@@ -1100,6 +1131,57 @@ mod tests {
         // The number and the unique prefix are the same session: no ambiguity.
         let rows = numbered(&["aaaa-1", "2bbb-2"]);
         assert_eq!(resolve(&rows, "2").unwrap().session_id, "2bbb-2");
+    }
+
+    /// `n` sessions `f01..fNN` (all numbered, none all-digit) plus `extra` ids.
+    fn many(n: usize, extra: &[&str]) -> Vec<(usize, SessionRow)> {
+        let mut ids: Vec<String> = (1..=n).map(|i| format!("f{i:02}")).collect();
+        ids.extend(extra.iter().map(|s| s.to_string()));
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        numbered(&refs)
+    }
+
+    #[test]
+    fn resolve_leading_zero_is_prefix_only() {
+        // The review's scenario: 25 sessions plus ids 0021-x and 0021-y.
+        let rows = many(25, &["0021-x", "0021-y"]);
+        assert!(rows
+            .iter()
+            .any(|(o, r)| *o == 21 && r.session_id != "0021-x"));
+        let msg = resolve(&rows, "0021").unwrap_err().to_string();
+        assert!(msg.contains("matches 2 sessions"), "{msg}");
+        assert!(msg.contains("0021-x") && msg.contains("0021-y"), "{msg}");
+        assert_eq!(resolve(&rows, "0021-x").unwrap().session_id, "0021-x");
+        // A unique leading-zero prefix opens that id, not session #21.
+        let rows = many(25, &["0021-x"]);
+        assert_eq!(resolve(&rows, "0021").unwrap().session_id, "0021-x");
+        assert_eq!(resolve(&rows, "002").unwrap().session_id, "0021-x");
+        // No id matches: an error, never session #21.
+        let rows = many(25, &[]);
+        assert!(resolve(&rows, "0021").is_err());
+        assert_eq!(resolve(&rows, "21").unwrap().session_id, "f21");
+    }
+
+    #[test]
+    fn resolve_refuses_long_number_shadowing_several_digit_prefixes() {
+        let rows = many(130, &["123a-x", "123b-y"]);
+        let n123 = rows
+            .iter()
+            .find(|(o, _)| *o == 123)
+            .unwrap()
+            .1
+            .session_id
+            .clone();
+        assert!(!n123.starts_with("123"), "{n123}");
+        let msg = resolve(&rows, "123").unwrap_err().to_string();
+        assert!(msg.contains("#123"), "{msg}");
+        assert!(msg.contains("123a-x") && msg.contains("123b-y"), "{msg}");
+        assert!(msg.contains("'#123'"), "{msg}");
+        assert_eq!(resolve(&rows, "#123").unwrap().session_id, n123);
+        assert_eq!(resolve(&rows, "123a").unwrap().session_id, "123a-x");
+        // 1-2 digits prefixing several ids still mean the number.
+        let rows = many(30, &["12a-x", "12b-y"]);
+        assert_eq!(resolve(&rows, "12").unwrap().session_id, "f12");
     }
 
     /// Pins burn_rate to auto_reset with a 60-minute threshold for the lifetime of

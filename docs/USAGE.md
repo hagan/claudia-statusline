@@ -221,8 +221,12 @@ control and escape sequences.
 
 A bare number is read as a session number when one exists, otherwise as an id
 prefix; `#N` is number-only. If a bare number is both an existing session number
-and the prefix of exactly one *other* session's id, it is refused as ambiguous:
-use `'#N'` for the number or a longer prefix for the id. Numbers are independent of `--limit` and filters.
+and the prefix of *other* sessions' ids, it is refused as ambiguous when it
+prefixes exactly one other id, or when it has 3 or more digits and prefixes
+several; use `'#N'` for the number or a longer prefix for the id. A 1-2 digit
+number that prefixes several ids still means the number. A selector with a
+leading zero (`0021`) is only ever an id prefix, since `list` never prints
+numbers that way. Numbers are independent of `--limit` and filters.
 An ambiguous prefix is refused with the matching ids;
 `pick` refuses to run without a terminal on stdin so it never hangs a script.
 
