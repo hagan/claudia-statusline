@@ -961,7 +961,11 @@ fn saturated_counter_does_not_panic_and_shares_sanely() {
 
     let (code, out, err) = env.run(&["stats"]);
     assert_eq!(code, Some(0), "stats failed: {}", err);
-    assert!(line_with(&out, "2.1.0").contains("100.0%"), "stats: {}", out);
+    assert!(
+        line_with(&out, "2.1.0").contains("100.0%"),
+        "stats: {}",
+        out
+    );
 
     let (code, out, err) = env.run(&["stats", "--sessions"]);
     assert_eq!(code, Some(0), "stats --sessions failed: {}", err);
@@ -983,6 +987,41 @@ fn saturated_counter_does_not_panic_and_shares_sanely() {
         "show agent row: {}",
         out
     );
+}
+
+#[test]
+fn stats_survive_overflowing_version_totals() {
+    // SQLite's SUM() over all-INTEGER inputs raises "integer overflow" from
+    // step, before int_lossy sees a row; TOTAL() never raises (WR-02).
+    let env = seeded();
+    let conn = env.db();
+    conn.execute(
+        "UPDATE sessions SET claude_version = '9.9.9',
+                             main_output_tokens = 9223372036854775807,
+                             agent_input_tokens = 9223372036854775807
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store i64::MAX counters");
+    conn.execute(
+        "UPDATE sessions SET claude_version = '9.9.9', main_output_tokens = 1,
+                             agent_input_tokens = 1
+         WHERE session_id = ?1",
+        params![MULTIBYTE_ID],
+    )
+    .expect("store a second counter in the same version");
+    drop(conn);
+
+    let (code, out, err) = env.run(&["stats"]);
+    assert_eq!(code, Some(0), "stats failed: {}", err);
+    assert!(!err.contains("overflow"), "stderr: {}", err);
+    let row = line_with(&out, "9.9.9");
+    // 2 sessions, 7 main requests; integer totals still render as integers.
+    let cells: Vec<&str> = row.split_whitespace().collect();
+    assert_eq!(cells[1], "2", "row: {}", row);
+    assert_eq!(cells[4], "7", "row: {}", row);
+    assert!(row.ends_with("100.0%"), "row: {}", row);
+    assert_clean("overflowing stats", &out);
 }
 
 // ---------------------------------------------------------------------------

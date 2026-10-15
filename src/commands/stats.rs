@@ -12,10 +12,16 @@
 //!
 //! Every TEXT cell read from the database is read lossily (one non-UTF-8 cell
 //! must not fail the command), sanitized for the terminal, and only then
-//! truncated by chars (never bytes) in Rust. Numeric cells (including the
-//! `SUM()`s, which turn REAL on one non-integer input) are read through
+//! truncated by chars (never bytes) in Rust. Numeric cells are read through
 //! `int_lossy` / `real_lossy` for the same reason: a NULL, a non-integral REAL
 //! or a non-numeric TEXT cell reads as a number instead of failing.
+//!
+//! The by-version aggregates use `TOTAL()`, not `SUM()`: SQLite's `SUM()` over
+//! all-INTEGER inputs raises "integer overflow" from `step` (before any row
+//! reaches `int_lossy`), so one corrupt near-`i64::MAX` cell would abort the
+//! whole command. `TOTAL()` never raises and returns REAL (0.0 for an empty or
+//! all-NULL group); `int_lossy` truncates it back to an integer, saturating at
+//! the `i64` bounds. A REAL is exact up to 2^53, far beyond any real total.
 
 use super::{div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
 use crate::error::Result;
@@ -52,10 +58,10 @@ fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
         "SELECT COALESCE(claude_version, '?') AS v,
                 COUNT(*),
                 MIN(start_time), MAX(last_updated),
-                COALESCE(SUM(main_requests), 0), COALESCE(SUM(main_input_tokens), 0),
-                COALESCE(SUM(main_output_tokens), 0),
-                COALESCE(SUM(agent_count), 0), COALESCE(SUM(agent_requests), 0),
-                COALESCE(SUM(agent_input_tokens), 0), COALESCE(SUM(agent_output_tokens), 0)
+                TOTAL(main_requests), TOTAL(main_input_tokens),
+                TOTAL(main_output_tokens),
+                TOTAL(agent_count), TOTAL(agent_requests),
+                TOTAL(agent_input_tokens), TOTAL(agent_output_tokens)
          FROM sessions
          WHERE main_requests > 0
          GROUP BY v
@@ -278,6 +284,53 @@ mod tests {
         assert!(lines
             .iter()
             .any(|l| l.contains("counts entirely under its newest version")));
+    }
+
+    #[test]
+    fn by_version_totals_render_as_integers_and_never_overflow() {
+        let (_dir, path) = temp_db();
+        insert(
+            &path,
+            "a",
+            "2020-01-01",
+            "2020-01-01",
+            "3.0",
+            "",
+            i64::MAX,
+            10,
+            0.0,
+        );
+        insert(
+            &path,
+            "b",
+            "2020-01-02",
+            "2020-01-02",
+            "3.0",
+            "",
+            2,
+            20,
+            0.0,
+        );
+        insert(
+            &path,
+            "c",
+            "2020-01-03",
+            "2020-01-03",
+            "4.0",
+            "",
+            3,
+            30,
+            0.0,
+        );
+        let lines = by_version_lines(&ro(&path)).unwrap();
+        let cells = |v: &str| -> Vec<String> {
+            let row = lines.iter().find(|l| l.starts_with(v)).unwrap();
+            row.split_whitespace().map(str::to_string).collect()
+        };
+        // TOTAL() returns REAL; the main_req cell still prints as an integer,
+        // and the overflowing group saturates instead of failing the query.
+        assert_eq!(cells("4.0")[4], "3");
+        assert_eq!(cells("3.0")[4], i64::MAX.to_string());
     }
 
     #[test]
