@@ -12,10 +12,12 @@
 //!
 //! Every TEXT cell read from the database is read lossily (one non-UTF-8 cell
 //! must not fail the command), sanitized for the terminal, and only then
-//! truncated by chars (never bytes) in Rust. Nullable numeric columns are
-//! COALESCEd in SQL for the same reason.
+//! truncated by chars (never bytes) in Rust. Numeric cells (including the
+//! `SUM()`s, which turn REAL on one non-integer input) are read through
+//! `int_lossy` / `real_lossy` for the same reason: a NULL, a non-integral REAL
+//! or a non-numeric TEXT cell reads as a number instead of failing.
 
-use super::{div, safe, share, text_lossy, trunc};
+use super::{div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
 use crate::error::Result;
 use rusqlite::{Connection, OpenFlags};
 
@@ -65,13 +67,13 @@ fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
             r.get::<_, i64>(1)?,
             text_lossy(r, 2)?.unwrap_or_default(),
             text_lossy(r, 3)?.unwrap_or_default(),
-            r.get::<_, i64>(4)?,
-            r.get::<_, i64>(5)?,
-            r.get::<_, i64>(6)?,
-            r.get::<_, i64>(7)?,
-            r.get::<_, i64>(8)?,
-            r.get::<_, i64>(9)?,
-            r.get::<_, i64>(10)?,
+            int_lossy(r, 4)?,
+            int_lossy(r, 5)?,
+            int_lossy(r, 6)?,
+            int_lossy(r, 7)?,
+            int_lossy(r, 8)?,
+            int_lossy(r, 9)?,
+            int_lossy(r, 10)?,
         ))
     })?;
 
@@ -147,12 +149,12 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
             text_lossy(r, 1)?.unwrap_or_default(),
             text_lossy(r, 2)?.unwrap_or_default(),
             text_lossy(r, 3)?.unwrap_or_default(),
-            r.get::<_, i64>(4)?,
-            r.get::<_, i64>(5)?,
-            r.get::<_, i64>(6)?,
-            r.get::<_, i64>(7)?,
-            r.get::<_, i64>(8)?,
-            r.get::<_, f64>(9)?,
+            int_lossy(r, 4)?,
+            int_lossy(r, 5)?,
+            int_lossy(r, 6)?,
+            int_lossy(r, 7)?,
+            int_lossy(r, 8)?,
+            real_lossy(r, 9)?,
         ))
     })?;
     let mut lines = vec![format!(

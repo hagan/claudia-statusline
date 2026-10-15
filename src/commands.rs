@@ -74,6 +74,48 @@ pub(crate) fn text_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<Op
     })
 }
 
+/// Read an INTEGER column lossily: NULL, a BLOB or text that is not a number
+/// read as `0`, a REAL truncated toward zero (saturating at the `i64` bounds).
+///
+/// SQLite's INTEGER affinity keeps a non-integral REAL (`1.5`) or non-numeric
+/// TEXT (`'abc'`) as stored, and `SUM()` returns REAL as soon as one input is
+/// not an integer. A strict `Row::get::<i64>` fails on such a cell, and like an
+/// invalid UTF-8 cell for [`text_lossy`], that one cell would abort the whole
+/// `sessions` / `stats` command.
+pub(crate) fn int_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<i64> {
+    use rusqlite::types::ValueRef;
+    Ok(match r.get_ref(i)? {
+        ValueRef::Integer(n) => n,
+        // `as` saturates and maps NaN to 0.
+        ValueRef::Real(f) => f as i64,
+        ValueRef::Text(b) => {
+            let s = String::from_utf8_lossy(b);
+            let s = s.trim();
+            s.parse::<i64>()
+                .ok()
+                .or_else(|| s.parse::<f64>().ok().map(|f| f as i64))
+                .unwrap_or(0)
+        }
+        ValueRef::Null | ValueRef::Blob(_) => 0,
+    })
+}
+
+/// Read a REAL column lossily: NULL, a BLOB, text that is not a number and a
+/// non-finite value read as `0.0`. Same reason as [`int_lossy`].
+pub(crate) fn real_lossy(r: &rusqlite::Row<'_>, i: usize) -> rusqlite::Result<f64> {
+    use rusqlite::types::ValueRef;
+    let v = match r.get_ref(i)? {
+        ValueRef::Integer(n) => n as f64,
+        ValueRef::Real(f) => f,
+        ValueRef::Text(b) => String::from_utf8_lossy(b)
+            .trim()
+            .parse::<f64>()
+            .unwrap_or(0.0),
+        ValueRef::Null | ValueRef::Blob(_) => 0.0,
+    };
+    Ok(if v.is_finite() { v } else { 0.0 })
+}
+
 /// Render an error from a `sessions` / `stats` handler for the terminal (D-12).
 ///
 /// - `StatuslineError::Other(msg)`: messages assembled by the command handlers
@@ -100,8 +142,33 @@ pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::error_for_terminal;
+    use super::{error_for_terminal, int_lossy, real_lossy};
     use crate::error::StatuslineError;
+
+    #[test]
+    fn numeric_readers_tolerate_any_cell() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let (ints, reals): (Vec<i64>, Vec<f64>) = conn
+            .query_row(
+                "SELECT 7, 1.5, -2.9, 'abc', ' 12 ', '3.7', NULL, X'00ff', 1e300, '1e999'",
+                [],
+                |r| {
+                    let mut ints = Vec::new();
+                    let mut reals = Vec::new();
+                    for i in 0..10 {
+                        ints.push(int_lossy(r, i)?);
+                        reals.push(real_lossy(r, i)?);
+                    }
+                    Ok((ints, reals))
+                },
+            )
+            .unwrap();
+        assert_eq!(ints, [7, 1, -2, 0, 12, 3, 0, 0, i64::MAX, i64::MAX]);
+        assert_eq!(
+            reals,
+            [7.0, 1.5, -2.9, 0.0, 12.0, 3.7, 0.0, 0.0, 1e300, 0.0]
+        );
+    }
 
     /// Any C0 control (including '\n'), DEL or C1 control.
     fn has_control(s: &str) -> bool {

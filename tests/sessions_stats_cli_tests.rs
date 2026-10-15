@@ -853,6 +853,21 @@ fn invalid_utf8_cell_does_not_abort_browser() {
         [],
     )
     .expect("store invalid utf-8 transcript path");
+    // Non-integer numeric cells (WR-01, iteration 2): INTEGER affinity keeps a
+    // non-integral REAL or non-numeric TEXT as stored.
+    conn.execute(
+        "UPDATE sessions SET lines_added = 'abc', main_input_tokens = 1.5,
+                             agent_count = 'x', cost = 'n/a'
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store non-integer numeric cells");
+    conn.execute(
+        "UPDATE transcript_progress SET size = 'big', requests = 2.5
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store non-integer transcript cells");
     drop(conn);
 
     let rows = env.rows(&[]);
@@ -860,6 +875,15 @@ fn invalid_utf8_cell_does_not_abort_browser() {
     let out = env.show(&n);
     assert!(out.contains("A\u{fffd}B"), "lossy model cell: {}", out);
     assert_clean("invalid utf-8 show", &out);
+    for args in [
+        vec!["sessions", "list", "--all"],
+        vec!["sessions", "list", "--all", "--attributed"],
+    ] {
+        let (code, out, err) = env.run(&args);
+        assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
+        assert!(out.contains("aaaa1111"), "{:?}: {}", args, out);
+        assert_clean("non-integer list", &out);
+    }
 }
 
 #[test]
@@ -873,6 +897,20 @@ fn stats_survive_null_cost_and_invalid_utf8() {
         [],
     )
     .expect("store NULL cost and invalid utf-8 cells");
+    // A non-integral REAL turns the by-version SUM() REAL; non-numeric TEXT in
+    // a counter must not fail either (WR-01, iteration 2).
+    conn.execute(
+        "UPDATE sessions SET main_input_tokens = 1.5, agent_count = 'abc',
+                             main_output_tokens = 'x'
+         WHERE session_id = 'aaaa1111-valid-old'",
+        [],
+    )
+    .expect("store non-integer numeric cells");
+    conn.execute(
+        "UPDATE sessions SET cost = 'abc' WHERE session_id = ?1",
+        params![HOSTILE_ID],
+    )
+    .expect("store non-numeric cost");
     drop(conn);
     for args in [vec!["stats"], vec!["stats", "--sessions"]] {
         let (code, out, err) = env.run(&args);

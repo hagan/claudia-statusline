@@ -11,7 +11,7 @@
 //! only, or a prefix of the session id; an ambiguous prefix is refused with the
 //! candidates.
 
-use super::{div, safe, share, text_lossy, trunc};
+use super::{div, int_lossy, real_lossy, safe, share, text_lossy, trunc};
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
@@ -74,8 +74,10 @@ const SESSION_COLUMNS: &str =
     COALESCE(agent_output_tokens, 0), COALESCE(main_requests, 0), COALESCE(main_input_tokens, 0),
     COALESCE(main_output_tokens, 0)";
 
-/// TEXT cells are read through [`text_lossy`] (WR-01): one non-UTF-8 cell must
-/// not make `load_numbered`, and with it every `sessions` subcommand, fail.
+/// TEXT cells are read through [`text_lossy`] and numeric cells through
+/// [`int_lossy`] / [`real_lossy`] (WR-01): one non-UTF-8, non-integer or
+/// non-numeric cell must not make `load_numbered`, and with it every
+/// `sessions` subcommand, fail.
 fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
     let start_time = text_lossy(r, 1)?.unwrap_or_default();
     Ok(SessionRow {
@@ -84,25 +86,25 @@ fn map_session(r: &rusqlite::Row<'_>) -> rusqlite::Result<SessionRow> {
         first_start_unknown: false,
         start_time,
         last_updated: text_lossy(r, 2)?.unwrap_or_default(),
-        cost: r.get::<_, Option<f64>>(3)?.unwrap_or(0.0),
-        lines_added: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
-        lines_removed: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
-        max_tokens_observed: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
+        cost: real_lossy(r, 3)?,
+        lines_added: int_lossy(r, 4)?,
+        lines_removed: int_lossy(r, 5)?,
+        max_tokens_observed: int_lossy(r, 6)?,
         model_name: text_lossy(r, 7)?,
         workspace_dir: text_lossy(r, 8)?,
-        total_input_tokens: r.get::<_, Option<i64>>(9)?.unwrap_or(0),
-        total_output_tokens: r.get::<_, Option<i64>>(10)?.unwrap_or(0),
-        total_cache_read_tokens: r.get::<_, Option<i64>>(11)?.unwrap_or(0),
-        total_cache_creation_tokens: r.get::<_, Option<i64>>(12)?.unwrap_or(0),
-        active_time_seconds: r.get::<_, Option<i64>>(13)?.unwrap_or(0),
+        total_input_tokens: int_lossy(r, 9)?,
+        total_output_tokens: int_lossy(r, 10)?,
+        total_cache_read_tokens: int_lossy(r, 11)?,
+        total_cache_creation_tokens: int_lossy(r, 12)?,
+        active_time_seconds: int_lossy(r, 13)?,
         claude_version: text_lossy(r, 14)?,
-        agent_count: r.get(15)?,
-        agent_requests: r.get(16)?,
-        agent_input_tokens: r.get(17)?,
-        agent_output_tokens: r.get(18)?,
-        main_requests: r.get(19)?,
-        main_input_tokens: r.get(20)?,
-        main_output_tokens: r.get(21)?,
+        agent_count: int_lossy(r, 15)?,
+        agent_requests: int_lossy(r, 16)?,
+        agent_input_tokens: int_lossy(r, 17)?,
+        agent_output_tokens: int_lossy(r, 18)?,
+        main_requests: int_lossy(r, 19)?,
+        main_input_tokens: int_lossy(r, 20)?,
+        main_output_tokens: int_lossy(r, 21)?,
     })
 }
 
@@ -250,14 +252,14 @@ fn load_transcripts(conn: &Connection, session_id: &str) -> Result<Vec<Transcrip
     let rows = stmt.query_map([session_id], |r| {
         Ok(TranscriptRow {
             path: text_lossy(r, 0)?.unwrap_or_default(),
-            is_agent: r.get::<_, i64>(1)? != 0,
+            is_agent: int_lossy(r, 1)? != 0,
             agent_type: text_lossy(r, 2)?,
-            size: r.get(3)?,
-            requests: r.get(4)?,
-            input_tokens: r.get(5)?,
-            cache_read_tokens: r.get(6)?,
-            cache_creation_tokens: r.get(7)?,
-            output_tokens: r.get(8)?,
+            size: int_lossy(r, 3)?,
+            requests: int_lossy(r, 4)?,
+            input_tokens: int_lossy(r, 5)?,
+            cache_read_tokens: int_lossy(r, 6)?,
+            cache_creation_tokens: int_lossy(r, 7)?,
+            output_tokens: int_lossy(r, 8)?,
         })
     })?;
     rows.map(|r| r.map_err(StatuslineError::from)).collect()
