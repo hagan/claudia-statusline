@@ -74,16 +74,16 @@ struct VersionAgg {
 }
 
 fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
-    // `main_requests > 0` in SQL is only a cheap superset (TEXT and BLOB cells
-    // sort above every number); the real filter is the Rust one below, on the
+    // No SQL prefilter: there is no index on `main_requests`, so the scan is
+    // full either way, and a SQL `> 0` would only be a superset under the
+    // column's INTEGER affinity. The only filter is the Rust one below, on the
     // value `count_lossy` reads, the same predicate `stats --sessions` and
     // `sessions list --attributed` apply.
     let mut stmt = conn.prepare(
         "SELECT COALESCE(claude_version, '?'), start_time, last_updated,
                 main_requests, main_input_tokens, main_output_tokens,
                 agent_count, agent_requests, agent_input_tokens, agent_output_tokens
-         FROM sessions
-         WHERE main_requests > 0",
+         FROM sessions",
     )?;
     let rows = stmt.query_map([], |r| {
         Ok((
@@ -243,9 +243,11 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
         "share%",
         "cost*"
     )];
-    // The SQL `main_requests > 0` is a superset (TEXT sorts above every
-    // number); keep the rows whose counter reads > 0, as the by-version view
-    // and `sessions list --attributed` do, then take the newest 25.
+    // The SQL `main_requests > 0` only shrinks the sort input. It is a
+    // superset only because main_requests has INTEGER affinity (migration v7):
+    // unconvertible TEXT/BLOB compare above any number. Rust applies the real
+    // check: keep the rows whose counter reads > 0, as the by-version view and
+    // `sessions list --attributed` do, then take the newest 25.
     let mut shown = 0;
     for row in rows {
         let (sid, v, start, model, mreq, min, mout, acount, ain, cost) = row?;
