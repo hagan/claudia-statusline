@@ -134,7 +134,9 @@ enum SessionsAction {
     },
     /// Print all parameters of one session: its # from the list (or `#N`) or a session id prefix
     Show {
-        /// Session number (# column of `list`; `#N` = number only) or session id prefix
+        /// Session number (# column of `list`; quote `'#N'` for number only, the reliable
+        /// form: a bare number that is also another session's id prefix is refused) or
+        /// session id prefix
         selector: String,
     },
     /// Interactive: list, read a selection from the terminal, show it

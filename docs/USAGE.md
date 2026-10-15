@@ -228,6 +228,12 @@ number that prefixes several ids still means the number. A *bare* selector
 with a leading zero (`0021`) is only ever an id prefix, since `list` never
 prints numbers that way; after `#` leading zeros are ignored (`'#0021'` is
 session #21). Numbers are independent of `--limit` and filters.
+
+Claude Code session ids are random hex, so in a store of a few hundred sessions
+roughly one in three 1-2 digit numbers is also the prefix of exactly one other
+id and is refused as above. The refusal is deliberate (it never opens the wrong
+session), but it means `'#N'` is the reliable form: use it in scripts, aliases
+and habits, and keep bare numbers for quick interactive use.
 An ambiguous prefix is refused with the matching ids;
 `pick` refuses to run without a terminal on stdin so it never hangs a script.
 

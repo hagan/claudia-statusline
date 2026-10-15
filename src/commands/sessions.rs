@@ -511,7 +511,10 @@ fn list_lines(rows: &[(usize, &SessionRow)]) -> Vec<String> {
     lines.push("version† = latest Claude Code version observed for the session; a session that spanned an upgrade shows only its newest version".into());
     lines
         .push("main_req/agents/share% = 0 for sessions recorded before attribution existed".into());
-    lines.push("select with: statusline sessions show <#|id-prefix>   (or: sessions pick)".into());
+    lines.push(
+        "select with: statusline sessions show <#|'#N'|id-prefix>   ('#N' is number-only, the reliable form; or: sessions pick)"
+            .into(),
+    );
     lines
 }
 

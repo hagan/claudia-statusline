@@ -1144,6 +1144,7 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
         "resumes included",
         "A *bare* selector",
         "`'#0021'` is",
+        "`'#N'` is the reliable form",
     ] {
         assert!(doc.contains(needed), "docs/USAGE.md lacks {:?}", needed);
     }
