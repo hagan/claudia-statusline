@@ -516,6 +516,201 @@ fn no_attribution_rows_when_not_opted_in_binary() {
             assert!(rows >= 1, "opted-in render must persist attribution rows");
         } else {
             assert_eq!(rows, 0, "default render must write no attribution rows");
+            // D-08 / D-11: the default render writes no attribution column either.
+            let (main_requests, agent_count, version) = attribution_cols(home.path());
+            assert_eq!(
+                main_requests, 0,
+                "default render must leave main_requests = 0"
+            );
+            assert_eq!(agent_count, 0, "default render must leave agent_count = 0");
+            assert_eq!(
+                version, None,
+                "default render must leave claude_version NULL"
+            );
         }
     }
+}
+
+// ============================================================================
+// Phase 18.1: the real producer (opt-in render) feeds the real consumers
+// (stats / sessions list --attributed), including across a real auto_reset.
+// ============================================================================
+
+const OPT_IN: &str = "[display]\nshow_agents = true\n";
+
+fn stats_db(home: &Path) -> PathBuf {
+    home.join("d").join("claudia-statusline").join("stats.db")
+}
+
+fn read_only_db(home: &Path) -> rusqlite::Connection {
+    rusqlite::Connection::open_with_flags(
+        stats_db(home),
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .expect("open stats.db read-only")
+}
+
+/// (main_requests, agent_count, claude_version) of SESSION_ID, read-only.
+fn attribution_cols(home: &Path) -> (i64, i64, Option<String>) {
+    read_only_db(home)
+        .query_row(
+            "SELECT main_requests, agent_count, claude_version FROM sessions WHERE session_id = ?1",
+            [SESSION_ID],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .expect("live sessions row")
+}
+
+/// The 7 derived totals + claude_version + start_time of SESSION_ID, read-only.
+fn live_row(home: &Path) -> ([i64; 7], Option<String>, String) {
+    read_only_db(home)
+        .query_row(
+            "SELECT agent_count, agent_requests, agent_input_tokens, agent_output_tokens,
+                    main_requests, main_input_tokens, main_output_tokens,
+                    claude_version, start_time
+             FROM sessions WHERE session_id = ?1",
+            [SESSION_ID],
+            |r| {
+                Ok((
+                    [
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                    ],
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            },
+        )
+        .expect("live sessions row")
+}
+
+/// Run a CLI consumer with the same opt-in config the producer used.
+fn opt_in_cli(home: &Path, args: &[&str]) -> String {
+    let mut cmd = isolated_cmd(home, Some(OPT_IN));
+    cmd.args(args);
+    let out = cmd.output().expect("run statusline CLI");
+    assert!(
+        out.status.success(),
+        "{args:?} must exit 0: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8(out.stdout).expect("utf-8 stdout")
+}
+
+fn has_version_row(out: &str) -> bool {
+    out.lines().any(|l| l.trim_start().starts_with("2.0.0"))
+}
+
+fn has_session_row(out: &str) -> bool {
+    out.lines().any(|l| l.contains("0a1b2c3d"))
+}
+
+fn opt_in_render(home: &Path, body: &str, env: &[(&str, &str)]) {
+    let mut cmd = isolated_cmd(home, Some(OPT_IN));
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = spawn_with_budget(cmd, body.as_bytes(), SPAWN_BUDGET, "opt-in render");
+    assert!(out.status.success(), "opt-in render must exit 0");
+}
+
+#[test]
+fn opt_in_render_feeds_stats_views() {
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let transcript = materialize_tree(&home.path().join("tree"));
+    let body = payload(PAYLOAD, &transcript);
+    opt_in_render(home.path(), &body, &[]);
+
+    let stats = opt_in_cli(home.path(), &["stats"]);
+    assert!(has_version_row(&stats), "stats must list 2.0.0:\n{stats}");
+    let sessions = opt_in_cli(home.path(), &["stats", "--sessions"]);
+    assert!(
+        has_session_row(&sessions),
+        "stats --sessions must list the session:\n{sessions}"
+    );
+    let list = opt_in_cli(home.path(), &["sessions", "list", "--attributed"]);
+    assert!(
+        has_session_row(&list),
+        "sessions list --attributed must list the session:\n{list}"
+    );
+}
+
+/// W-NEW-1 / I-NEW-1: a real auto_reset (DELETE + re-insert of the live row)
+/// followed by an opt-in render over an UNCHANGED transcript must keep the
+/// session in the attribution views. Only `sessions.last_activity` is written
+/// directly (the reset trigger); every v7 value comes from the producer.
+#[test]
+fn producer_to_consumer_survives_auto_reset() {
+    let ar = [
+        ("STATUSLINE_BURN_RATE_MODE", "auto_reset"),
+        ("STATUSLINE_BURN_RATE_THRESHOLD", "60"),
+    ];
+    let home = tempfile::TempDir::new().expect("isolated home");
+    let transcript = materialize_tree(&home.path().join("tree"));
+    let body = payload(PAYLOAD, &transcript);
+
+    opt_in_render(home.path(), &body, &ar);
+    let (totals, version, start) = live_row(home.path());
+    assert!(
+        totals[4] > 0,
+        "producer must record main requests: {totals:?}"
+    );
+    assert_eq!(version.as_deref(), Some("2.0.0"));
+    let stats = opt_in_cli(home.path(), &["stats"]);
+    assert!(has_version_row(&stats), "stats must list 2.0.0:\n{stats}");
+    let list = opt_in_cli(home.path(), &["sessions", "list", "--attributed"]);
+    assert!(
+        has_session_row(&list),
+        "list must show the session:\n{list}"
+    );
+
+    // Age last_activity (not an attribution column) past the 60-minute threshold.
+    let idle = (chrono::Local::now() - chrono::Duration::hours(2)).to_rfc3339();
+    rusqlite::Connection::open(stats_db(home.path()))
+        .expect("open stats.db")
+        .execute(
+            "UPDATE sessions SET last_activity = ?1 WHERE session_id = ?2",
+            [idle.as_str(), SESSION_ID],
+        )
+        .expect("backdate last_activity");
+
+    opt_in_render(home.path(), &body, &ar);
+
+    let archived: i64 = read_only_db(home.path())
+        .query_row(
+            "SELECT COUNT(*) FROM session_archive WHERE session_id = ?1",
+            [SESSION_ID],
+            |r| r.get(0),
+        )
+        .expect("count archive rows");
+    assert_eq!(
+        archived, 1,
+        "auto_reset did not fire; this test would be vacuous"
+    );
+    let (after_totals, after_version, after_start) = live_row(home.path());
+    assert_ne!(
+        after_start, start,
+        "auto_reset must have restarted the live row"
+    );
+
+    assert_eq!(
+        after_totals, totals,
+        "attribution totals lost across auto_reset"
+    );
+    assert_eq!(after_version.as_deref(), Some("2.0.0"));
+    let stats = opt_in_cli(home.path(), &["stats"]);
+    assert!(
+        has_version_row(&stats),
+        "stats must still list 2.0.0 after auto_reset:\n{stats}"
+    );
+    let list = opt_in_cli(home.path(), &["sessions", "list", "--attributed"]);
+    assert!(
+        has_session_row(&list),
+        "sessions list --attributed must still show the session after auto_reset:\n{list}"
+    );
 }

@@ -945,4 +945,86 @@ mod tests {
         assert_eq!((row.0, row.1, row.2), (62, 3330 + 180, 170));
         assert_eq!(session(&fx.db), [1, 1, 555, 25, 62, 3510, 170]);
     }
+
+    fn version(db: &Path) -> Option<String> {
+        Connection::open(db)
+            .unwrap()
+            .query_row(
+                "SELECT claude_version FROM sessions WHERE session_id = ?1",
+                params![SID],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
+    /// What `update_session_tx`'s auto_reset does to the live row: DELETE and
+    /// re-insert, so every v7 column is back at its default (store-level unit
+    /// test; the end-to-end test drives a real auto_reset instead).
+    fn reset_row(fx: &Fixture) {
+        let c = Connection::open(&fx.db).unwrap();
+        c.execute("DELETE FROM sessions WHERE session_id = ?1", params![SID])
+            .unwrap();
+        c.execute(
+            "INSERT INTO sessions (session_id, start_time, last_updated) VALUES (?1, 'y', 'y')",
+            params![SID],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn unchanged_rescan_restores_totals_after_row_reset() {
+        let fx = fixture();
+        scan_at_detailed(&fx.db, WAIT, SID, fx.main_str(), Some("2.0.0"), true).unwrap();
+        let before = session(&fx.db);
+        assert!(before[4] > 0, "fixture must attribute main requests");
+        assert_eq!(version(&fx.db).as_deref(), Some("2.0.0"));
+
+        reset_row(&fx);
+        assert_eq!(session(&fx.db), [0; 7]);
+
+        // The transcript is unchanged, so no progress row needs writing.
+        let (_, discarded) =
+            scan_at_detailed(&fx.db, WAIT, SID, fx.main_str(), Some("2.0.0"), true).unwrap();
+        assert_eq!(discarded, Some(0));
+        assert_eq!(session(&fx.db), before, "totals must be re-derived");
+        assert_eq!(version(&fx.db).as_deref(), Some("2.0.0"));
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn fresh_unchanged_rescan_takes_no_write_lock() {
+        let fx = fixture();
+        sa(&fx, true);
+        let holder = Connection::open(&fx.db).unwrap();
+        holder.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let t = std::time::Instant::now();
+        let (_, discarded) =
+            scan_at_detailed(&fx.db, WAIT, SID, fx.main_str(), None, true).unwrap();
+        let elapsed = t.elapsed();
+        holder.execute_batch("ROLLBACK").unwrap();
+        assert_eq!(discarded, Some(0), "a fresh row needs no write");
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "fresh rescan waited for the write lock: {elapsed:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::parallel]
+    fn read_only_rescan_after_reset_writes_nothing() {
+        let fx = fixture();
+        sa(&fx, true);
+        reset_row(&fx);
+        let rows = row_count(&fx.db);
+        let before_dump = dump(&fx.db);
+
+        let (_, discarded) =
+            scan_at_detailed(&fx.db, WAIT, SID, fx.main_str(), Some("2.0.0"), false).unwrap();
+        assert_eq!(discarded, None);
+        assert_eq!(session(&fx.db), [0; 7]);
+        assert_eq!(version(&fx.db), None);
+        assert_eq!(row_count(&fx.db), rows);
+        assert_eq!(dump(&fx.db), before_dump);
+    }
 }
