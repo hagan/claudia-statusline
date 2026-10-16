@@ -9,6 +9,11 @@
 //!   base it was loaded from ([`BASE_COLS`]); a row another render changed is
 //!   skipped. Session totals are derived by TOTAL/COUNT over `transcript_progress`
 //!   inside the same transaction, so a stale writer cannot regress them.
+//! - With no changed file, [`session_totals_stale`] (a plain read, no
+//!   transaction) compares the live `sessions` row with the same derived
+//!   expressions; only a stale row (e.g. zeroed by auto_reset's re-insert)
+//!   is rewritten by [`refresh_session_totals`] in one IMMEDIATE transaction.
+//!   A session that never renders again keeps whatever its row holds.
 //! - Every database step shares one budget of the configured database busy
 //!   timeout capped at `ATTRIBUTION_DB_WAIT_MS` (an [`AttributionDeadline`] for
 //!   open + load, then a fresh one sized to what was left for the commit, so
@@ -23,7 +28,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use rusqlite::types::ValueRef;
-use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior};
+use rusqlite::{
+    params, Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
+};
 
 use super::progress::{decode_window, encode_window, FileState, MAX_AGENT_TYPE_CHARS};
 use super::TranscriptTotals;
@@ -407,37 +414,117 @@ pub(crate) fn commit(
             ])?;
         }
     }
-    // TOTAL() (always REAL, never raises "integer overflow" like SUM()) and a
-    // saturating CAST back to INTEGER: stored totals are untrusted and one
-    // corrupt row must not make every later commit for the session fail.
-    tx.execute(
-        "UPDATE sessions SET
-            claude_version = COALESCE(?2, claude_version),
-            agent_count = (SELECT COUNT(*) FROM transcript_progress
-                           WHERE session_id = ?1 AND is_agent = 1),
-            agent_requests = (SELECT CAST(TOTAL(requests) AS INTEGER) FROM transcript_progress
-                              WHERE session_id = ?1 AND is_agent = 1),
-            agent_input_tokens = (SELECT CAST(TOTAL(input_tokens + cache_read_tokens
-                                      + cache_creation_tokens) AS INTEGER)
-                                  FROM transcript_progress
-                                  WHERE session_id = ?1 AND is_agent = 1),
-            agent_output_tokens = (SELECT CAST(TOTAL(output_tokens) AS INTEGER)
-                                   FROM transcript_progress
-                                   WHERE session_id = ?1 AND is_agent = 1),
-            main_requests = (SELECT CAST(TOTAL(requests) AS INTEGER) FROM transcript_progress
-                             WHERE session_id = ?1 AND is_agent = 0),
-            main_input_tokens = (SELECT CAST(TOTAL(input_tokens + cache_read_tokens
-                                     + cache_creation_tokens) AS INTEGER)
-                                 FROM transcript_progress
-                                 WHERE session_id = ?1 AND is_agent = 0),
-            main_output_tokens = (SELECT CAST(TOTAL(output_tokens) AS INTEGER)
-                                  FROM transcript_progress
-                                  WHERE session_id = ?1 AND is_agent = 0)
-         WHERE session_id = ?1",
-        params![session_id, claude_version],
-    )?;
+    update_session_totals(&tx, session_id, claude_version)?;
     tx.commit()?;
     Ok(discarded)
+}
+
+// TOTAL() (always REAL, never raises "integer overflow" like SUM()) and a
+// saturating CAST back to INTEGER: stored totals are untrusted and one
+// corrupt row must not make every later commit for the session fail.
+/// `(sessions column, expression over transcript_progress)` for every derived
+/// session total. The single source for the UPDATE ([`update_session_totals`])
+/// and the staleness check ([`session_totals_stale`]), so the two can never
+/// disagree (a check stricter than the write would rewrite the row forever).
+/// `?1` is the session id.
+const DERIVED_TOTALS: [(&str, &str); 7] = [
+    (
+        "agent_count",
+        "(SELECT COUNT(*) FROM transcript_progress WHERE session_id = ?1 AND is_agent = 1)",
+    ),
+    (
+        "agent_requests",
+        "(SELECT CAST(TOTAL(requests) AS INTEGER) FROM transcript_progress
+          WHERE session_id = ?1 AND is_agent = 1)",
+    ),
+    (
+        "agent_input_tokens",
+        "(SELECT CAST(TOTAL(input_tokens + cache_read_tokens + cache_creation_tokens) AS INTEGER)
+          FROM transcript_progress WHERE session_id = ?1 AND is_agent = 1)",
+    ),
+    (
+        "agent_output_tokens",
+        "(SELECT CAST(TOTAL(output_tokens) AS INTEGER) FROM transcript_progress
+          WHERE session_id = ?1 AND is_agent = 1)",
+    ),
+    (
+        "main_requests",
+        "(SELECT CAST(TOTAL(requests) AS INTEGER) FROM transcript_progress
+          WHERE session_id = ?1 AND is_agent = 0)",
+    ),
+    (
+        "main_input_tokens",
+        "(SELECT CAST(TOTAL(input_tokens + cache_read_tokens + cache_creation_tokens) AS INTEGER)
+          FROM transcript_progress WHERE session_id = ?1 AND is_agent = 0)",
+    ),
+    (
+        "main_output_tokens",
+        "(SELECT CAST(TOTAL(output_tokens) AS INTEGER) FROM transcript_progress
+          WHERE session_id = ?1 AND is_agent = 0)",
+    ),
+];
+
+/// Re-derive the live `sessions` row's attribution totals from
+/// `transcript_progress` and set `claude_version = COALESCE(?2, existing)`.
+/// Only constant SQL fragments are concatenated; both values are bound.
+fn update_session_totals(
+    tx: &Transaction,
+    session_id: &str,
+    claude_version: Option<&str>,
+) -> rusqlite::Result<usize> {
+    let sets: Vec<String> = DERIVED_TOTALS
+        .iter()
+        .map(|(col, expr)| format!("{col} = {expr}"))
+        .collect();
+    tx.execute(
+        &format!(
+            "UPDATE sessions SET claude_version = COALESCE(?2, claude_version), {} \
+             WHERE session_id = ?1",
+            sets.join(", ")
+        ),
+        params![session_id, claude_version],
+    )
+}
+
+/// Whether the live `sessions` row differs from what [`update_session_totals`]
+/// would write (any derived total, or a payload version it would set). A plain
+/// read: no transaction, no write lock (D-12). `false` when the session has no
+/// live row (nothing to refresh).
+pub(crate) fn session_totals_stale(
+    conn: &Connection,
+    session_id: &str,
+    claude_version: Option<&str>,
+    deadline: &AttributionDeadline,
+) -> rusqlite::Result<bool> {
+    arm(conn, deadline)?;
+    let diffs: Vec<String> = DERIVED_TOTALS
+        .iter()
+        .map(|(col, expr)| format!("{col} IS NOT {expr}"))
+        .collect();
+    conn.query_row(
+        &format!(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE session_id = ?1 AND \
+             ((?2 IS NOT NULL AND claude_version IS NOT ?2) OR {}))",
+            diffs.join(" OR ")
+        ),
+        params![session_id, claude_version],
+        |r| r.get(0),
+    )
+}
+
+/// Re-derive the live row's totals in one IMMEDIATE transaction whose busy
+/// wait is bounded by `deadline` (used when no file changed but the row is
+/// stale, e.g. after auto_reset re-inserted it with zeroed columns).
+pub(crate) fn refresh_session_totals(
+    conn: &mut Connection,
+    session_id: &str,
+    claude_version: Option<&str>,
+    deadline: &AttributionDeadline,
+) -> rusqlite::Result<()> {
+    arm(conn, deadline)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    update_session_totals(&tx, session_id, claude_version)?;
+    tx.commit()
 }
 
 #[cfg(test)]
@@ -1000,5 +1087,106 @@ mod tests {
         let w = vec![entry; crate::agents::progress::REQUEST_WINDOW];
         let enc = encode_window(&w, true);
         assert!(enc.len() as i64 <= MAX_WINDOW_JSON_BYTES, "{}", enc.len());
+    }
+
+    /// auto_reset's effect on the live row: DELETE + re-insert with defaults.
+    fn reset_session_row(conn: &Connection) {
+        conn.execute("DELETE FROM sessions WHERE session_id = ?1", params![SID])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (session_id, start_time, last_updated) VALUES (?1, 'y', 'y')",
+            params![SID],
+        )
+        .unwrap();
+    }
+
+    fn commit_main_and_agent(conn: &mut Connection, version: Option<&str>) {
+        let a = st("/p/s/subagents/agent-1.jsonl", true, 10, 2, 7);
+        let m = st("/p/s.jsonl", false, 30, 5, 13);
+        commit(conn, SID, version, &[(None, a), (None, m)], &long()).unwrap();
+    }
+
+    #[test]
+    fn session_totals_stale_after_row_reset() {
+        let db = db();
+        let mut conn = rw(&db);
+        commit_main_and_agent(&mut conn, Some("2.0.0"));
+        let (_, before) = session_cols(&conn);
+        assert!(before[4] > 0);
+        reset_session_row(&conn);
+        assert_eq!(
+            session_totals_stale(&conn, SID, Some("2.0.0"), &long()),
+            Ok(true)
+        );
+        refresh_session_totals(&mut conn, SID, Some("2.0.0"), &long()).unwrap();
+        assert_eq!(
+            session_totals_stale(&conn, SID, Some("2.0.0"), &long()),
+            Ok(false)
+        );
+        assert_eq!(session_cols(&conn), (Some("2.0.0".to_string()), before));
+    }
+
+    #[test]
+    fn session_totals_stale_false_when_fresh() {
+        let db = db();
+        let mut conn = rw(&db);
+        commit_main_and_agent(&mut conn, Some("2.0.0"));
+        assert_eq!(
+            session_totals_stale(&conn, SID, Some("2.0.0"), &long()),
+            Ok(false)
+        );
+        assert_eq!(session_totals_stale(&conn, SID, None, &long()), Ok(false));
+    }
+
+    #[test]
+    fn session_totals_stale_true_for_null_version_only() {
+        let db = db();
+        let mut conn = rw(&db);
+        commit_main_and_agent(&mut conn, None);
+        assert_eq!(session_cols(&conn).0, None);
+        assert_eq!(
+            session_totals_stale(&conn, SID, Some("2.0.0"), &long()),
+            Ok(true)
+        );
+        assert_eq!(session_totals_stale(&conn, SID, None, &long()), Ok(false));
+    }
+
+    #[test]
+    fn session_totals_stale_false_without_sessions_row() {
+        let db = db();
+        let mut conn = rw(&db);
+        commit_main_and_agent(&mut conn, Some("2.0.0"));
+        conn.execute("DELETE FROM sessions WHERE session_id = ?1", params![SID])
+            .unwrap();
+        assert_eq!(
+            session_totals_stale(&conn, SID, Some("2.0.0"), &long()),
+            Ok(false)
+        );
+        refresh_session_totals(&mut conn, SID, Some("2.0.0"), &long()).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0, "refresh must not create a sessions row");
+    }
+
+    /// The check and the UPDATE share one CAST(TOTAL()) expression list, so
+    /// saturated corrupt totals converge after one refresh (no write loop).
+    #[test]
+    fn stale_check_converges_with_overflowing_totals() {
+        let db = db();
+        let mut conn = rw(&db);
+        commit_main_and_agent(&mut conn, None);
+        conn.execute(
+            "UPDATE transcript_progress SET requests = ?1, input_tokens = ?1,
+                    cache_read_tokens = ?1, cache_creation_tokens = ?1, output_tokens = ?1",
+            params![i64::MAX],
+        )
+        .unwrap();
+        assert_eq!(session_totals_stale(&conn, SID, None, &long()), Ok(true));
+        refresh_session_totals(&mut conn, SID, None, &long()).unwrap();
+        assert_eq!(session_totals_stale(&conn, SID, None, &long()), Ok(false));
+        let (_, c) = session_cols(&conn);
+        assert_eq!(c[1], i64::MAX);
+        assert_eq!(c[5], i64::MAX);
     }
 }

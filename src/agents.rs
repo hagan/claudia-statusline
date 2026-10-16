@@ -43,6 +43,12 @@
 //! - `sessions.agent_*` are derived from the persisted rows (files whose bytes
 //!   were read), so a refused file is counted on screen but not in
 //!   `sessions.agent_count`.
+//! - When no file changed, a read-only check compares the live `sessions`
+//!   row with the totals derived from `transcript_progress` (and the payload
+//!   version); only if they differ are they re-derived, in one bounded
+//!   `BEGIN IMMEDIATE`. This repairs a row zeroed by auto_reset's DELETE +
+//!   re-insert on the session's next opt-in render; a fresh row takes no
+//!   write lock. Rows of sessions that never render again stay zeroed.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -337,7 +343,22 @@ pub(crate) fn persist(
         })
         .collect();
     if updates.is_empty() {
-        return Some(0);
+        // No progress row to write, but the live sessions row may still lack
+        // its derived totals (auto_reset DELETEs and re-inserts it). A plain
+        // read decides; the IMMEDIATE write runs only when the row differs.
+        return match store::session_totals_stale(conn, session_id, claude_version, deadline) {
+            Ok(false) => Some(0),
+            Ok(true) => {
+                match store::refresh_session_totals(conn, session_id, claude_version, deadline) {
+                    Ok(()) => Some(0),
+                    Err(_) => {
+                        log::debug!("agents: session totals not refreshed this render");
+                        None
+                    }
+                }
+            }
+            Err(_) => None,
+        };
     }
     match store::commit(conn, session_id, claude_version, &updates, deadline) {
         Ok(discarded) => {
