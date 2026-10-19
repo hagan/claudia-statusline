@@ -357,7 +357,10 @@ pub(crate) fn persist(
                     }
                 }
             }
-            Err(_) => None,
+            Err(_) => {
+                log::debug!("agents: session totals staleness not checked this render");
+                None
+            }
         };
     }
     match store::commit(conn, session_id, claude_version, &updates, deadline) {
