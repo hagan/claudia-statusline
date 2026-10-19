@@ -12,8 +12,8 @@
 //! candidates.
 
 use super::{
-    attribution_hint, attribution_on, count_lossy, div, int_lossy, real_lossy, safe, share,
-    text_lossy, trunc, ATTRIBUTION_OFF_HINT, ZERO_CAUSE,
+    count_lossy, div, int_lossy, real_lossy, safe, share, text_lossy, trunc, Attribution,
+    ZERO_CAUSE,
 };
 use crate::error::{Result, StatuslineError};
 use rusqlite::{Connection, OpenFlags};
@@ -476,9 +476,9 @@ fn index_and_filter<'a>(
 ///
 /// The zero-attribution legend is the neutral [`ZERO_CAUSE`] (it describes
 /// stored rows, so it stays true after a config change, D-06); the opt-in hint
-/// follows it only when attribution is off (`!on`) and a shown row has zero
+/// follows it only when attribution is off (`!a.on`) and a shown row has zero
 /// attribution (D-13).
-fn list_lines(rows: &[(usize, &SessionRow)], on: bool) -> Vec<String> {
+fn list_lines(rows: &[(usize, &SessionRow)], a: &Attribution) -> Vec<String> {
     let mut lines = Vec::with_capacity(rows.len() + 6);
     lines.push(format!(
         "{:>5}  {:<8} {:<16} {:<16} {:<9} {:<18} {:<22} {:>8} {:>6} {:>6} {:>8}",
@@ -518,8 +518,8 @@ fn list_lines(rows: &[(usize, &SessionRow)], on: bool) -> Vec<String> {
     lines.push("cost*    = session total across all CLI processes (resumes included), as accounted into daily/monthly totals".into());
     lines.push("version† = latest Claude Code version observed for the session; a session that spanned an upgrade shows only its newest version".into());
     lines.push(safe(&format!("main_req/agents/share% = 0: {ZERO_CAUSE}")));
-    if !on && rows.iter().any(|(_, r)| r.main_requests == 0) {
-        lines.push(safe(ATTRIBUTION_OFF_HINT));
+    if !a.on && rows.iter().any(|(_, r)| r.main_requests == 0) {
+        lines.push(safe(&a.off_hint()));
     }
     lines.push(
         "select with: statusline sessions show <#|'#N'|id-prefix>   ('#N' is number-only, the reliable form; or: sessions pick)"
@@ -547,16 +547,16 @@ fn empty_message(attributed: bool, workspace: Option<&str>) -> String {
 /// [`empty_message`], then, for `--attributed` only, the attribution hint for
 /// the current config (D-04, D-05). An unfiltered or workspace-only empty view
 /// has nothing recorded at all, so no hint.
-fn empty_lines(attributed: bool, workspace: Option<&str>, on: bool) -> Vec<String> {
+fn empty_lines(attributed: bool, workspace: Option<&str>, a: &Attribution) -> Vec<String> {
     let mut lines = vec![empty_message(attributed, workspace)];
     if attributed {
-        lines.push(safe(attribution_hint(on)));
+        lines.push(safe(&a.hint()));
     }
     lines
 }
 
-fn print_list(rows: &[(usize, &SessionRow)], on: bool) {
-    for l in list_lines(rows, on) {
+fn print_list(rows: &[(usize, &SessionRow)], a: &Attribution) {
+    for l in list_lines(rows, a) {
         cli_println!("{l}");
     }
 }
@@ -567,9 +567,9 @@ fn print_list(rows: &[(usize, &SessionRow)], on: bool) {
 /// string (id, version, model, workspace, timestamps, transcript paths, agent
 /// file names and types) goes through [`safe`] / [`trunc`] before layout
 /// (D-12). The resume line is gated on the RAW stored id (D-05..D-07).
-/// `on`: whether the effective config requests attribution; with it off, a
+/// `a`: the attribution state of the effective config; with it off, a
 /// zero-attribution session gets the opt-in hint (D-04, D-05).
-fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow], on: bool) -> Vec<String> {
+fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow], a: &Attribution) -> Vec<String> {
     let mut lines = Vec::new();
     let main_path = transcripts
         .iter()
@@ -647,8 +647,8 @@ fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow], on: bool) -> Vec<St
         r.agent_count,
         share(r.agent_input_tokens, r.main_input_tokens)
     ));
-    if r.main_requests == 0 && !on {
-        lines.push(format!("  {}", safe(ATTRIBUTION_OFF_HINT)));
+    if r.main_requests == 0 && !a.on {
+        lines.push(format!("  {}", safe(&a.off_hint())));
     }
 
     let agents: Vec<&TranscriptRow> = transcripts.iter().filter(|t| t.is_agent).collect();
@@ -716,9 +716,9 @@ fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow], on: bool) -> Vec<St
     lines
 }
 
-fn print_show(conn: &Connection, r: &SessionRow, on: bool) -> Result<()> {
+fn print_show(conn: &Connection, r: &SessionRow, a: &Attribution) -> Result<()> {
     let transcripts = load_transcripts(conn, &r.session_id)?;
-    for l in show_lines(r, &transcripts, on) {
+    for l in show_lines(r, &transcripts, a) {
         cli_println!("{l}");
     }
     Ok(())
@@ -745,14 +745,14 @@ pub(crate) fn list(
         workspace.as_deref(),
         if all { 0 } else { limit },
     );
-    let on = attribution_on();
+    let a = Attribution::current();
     if view.is_empty() {
-        for l in empty_lines(attributed, workspace.as_deref(), on) {
+        for l in empty_lines(attributed, workspace.as_deref(), &a) {
             cli_println!("{l}");
         }
         return Ok(());
     }
-    print_list(&view, on);
+    print_list(&view, &a);
     if workspace.is_some() || attributed {
         cli_println!();
         cli_println!("filtered view; # is the stable session number (rank by first start over all sessions), so `sessions show <#>` opens the same session");
@@ -768,7 +768,7 @@ pub(crate) fn show(selector: &str) -> Result<()> {
     };
     let rows = load_numbered(&conn)?;
     let r = resolve(&rows, selector)?;
-    print_show(&conn, r, attribution_on())
+    print_show(&conn, r, &Attribution::current())
 }
 
 /// `sessions pick [--all] [--attributed] [--limit N] [--workspace PATH|--here]`:
@@ -798,14 +798,14 @@ pub(crate) fn pick(
         workspace.as_deref(),
         if all { 0 } else { limit },
     );
-    let on = attribution_on();
+    let a = Attribution::current();
     if view.is_empty() {
-        for l in empty_lines(attributed, workspace.as_deref(), on) {
+        for l in empty_lines(attributed, workspace.as_deref(), &a) {
             cli_println!("{l}");
         }
         return Ok(());
     }
-    print_list(&view, on);
+    print_list(&view, &a);
     cli_print!("session (#, id prefix, empty = quit): ");
     crate::cli_output::flush_stdout();
     let mut line = String::new();
@@ -816,7 +816,7 @@ pub(crate) fn pick(
     }
     let r = resolve(&rows, sel)?;
     cli_println!();
-    print_show(&conn, r, on)
+    print_show(&conn, r, &a)
 }
 
 #[cfg(test)]
@@ -1582,7 +1582,7 @@ mod tests {
         r.claude_version = Some("2.1\x1b[31m\u{9b}".into());
         r.model_name = Some("M\x1b[2J\nFAKE".into());
         r.workspace_dir = Some("/w/a/b\n\x1b[1AFAKE".into());
-        let lines = list_lines(&[(7, &r)], false);
+        let lines = list_lines(&[(7, &r)], &Attribution::legacy(false));
         for l in &lines {
             assert!(!has_control(l), "control char in {l:?}");
         }
@@ -1597,7 +1597,7 @@ mod tests {
         r.start_time = "2026-09-16T00:0\u{20ac}:00Z".into();
         r.first_start = r.start_time.clone();
         r.last_updated = "2026-09-16T00:0\u{e9}0:00Z".into();
-        let lines = list_lines(&[(1, &r)], false);
+        let lines = list_lines(&[(1, &r)], &Attribution::legacy(false));
         let data = &lines[1];
         assert!(data.contains("1234567\u{e9}"), "data: {data:?}");
         assert!(data.contains("2026-09-16T00:0\u{20ac}"), "data: {data:?}");
@@ -1609,7 +1609,7 @@ mod tests {
         let mut r = row("abcdef01");
         r.first_start = "2026-01-01T10:00:00-07:00".into();
         r.start_time = "2026-10-13T09:00:00-07:00".into();
-        let lines = list_lines(&[(1, &r)], false);
+        let lines = list_lines(&[(1, &r)], &Attribution::legacy(false));
         assert!(
             lines[1].contains("2026-01-01T10:00"),
             "data: {:?}",
@@ -1626,7 +1626,7 @@ mod tests {
     fn list_lines_labels_and_wide_ordinal() {
         let a = row("aaaaaaaa");
         let b = row("bbbbbbbb");
-        let lines = list_lines(&[(12345, &a), (3, &b)], false);
+        let lines = list_lines(&[(12345, &a), (3, &b)], &Attribution::legacy(false));
         assert!(lines[0].contains("version†"), "header: {:?}", lines[0]);
         assert!(lines[0].contains("cost*"), "header: {:?}", lines[0]);
         assert!(lines
@@ -1661,7 +1661,7 @@ mod tests {
     #[test]
     fn resume_line_valid_id() {
         let r = row("e0490618-aaaa_BBBB");
-        let lines = show_lines(&r, &[], false);
+        let lines = show_lines(&r, &[], &Attribution::legacy(false));
         assert_eq!(
             lines.last().unwrap(),
             "resume            claude --resume e0490618-aaaa_BBBB"
@@ -1682,7 +1682,7 @@ mod tests {
             &long,
         ];
         for id in ids {
-            let lines = show_lines(&row(id), &[], false);
+            let lines = show_lines(&row(id), &[], &Attribution::legacy(false));
             assert_eq!(lines.last().unwrap(), RESUME_UNAVAILABLE, "id {id:?}");
             assert!(
                 !lines.iter().any(|l| l.contains("claude --resume")),
@@ -1693,7 +1693,7 @@ mod tests {
 
     #[test]
     fn show_lines_session_id_line_shows_sanitized_invalid_id() {
-        let lines = show_lines(&row("id\x1b[2Jx"), &[], false);
+        let lines = show_lines(&row("id\x1b[2Jx"), &[], &Attribution::legacy(false));
         assert_eq!(lines[0], "session_id        id[2Jx");
     }
 
@@ -1714,7 +1714,7 @@ mod tests {
                 Some("Expl\x1b[31more\n"),
             ),
         ];
-        let lines = show_lines(&r, &ts, false);
+        let lines = show_lines(&r, &ts, &Attribution::legacy(false));
         for l in &lines {
             assert!(!has_control(l), "control char in {l:?}");
         }
@@ -1734,13 +1734,13 @@ mod tests {
     #[test]
     fn show_lines_first_start_only_when_reset() {
         let r = row("same-start");
-        let lines = show_lines(&r, &[], false);
+        let lines = show_lines(&r, &[], &Attribution::legacy(false));
         assert!(!lines.iter().any(|l| l.starts_with("first_start")));
 
         let mut r = row("after-reset");
         r.first_start = "2026-01-01T10:00:00-07:00".into();
         r.start_time = "2026-10-13T09:00:00-07:00".into();
-        let lines = show_lines(&r, &[], false);
+        let lines = show_lines(&r, &[], &Attribution::legacy(false));
         let fs: Vec<&String> = lines
             .iter()
             .filter(|l| l.starts_with("first_start"))
@@ -1762,12 +1762,12 @@ mod tests {
         assert!(!rows[1].1.first_start_unknown);
 
         let view: Vec<(usize, &SessionRow)> = rows.iter().map(|(n, r)| (*n, r)).collect();
-        let lines = list_lines(&view, false);
+        let lines = list_lines(&view, &Attribution::legacy(false));
         let legacy = lines.iter().find(|l| l.contains("legacy01")).unwrap();
         assert!(!legacy.contains("2026-10-14"), "{legacy:?}");
         assert_eq!(legacy.split_whitespace().nth(2), Some("?"), "{legacy:?}");
 
-        let shown = show_lines(&rows[0].1, &[], false);
+        let shown = show_lines(&rows[0].1, &[], &Attribution::legacy(false));
         let fs: Vec<&String> = shown
             .iter()
             .filter(|l| l.starts_with("first_start"))
@@ -1780,7 +1780,7 @@ mod tests {
     fn show_lines_labels() {
         let mut r = row("labels");
         r.claude_version = Some("2.1.0".into());
-        let lines = show_lines(&r, &[], false);
+        let lines = show_lines(&r, &[], &Attribution::legacy(false));
         assert!(lines
             .iter()
             .any(|l| l.starts_with("claude_version") && l.contains("(latest seen)")));
@@ -1813,7 +1813,7 @@ mod tests {
         let a = attributed_row("attr0000");
         for rows in [vec![(1, &z)], vec![(2, &a)], vec![(1, &z), (2, &a)]] {
             for on in [false, true] {
-                let lines = list_lines(&rows, on);
+                let lines = list_lines(&rows, &Attribution::legacy(on));
                 assert_eq!(
                     lines.iter().filter(|l| **l == zero_cause_legend()).count(),
                     1,
@@ -1834,9 +1834,9 @@ mod tests {
         let z = row("zero0000");
         let a = attributed_row("attr0000");
         let has_hint = |rows: &[(usize, &SessionRow)], on: bool| {
-            list_lines(rows, on)
+            list_lines(rows, &Attribution::legacy(on))
                 .iter()
-                .any(|l| l == ATTRIBUTION_OFF_HINT)
+                .any(|l| l == super::super::ATTRIBUTION_OFF_LEGACY)
         };
         assert!(has_hint(&[(1, &z)], false));
         assert!(has_hint(&[(1, &z), (2, &a)], false));
@@ -1844,25 +1844,25 @@ mod tests {
         assert!(!has_hint(&[(2, &a)], false));
         assert!(!has_hint(&[(2, &a)], true));
         // The hint directly follows the neutral cause line.
-        let lines = list_lines(&[(1, &z)], false);
+        let lines = list_lines(&[(1, &z)], &Attribution::legacy(false));
         let i = lines
             .iter()
             .position(|l| *l == zero_cause_legend())
             .unwrap();
-        assert_eq!(lines[i + 1], ATTRIBUTION_OFF_HINT);
+        assert_eq!(lines[i + 1], super::super::ATTRIBUTION_OFF_LEGACY);
     }
 
     #[test]
     fn empty_lines_attributed_hint_follows_config() {
         assert_eq!(
-            empty_lines(true, None, false),
+            empty_lines(true, None, &Attribution::legacy(false)),
             vec![
                 "(no attributed sessions)".to_string(),
-                ATTRIBUTION_OFF_HINT.to_string()
+                super::super::ATTRIBUTION_OFF_LEGACY.to_string()
             ]
         );
         assert_eq!(
-            empty_lines(true, Some("/w"), true),
+            empty_lines(true, Some("/w"), &Attribution::legacy(true)),
             vec![
                 "(no attributed sessions under /w)".to_string(),
                 super::super::ATTRIBUTION_ON_EMPTY.to_string()
@@ -1870,39 +1870,63 @@ mod tests {
         );
         for on in [false, true] {
             assert_eq!(
-                empty_lines(false, None, on),
+                empty_lines(false, None, &Attribution::legacy(on)),
                 vec!["(no sessions recorded)".to_string()]
             );
             assert_eq!(
-                empty_lines(false, Some("/w"), on),
+                empty_lines(false, Some("/w"), &Attribution::legacy(on)),
                 vec!["(no sessions recorded under /w)".to_string()]
             );
         }
-        let l = empty_lines(true, Some("/w\x1b[31mx\n"), false);
+        let l = empty_lines(true, Some("/w\x1b[31mx\n"), &Attribution::legacy(false));
         assert!(l.iter().all(|x| !has_control(x)), "{l:?}");
     }
 
     #[test]
     fn show_lines_zero_row_off_hint() {
-        let hint = format!("  {ATTRIBUTION_OFF_HINT}");
+        let hint = format!("  {}", super::super::ATTRIBUTION_OFF_LEGACY);
         let z = row("zero-row");
-        let lines = show_lines(&z, &[], false);
+        let lines = show_lines(&z, &[], &Attribution::legacy(false));
         let i = lines
             .iter()
             .position(|l| *l == hint)
             .unwrap_or_else(|| panic!("{lines:?}"));
         // Inside the attribution block: right after the agents line.
         assert!(lines[i - 1].starts_with("  agents  requests"), "{lines:?}");
-        assert!(!show_lines(&z, &[], true).contains(&hint));
+        assert!(!show_lines(&z, &[], &Attribution::legacy(true)).contains(&hint));
         let a = attributed_row("attr-row");
-        assert!(!show_lines(&a, &[], false).contains(&hint));
-        assert!(!show_lines(&a, &[], true).contains(&hint));
+        assert!(!show_lines(&a, &[], &Attribution::legacy(false)).contains(&hint));
+        assert!(!show_lines(&a, &[], &Attribution::legacy(true)).contains(&hint));
+    }
+
+    #[test]
+    fn layout_mode_off_hint_names_agents_variable() {
+        // CR-01: with a layout in use, show_agents has no effect, so the hint
+        // must point at the {agents} variable instead.
+        let st = Attribution {
+            on: false,
+            layout: true,
+        };
+        let z = row("zero0000");
+        let hint = super::super::ATTRIBUTION_OFF_LAYOUT;
+        assert!(list_lines(&[(1, &z)], &st).iter().any(|l| l == hint));
+        assert!(show_lines(&z, &[], &st).contains(&format!("  {hint}")));
+        assert_eq!(empty_lines(true, None, &st)[1], hint);
+        let all: Vec<String> = list_lines(&[(1, &z)], &st)
+            .into_iter()
+            .chain(show_lines(&z, &[], &st))
+            .chain(empty_lines(true, None, &st))
+            .collect();
+        assert!(
+            !all.iter().any(|l| l.contains("show_agents = true")),
+            "{all:?}"
+        );
     }
 
     #[test]
     fn show_lines_no_transcript_neutral_wording() {
         for on in [false, true] {
-            let lines = show_lines(&row("no-ts"), &[], on);
+            let lines = show_lines(&row("no-ts"), &[], &Attribution::legacy(on));
             let tl = lines
                 .iter()
                 .find(|l| l.starts_with("transcript "))
@@ -1925,11 +1949,15 @@ mod tests {
         let a = attributed_row("attr0000");
         let mut out: Vec<String> = Vec::new();
         for on in [false, true] {
-            out.extend(list_lines(&[(1, &z), (2, &a)], on));
-            out.extend(show_lines(&z, &[], on));
-            out.extend(show_lines(&a, &[], on));
+            out.extend(list_lines(&[(1, &z), (2, &a)], &Attribution::legacy(on)));
+            out.extend(show_lines(&z, &[], &Attribution::legacy(on)));
+            out.extend(show_lines(&a, &[], &Attribution::legacy(on)));
             for attributed in [false, true] {
-                out.extend(empty_lines(attributed, Some("/w"), on));
+                out.extend(empty_lines(
+                    attributed,
+                    Some("/w"),
+                    &Attribution::legacy(on),
+                ));
             }
         }
         for l in &out {

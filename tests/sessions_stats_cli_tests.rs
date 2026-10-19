@@ -1252,6 +1252,38 @@ fn on_but_empty_wording() {
     assert!(!out.contains("attribution is off"), "list: {}", out);
 }
 
+/// CR-01: with a layout preset in use, `[display].show_agents` has no effect,
+/// so the off-hint must point at the `{agents}` variable and must not tell the
+/// user to set what they already set.
+#[test]
+fn layout_mode_off_hint_names_agents_variable() {
+    let env = one_unattributed_render();
+    let cfg = env.home.path().join("layout.toml");
+    std::fs::write(
+        &cfg,
+        "[display]\nshow_agents = true\n[layout]\npreset = \"compact\"\n",
+    )
+    .expect("write layout.toml");
+
+    for args in [
+        &["stats"][..],
+        &["stats", "--sessions"][..],
+        &["sessions", "list", "--attributed"][..],
+        &["sessions", "list"][..],
+        &["sessions", "show", "#1"][..],
+    ] {
+        let out = run_view(&env, args, Some(&cfg));
+        assert!(out.contains(OFF_HINT), "{:?}: {}", args, out);
+        assert!(out.contains("{agents}"), "{:?}: {}", args, out);
+        assert!(
+            !out.contains("show_agents = true"),
+            "{:?} tells a layout user to set show_agents:\n{}",
+            args,
+            out
+        );
+    }
+}
+
 #[test]
 fn help_mentions_attribution_opt_in() {
     let env = Env::new();
@@ -1264,5 +1296,15 @@ fn help_mentions_attribution_opt_in() {
         let (code, out, err) = env.run(args);
         assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
         assert!(out.contains("opt-in"), "{:?} lacks opt-in:\n{}", args, out);
+        // CR-01: both enable paths, each qualified by mode.
+        for needed in ["show_agents = true", "{agents}", "legacy", "preset"] {
+            assert!(
+                out.contains(needed),
+                "{:?} lacks {:?}:\n{}",
+                args,
+                needed,
+                out
+            );
+        }
     }
 }

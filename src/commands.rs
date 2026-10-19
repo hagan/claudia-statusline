@@ -44,10 +44,17 @@ pub(crate) fn trunc(s: &str, n: usize) -> String {
 }
 
 /// Shown under an empty or zero-attribution `stats` / `sessions` view when the
-/// effective config does not request subagent attribution (W-NEW-2, D-04).
-/// Attribution is opt-in: renders only scan transcripts when an agents value is
-/// displayed, so a default user's views stay empty.
-pub(crate) const ATTRIBUTION_OFF_HINT: &str = "subagent attribution is off (it is opt-in): enable it with [display].show_agents = true, or use an {agents} variable in your layout template";
+/// effective config does not request subagent attribution and the legacy
+/// (non-layout) renderer is in use (W-NEW-2, D-04). Attribution is opt-in:
+/// renders only scan transcripts when an agents value is displayed, so a
+/// default user's views stay empty.
+pub(crate) const ATTRIBUTION_OFF_LEGACY: &str =
+    "subagent attribution is off (it is opt-in): enable it with [display].show_agents = true";
+
+/// The off-hint when a layout preset or `[layout].format` is in use (CR-01):
+/// `agents_requested` then ignores `[display].show_agents` entirely, and only
+/// an `{agents…}` template variable turns attribution on.
+pub(crate) const ATTRIBUTION_OFF_LAYOUT: &str = "subagent attribution is off (it is opt-in): a layout preset or format is in use, so add an {agents} variable to [layout].format ([display].show_agents has no effect with a layout)";
 
 /// Shown under an empty attribution view when attribution is on (D-04).
 pub(crate) const ATTRIBUTION_ON_EMPTY: &str = "attribution is on: a session appears here once a render with stats updates has read its transcript";
@@ -57,21 +64,53 @@ pub(crate) const ATTRIBUTION_ON_EMPTY: &str = "attribution is on: a session appe
 pub(crate) const ZERO_CAUSE: &str =
     "attribution was off when the session rendered, or the session predates attribution";
 
-/// The empty-view hint for the current attribution state.
-pub(crate) fn attribution_hint(on: bool) -> &'static str {
-    if on {
-        ATTRIBUTION_ON_EMPTY
-    } else {
-        ATTRIBUTION_OFF_HINT
-    }
+/// The attribution state of the effective config, as the render path would see
+/// it: whether attribution is requested, and whether the layout renderer is in
+/// use (which decides how to turn it on, CR-01).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Attribution {
+    /// `display::agents_requested`: the render path's opt-in predicate.
+    pub(crate) on: bool,
+    /// `display::uses_layout_system`: `[display].show_agents` has no effect.
+    pub(crate) layout: bool,
 }
 
-/// Whether the effective config requests subagent attribution, with the same
-/// predicate the render path uses. `get_config` honors the CLI → env → file →
-/// default precedence and never fails: a config error falls back to the
-/// default config, i.e. attribution off (D-04, threat T-18.1-07).
-pub(crate) fn attribution_on() -> bool {
-    crate::display::agents_requested(crate::config::get_config())
+impl Attribution {
+    /// The state of the effective config. `get_config` honors the CLI → env →
+    /// file → default precedence and never fails: a config error falls back to
+    /// the default config, i.e. attribution off (D-04, threat T-18.1-07).
+    pub(crate) fn current() -> Self {
+        let cfg = crate::config::get_config();
+        Self {
+            on: crate::display::agents_requested(cfg),
+            layout: crate::display::uses_layout_system(cfg),
+        }
+    }
+
+    /// The off-hint worded for the active renderer (CR-01). Terminal-safe
+    /// already; callers still pass it through [`safe`].
+    pub(crate) fn off_hint(&self) -> String {
+        if self.layout {
+            ATTRIBUTION_OFF_LAYOUT.to_string()
+        } else {
+            ATTRIBUTION_OFF_LEGACY.to_string()
+        }
+    }
+
+    /// The empty-view hint for this state.
+    pub(crate) fn hint(&self) -> String {
+        if self.on {
+            ATTRIBUTION_ON_EMPTY.to_string()
+        } else {
+            self.off_hint()
+        }
+    }
+
+    /// A legacy-mode state, for the view unit tests.
+    #[cfg(test)]
+    pub(crate) fn legacy(on: bool) -> Self {
+        Self { on, layout: false }
+    }
 }
 
 /// `a / b` as `f64`, `0.0` when `b == 0`.
@@ -209,20 +248,34 @@ pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        attribution_hint, count_lossy, error_for_terminal, int_lossy, real_lossy, share,
-        ATTRIBUTION_OFF_HINT, ATTRIBUTION_ON_EMPTY, ZERO_CAUSE,
+        count_lossy, error_for_terminal, int_lossy, real_lossy, share, Attribution,
+        ATTRIBUTION_OFF_LAYOUT, ATTRIBUTION_OFF_LEGACY, ATTRIBUTION_ON_EMPTY, ZERO_CAUSE,
     };
     use crate::error::StatuslineError;
 
     #[test]
     fn hint_constants_follow_state() {
-        assert_eq!(attribution_hint(false), ATTRIBUTION_OFF_HINT);
-        assert_eq!(attribution_hint(true), ATTRIBUTION_ON_EMPTY);
-        assert!(ATTRIBUTION_OFF_HINT.contains("opt-in"));
-        assert!(ATTRIBUTION_OFF_HINT.contains("[display].show_agents = true"));
+        let st = |on, layout| Attribution { on, layout };
+        assert_eq!(st(false, false).hint(), ATTRIBUTION_OFF_LEGACY);
+        assert_eq!(st(false, true).hint(), ATTRIBUTION_OFF_LAYOUT);
+        assert_eq!(st(true, false).hint(), ATTRIBUTION_ON_EMPTY);
+        assert_eq!(st(true, true).hint(), ATTRIBUTION_ON_EMPTY);
+        for h in [ATTRIBUTION_OFF_LEGACY, ATTRIBUTION_OFF_LAYOUT] {
+            assert!(h.contains("opt-in"), "{h}");
+        }
+        assert!(ATTRIBUTION_OFF_LEGACY.contains("[display].show_agents = true"));
+        assert!(!ATTRIBUTION_OFF_LEGACY.contains("{agents}"));
+        // CR-01: a layout user is never told to set show_agents.
+        assert!(ATTRIBUTION_OFF_LAYOUT.contains("{agents}"));
+        assert!(!ATTRIBUTION_OFF_LAYOUT.contains("show_agents = true"));
         assert!(!ATTRIBUTION_ON_EMPTY.contains("off"));
         // Constants are already terminal-safe.
-        for s in [ATTRIBUTION_OFF_HINT, ATTRIBUTION_ON_EMPTY, ZERO_CAUSE] {
+        for s in [
+            ATTRIBUTION_OFF_LEGACY,
+            ATTRIBUTION_OFF_LAYOUT,
+            ATTRIBUTION_ON_EMPTY,
+            ZERO_CAUSE,
+        ] {
             assert_eq!(super::safe(s), s);
         }
     }
