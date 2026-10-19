@@ -1132,6 +1132,8 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
         "by index from the default list",
         "before attribution existed",
         "accumulates as sessions render",
+        // WR-03: overstated "every view is empty/0 and says so" claim.
+        "each of these views says",
     ] {
         assert!(!doc.contains(stale), "docs/USAGE.md still says {:?}", stale);
     }
@@ -1149,6 +1151,11 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
         "`'#N'` is the reliable form",
         "shares one main transcript",
         "show_agents = true",
+        // WR-03: matches actual behaviour (history kept, hint only when
+        // empty/zero, names the loaded config).
+        "sessions attributed earlier stay listed",
+        "The hint appears only when a view",
+        "`statusline config path`",
     ] {
         assert!(doc.contains(needed), "docs/USAGE.md lacks {:?}", needed);
     }

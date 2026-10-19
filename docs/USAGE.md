@@ -123,12 +123,22 @@ that were rendered with attribution on, and count only agent files that a
 render has read and saved.
 
 Attribution is opt-in for these views too (default off: set
-`[display].show_agents = true` in the legacy layout, or use an `{agents}`
-variable in a layout template). With it off, `stats` and
-`sessions list --attributed` are empty, `sessions list` and `sessions show`
-show 0, and each of these views says that attribution is off and how to turn
-it on. A session that was auto-reset keeps its attribution once it renders
-again with attribution on; a session that never renders again after an older
+`[display].show_agents = true` in the legacy layout, or add an `{agents}`
+variable to `[layout].format` when a layout preset or format is in use). With
+it off, renders record no attribution: a session rendered only with it off
+shows 0 and is left out of `stats` and `sessions list --attributed`, while
+sessions attributed earlier stay listed. The hint appears only when a view
+has nothing to show or shows a 0: when `stats`, `stats --sessions` or
+`sessions list --attributed` is empty, or `sessions list` / `sessions show`
+shows a session with 0, the view says that attribution is off and how to turn
+it on. It names the config file the command loaded, which can differ from the
+one your renders use (`--config` or environment in `statusLine.command`);
+`statusline config path` shows which file is active. An empty
+`sessions list` (no filter or `--workspace` only) and a missing stats
+database print no hint.
+
+A session that was auto-reset keeps its attribution once it renders again with
+attribution on; a session that never renders again after an older
 reset keeps showing 0. The `sessions` views list the common causes of a 0
 (attribution off when the session rendered, a session older than attribution,
 an auto-reset with no render since); a session can also show 0 because its
