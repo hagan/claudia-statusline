@@ -1911,7 +1911,7 @@ mod tests {
         let z = row("zero0000");
         let hint = st.off_hint();
         assert!(hint.ends_with(super::super::ATTRIBUTION_ENABLE_LAYOUT));
-        assert!(list_lines(&[(1, &z)], &st).iter().any(|l| *l == hint));
+        assert!(list_lines(&[(1, &z)], &st).contains(&hint));
         assert!(show_lines(&z, &[], &st).contains(&format!("  {hint}")));
         assert_eq!(empty_lines(true, None, &st)[1], hint);
         let all: Vec<String> = list_lines(&[(1, &z)], &st)
