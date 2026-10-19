@@ -122,6 +122,21 @@ statusline (the data directory, `XDG_DATA_HOME`, or the test store under
 that were rendered with attribution on, and count only agent files that a
 render has read and saved.
 
+Attribution is opt-in for these views too (default off: set
+`[display].show_agents = true` in the legacy layout, or use an `{agents}`
+variable in a layout template). With it off, `stats` and
+`sessions list --attributed` are empty, `sessions list` and `sessions show`
+show 0, and each of these views says that attribution is off and how to turn
+it on. A session that was auto-reset keeps its attribution once it renders
+again with attribution on; a session that never renders again after an older
+reset keeps showing 0.
+
+When a second session shares one main transcript with another session (for
+example two sessions running on the same conversation file), the transcript's
+attribution is saved for the session that recorded it first. The second
+session shows 0 main requests and is excluded from `statusline stats` and
+`sessions list --attributed`.
+
 The prompt-cache variables (`{prompt_cache}`, `{cache_hit}`, `{cache_misses}`,
 `{cache_miss_cause}`, `{cache_warm}`; segment toggle `display.show_prompt_cache`)
 come from Claude Code's `prompt_cache` payload field. `{cache_miss_cause}` lists

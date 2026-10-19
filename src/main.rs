@@ -119,7 +119,8 @@ enum SessionsAction {
         /// Show every session instead of the newest 25
         #[arg(long)]
         all: bool,
-        /// Only sessions with attribution data (main_requests > 0)
+        /// Only sessions with attribution data (main_requests > 0); attribution is opt-in
+        /// ([display].show_agents = true or an {agents} layout variable)
         #[arg(long)]
         attributed: bool,
         /// Number of sessions to show
@@ -144,7 +145,8 @@ enum SessionsAction {
         /// Show every session instead of the newest 25
         #[arg(long)]
         all: bool,
-        /// Only sessions with attribution data (main_requests > 0)
+        /// Only sessions with attribution data (main_requests > 0); attribution is opt-in
+        /// ([display].show_agents = true or an {agents} layout variable)
         #[arg(long)]
         attributed: bool,
         /// Number of sessions to show
@@ -164,6 +166,8 @@ enum Commands {
     /// Token attribution per Claude Code version (default) or per session:
     /// main requests, input traffic and output per request, subagent share.
     /// Compare rows across versions to spot a behaviour change after an update.
+    /// Attribution is opt-in: set [display].show_agents = true, or use an {agents}
+    /// variable in your layout template; until then these views are empty.
     Stats {
         /// Group by Claude Code version (default view)
         #[arg(long)]
