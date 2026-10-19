@@ -462,7 +462,7 @@ mod tests {
     fn by_version_lines_empty_shows_off_hint() {
         let (_dir, path) = unattributed_db();
         let lines = by_version_lines(&ro(&path), &Attribution::legacy(false)).unwrap();
-        assert_eq!(lines[2], super::super::ATTRIBUTION_OFF_LEGACY);
+        assert_eq!(lines[2], Attribution::legacy(false).off_hint());
         assert!(
             !lines.iter().any(|l| l.contains("accumulates")),
             "{lines:?}"
@@ -527,7 +527,7 @@ mod tests {
                     .iter(),
             )
         {
-            assert_ne!(l, super::super::ATTRIBUTION_OFF_LEGACY);
+            assert_ne!(*l, Attribution::legacy(false).off_hint());
             assert_ne!(l, super::super::ATTRIBUTION_ON_EMPTY);
             assert!(!l.starts_with("(no sessions"), "{l:?}");
         }

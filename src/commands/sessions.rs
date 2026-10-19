@@ -1836,7 +1836,7 @@ mod tests {
         let has_hint = |rows: &[(usize, &SessionRow)], on: bool| {
             list_lines(rows, &Attribution::legacy(on))
                 .iter()
-                .any(|l| l == super::super::ATTRIBUTION_OFF_LEGACY)
+                .any(|l| *l == Attribution::legacy(false).off_hint())
         };
         assert!(has_hint(&[(1, &z)], false));
         assert!(has_hint(&[(1, &z), (2, &a)], false));
@@ -1849,7 +1849,7 @@ mod tests {
             .iter()
             .position(|l| *l == zero_cause_legend())
             .unwrap();
-        assert_eq!(lines[i + 1], super::super::ATTRIBUTION_OFF_LEGACY);
+        assert_eq!(lines[i + 1], Attribution::legacy(false).off_hint());
     }
 
     #[test]
@@ -1858,7 +1858,7 @@ mod tests {
             empty_lines(true, None, &Attribution::legacy(false)),
             vec![
                 "(no attributed sessions)".to_string(),
-                super::super::ATTRIBUTION_OFF_LEGACY.to_string()
+                Attribution::legacy(false).off_hint()
             ]
         );
         assert_eq!(
@@ -1884,7 +1884,7 @@ mod tests {
 
     #[test]
     fn show_lines_zero_row_off_hint() {
-        let hint = format!("  {}", super::super::ATTRIBUTION_OFF_LEGACY);
+        let hint = format!("  {}", Attribution::legacy(false).off_hint());
         let z = row("zero-row");
         let lines = show_lines(&z, &[], &Attribution::legacy(false));
         let i = lines
@@ -1906,10 +1906,12 @@ mod tests {
         let st = Attribution {
             on: false,
             layout: true,
+            source: None,
         };
         let z = row("zero0000");
-        let hint = super::super::ATTRIBUTION_OFF_LAYOUT;
-        assert!(list_lines(&[(1, &z)], &st).iter().any(|l| l == hint));
+        let hint = st.off_hint();
+        assert!(hint.ends_with(super::super::ATTRIBUTION_ENABLE_LAYOUT));
+        assert!(list_lines(&[(1, &z)], &st).iter().any(|l| *l == hint));
         assert!(show_lines(&z, &[], &st).contains(&format!("  {hint}")));
         assert_eq!(empty_lines(true, None, &st)[1], hint);
         let all: Vec<String> = list_lines(&[(1, &z)], &st)

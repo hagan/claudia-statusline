@@ -43,18 +43,19 @@ pub(crate) fn trunc(s: &str, n: usize) -> String {
     safe(s).chars().take(n).collect()
 }
 
-/// Shown under an empty or zero-attribution `stats` / `sessions` view when the
-/// effective config does not request subagent attribution and the legacy
-/// (non-layout) renderer is in use (W-NEW-2, D-04). Attribution is opt-in:
-/// renders only scan transcripts when an agents value is displayed, so a
-/// default user's views stay empty.
-pub(crate) const ATTRIBUTION_OFF_LEGACY: &str =
-    "subagent attribution is off (it is opt-in): enable it with [display].show_agents = true";
+/// How to turn attribution on when the legacy (non-layout) renderer is in use
+/// (W-NEW-2, D-04). Attribution is opt-in: renders only scan transcripts when
+/// an agents value is displayed, so a default user's views stay empty.
+pub(crate) const ATTRIBUTION_ENABLE_LEGACY: &str = "enable it with [display].show_agents = true";
 
-/// The off-hint when a layout preset or `[layout].format` is in use (CR-01):
-/// `agents_requested` then ignores `[display].show_agents` entirely, and only
-/// an `{agents…}` template variable turns attribution on.
-pub(crate) const ATTRIBUTION_OFF_LAYOUT: &str = "subagent attribution is off (it is opt-in): a layout preset or format is in use, so add an {agents} variable to [layout].format ([display].show_agents has no effect with a layout)";
+/// How to turn attribution on when a layout preset or `[layout].format` is in
+/// use (CR-01): `agents_requested` then ignores `[display].show_agents`
+/// entirely, and only an `{agents…}` template variable turns attribution on.
+pub(crate) const ATTRIBUTION_ENABLE_LAYOUT: &str = "a layout preset or format is in use, so add an {agents} variable to [layout].format ([display].show_agents has no effect with a layout)";
+
+/// Lead of the off-hint shown under an empty or zero-attribution `stats` /
+/// `sessions` view; [`Attribution::off_hint`] completes it.
+pub(crate) const ATTRIBUTION_OFF: &str = "subagent attribution is off (it is opt-in)";
 
 /// Shown under an empty attribution view when attribution is on (D-04).
 pub(crate) const ATTRIBUTION_ON_EMPTY: &str = "attribution is on: a session appears here once a render with stats updates has read its transcript";
@@ -76,6 +77,12 @@ pub(crate) struct Attribution {
     pub(crate) on: bool,
     /// `display::uses_layout_system`: `[display].show_agents` has no effect.
     pub(crate) layout: bool,
+    /// The config file this command loaded (`None`: none found, defaults),
+    /// raw; sanitized when printed. Renders run under Claude Code's
+    /// `statusLine.command` and may load another file (`--config`, env), so
+    /// the off-hint names the one it checked instead of stating a fact about
+    /// every render (WR-02).
+    pub(crate) source: Option<String>,
 }
 
 impl Attribution {
@@ -87,17 +94,29 @@ impl Attribution {
         Self {
             on: crate::display::agents_requested(cfg),
             layout: crate::display::uses_layout_system(cfg),
+            // Same search order `get_config` used; path probes only, cannot fail.
+            source: crate::config::resolve_config_source()
+                .active
+                .map(|p| p.display().to_string()),
         }
     }
 
-    /// The off-hint worded for the active renderer (CR-01). Terminal-safe
-    /// already; callers still pass it through [`safe`].
+    /// The off-hint worded for the active renderer (CR-01), naming the config
+    /// this command checked (WR-02). The path is untrusted text and goes
+    /// through [`safe`] here; callers still pass the whole line through it.
     pub(crate) fn off_hint(&self) -> String {
-        if self.layout {
-            ATTRIBUTION_OFF_LAYOUT.to_string()
+        let src = match &self.source {
+            Some(p) => safe(p),
+            None => "no file: defaults".to_string(),
+        };
+        let enable = if self.layout {
+            ATTRIBUTION_ENABLE_LAYOUT
         } else {
-            ATTRIBUTION_OFF_LEGACY.to_string()
-        }
+            ATTRIBUTION_ENABLE_LEGACY
+        };
+        format!(
+            "{ATTRIBUTION_OFF} in the config this command loaded ({src}; see `statusline config path`): {enable}"
+        )
     }
 
     /// The empty-view hint for this state.
@@ -112,7 +131,11 @@ impl Attribution {
     /// A legacy-mode state, for the view unit tests.
     #[cfg(test)]
     pub(crate) fn legacy(on: bool) -> Self {
-        Self { on, layout: false }
+        Self {
+            on,
+            layout: false,
+            source: None,
+        }
     }
 }
 
@@ -252,39 +275,61 @@ pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
 mod tests {
     use super::{
         count_lossy, error_for_terminal, int_lossy, real_lossy, share, Attribution,
-        ATTRIBUTION_OFF_LAYOUT, ATTRIBUTION_OFF_LEGACY, ATTRIBUTION_ON_EMPTY, ZERO_CAUSE,
+        ATTRIBUTION_ENABLE_LAYOUT, ATTRIBUTION_ENABLE_LEGACY, ATTRIBUTION_OFF,
+        ATTRIBUTION_ON_EMPTY, ZERO_CAUSE,
     };
     use crate::error::StatuslineError;
 
     #[test]
     fn hint_constants_follow_state() {
-        let st = |on, layout| Attribution { on, layout };
-        assert_eq!(st(false, false).hint(), ATTRIBUTION_OFF_LEGACY);
-        assert_eq!(st(false, true).hint(), ATTRIBUTION_OFF_LAYOUT);
+        let st = |on, layout| Attribution {
+            on,
+            layout,
+            source: None,
+        };
+        let legacy = st(false, false).hint();
+        let layout = st(false, true).hint();
         assert_eq!(st(true, false).hint(), ATTRIBUTION_ON_EMPTY);
         assert_eq!(st(true, true).hint(), ATTRIBUTION_ON_EMPTY);
-        for h in [ATTRIBUTION_OFF_LEGACY, ATTRIBUTION_OFF_LAYOUT] {
+        for h in [&legacy, &layout] {
+            assert!(h.starts_with(ATTRIBUTION_OFF), "{h}");
             assert!(h.contains("opt-in"), "{h}");
+            assert!(h.contains("(no file: defaults;"), "{h}");
         }
-        assert!(ATTRIBUTION_OFF_LEGACY.contains("[display].show_agents = true"));
-        assert!(!ATTRIBUTION_OFF_LEGACY.contains("{agents}"));
+        assert!(legacy.ends_with(ATTRIBUTION_ENABLE_LEGACY), "{legacy}");
+        assert!(legacy.contains("[display].show_agents = true"));
+        assert!(!legacy.contains("{agents}"));
         // CR-01: a layout user is never told to set show_agents.
-        assert!(ATTRIBUTION_OFF_LAYOUT.contains("{agents}"));
-        assert!(!ATTRIBUTION_OFF_LAYOUT.contains("show_agents = true"));
+        assert!(layout.ends_with(ATTRIBUTION_ENABLE_LAYOUT), "{layout}");
+        assert!(layout.contains("{agents}"));
+        assert!(!layout.contains("show_agents = true"));
         assert!(!ATTRIBUTION_ON_EMPTY.contains("off"));
         // WR-01: the cause list is explicitly non-exhaustive and names the
         // auto-reset limitation (D-14).
         assert!(ZERO_CAUSE.starts_with("causes include"));
         assert!(ZERO_CAUSE.contains("auto-reset"));
-        // Constants are already terminal-safe.
+        // Constants and the hints are already terminal-safe.
         for s in [
-            ATTRIBUTION_OFF_LEGACY,
-            ATTRIBUTION_OFF_LAYOUT,
+            legacy.as_str(),
+            layout.as_str(),
             ATTRIBUTION_ON_EMPTY,
             ZERO_CAUSE,
         ] {
             assert_eq!(super::safe(s), s);
         }
+    }
+
+    #[test]
+    fn off_hint_names_loaded_config_sanitized() {
+        // WR-02: the hint names the file it checked, through safe().
+        let a = Attribution {
+            on: false,
+            layout: false,
+            source: Some("/h/\x1b[31mx\n/config.toml".into()),
+        };
+        let h = a.off_hint();
+        assert!(h.contains("(/h/x/config.toml;"), "{h:?}");
+        assert!(!has_control(&h), "{h:?}");
     }
 
     #[test]

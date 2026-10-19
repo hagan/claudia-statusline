@@ -1203,6 +1203,12 @@ fn opt_in_hint_when_attribution_off() {
         out
     );
     assert!(out.contains(OFF_HINT), "stats: {}", out);
+    // WR-02: with no config file the hint says it checked the defaults.
+    assert!(
+        out.contains("in the config this command loaded (no file: defaults;"),
+        "stats: {}",
+        out
+    );
 
     let out = run_view(&env, &["stats", "--sessions"], None);
     assert!(
@@ -1274,6 +1280,14 @@ fn layout_mode_off_hint_names_agents_variable() {
         let out = run_view(&env, args, Some(&cfg));
         assert!(out.contains(OFF_HINT), "{:?}: {}", args, out);
         assert!(out.contains("{agents}"), "{:?}: {}", args, out);
+        // WR-02: the hint names the config file this command checked.
+        assert!(
+            out.contains(&format!("({};", cfg.display())),
+            "{:?} does not name {}:\n{}",
+            args,
+            cfg.display(),
+            out
+        );
         assert!(
             !out.contains("show_agents = true"),
             "{:?} tells a layout user to set show_agents:\n{}",
