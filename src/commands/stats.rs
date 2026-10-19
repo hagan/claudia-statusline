@@ -27,7 +27,9 @@
 //! `main_requests > 0` predicate to every view and saturates at `i64::MAX`
 //! instead of failing.
 
-use super::{count_lossy, div, real_lossy, safe, share, text_lossy, trunc};
+use super::{
+    attribution_hint, attribution_on, count_lossy, div, real_lossy, safe, share, text_lossy, trunc,
+};
 use crate::error::Result;
 use rusqlite::{Connection, OpenFlags};
 use std::collections::HashMap;
@@ -51,8 +53,12 @@ pub(crate) fn show_stats(by_version: bool, sessions: bool) -> Result<()> {
     }
 }
 
+/// Empty-view message shared by both stats views.
+const EMPTY: &str = "(no sessions with attribution data)";
+
 fn show_by_version(conn: &Connection) -> Result<()> {
-    for l in by_version_lines(conn)? {
+    let on = attribution_on();
+    for l in by_version_lines(conn, on)? {
         cli_println!("{l}");
     }
     Ok(())
@@ -73,7 +79,9 @@ struct VersionAgg {
     aout: i64,
 }
 
-fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
+/// `on`: whether the effective config requests attribution; only used for the
+/// hint under an empty view (D-04, D-05).
+fn by_version_lines(conn: &Connection, on: bool) -> Result<Vec<String>> {
     // No SQL prefilter: there is no index on `main_requests`, so the scan is
     // full either way, and a SQL `> 0` would only be a superset under the
     // column's INTEGER affinity. The only filter is the Rust one below, on the
@@ -185,9 +193,8 @@ fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
         ));
     }
     if !any {
-        lines.push(
-            "(no sessions with attribution data yet; it accumulates as sessions render)".into(),
-        );
+        lines.push(EMPTY.into());
+        lines.push(safe(attribution_hint(on)));
     } else {
         lines.push(String::new());
         lines.push("in_k/req = main input traffic (fresh + cache read + cache write) per main request, thousands".into());
@@ -199,13 +206,16 @@ fn by_version_lines(conn: &Connection) -> Result<Vec<String>> {
 }
 
 fn show_sessions(conn: &Connection) -> Result<()> {
-    for l in sessions_lines(conn)? {
+    let on = attribution_on();
+    for l in sessions_lines(conn, on)? {
         cli_println!("{l}");
     }
     Ok(())
 }
 
-fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
+/// `on`: as for [`by_version_lines`]. An empty view prints the header, the
+/// empty message and the hint only, no legends (D-15).
+fn sessions_lines(conn: &Connection, on: bool) -> Result<Vec<String>> {
     let mut stmt = conn.prepare(
         "SELECT session_id, COALESCE(claude_version, '?'),
                 start_time, COALESCE(model_name, ''),
@@ -271,6 +281,11 @@ fn sessions_lines(conn: &Connection) -> Result<Vec<String>> {
             share(ain, min),
             cost,
         ));
+    }
+    if shown == 0 {
+        lines.push(EMPTY.into());
+        lines.push(safe(attribution_hint(on)));
+        return Ok(lines);
     }
     lines.push(String::new());
     lines.push("cost*    = session total across all CLI processes (resumes included), as accounted into daily/monthly totals".into());
@@ -349,7 +364,7 @@ mod tests {
             3000,
             1.5,
         );
-        let lines = by_version_lines(&ro(&path)).unwrap();
+        let lines = by_version_lines(&ro(&path), false).unwrap();
         for l in &lines {
             assert!(!has_control(l), "control char in {l:?}");
         }
@@ -402,7 +417,7 @@ mod tests {
             30,
             0.0,
         );
-        let lines = by_version_lines(&ro(&path)).unwrap();
+        let lines = by_version_lines(&ro(&path), false).unwrap();
         let cells = |v: &str| -> Vec<String> {
             let row = lines.iter().find(|l| l.starts_with(v)).unwrap();
             row.split_whitespace().map(str::to_string).collect()
@@ -413,10 +428,9 @@ mod tests {
         assert_eq!(cells("3.0")[4], i64::MAX.to_string());
     }
 
-    #[test]
-    fn by_version_lines_empty_has_no_figures() {
-        let (_dir, path) = temp_db();
-        // Present but unattributed (main_requests 0): excluded from the view.
+    /// A db with one present but unattributed row (main_requests 0).
+    fn unattributed_db() -> (tempfile::TempDir, PathBuf) {
+        let (dir, path) = temp_db();
         insert(
             &path,
             "sess-z",
@@ -428,13 +442,93 @@ mod tests {
             0,
             0.0,
         );
-        let lines = by_version_lines(&ro(&path)).unwrap();
-        assert_eq!(lines.len(), 2, "{lines:?}");
-        assert!(lines[0].contains("version†"));
-        assert!(lines[1].starts_with("(no sessions with attribution data yet; "));
-        assert!(!lines
+        (dir, path)
+    }
+
+    #[test]
+    fn by_version_lines_empty_has_no_figures() {
+        let (_dir, path) = unattributed_db();
+        for on in [false, true] {
+            let lines = by_version_lines(&ro(&path), on).unwrap();
+            assert_eq!(lines.len(), 3, "{lines:?}");
+            assert!(lines[0].contains("version†"));
+            assert_eq!(lines[1], "(no sessions with attribution data)");
+            assert_eq!(lines[2], attribution_hint(on));
+            assert!(!lines
+                .iter()
+                .any(|l| l.contains("latest observed Claude Code version")));
+        }
+    }
+
+    #[test]
+    fn by_version_lines_empty_shows_off_hint() {
+        let (_dir, path) = unattributed_db();
+        let lines = by_version_lines(&ro(&path), false).unwrap();
+        assert_eq!(lines[2], super::super::ATTRIBUTION_OFF_HINT);
+        assert!(
+            !lines.iter().any(|l| l.contains("accumulates")),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|l| l.contains("share%   =")), "{lines:?}");
+    }
+
+    #[test]
+    fn by_version_lines_empty_on_wording() {
+        let (_dir, path) = unattributed_db();
+        let lines = by_version_lines(&ro(&path), true).unwrap();
+        assert_eq!(lines[2], super::super::ATTRIBUTION_ON_EMPTY);
+        assert!(
+            !lines.iter().any(|l| l.contains("attribution is off")),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn sessions_lines_empty_shows_hint_without_legends() {
+        let (_dir, path) = unattributed_db();
+        for on in [false, true] {
+            let lines = sessions_lines(&ro(&path), on).unwrap();
+            assert_eq!(lines.len(), 3, "{lines:?}");
+            assert!(lines[0].contains("cost*"), "{lines:?}");
+            assert_eq!(lines[1], "(no sessions with attribution data)");
+            assert_eq!(lines[2], attribution_hint(on));
+            assert!(!lines.iter().any(|l| l.contains("cost*    =")), "{lines:?}");
+            assert!(!lines.iter().any(String::is_empty), "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn stats_lines_with_rows_have_no_hint() {
+        let (_dir, path) = unattributed_db();
+        insert(
+            &path,
+            "sess-a",
+            "2020-01-02",
+            "2020-01-02",
+            "2.1",
+            "Opus",
+            2,
+            2000,
+            0.5,
+        );
+        let conn = ro(&path);
+        assert_eq!(
+            by_version_lines(&conn, false).unwrap(),
+            by_version_lines(&conn, true).unwrap()
+        );
+        assert_eq!(
+            sessions_lines(&conn, false).unwrap(),
+            sessions_lines(&conn, true).unwrap()
+        );
+        for l in by_version_lines(&conn, false)
+            .unwrap()
             .iter()
-            .any(|l| l.contains("latest observed Claude Code version")));
+            .chain(sessions_lines(&conn, false).unwrap().iter())
+        {
+            assert_ne!(l, super::super::ATTRIBUTION_OFF_HINT);
+            assert_ne!(l, super::super::ATTRIBUTION_ON_EMPTY);
+            assert!(!l.starts_with("(no sessions"), "{l:?}");
+        }
     }
 
     #[test]
@@ -451,7 +545,7 @@ mod tests {
             2000,
             0.75,
         );
-        let lines = sessions_lines(&ro(&path)).unwrap();
+        let lines = sessions_lines(&ro(&path), false).unwrap();
         for l in &lines {
             assert!(!has_control(l), "control char in {l:?}");
         }
@@ -484,7 +578,7 @@ mod tests {
             1000,
             0.1,
         );
-        let lines = sessions_lines(&ro(&path)).unwrap();
+        let lines = sessions_lines(&ro(&path), false).unwrap();
         let row = &lines[1];
         assert!(row.starts_with("1234567\u{e9} "), "row: {row:?}");
         assert!(row.contains("2020-03-01T10:0\u{20ac}"), "row: {row:?}");
@@ -527,7 +621,7 @@ mod tests {
         }
         drop(conn);
 
-        let lines = sessions_lines(&ro(&path)).unwrap();
+        let lines = sessions_lines(&ro(&path), false).unwrap();
         let blank = lines.iter().position(String::is_empty).unwrap();
         let rows = &lines[1..blank];
         assert_eq!(rows.len(), 25, "{rows:?}");

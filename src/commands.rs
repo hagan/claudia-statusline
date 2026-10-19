@@ -43,6 +43,37 @@ pub(crate) fn trunc(s: &str, n: usize) -> String {
     safe(s).chars().take(n).collect()
 }
 
+/// Shown under an empty or zero-attribution `stats` / `sessions` view when the
+/// effective config does not request subagent attribution (W-NEW-2, D-04).
+/// Attribution is opt-in: renders only scan transcripts when an agents value is
+/// displayed, so a default user's views stay empty.
+pub(crate) const ATTRIBUTION_OFF_HINT: &str = "subagent attribution is off (it is opt-in): enable it with [display].show_agents = true, or use an {agents} variable in your layout template";
+
+/// Shown under an empty attribution view when attribution is on (D-04).
+pub(crate) const ATTRIBUTION_ON_EMPTY: &str = "attribution is on: a session appears here once a render with stats updates has read its transcript";
+
+/// Neutral cause of a stored row with zero attribution (D-06). Describes the
+/// stored row, not the current config, so it stays true after a config change.
+pub(crate) const ZERO_CAUSE: &str =
+    "attribution was off when the session rendered, or the session predates attribution";
+
+/// The empty-view hint for the current attribution state.
+pub(crate) fn attribution_hint(on: bool) -> &'static str {
+    if on {
+        ATTRIBUTION_ON_EMPTY
+    } else {
+        ATTRIBUTION_OFF_HINT
+    }
+}
+
+/// Whether the effective config requests subagent attribution, with the same
+/// predicate the render path uses. `get_config` honors the CLI → env → file →
+/// default precedence and never fails: a config error falls back to the
+/// default config, i.e. attribution off (D-04, threat T-18.1-07).
+pub(crate) fn attribution_on() -> bool {
+    crate::display::agents_requested(crate::config::get_config())
+}
+
 /// `a / b` as `f64`, `0.0` when `b == 0`.
 pub(crate) fn div(a: i64, b: i64) -> f64 {
     if b == 0 {
@@ -177,8 +208,24 @@ pub(crate) fn error_for_terminal(e: &crate::error::StatuslineError) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{count_lossy, error_for_terminal, int_lossy, real_lossy, share};
+    use super::{
+        attribution_hint, count_lossy, error_for_terminal, int_lossy, real_lossy, share,
+        ATTRIBUTION_OFF_HINT, ATTRIBUTION_ON_EMPTY, ZERO_CAUSE,
+    };
     use crate::error::StatuslineError;
+
+    #[test]
+    fn attribution_hint_follows_state() {
+        assert_eq!(attribution_hint(false), ATTRIBUTION_OFF_HINT);
+        assert_eq!(attribution_hint(true), ATTRIBUTION_ON_EMPTY);
+        assert!(ATTRIBUTION_OFF_HINT.contains("opt-in"));
+        assert!(ATTRIBUTION_OFF_HINT.contains("[display].show_agents = true"));
+        assert!(!ATTRIBUTION_ON_EMPTY.contains("off"));
+        // Constants are already terminal-safe.
+        for s in [ATTRIBUTION_OFF_HINT, ATTRIBUTION_ON_EMPTY, ZERO_CAUSE] {
+            assert_eq!(super::safe(s), s);
+        }
+    }
 
     #[test]
     fn numeric_readers_tolerate_any_cell() {
