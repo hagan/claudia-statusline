@@ -215,7 +215,7 @@ mod tests {
     use crate::error::StatuslineError;
 
     #[test]
-    fn attribution_hint_follows_state() {
+    fn hint_constants_follow_state() {
         assert_eq!(attribution_hint(false), ATTRIBUTION_OFF_HINT);
         assert_eq!(attribution_hint(true), ATTRIBUTION_ON_EMPTY);
         assert!(ATTRIBUTION_OFF_HINT.contains("opt-in"));
