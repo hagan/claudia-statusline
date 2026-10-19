@@ -1130,6 +1130,8 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
         "resets on `--resume`",
         "position from the **unfiltered** list",
         "by index from the default list",
+        "before attribution existed",
+        "accumulates as sessions render",
     ] {
         assert!(!doc.contains(stale), "docs/USAGE.md still says {:?}", stale);
     }
@@ -1145,7 +1147,122 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
         "A *bare* selector",
         "`'#0021'` is",
         "`'#N'` is the reliable form",
+        "shares one main transcript",
+        "show_agents = true",
     ] {
         assert!(doc.contains(needed), "docs/USAGE.md lacks {:?}", needed);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Phase 18.1 (W-NEW-2, D-04..D-07): opt-in hints through the real binary.
+// ---------------------------------------------------------------------------
+
+const OFF_HINT: &str = "attribution is off (it is opt-in)";
+const ON_EMPTY: &str = "attribution is on:";
+const ZERO_CAUSE: &str =
+    "attribution was off when the session rendered, or the session predates attribution";
+const MISLEADING: [&str; 3] = [
+    "before attribution existed",
+    "accumulates as sessions render",
+    "not scanned yet",
+];
+
+/// A store holding one real default render (attribution off, so every
+/// attribution figure is 0).
+fn one_unattributed_render() -> Env {
+    let env = Env::new();
+    env.render("0e3c3f6a-1b2c-4d5e-8f90-a1b2c3d4e5f6", 0.5, &[]);
+    env
+}
+
+/// Runs `args` (optionally with `STATUSLINE_CONFIG=config`), asserts exit 0,
+/// clean output and no misleading wording, and returns stdout.
+fn run_view(env: &Env, args: &[&str], config: Option<&Path>) -> String {
+    let mut cmd = env.cmd(args);
+    if let Some(path) = config {
+        cmd.env("STATUSLINE_CONFIG", path);
+    }
+    let (code, out, err) = run_cmd(cmd);
+    assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
+    assert_clean(&format!("{:?} stdout", args), &out);
+    assert_clean(&format!("{:?} stderr", args), &err);
+    for bad in MISLEADING {
+        assert!(!out.contains(bad), "{:?} says {:?}:\n{}", args, bad, out);
+    }
+    out
+}
+
+#[test]
+fn opt_in_hint_when_attribution_off() {
+    let env = one_unattributed_render();
+
+    let out = run_view(&env, &["stats"], None);
+    assert!(
+        out.contains("(no sessions with attribution data)"),
+        "{}",
+        out
+    );
+    assert!(out.contains(OFF_HINT), "stats: {}", out);
+
+    let out = run_view(&env, &["stats", "--sessions"], None);
+    assert!(
+        out.contains("(no sessions with attribution data)"),
+        "{}",
+        out
+    );
+    assert!(out.contains(OFF_HINT), "stats --sessions: {}", out);
+    assert!(
+        !out.contains("share%   ="),
+        "empty view has legends: {}",
+        out
+    );
+
+    let out = run_view(&env, &["sessions", "list", "--attributed"], None);
+    assert!(out.contains("(no attributed sessions"), "{}", out);
+    assert!(out.contains(OFF_HINT), "list --attributed: {}", out);
+
+    let out = run_view(&env, &["sessions", "list"], None);
+    assert!(out.contains(ZERO_CAUSE), "list: {}", out);
+    assert!(out.contains(OFF_HINT), "list: {}", out);
+
+    let out = run_view(&env, &["sessions", "show", "#1"], None);
+    assert!(out.contains(OFF_HINT), "show: {}", out);
+    assert!(out.contains("none recorded"), "show: {}", out);
+}
+
+#[test]
+fn on_but_empty_wording() {
+    let env = one_unattributed_render();
+    let on = env.home.path().join("on.toml");
+    std::fs::write(&on, "[display]\nshow_agents = true\n").expect("write on.toml");
+
+    for args in [
+        &["stats"][..],
+        &["stats", "--sessions"][..],
+        &["sessions", "list", "--attributed"][..],
+    ] {
+        let out = run_view(&env, args, Some(&on));
+        assert!(out.contains(ON_EMPTY), "{:?}: {}", args, out);
+        assert!(!out.contains("attribution is off"), "{:?}: {}", args, out);
+    }
+
+    let out = run_view(&env, &["sessions", "list"], Some(&on));
+    assert!(out.contains(ZERO_CAUSE), "list: {}", out);
+    assert!(!out.contains("attribution is off"), "list: {}", out);
+}
+
+#[test]
+fn help_mentions_attribution_opt_in() {
+    let env = Env::new();
+    for args in [
+        &["stats", "-h"][..],
+        &["stats", "--help"][..],
+        &["sessions", "list", "--help"][..],
+        &["sessions", "pick", "--help"][..],
+    ] {
+        let (code, out, err) = env.run(args);
+        assert_eq!(code, Some(0), "{:?} failed: {}", args, err);
+        assert!(out.contains("opt-in"), "{:?} lacks opt-in:\n{}", args, out);
     }
 }
