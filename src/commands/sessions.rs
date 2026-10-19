@@ -695,7 +695,7 @@ fn show_lines(r: &SessionRow, transcripts: &[TranscriptRow], a: &Attribution) ->
             ));
         }
         None => lines.push(safe(&format!(
-            "transcript        (none recorded: {ZERO_CAUSE})"
+            "transcript        (none recorded; {ZERO_CAUSE})"
         ))),
     }
     // Validate the RAW stored id, never the sanitized one: sanitizing can turn
@@ -1933,7 +1933,7 @@ mod tests {
                 .expect("transcript line");
             assert_eq!(
                 *tl,
-                format!("transcript        (none recorded: {ZERO_CAUSE})")
+                format!("transcript        (none recorded; {ZERO_CAUSE})")
             );
         }
     }

@@ -59,10 +59,13 @@ pub(crate) const ATTRIBUTION_OFF_LAYOUT: &str = "subagent attribution is off (it
 /// Shown under an empty attribution view when attribution is on (D-04).
 pub(crate) const ATTRIBUTION_ON_EMPTY: &str = "attribution is on: a session appears here once a render with stats updates has read its transcript";
 
-/// Neutral cause of a stored row with zero attribution (D-06). Describes the
+/// Neutral causes of a stored row with zero attribution (D-06). Describes the
 /// stored row, not the current config, so it stays true after a config change.
-pub(crate) const ZERO_CAUSE: &str =
-    "attribution was off when the session rendered, or the session predates attribution";
+/// Explicitly non-exhaustive (WR-01): a row can also be 0 because an older
+/// auto_reset zeroed it and it never rendered again (D-14), because another
+/// session owns its main transcript (P18-B, D-09: documented, not listed), or
+/// because a render skipped its save (busy database, exhausted deadline).
+pub(crate) const ZERO_CAUSE: &str = "causes include attribution off when it rendered, a session older than attribution, or an auto-reset with no render since (see USAGE for more)";
 
 /// The attribution state of the effective config, as the render path would see
 /// it: whether attribution is requested, and whether the layout renderer is in
@@ -269,6 +272,10 @@ mod tests {
         assert!(ATTRIBUTION_OFF_LAYOUT.contains("{agents}"));
         assert!(!ATTRIBUTION_OFF_LAYOUT.contains("show_agents = true"));
         assert!(!ATTRIBUTION_ON_EMPTY.contains("off"));
+        // WR-01: the cause list is explicitly non-exhaustive and names the
+        // auto-reset limitation (D-14).
+        assert!(ZERO_CAUSE.starts_with("causes include"));
+        assert!(ZERO_CAUSE.contains("auto-reset"));
         // Constants are already terminal-safe.
         for s in [
             ATTRIBUTION_OFF_LEGACY,

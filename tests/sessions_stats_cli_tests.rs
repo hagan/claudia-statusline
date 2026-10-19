@@ -1160,8 +1160,7 @@ fn usage_doc_describes_stable_numbers_and_honest_labels() {
 
 const OFF_HINT: &str = "attribution is off (it is opt-in)";
 const ON_EMPTY: &str = "attribution is on:";
-const ZERO_CAUSE: &str =
-    "attribution was off when the session rendered, or the session predates attribution";
+const ZERO_CAUSE: &str = "causes include attribution off when it rendered, a session older than attribution, or an auto-reset with no render since (see USAGE for more)";
 const MISLEADING: [&str; 3] = [
     "before attribution existed",
     "accumulates as sessions render",

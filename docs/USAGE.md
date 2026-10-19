@@ -129,7 +129,11 @@ variable in a layout template). With it off, `stats` and
 show 0, and each of these views says that attribution is off and how to turn
 it on. A session that was auto-reset keeps its attribution once it renders
 again with attribution on; a session that never renders again after an older
-reset keeps showing 0.
+reset keeps showing 0. The `sessions` views list the common causes of a 0
+(attribution off when the session rendered, a session older than attribution,
+an auto-reset with no render since); a session can also show 0 because its
+renders skipped saving (database locked past the 250 ms wait) or because it
+shares a main transcript with another session (below).
 
 When a second session shares one main transcript with another session (for
 example two sessions running on the same conversation file), the transcript's
