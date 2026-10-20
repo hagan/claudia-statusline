@@ -231,6 +231,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -239,13 +241,16 @@ jobs:
 
       - name: Get version
         id: version
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ github.event.inputs.tag }}"
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_TAG"
           else
             VERSION=${GITHUB_REF#refs/tags/}
           fi
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Prepare release assets
         run: |
@@ -254,6 +259,78 @@ jobs:
 
           # List all files for debugging
           ls -la *.tar.gz *.zip *.sha256 || true
+
+      # Phase 19 D-13/D-14: the Release body is the tagged version's CHANGELOG
+      # section plus static install instructions. A missing or empty section
+      # fails the release instead of publishing a stale body.
+      - name: Build release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.version.outputs.version }}
+        run: |
+          if [[ ! "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Release tag must look like vX.Y.Z (got: $RELEASE_TAG)"
+            exit 1
+          fi
+
+          SECTION="$(./scripts/changelog-section.sh "${RELEASE_TAG#v}")"
+
+          {
+            echo "## Claudia Statusline $RELEASE_TAG"
+            echo
+            printf '%s\n' "$SECTION"
+            echo
+            sed -e "s|@REPO@|${GITHUB_REPOSITORY}|g" -e "s|@TAG@|${RELEASE_TAG}|g" <<'NOTES'
+          ### Installation
+
+          #### Quick Install (Linux/macOS)
+          ```bash
+          # Detect architecture and download appropriate binary
+          ARCH=$(uname -m)
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+
+          if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
+          if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then ARCH="arm64"; fi
+          if [ "$OS" = "darwin" ]; then OS="darwin"; fi
+
+          curl -L https://github.com/@REPO@/releases/download/@TAG@/statusline-${OS}-${ARCH}.tar.gz | tar xz
+          chmod +x statusline
+          sudo mv statusline /usr/local/bin/
+          ```
+
+          #### Manual Download
+
+          Download the appropriate binary for your platform:
+
+          **Standard Binaries (Default - Recommended for most users)**:
+          - **Linux x86_64**: `statusline-linux-amd64.tar.gz`
+          - **Linux ARM64**: `statusline-linux-arm64.tar.gz`
+          - **macOS Intel**: `statusline-darwin-amd64.tar.gz`
+          - **macOS Apple Silicon**: `statusline-darwin-arm64.tar.gz`
+          - **Windows**: `statusline-windows-amd64.zip`
+
+          **Turso Sync Variants (Experimental - For cloud sync across machines)**:
+          - **Linux x86_64**: `statusline-turso-linux-amd64.tar.gz`
+          - **Linux ARM64**: `statusline-turso-linux-arm64.tar.gz`
+          - **macOS Intel**: `statusline-turso-darwin-amd64.tar.gz`
+          - **macOS Apple Silicon**: `statusline-turso-darwin-arm64.tar.gz`
+          - **Windows**: `statusline-turso-windows-amd64.zip`
+
+          > **Note**: Turso variants include cloud sync capabilities. Requires additional configuration.
+          > See README.md "Cloud Sync (Optional Feature)" section for setup instructions.
+
+          Full history: [CHANGELOG.md](https://github.com/@REPO@/blob/main/CHANGELOG.md)
+
+          ### Verification
+
+          SHA256 checksums are provided for each binary. To verify:
+          ```bash
+          sha256sum -c statusline-linux-amd64.tar.gz.sha256
+          ```
+          NOTES
+          } > release-notes.md
+
+          cat release-notes.md
 
       - name: Create Release with Assets
         uses: softprops/action-gh-release@v2
@@ -267,67 +344,6 @@ jobs:
             *.tar.gz
             *.zip
             *.sha256
-          body: |
-            ## Claudia Statusline ${{ steps.version.outputs.version }}
-
-            High-performance, secure statusline for Claude Code with SQLite dual-storage backend.
-
-            ### ⚠️ Security Notice (v2.2.1)
-            This release contains critical security fixes. All users should upgrade immediately.
-
-            ### Installation
-
-            #### Quick Install (Linux/macOS)
-            ```bash
-            # Detect architecture and download appropriate binary
-            ARCH=$(uname -m)
-            OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-
-            if [ "$ARCH" = "x86_64" ]; then ARCH="amd64"; fi
-            if [ "$ARCH" = "aarch64" ] || [ "$ARCH" = "arm64" ]; then ARCH="arm64"; fi
-            if [ "$OS" = "darwin" ]; then OS="darwin"; fi
-
-            curl -L https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.version }}/statusline-${OS}-${ARCH}.tar.gz | tar xz
-            chmod +x statusline
-            sudo mv statusline /usr/local/bin/
-            ```
-
-            #### Manual Download
-
-            Download the appropriate binary for your platform:
-
-            **Standard Binaries (Default - Recommended for most users)**:
-            - **Linux x86_64**: `statusline-linux-amd64.tar.gz`
-            - **Linux ARM64**: `statusline-linux-arm64.tar.gz`
-            - **macOS Intel**: `statusline-darwin-amd64.tar.gz`
-            - **macOS Apple Silicon**: `statusline-darwin-arm64.tar.gz`
-            - **Windows**: `statusline-windows-amd64.zip`
-
-            **Turso Sync Variants (Experimental - For cloud sync across machines)**:
-            - **Linux x86_64**: `statusline-turso-linux-amd64.tar.gz`
-            - **Linux ARM64**: `statusline-turso-linux-arm64.tar.gz`
-            - **macOS Intel**: `statusline-turso-darwin-amd64.tar.gz`
-            - **macOS Apple Silicon**: `statusline-turso-darwin-arm64.tar.gz`
-            - **Windows**: `statusline-turso-windows-amd64.zip`
-
-            > **Note**: Turso variants include cloud sync capabilities. Requires additional configuration.
-            > See README.md "Cloud Sync (Optional Feature)" section for setup instructions.
-
-            ### Changes
-
-            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for complete details.
-
-            Key features in v2.2.0:
-            - SQLite dual-storage backend for better concurrent access
-            - Automatic migration from JSON to SQLite
-            - Multi-platform CI/CD with automated releases
-            - Comprehensive test suite (75 tests)
-
-            ### Verification
-
-            SHA256 checksums are provided for each binary. To verify:
-            ```bash
-            sha256sum -c statusline-linux-amd64.tar.gz.sha256
-            ```
+          body_path: release-notes.md
           draft: false
           prerelease: false
