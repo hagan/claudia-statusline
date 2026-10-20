@@ -671,6 +671,8 @@ We welcome contributions! Please see:
 
 **Current Implementation**: Complete Rust rewrite with persistent stats, cloud sync, and enhanced features.
 
+**Contributors**: Piotr Wąsiewicz ([@pwasiewi](https://github.com/pwasiewi)): subagent attribution, session browser, per-version stats ([#76](https://github.com/hagan/claudia-statusline/pull/76))
+
 **License**: MIT - See [LICENSE](LICENSE)
 
 ---
