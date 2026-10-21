@@ -24,10 +24,52 @@ pub use analytics::SessionWithModel;
 pub use maintenance::perform_maintenance;
 #[allow(unused_imports)]
 pub use maintenance::MaintenanceResult;
-pub use schema::{SessionUpdate, SCHEMA};
+pub use schema::{AppliedUpdate, SessionUpdate, SCHEMA};
 
 // Track which database files have been migrated to avoid redundant migration checks
 static MIGRATED_DBS: OnceLock<Mutex<HashSet<PathBuf>>> = OnceLock::new();
+
+// Test-only race seam: fires between the stale `is_new_db` read and BEGIN IMMEDIATE in
+// `SqliteDatabase::new`. Thread-local so parallel tests cannot see each other's hooks;
+// compiled out of non-test builds.
+#[cfg(test)]
+pub(crate) type AfterNewDbHook = Option<Box<dyn FnOnce(&Path)>>;
+#[cfg(test)]
+thread_local! { pub(crate) static AFTER_NEW_DB_CHECK: std::cell::RefCell<AfterNewDbHook> = const { std::cell::RefCell::new(None) }; }
+
+/// Open `path` strictly read-only. This is the only database open allowed on a
+/// read-only render (`update_stats == false`, AGENT-04 / SC3); 17-07's attribution
+/// store reuses it.
+///
+/// The connection is `SQLITE_OPEN_READ_ONLY` (no `SQLITE_OPEN_CREATE`, no URI), sets
+/// `SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE` so closing the last connection never checkpoints a
+/// pending WAL into the main file, and runs with `query_only = ON`. It never creates the
+/// parent directory or the database, never switches the journal mode, and runs no DDL,
+/// migration or open-time repair. A missing `path` returns `SQLITE_CANTOPEN` without
+/// touching the filesystem.
+///
+/// SQLite note: on a WAL database whose `-wal`/`-shm` are absent, a read-only open may
+/// create an empty `-wal` and a non-durable `-shm` when the directory is writable; the
+/// main database file is never written.
+pub(crate) fn open_read_only_connection(path: &Path, busy_ms: u32) -> Result<Connection> {
+    if !path.exists() {
+        return Err(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CANTOPEN),
+            Some("database not found".to_string()),
+        ));
+    }
+    let conn = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    conn.set_db_config(
+        rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+        true,
+    )?;
+    conn.busy_timeout(std::time::Duration::from_millis(busy_ms as u64))?;
+    conn.pragma_update(None, "query_only", "ON")?;
+    Ok(conn)
+}
 
 pub struct SqliteDatabase {
     #[allow(dead_code)]
@@ -109,8 +151,16 @@ impl SqliteDatabase {
             .unwrap_or(false);
 
         let is_new_db = !has_sessions_table;
+        // True only when this process created the complete schema and stamped v8.
+        let mut created_fresh = false;
 
         if is_new_db {
+            // Test-only: let a test commit another binary's schema in the race window.
+            #[cfg(test)]
+            if let Some(hook) = AFTER_NEW_DB_CHECK.with(|h| h.borrow_mut().take()) {
+                hook(db_path);
+            }
+
             // NEW DATABASE: create the complete schema AND record the version ATOMICALLY.
             //
             // Concurrency safety: `is_new_db` is read outside a transaction, so multiple
@@ -125,21 +175,60 @@ impl SqliteDatabase {
             // keeps a lost version-record race from raising `UNIQUE constraint failed:
             // schema_migrations.version`. Mirrors the adapter pattern in
             // `SqliteDatabase::update_session`.
-            crate::retry::retry_if_retryable(&crate::retry::RetryConfig::for_db_ops(), || {
+            //
+            // Stale-read re-check (D-01, INTEG-04): because `is_new_db` was read outside any
+            // transaction, another process (for example a v3.3.0 binary, whose own init is
+            // the same shape but stamps v6) can commit its tables and version stamp in the
+            // gap. Running our SCHEMA over its tables would then be a no-op
+            // (`CREATE ... IF NOT EXISTS`) while we still stamped v8, recording migrations
+            // 007 and 008 (D-03) whose columns we never created. BEGIN IMMEDIATE starts a
+            // write transaction on the latest committed snapshot, so re-reading
+            // `sqlite_master` inside it sees the other process's committed tables. If
+            // `sessions` is already there we write nothing, return `created_fresh = false`
+            // and fall through to the migration runner, which runs 007/008 (idempotent) and
+            // records them itself; a newer binary therefore never stamps a version whose
+            // columns it did not create.
+            //
+            // Reverse order: if this binary commits first, a stale v6 initializer later only
+            // adds `INSERT OR IGNORE` stamp 6 over IF NOT EXISTS DDL, leaving versions [6, 8]
+            // with every v8 column present.
+            //
+            // Falling through with an empty `schema_migrations` (RESEARCH Pitfall 2) cannot
+            // happen with v3.3.0 or v3.4.0 binaries: both commit SCHEMA and their stamp in
+            // one transaction. Making 003-006 idempotent is out of scope.
+            //
+            // BUSY coverage: the WAL switch above and this transaction run under
+            // `retry_if_retryable`; `run_migrations_on_db` below retries the migration steps
+            // and the repair, while `MigrationRunner::new`'s own setup relies on its
+            // busy_timeout (set before WAL).
+            created_fresh = crate::retry::retry_if_retryable(&crate::retry::RetryConfig::for_db_ops(), || {
                 let tx = conn
                     .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
                     .map_err(crate::error::StatuslineError::Database)?;
+                let sessions_exists: i64 = tx
+                    .query_row(
+                        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .map_err(crate::error::StatuslineError::Database)?;
+                if sessions_exists > 0 {
+                    // Another process created the schema after our stale read: write
+                    // nothing and let the migration runner bring it up to date.
+                    tx.commit().map_err(crate::error::StatuslineError::Database)?;
+                    return Ok(false);
+                }
                 tx.execute_batch(SCHEMA)
                     .map_err(crate::error::StatuslineError::Database)?;
-                // Mark as fully migrated (v6 includes daily/monthly token tracking).
+                // Mark as fully migrated (v8 adds the accounting baseline columns (migration 008)).
                 tx.execute(
                     "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
-                     VALUES (?1, ?2, '', 'New database with complete schema (v6)', 0)",
-                    params![6, chrono::Local::now().to_rfc3339()],
+                     VALUES (?1, ?2, '', 'New database with complete schema (v8)', 0)",
+                    params![8, chrono::Local::now().to_rfc3339()],
                 )
                 .map_err(crate::error::StatuslineError::Database)?;
                 tx.commit().map_err(crate::error::StatuslineError::Database)?;
-                Ok(())
+                Ok(true)
             })
             .map_err(|e| match e {
                 crate::error::StatuslineError::Database(db_err) => db_err,
@@ -148,7 +237,9 @@ impl SqliteDatabase {
                     Some(e.to_string()),
                 ),
             })?;
-        } else {
+        }
+
+        if !created_fresh {
             // OLD DATABASE: Only ensure base tables exist, let migrations add columns/indexes
             // This prevents "no such column" errors when creating indexes
             conn.execute_batch(
@@ -246,6 +337,19 @@ impl SqliteDatabase {
         };
 
         Ok(db)
+    }
+
+    /// Open an existing database for reads only (see [`open_read_only_connection`]).
+    ///
+    /// The on-disk schema may be older than this binary (no migration or repair runs):
+    /// queries on missing columns return `Err` and callers already degrade to "no value".
+    pub(crate) fn open_read_only(db_path: &Path) -> Result<Self> {
+        let conn =
+            open_read_only_connection(db_path, config::get_config().database.busy_timeout_ms)?;
+        Ok(Self {
+            path: db_path.to_path_buf(),
+            conn: Mutex::new(conn),
+        })
     }
 
     fn get_connection(&self) -> Result<MutexGuard<'_, Connection>> {

@@ -35,6 +35,7 @@ fn test_public_api_surface() {
         max_tokens_observed: None,
         active_time_seconds: None,
         last_activity: None,
+        inferred_start_ms: None,
     };
 
     // MaintenanceResult -- must be constructable with all fields
@@ -94,13 +95,14 @@ fn test_session_update() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
     assert_eq!(day_total, 10.0);
     assert_eq!(session_total, 10.0);
 
-    // Update same session - should REPLACE not accumulate
+    // Update same session with a lower value (no start signal)
     let (day_total, session_total) = db
         .update_session(
             "test-session",
@@ -115,16 +117,19 @@ fn test_session_update() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
+    // Downward re-report with no start signal: high-water fallback (D-02), so it
+    // contributes nothing and the session keeps its cumulative accounted total (D-05/D-06).
     assert_eq!(
-        day_total, 5.0,
-        "Day total should be replaced, not accumulated"
+        day_total, 10.0,
+        "Day total must not decrease on a downward correction"
     );
     assert_eq!(
-        session_total, 5.0,
-        "Session total should be replaced, not accumulated"
+        session_total, 10.0,
+        "D-05/D-06: session total is the cumulative accounted value, not the raw payload"
     );
 }
 
@@ -152,6 +157,7 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
@@ -173,13 +179,15 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
     assert_eq!(session_total, 20.0);
     assert_eq!(day_total, 30.0); // 10 + 20
 
-    // Update first session with LOWER value - should decrease day total
+    // Update first session with a slightly LOWER value — a correction, which
+    // must contribute nothing to the day total (never subtract)
     let (day_total, session_total) = db
         .update_session(
             "session1",
@@ -194,13 +202,17 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
-    assert_eq!(session_total, 8.0, "Session should have new value");
     assert_eq!(
-        day_total, 28.0,
-        "Day total should decrease by 2 (30 - 2 = 28)"
+        session_total, 10.0,
+        "D-05/D-06: a correction leaves the accounted session total at the high-water"
+    );
+    assert_eq!(
+        day_total, 30.0,
+        "Day total must not decrease on a downward correction"
     );
 
     // Update first session with HIGHER value - should increase day total
@@ -218,16 +230,18 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
     assert_eq!(session_total, 15.0, "Session should have new value");
     assert_eq!(
         day_total, 35.0,
-        "Day total should increase by 7 (28 + 7 = 35)"
+        "ACCT-02/D-04: growth counts only above the 10.0 high-water (30 + 5 = 35)"
     );
 
-    // Update second session to zero - should decrease day total
+    // Update second session to zero with no start signal: high-water fallback (D-02),
+    // contributes nothing, and the accounted session total stays at 20.0 (D-05)
     let (day_total, session_total) = db
         .update_session(
             "session2",
@@ -242,13 +256,17 @@ fn test_session_update_delta_calculation() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
         .unwrap();
-    assert_eq!(session_total, 0.0, "Session should be zero");
     assert_eq!(
-        day_total, 15.0,
-        "Day total should be just session1 (35 - 20 = 15)"
+        session_total, 20.0,
+        "D-05/D-06: session keeps its cumulative accounted total"
+    );
+    assert_eq!(
+        day_total, 35.0,
+        "A reset to zero must not subtract the old session cost"
     );
 }
 
@@ -287,6 +305,7 @@ fn test_concurrent_updates() {
                         max_tokens_observed: None,
                         active_time_seconds: None,
                         last_activity: None,
+                        inferred_start_ms: None,
                     },
                 )
             })
@@ -326,6 +345,7 @@ fn test_aggregates() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -342,6 +362,7 @@ fn test_aggregates() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -358,6 +379,7 @@ fn test_aggregates() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -392,6 +414,7 @@ fn test_session_start_time_preserved_on_update() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -423,6 +446,7 @@ fn test_session_start_time_preserved_on_update() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -636,6 +660,7 @@ fn test_automatic_database_upgrade() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -692,6 +717,7 @@ fn test_all_time_stats_loading() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -708,6 +734,7 @@ fn test_all_time_stats_loading() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -724,6 +751,7 @@ fn test_all_time_stats_loading() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -788,6 +816,7 @@ fn test_database_wal_shm_permissions() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         };
         db.update_session("test-session", update).unwrap();
     } // Drop db to ensure WAL/SHM files are created
@@ -888,6 +917,7 @@ fn test_active_time_tracking_storage() {
             max_tokens_observed: None,
             active_time_seconds: Some(0), // Explicitly set to 0
             last_activity: Some(now.clone()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -964,6 +994,7 @@ fn test_active_time_accumulation() {
             max_tokens_observed: None,
             active_time_seconds: Some(0),
             last_activity: Some(first_activity.clone()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -985,6 +1016,7 @@ fn test_active_time_accumulation() {
             max_tokens_observed: None,
             active_time_seconds: Some(300), // 5 minutes accumulated
             last_activity: Some(second_activity),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -1044,6 +1076,7 @@ fn test_active_time_ignores_long_gaps() {
             max_tokens_observed: None,
             active_time_seconds: Some(0),
             last_activity: Some("2025-01-01T10:00:00Z".to_string()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -1064,6 +1097,7 @@ fn test_active_time_ignores_long_gaps() {
             max_tokens_observed: None,
             active_time_seconds: Some(0), // Still 0 - gap was ignored
             last_activity: Some("2025-01-01T12:00:00Z".to_string()),
+            inferred_start_ms: None,
         },
     )
     .unwrap();
@@ -1134,6 +1168,7 @@ fn cost_only_update(cost: f64) -> SessionUpdate {
         max_tokens_observed: None,
         active_time_seconds: None,
         last_activity: None,
+        inferred_start_ms: None,
     }
 }
 
@@ -1312,6 +1347,7 @@ fn test_reset_session_max_tokens() {
         max_tokens_observed: Some(150000), // 150K tokens
         active_time_seconds: None,
         last_activity: None,
+        inferred_start_ms: None,
     };
     db.update_session(session_id, update).unwrap();
 
@@ -1349,4 +1385,421 @@ fn test_reset_session_max_tokens_nonexistent_session() {
         result.is_ok(),
         "Reset on non-existent session should succeed"
     );
+}
+
+// =============================================================================
+// Phase 16-02: fresh-initialization race with a v3.3.0 (schema v6) binary
+// =============================================================================
+
+/// Frozen v3.3.0 SCHEMA (no stamp; every CREATE is IF NOT EXISTS).
+const V6_SCHEMA: &str = include_str!("../../tests/fixtures/schema_v6_v3.3.0.sql");
+/// Synthetic v6 rows plus the stamp-6 record.
+const V6_SEED: &str = include_str!("../../tests/fixtures/seed_v6.sql");
+
+/// What a v3.3.0 binary does in its new-DB branch once its stale check said "sessions
+/// absent": one IMMEDIATE transaction running its SCHEMA and stamping version 6.
+fn commit_v6_init(path: &std::path::Path) -> rusqlite::Result<()> {
+    let mut conn = Connection::open(path)?;
+    conn.pragma_update(None, "busy_timeout", 5000)?;
+    // journal_mode=WAL can return SQLITE_BUSY without invoking the busy handler under
+    // contention; retry briefly like the production open path does.
+    let mut attempts = 0;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => break,
+            Err(rusqlite::Error::SqliteFailure(e, _))
+                if e.code == rusqlite::ErrorCode::DatabaseBusy && attempts < 50 =>
+            {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(V6_SCHEMA)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO schema_migrations (version, applied_at, checksum, description, execution_time_ms)
+         VALUES (6, ?1, '', 'New database with complete schema (v6)', 0)",
+        [chrono::Local::now().to_rfc3339()],
+    )?;
+    tx.commit()
+}
+
+/// v3.3.0's full init shape: stale sessions check outside a transaction, then (only if
+/// absent) the IMMEDIATE SCHEMA + stamp-6 transaction.
+fn commit_v6_init_if_absent(path: &std::path::Path) -> rusqlite::Result<()> {
+    let has_sessions: bool = {
+        let conn = Connection::open(path)?;
+        conn.pragma_update(None, "busy_timeout", 5000)?;
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='sessions'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    };
+    if has_sessions {
+        Ok(())
+    } else {
+        commit_v6_init(path)
+    }
+}
+
+fn recorded_versions(path: &std::path::Path) -> Vec<u32> {
+    let conn = Connection::open(path).unwrap();
+    let mut stmt = conn
+        .prepare("SELECT version FROM schema_migrations ORDER BY version")
+        .unwrap();
+    stmt.query_map([], |r| r.get::<_, u32>(0))
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<u32>>>()
+        .unwrap()
+}
+
+/// SC2 invariant: every registry column and object required by the highest recorded
+/// version exists. Uses only the Plan 01 registries (single source of truth).
+fn assert_versions_match_columns(path: &std::path::Path) {
+    let conn = Connection::open(path).unwrap();
+    let max: u32 = conn
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    let missing_cols = crate::migrations::missing_required_columns(&conn, max).unwrap();
+    assert!(
+        missing_cols.is_empty(),
+        "schema stamped v{max} but required columns are missing: {missing_cols:?}"
+    );
+    let missing_objs = crate::migrations::missing_required_objects(&conn, max).unwrap();
+    assert!(
+        missing_objs.is_empty(),
+        "schema stamped v{max} but required objects are missing: {missing_objs:?}"
+    );
+}
+
+#[test]
+fn fresh_init_race_with_v6_binary_never_stamps_v8_without_columns() {
+    // Deterministic forward order: a v3.3.0 binary commits its v6 SCHEMA + stamp 6 in the
+    // gap between our stale `is_new_db` read and our BEGIN IMMEDIATE.
+    let temp_dir = TempDir::new().unwrap();
+    let p = temp_dir.path().join("race.db");
+
+    AFTER_NEW_DB_CHECK.with(|h| {
+        *h.borrow_mut() = Some(Box::new(|path: &std::path::Path| {
+            commit_v6_init(path).expect("v6 initializer failed in the race window")
+        }));
+    });
+    let result = SqliteDatabase::new(&p);
+    // Clear the hook in case it did not fire.
+    AFTER_NEW_DB_CHECK.with(|h| h.borrow_mut().take());
+    result.expect("SqliteDatabase::new failed");
+
+    // (1) Invariant first: the Plan 01 repair alone would make this pass...
+    assert_versions_match_columns(&p);
+    // (2) ...so this is the assertion that proves D-01: no version stamped that this
+    // binary did not create.
+    let versions = recorded_versions(&p);
+    assert_eq!(
+        versions,
+        vec![6, 7, 8],
+        "stale fresh-init branch stamped a version it did not create"
+    );
+}
+
+#[test]
+fn fresh_init_race_new_binary_commits_first_then_stale_v6_finishes() {
+    // Reverse order: a v6 initializer already decided "sessions absent"; the new binary
+    // finishes first (full v8 SCHEMA, stamp 8); then the stale v6 tx runs over it.
+    let temp_dir = TempDir::new().unwrap();
+    let p = temp_dir.path().join("race_rev.db");
+
+    SqliteDatabase::new(&p).expect("SqliteDatabase::new failed");
+    commit_v6_init(&p).expect("stale v6 initializer failed over a v8 schema");
+
+    assert_versions_match_columns(&p);
+    assert_eq!(recorded_versions(&p), vec![6, 8]);
+
+    let schema_version_before: i64 = Connection::open(&p)
+        .unwrap()
+        .query_row("PRAGMA schema_version", [], |r| r.get(0))
+        .unwrap();
+
+    // A later migration pass (MIGRATED_DBS would skip it via SqliteDatabase::new) changes
+    // nothing.
+    crate::migrations::MigrationRunner::new(&p)
+        .unwrap()
+        .migrate()
+        .expect("second migration pass failed");
+
+    let schema_version_after: i64 = Connection::open(&p)
+        .unwrap()
+        .query_row("PRAGMA schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(recorded_versions(&p), vec![6, 8]);
+    assert_eq!(
+        schema_version_before, schema_version_after,
+        "second migration pass changed the schema"
+    );
+    assert_versions_match_columns(&p);
+}
+
+#[test]
+#[serial_test::serial]
+// Supplemental to the two deterministic tests above: real threads racing a v3.3.0-shaped
+// initializer against SqliteDatabase::new. It does not guarantee either winner order
+// occurs; it asserts the SC2 invariant on whatever interleaving happens. Marked #[serial]
+// for the same reason as test_concurrent_updates (DB-stress I/O pressure).
+fn fresh_init_race_stress_v6_vs_new() {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    for i in 0..30 {
+        let temp_dir = TempDir::new().unwrap();
+        let p = temp_dir.path().join(format!("stress_{i}.db"));
+        let barrier = Arc::new(Barrier::new(2));
+
+        let (pa, ba) = (p.clone(), Arc::clone(&barrier));
+        let a = thread::spawn(move || {
+            ba.wait();
+            commit_v6_init_if_absent(&pa)
+        });
+        let (pb, bb) = (p.clone(), Arc::clone(&barrier));
+        let b = thread::spawn(move || {
+            bb.wait();
+            SqliteDatabase::new(&pb).map(|_| ())
+        });
+
+        let ra = a.join().unwrap();
+        let rb = b.join().unwrap();
+        assert!(ra.is_ok(), "iteration {i}: v6 initializer failed: {ra:?}");
+        assert!(
+            rb.is_ok(),
+            "iteration {i}: SqliteDatabase::new failed: {rb:?}"
+        );
+
+        assert_versions_match_columns(&p);
+        let versions = recorded_versions(&p);
+        assert_eq!(
+            versions.iter().max().copied(),
+            Some(8),
+            "iteration {i}: versions {versions:?}"
+        );
+    }
+}
+
+#[test]
+fn v6_upgrade_preserves_every_row_and_adds_v7_v8_columns() {
+    use rusqlite::types::Value;
+
+    let temp_dir = TempDir::new().unwrap();
+    let p = temp_dir.path().join("v6_populated.db");
+
+    // (table, primary key) for every seeded table.
+    let tables = [
+        ("sessions", "session_id"),
+        ("daily_stats", "date"),
+        ("monthly_stats", "month"),
+        ("session_archive", "id"),
+        ("learned_context_windows", "model_name"),
+    ];
+
+    fn snapshot(conn: &Connection, table: &str, cols: &[String], pk: &str) -> Vec<Vec<Value>> {
+        let sql = format!("SELECT {} FROM {} ORDER BY {}", cols.join(", "), table, pk);
+        let mut stmt = conn.prepare(&sql).unwrap();
+        stmt.query_map([], |r| {
+            (0..cols.len())
+                .map(|i| r.get::<_, Value>(i))
+                .collect::<rusqlite::Result<Vec<Value>>>()
+        })
+        .unwrap()
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .unwrap()
+    }
+
+    let mut before = Vec::new();
+    {
+        let conn = Connection::open(&p).unwrap();
+        conn.execute_batch(V6_SCHEMA).unwrap();
+        conn.execute_batch(V6_SEED).unwrap();
+        for (table, pk) in tables {
+            let mut stmt = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .unwrap();
+            let cols: Vec<String> = stmt
+                .query_map([], |r| r.get::<_, String>(1))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap();
+            let rows = snapshot(&conn, table, &cols, pk);
+            assert!(!rows.is_empty(), "seed has no rows for {table}");
+            before.push((table, pk, cols, rows));
+        }
+    }
+
+    SqliteDatabase::new(&p).expect("upgrade of populated v6 DB failed");
+
+    let conn = Connection::open(&p).unwrap();
+    for (table, pk, cols, rows) in &before {
+        assert_eq!(
+            &snapshot(&conn, table, cols, pk),
+            rows,
+            "rows of {table} changed during the v6 upgrade"
+        );
+    }
+
+    assert_versions_match_columns(&p);
+    assert!(crate::migrations::missing_required_columns(&conn, 8)
+        .unwrap()
+        .is_empty());
+    assert!(crate::migrations::missing_required_objects(&conn, 8)
+        .unwrap()
+        .is_empty());
+
+    let sessions_total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+        .unwrap();
+    let defaulted: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM sessions
+             WHERE agent_count = 0 AND agent_requests = 0 AND agent_input_tokens = 0
+               AND agent_output_tokens = 0 AND main_requests = 0 AND main_input_tokens = 0
+               AND main_output_tokens = 0 AND claude_version IS NULL
+               AND raw_cost IS NULL AND raw_lines_added IS NULL AND raw_lines_removed IS NULL
+               AND process_start_ms IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        defaulted, sessions_total,
+        "old sessions rows must get v7 defaults (0 / NULL) and NULL v8 baselines"
+    );
+
+    assert_eq!(recorded_versions(&p), vec![6, 7, 8]);
+}
+
+// =============================================================================
+// AGENT-04 / SC3: read-only open primitives (17-11)
+// =============================================================================
+
+fn ro_wal_path(db: &std::path::Path) -> std::path::PathBuf {
+    db.with_extension("db-wal")
+}
+
+fn ro_shm_path(db: &std::path::Path) -> std::path::PathBuf {
+    db.with_extension("db-shm")
+}
+
+#[test]
+fn open_read_only_missing_path_creates_nothing() {
+    let temp = TempDir::new().unwrap();
+    let dir = temp.path().join("nodir");
+    let db_path = dir.join("stats.db");
+
+    assert!(super::open_read_only_connection(&db_path, 1000).is_err());
+    assert!(super::SqliteDatabase::open_read_only(&db_path).is_err());
+
+    assert!(!db_path.exists(), "stats.db must not be created");
+    assert!(!ro_wal_path(&db_path).exists(), "-wal must not be created");
+    assert!(!ro_shm_path(&db_path).exists(), "-shm must not be created");
+    assert!(!dir.exists(), "parent directory must not be created");
+}
+
+#[test]
+fn open_read_only_rejects_writes() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("stats.db");
+    drop(super::SqliteDatabase::new(&db_path).unwrap());
+
+    let ro = super::SqliteDatabase::open_read_only(&db_path).unwrap();
+    assert!(ro.get_all_time_total().is_ok(), "reads must succeed");
+    drop(ro);
+
+    let conn = super::open_read_only_connection(&db_path, 1000).unwrap();
+    let res = conn.execute(
+        "INSERT INTO sessions (session_id, start_time, last_updated) VALUES ('x', 'a', 'b')",
+        [],
+    );
+    assert!(
+        res.is_err(),
+        "writes through a read-only connection must fail"
+    );
+}
+
+#[test]
+fn open_read_only_does_not_checkpoint_pending_wal() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("stats.db");
+    drop(super::SqliteDatabase::new(&db_path).unwrap());
+
+    // Writer that leaves its commit in the WAL (no autocheckpoint, no checkpoint on close).
+    {
+        let w = Connection::open(&db_path).unwrap();
+        w.set_db_config(
+            rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE,
+            true,
+        )
+        .unwrap();
+        w.pragma_update(None, "wal_autocheckpoint", 0).unwrap();
+        w.execute(
+            "INSERT INTO sessions (session_id, start_time, last_updated, cost)
+             VALUES ('pending', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 1.5)",
+            [],
+        )
+        .unwrap();
+    }
+    let wal = ro_wal_path(&db_path);
+    let wal_before = std::fs::read(&wal).expect("-wal must exist");
+    assert!(
+        !wal_before.is_empty(),
+        "precondition: pending WAL is non-empty"
+    );
+    let main_before = std::fs::read(&db_path).unwrap();
+
+    {
+        let ro = super::open_read_only_connection(&db_path, 1000).unwrap();
+        let cost: f64 = ro
+            .query_row(
+                "SELECT cost FROM sessions WHERE session_id = 'pending'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!((cost - 1.5).abs() < 1e-9, "pending WAL row must be visible");
+    }
+
+    assert_eq!(
+        std::fs::read(&db_path).unwrap(),
+        main_before,
+        "main db bytes"
+    );
+    assert_eq!(std::fs::read(&wal).unwrap(), wal_before, "-wal bytes");
+}
+
+#[test]
+fn open_read_only_does_not_repair_drift() {
+    let temp = TempDir::new().unwrap();
+    let db_path = temp.path().join("stats.db");
+    drop(super::SqliteDatabase::new(&db_path).unwrap());
+    {
+        let c = Connection::open(&db_path).unwrap();
+        c.execute_batch("ALTER TABLE sessions DROP COLUMN claude_version")
+            .unwrap();
+    }
+
+    drop(super::SqliteDatabase::open_read_only(&db_path).unwrap());
+
+    let c = Connection::open(&db_path).unwrap();
+    let n: i64 = c
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'claude_version'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(n, 0, "read-only open must not repair the drifted column");
 }

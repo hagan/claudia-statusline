@@ -128,8 +128,10 @@ pub fn format_token_count(tokens: usize) -> String {
 /// Determines the context window size for a given model
 ///
 /// Uses intelligent defaults based on model family and version:
-/// - Sonnet 3.5+, 4.5+: 200k tokens
-/// - Opus 3.5+: 200k tokens
+/// - Sonnet 3.5+, 4.x+ (incl. 4.6+/5+): 200k tokens
+/// - Opus 3.5+, 4.x+ (incl. 4.6+/5+): 200k tokens (1M is opt-in per session;
+///   the payload's `context_window_size` is authoritative when present)
+/// - Fable / Mythos: 1M tokens
 /// - Older models: 160k tokens
 /// - Unknown models: Config default (200k)
 ///
@@ -156,8 +158,10 @@ fn get_learned_context_window(
     use crate::context_learning::ContextLearner;
     use crate::database::SqliteDatabase;
 
+    // Read-only open (AGENT-04): a missing DB returns Err ("no learned value") instead
+    // of creating one; no migration or repair runs on the render path.
     let db_path = get_data_dir().join("stats.db");
-    let db = SqliteDatabase::new(&db_path)?;
+    let db = SqliteDatabase::open_read_only(&db_path)?;
     let learner = ContextLearner::new(db);
 
     learner.get_learned_window(model_name, config.context.learning_confidence_threshold)
@@ -243,7 +247,9 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
 
                 match family.as_str() {
                     "Sonnet" => {
-                        // Sonnet 3.5+, 4.x+: 200k tokens
+                        // Sonnet 3.5+, 4.x+ (incl. 4.6+/5+): 200k fallback. The 1M window
+                        // is opt-in per session; the payload's context_window_size is
+                        // authoritative when present.
                         if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
                             200_000
                         } else {
@@ -251,7 +257,9 @@ pub fn get_context_window_for_model(model_name: Option<&str>, config: &config::C
                         }
                     }
                     "Opus" => {
-                        // Opus 3.5+: 200k tokens
+                        // Opus 3.5+, 4.x+ (incl. 4.6+/5+): 200k fallback. The 1M window
+                        // is opt-in per session; the payload's context_window_size is
+                        // authoritative when present.
                         if version_number >= 4 || (version_number == 3 && minor_version >= 5) {
                             200_000
                         } else {
@@ -325,6 +333,91 @@ pub fn get_token_count_from_transcript(transcript_path: &str) -> Option<u32> {
     get_token_breakdown_from_transcript(transcript_path).map(|breakdown| breakdown.context_size())
 }
 
+/// One API request's usage after per-requestId de-duplication.
+///
+/// `ts` is the Unix timestamp of the winning line (None when unparseable) and
+/// `order` is that line's position in the input, which entries are sorted by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestUsage {
+    pub input: u32,
+    pub output: u32,
+    pub cache_read: u32,
+    pub cache_creation: u32,
+    pub ts: Option<u64>,
+    pub order: usize,
+}
+
+/// The per-line half of the D-11/D-12 rule: parse one transcript line and
+/// return its `requestId` (if any) plus its usage, or `None` when the line does
+/// not count (malformed JSON, not an assistant message, no usage, or an
+/// all-empty usage object). `order` is stored on the result unchanged.
+///
+/// Shared by [`collect_request_usage`] (batch) and `agents::progress`
+/// (incremental, Phase 17) so both apply ONE predicate. Never panics on
+/// untrusted input.
+pub(crate) fn request_usage_of(line: &str, order: usize) -> Option<(Option<String>, RequestUsage)> {
+    let entry = serde_json::from_str::<TranscriptEntry>(line).ok()?;
+    if entry.message.role != "assistant" {
+        return None;
+    }
+    let usage = entry.message.usage?;
+    if usage.input_tokens.is_none()
+        && usage.output_tokens.is_none()
+        && usage.cache_read_input_tokens.is_none()
+        && usage.cache_creation_input_tokens.is_none()
+    {
+        return None;
+    }
+    let item = RequestUsage {
+        input: usage.input_tokens.unwrap_or(0),
+        output: usage.output_tokens.unwrap_or(0),
+        cache_read: usage.cache_read_input_tokens.unwrap_or(0),
+        cache_creation: usage.cache_creation_input_tokens.unwrap_or(0),
+        ts: parse_iso8601_to_unix(&entry.timestamp),
+        order,
+    };
+    Some((entry.request_id, item))
+}
+
+/// Collect assistant usage from transcript lines, counting each API request once.
+///
+/// Claude Code writes one line per content block of a response, each repeating
+/// the request's `usage`. Rule (D-11): per `requestId`, the LAST line with
+/// non-empty usage wins. Lines without usage (or with an all-empty usage object)
+/// are ignored and do not mark their requestId as seen. Lines without a
+/// `requestId` (older transcripts) each count individually (D-12).
+///
+/// Malformed lines are skipped; this never panics on untrusted input. The
+/// result is ordered by the winning line's position. Shared by
+/// `get_token_breakdown_from_transcript` and `get_rolling_window_rates`; the
+/// per-line predicate lives in [`request_usage_of`], which `agents::progress`
+/// reuses for incremental subagent attribution (Phase 17).
+pub(crate) fn collect_request_usage<'a, I: IntoIterator<Item = &'a str>>(
+    lines: I,
+) -> Vec<RequestUsage> {
+    let mut out: Vec<RequestUsage> = Vec::new();
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+
+    for (order, line) in lines.into_iter().enumerate() {
+        let Some((request_id, item)) = request_usage_of(line, order) else {
+            continue;
+        };
+        match request_id {
+            Some(rid) => match index.get(&rid) {
+                Some(&slot) => out[slot] = item,
+                None => {
+                    index.insert(rid, out.len());
+                    out.push(item);
+                }
+            },
+            None => out.push(item),
+        }
+    }
+
+    out.sort_by_key(|e| e.order);
+    out
+}
+
 /// Extracts detailed token breakdown from transcript file.
 ///
 /// Returns a TokenBreakdown with separate counts for input, output, cache read, and cache creation tokens.
@@ -388,44 +481,25 @@ pub fn get_token_breakdown_from_transcript(
             .collect()
     };
 
-    // Process all assistant messages:
+    // Each API request counted once (see `collect_request_usage`):
     // - LAST for context-related tokens (input, cache_read) - represents CURRENT context usage
     //   This is what users see on the statusline (e.g., "9%" after compaction, not "64%")
     // - SUM for generated tokens (output, cache_creation) - represents total work done
     //
     // IMPORTANT: For compaction detection heuristics (Phase 2), the database tracks
     // max_tokens_observed separately. This function returns CURRENT values for display.
-    let mut last_input = 0u32;
-    let mut last_cache_read = 0u32;
+    let entries = collect_request_usage(lines.iter().map(String::as_str));
+    let has_data = !entries.is_empty();
     let mut sum_output = 0u32;
     let mut sum_cache_creation = 0u32;
-    let mut has_data = false;
-
-    for line in lines {
-        if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(&line) {
-            if entry.message.role == "assistant" {
-                if let Some(usage) = entry.message.usage {
-                    has_data = true;
-
-                    // Extract individual token counts
-                    let input = usage.input_tokens.unwrap_or(0);
-                    let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
-                    let cache_creation = usage.cache_creation_input_tokens.unwrap_or(0);
-                    let output = usage.output_tokens.unwrap_or(0);
-
-                    // SUM: output and cache_creation (cumulative work done)
-                    sum_output = sum_output.saturating_add(output);
-                    sum_cache_creation = sum_cache_creation.saturating_add(cache_creation);
-
-                    // LAST: input and cache_read (CURRENT context usage for display)
-                    // We overwrite on each iteration to keep only the most recent values
-                    // This ensures the statusline shows current context %, not historical peak
-                    last_input = input;
-                    last_cache_read = cache_read;
-                }
-            }
-        }
+    for e in &entries {
+        sum_output = sum_output.saturating_add(e.output);
+        sum_cache_creation = sum_cache_creation.saturating_add(e.cache_creation);
     }
+    let (last_input, last_cache_read) = entries
+        .last()
+        .map(|e| (e.input, e.cache_read))
+        .unwrap_or((0, 0));
 
     if has_data {
         Some(TokenBreakdown {
@@ -469,7 +543,8 @@ fn detect_compaction_state(
     let last_known_tokens = if let Some(sid) = session_id {
         let db_path = get_data_dir().join("stats.db");
         if db_path.exists() {
-            if let Ok(db) = SqliteDatabase::new(&db_path) {
+            // Read-only open (AGENT-04): only reads max_tokens_observed.
+            if let Ok(db) = SqliteDatabase::open_read_only(&db_path) {
                 db.get_session_max_tokens(sid)
             } else {
                 None
@@ -717,13 +792,8 @@ pub fn get_rolling_window_rates(
     // Note: For rolling window, we use different logic than session totals:
     // - SUM for output/cache_creation (cumulative work done in window)
     // - MAX for input/cache_read (peak context, not cumulative - input shows full context each message)
-    let mut max_input = 0u32;
-    let mut max_cache_read = 0u32;
-    let mut sum_output = 0u32;
-    let mut sum_cache_creation = 0u32;
     let mut earliest_timestamp: Option<u64> = None;
     let mut latest_timestamp: Option<u64> = None;
-    let mut has_data = false;
 
     for line in buffer.iter() {
         if let Ok(entry) = serde_json::from_str::<TranscriptEntry>(line) {
@@ -741,30 +811,29 @@ pub fn get_rolling_window_rates(
                         Some(l) if ts > l => latest_timestamp = Some(ts),
                         _ => {}
                     }
-
-                    // Only assistant messages have usage data
-                    if entry.message.role == "assistant" {
-                        if let Some(usage) = entry.message.usage {
-                            has_data = true;
-                            // MAX for context tokens (input/cache_read represent full context, not delta)
-                            let input = usage.input_tokens.unwrap_or(0);
-                            let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
-                            if input > max_input {
-                                max_input = input;
-                            }
-                            if cache_read > max_cache_read {
-                                max_cache_read = cache_read;
-                            }
-                            // SUM for generated tokens (output/cache_creation are cumulative)
-                            sum_output =
-                                sum_output.saturating_add(usage.output_tokens.unwrap_or(0));
-                            sum_cache_creation = sum_cache_creation
-                                .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-                        }
-                    }
                 }
             }
         }
+    }
+
+    // Usage: each API request counted once (see `collect_request_usage`), and a
+    // request belongs to the window when its WINNING (last) line is in it. A
+    // request's usage is final when its last line is written, so a request whose
+    // lines straddle the cutoff lands in exactly one window.
+    let mut max_input = 0u32;
+    let mut max_cache_read = 0u32;
+    let mut sum_output = 0u32;
+    let mut sum_cache_creation = 0u32;
+    let mut has_data = false;
+    for e in collect_request_usage(buffer.iter().map(String::as_str))
+        .into_iter()
+        .filter(|e| e.ts.is_some_and(|t| t >= cutoff))
+    {
+        has_data = true;
+        max_input = max_input.max(e.input);
+        max_cache_read = max_cache_read.max(e.cache_read);
+        sum_output = sum_output.saturating_add(e.output);
+        sum_cache_creation = sum_cache_creation.saturating_add(e.cache_creation);
     }
 
     if !has_data {
@@ -819,6 +888,305 @@ mod tests {
         crate::config::Config::default()
     }
     use std::fs;
+
+    #[test]
+    fn test_token_breakdown_dedupes_content_block_lines() {
+        // One API response = several transcript lines (thinking, text, tool_use),
+        // each repeating the same usage under one requestId. Sums must count it once.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dup.jsonl");
+        let mk = |rid: &str, cr: u32, cc: u32, out: u32| {
+            format!(
+                r#"{{"type":"assistant","requestId":"{rid}","timestamp":"2026-09-16T00:00:00Z","message":{{"role":"assistant","content":[],"usage":{{"input_tokens":1,"cache_read_input_tokens":{cr},"cache_creation_input_tokens":{cc},"output_tokens":{out}}}}}}}"#
+            )
+        };
+        let mut lines = vec![mk("r1", 100, 10, 5); 3];
+        lines.push(mk("r2", 200, 20, 7));
+        // A legacy line without requestId still counts on its own.
+        lines.push(
+            r#"{"type":"assistant","timestamp":"t","message":{"role":"assistant","content":[],"usage":{"input_tokens":1,"cache_read_input_tokens":300,"cache_creation_input_tokens":30,"output_tokens":9}}}"#.to_string(),
+        );
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+
+        let b = get_token_breakdown_from_transcript(path.to_str().unwrap()).unwrap();
+        assert_eq!(b.output_tokens, 5 + 7 + 9);
+        assert_eq!(b.cache_creation_tokens, 10 + 20 + 30);
+        // "last" semantics unchanged
+        assert_eq!(b.cache_read_tokens, 300);
+        assert_eq!(b.input_tokens, 1);
+    }
+
+    // ---- #78 / ACCT-04: per-requestId last-wins dedup (D-11, D-12) ----
+
+    /// Assistant line with a requestId, explicit usage and timestamp.
+    fn dedup_line(rid: &str, ts: &str, input: u32, cr: u32, cc: u32, out: u32) -> String {
+        format!(
+            r#"{{"type":"assistant","requestId":"{rid}","timestamp":"{ts}","message":{{"role":"assistant","content":[],"usage":{{"input_tokens":{input},"cache_read_input_tokens":{cr},"cache_creation_input_tokens":{cc},"output_tokens":{out}}}}}}}"#
+        )
+    }
+
+    fn write_transcript(lines: &[String]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let p = path.to_str().unwrap().to_string();
+        (dir, p)
+    }
+
+    const TS: &str = "2026-09-16T00:00:00Z";
+
+    #[test]
+    fn dedup_repeated_identical_usage() {
+        let mut lines = vec![dedup_line("r1", TS, 1, 100, 10, 5); 3];
+        lines.push(dedup_line("r2", TS, 2, 200, 20, 7));
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 5 + 7);
+        assert_eq!(b.cache_creation_tokens, 10 + 20);
+        assert_eq!(b.input_tokens, 2);
+        assert_eq!(b.cache_read_tokens, 200);
+    }
+
+    #[test]
+    fn dedup_missing_then_present() {
+        // First line of r1 carries no usage; it must not mark r1 as seen.
+        let lines = vec![
+            format!(
+                r#"{{"type":"assistant","requestId":"r1","timestamp":"{TS}","message":{{"role":"assistant","content":[]}}}}"#
+            ),
+            dedup_line("r1", TS, 3, 300, 30, 11),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 11);
+        assert_eq!(b.cache_creation_tokens, 30);
+        assert_eq!(b.input_tokens, 3);
+        assert_eq!(b.cache_read_tokens, 300);
+    }
+
+    #[test]
+    fn dedup_revised_usage_last_wins() {
+        let lines = vec![
+            dedup_line("r1", TS, 1, 100, 10, 5),
+            dedup_line("r1", TS, 1, 100, 12, 9),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 9);
+        assert_eq!(b.cache_creation_tokens, 12);
+    }
+
+    #[test]
+    fn dedup_interleaved_a_b_a() {
+        let lines = vec![
+            dedup_line("A", TS, 1, 100, 10, 5),
+            dedup_line("B", TS, 2, 200, 20, 7),
+            dedup_line("A", TS, 1, 100, 10, 5),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 12);
+        assert_eq!(b.cache_creation_tokens, 30);
+        // A's winning line comes after B, so "last" values come from A.
+        assert_eq!(b.input_tokens, 1);
+        assert_eq!(b.cache_read_tokens, 100);
+    }
+
+    #[test]
+    fn dedup_empty_usage_object_is_ignored() {
+        let lines = vec![
+            format!(
+                r#"{{"type":"assistant","requestId":"r1","timestamp":"{TS}","message":{{"role":"assistant","content":[],"usage":{{}}}}}}"#
+            ),
+            dedup_line("r1", TS, 4, 400, 40, 13),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 13);
+        assert_eq!(b.cache_read_tokens, 400);
+
+        // An empty usage object alone is not data.
+        let only_empty = vec![format!(
+            r#"{{"type":"assistant","requestId":"r9","timestamp":"{TS}","message":{{"role":"assistant","content":[],"usage":{{}}}}}}"#
+        )];
+        let (_d2, p2) = write_transcript(&only_empty);
+        assert!(get_token_breakdown_from_transcript(&p2).is_none());
+    }
+
+    #[test]
+    fn legacy_lines_without_request_id_count_individually() {
+        let legacy = format!(
+            r#"{{"type":"assistant","timestamp":"{TS}","message":{{"role":"assistant","content":[],"usage":{{"input_tokens":1,"cache_read_input_tokens":50,"cache_creation_input_tokens":6,"output_tokens":4}}}}}}"#
+        );
+        let (_d, p) = write_transcript(&[legacy.clone(), legacy]);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens, 8);
+        assert_eq!(b.cache_creation_tokens, 12);
+    }
+
+    fn ago(secs: i64) -> String {
+        (chrono::Utc::now() - chrono::Duration::seconds(secs))
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+    }
+
+    /// Recover the summed (output, cache_creation) from rolling-window rates.
+    fn recovered_sums(r: (f64, f64, f64, f64, u64)) -> (u64, u64) {
+        let dur = r.4 as f64;
+        ((r.1 * dur).round() as u64, (r.3 * dur).round() as u64)
+    }
+
+    #[test]
+    fn rolling_window_dedups_repeated_request_lines() {
+        let lines = vec![
+            dedup_line("r1", &ago(120), 1, 100, 10, 50),
+            dedup_line("r1", &ago(119), 1, 100, 10, 50),
+            dedup_line("r1", &ago(118), 1, 100, 10, 50),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let r = get_rolling_window_rates(&p, 3600).unwrap();
+        assert_eq!(recovered_sums(r), (50, 10));
+    }
+
+    #[test]
+    fn dedup_orders_by_winning_line() {
+        let a1 = dedup_line("A", TS, 1, 0, 0, 5);
+        let b = dedup_line("B", TS, 2, 0, 0, 7);
+        let a2 = dedup_line("A", TS, 3, 0, 0, 5);
+        let garbage = "not json".to_string();
+        let lines = [a1, garbage, b, a2];
+        let got = collect_request_usage(lines.iter().map(String::as_str));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].input, 2); // B (order 2)
+        assert_eq!(got[1].input, 3); // A's winning line (order 3)
+        assert_eq!(got[1].order, 3);
+        assert!(got[1].ts.is_some());
+    }
+
+    #[test]
+    fn rolling_window_membership_uses_winning_line_timestamp() {
+        // X straddles the cutoff: first line outside, winning line inside -> once.
+        // Y's only (winning) line is outside -> excluded.
+        let lines = vec![
+            dedup_line("Y", &ago(7300), 1, 100, 1000, 700),
+            dedup_line("X", &ago(7200), 1, 100, 10, 50),
+            dedup_line("X", &ago(60), 1, 100, 10, 50),
+        ];
+        let (_d, p) = write_transcript(&lines);
+        let r = get_rolling_window_rates(&p, 3600).unwrap();
+        assert_eq!(recovered_sums(r), (50, 10));
+    }
+
+    // ---- Synthetic multi-block fixture (D-13). Expected values are hand-computed in
+    // tests/fixtures/transcripts/multiblock-synthetic.provenance.md ----
+
+    const FIXTURE_MULTIBLOCK: &str = include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/transcripts/multiblock-synthetic.jsonl"
+    ));
+    const FIXTURE_SUM_OUTPUT: u64 = 860;
+    const FIXTURE_SUM_CACHE_CREATION: u64 = 5450;
+    const FIXTURE_LAST_INPUT: u32 = 8;
+    const FIXTURE_LAST_CACHE_READ: u32 = 12500;
+    const FIXTURE_REQUESTS: usize = 10;
+
+    fn write_fixture(text: &str) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("multiblock-synthetic.jsonl");
+        std::fs::write(&path, text).unwrap();
+        let p = path.to_str().unwrap().to_string();
+        (dir, p)
+    }
+
+    #[test]
+    fn fixture_multiblock_breakdown_counts_each_request_once() {
+        let entries = collect_request_usage(FIXTURE_MULTIBLOCK.lines());
+        assert_eq!(entries.len(), FIXTURE_REQUESTS);
+
+        let (_d, p) = write_fixture(FIXTURE_MULTIBLOCK);
+        let b = get_token_breakdown_from_transcript(&p).unwrap();
+        assert_eq!(b.output_tokens as u64, FIXTURE_SUM_OUTPUT);
+        assert_eq!(b.cache_creation_tokens as u64, FIXTURE_SUM_CACHE_CREATION);
+        assert_eq!(b.input_tokens, FIXTURE_LAST_INPUT);
+        assert_eq!(b.cache_read_tokens, FIXTURE_LAST_CACHE_READ);
+    }
+
+    #[test]
+    fn fixture_multiblock_rolling_window_counts_each_request_once() {
+        // Re-base the fixture's timestamps so its latest line is 10 s ago, keeping
+        // the relative offsets, then read it through a 30-day window.
+        let values: Vec<serde_json::Value> = FIXTURE_MULTIBLOCK
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        let latest = values
+            .iter()
+            .filter_map(|v| v.get("timestamp")?.as_str())
+            .filter_map(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+            .max()
+            .unwrap();
+        let shift = (chrono::Utc::now() - chrono::Duration::seconds(10))
+            - latest.with_timezone(&chrono::Utc);
+        let rebased: Vec<String> = values
+            .into_iter()
+            .map(|mut v| {
+                let new_ts = v
+                    .get("timestamp")
+                    .and_then(|t| t.as_str())
+                    .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                    .map(|t| {
+                        (t.with_timezone(&chrono::Utc) + shift)
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    });
+                if let Some(ts) = new_ts {
+                    v["timestamp"] = serde_json::Value::String(ts);
+                }
+                v.to_string()
+            })
+            .collect();
+
+        let (_d, p) = write_fixture(&(rebased.join("\n") + "\n"));
+        let r = get_rolling_window_rates(&p, 30 * 24 * 3600).unwrap();
+        assert_eq!(
+            recovered_sums(r),
+            (FIXTURE_SUM_OUTPUT, FIXTURE_SUM_CACHE_CREATION)
+        );
+    }
+
+    #[test]
+    fn fixture_has_no_private_data() {
+        // The repo is public: the synthetic fixture must carry no paths, user
+        // names, hosts or emails, and only invented identifiers.
+        for needle in [
+            "/Users/",
+            "/home/",
+            "/root/",
+            "C:\\\\",
+            "@",
+            "\"cwd\"",
+            "gitBranch",
+            "hostname",
+            ".local",
+        ] {
+            assert!(
+                !FIXTURE_MULTIBLOCK.contains(needle),
+                "fixture contains {needle:?}"
+            );
+        }
+        for line in FIXTURE_MULTIBLOCK.lines() {
+            let v: serde_json::Value = serde_json::from_str(line).unwrap();
+            if let Some(rid) = v.get("requestId") {
+                assert!(rid.as_str().unwrap().starts_with("req_synth_"), "{rid}");
+            }
+            if let Some(sid) = v.get("sessionId") {
+                assert_eq!(sid, "synthetic-session-0001");
+            }
+        }
+        assert!(FIXTURE_MULTIBLOCK
+            .lines()
+            .next()
+            .unwrap()
+            .contains("SYNTHETIC FIXTURE"));
+    }
 
     #[test]
     fn test_validate_transcript_file_security() {
@@ -1205,7 +1573,7 @@ mod tests {
     }
 
     #[test]
-    fn test_fable_mythos_default_1m_window() {
+    fn test_context_window_fallback_defaults() {
         let cfg = test_config();
         // Fable/Mythos default (and max) window is 1M, so the fallback guesses 1M.
         assert_eq!(
@@ -1216,12 +1584,24 @@ mod tests {
             get_context_window_for_model(Some("claude-mythos-5"), &cfg),
             1_000_000
         );
-        // Opus/Sonnet stay conservative at 200k in the fallback (1M is opt-in per
-        // session; the payload's context_window_size is authoritative when present).
-        assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
-            200_000
-        );
+        // Opus/Sonnet fall back to 200k: the 1M window is opt-in per session, and
+        // the payload's context_window_size is authoritative when present.
+        for model in [
+            "claude-opus-4-8",
+            "claude-opus-4-6",
+            "claude-opus-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "Claude Opus 4.6",
+            "Claude Sonnet 4.5",
+            "claude-opus-4-5",
+        ] {
+            assert_eq!(
+                get_context_window_for_model(Some(model), &cfg),
+                200_000,
+                "fallback window for {model}"
+            );
+        }
     }
 
     #[test]
@@ -1449,10 +1829,10 @@ mod tests {
     fn cache_lookup_wins_over_smart_default_when_enabled() {
         let _temp = isolate_cache();
         let cfg = enabled_config();
-        // claude-opus-4-8 smart default is 200k; the cache says 1M.
-        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+        // claude-opus-4-5 smart default is 200k; the cache says 1M.
+        write_models_cache(&cache_with("claude-opus-4-5", 1_000_000)).expect("write");
         assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             1_000_000,
             "enabled cache value must beat the smart default (D-01/D-02)"
         );
@@ -1464,12 +1844,12 @@ mod tests {
         // ENABLED-GATE (review MUST-FIX #1 / T-07-14): the SAME populated cache
         // present on disk must NOT change rendering when `[ant]` is disabled.
         let _temp = isolate_cache();
-        write_models_cache(&cache_with("claude-opus-4-8", 1_000_000)).expect("write");
+        write_models_cache(&cache_with("claude-opus-4-5", 1_000_000)).expect("write");
 
         let disabled = crate::config::Config::default(); // ant.enabled == false (default)
-        let with_cache = get_context_window_for_model(Some("claude-opus-4-8"), &disabled);
+        let with_cache = get_context_window_for_model(Some("claude-opus-4-5"), &disabled);
 
-        // The no-cache result (smart default) for claude-opus-4-8 is 200k.
+        // The no-cache result (smart default) for claude-opus-4-5 is 200k.
         assert_eq!(
             with_cache, 200_000,
             "a populated cache must be ignored when [ant] is disabled/absent"
@@ -1500,11 +1880,11 @@ mod tests {
     fn cached_zero_falls_through_to_smart_default() {
         // D-06 / T-07-05: a cached `0` is unknown; never render 0.
         let _temp = isolate_cache();
-        write_models_cache(&cache_with("claude-opus-4-8", 0)).expect("write");
+        write_models_cache(&cache_with("claude-opus-4-5", 0)).expect("write");
 
         let cfg = enabled_config();
         assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             200_000,
             "a cached 0 must fall through to the smart default, never render 0"
         );
@@ -1519,7 +1899,7 @@ mod tests {
 
         let cfg = enabled_config();
         assert_eq!(
-            get_context_window_for_model(Some("claude-opus-4-8"), &cfg),
+            get_context_window_for_model(Some("claude-opus-4-5"), &cfg),
             200_000,
             "an id absent from the cache must fall through to the smart default"
         );
@@ -1541,5 +1921,70 @@ mod tests {
             result, 1_000_000,
             "a versionless display name must not match a canonical-id cache key"
         );
+    }
+
+    // ---- request_usage_of: the per-line D-11/D-12 predicate (AGENT-05) ----
+
+    #[test]
+    fn request_usage_of_filters_like_collect() {
+        let ts = "2026-01-01T00:00:00.000Z";
+        let user = format!(
+            r#"{{"type":"user","message":{{"role":"user","content":"hi"}},"timestamp":"{ts}"}}"#
+        );
+        assert!(request_usage_of(&user, 0).is_none());
+
+        let no_usage = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","content":"x"}},"timestamp":"{ts}"}}"#
+        );
+        assert!(request_usage_of(&no_usage, 1).is_none());
+
+        let empty_usage = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","usage":{{}}}},"timestamp":"{ts}"}}"#
+        );
+        assert!(request_usage_of(&empty_usage, 2).is_none());
+
+        assert!(request_usage_of("{not json", 3).is_none());
+
+        let with_rid = format!(
+            r#"{{"type":"assistant","requestId":"r1","message":{{"role":"assistant","usage":{{"input_tokens":5,"output_tokens":7,"cache_read_input_tokens":11,"cache_creation_input_tokens":13}}}},"timestamp":"{ts}"}}"#
+        );
+        let (rid, u) = request_usage_of(&with_rid, 42).expect("usage line");
+        assert_eq!(rid.as_deref(), Some("r1"));
+        assert_eq!(
+            (u.input, u.output, u.cache_read, u.cache_creation, u.order),
+            (5, 7, 11, 13, 42)
+        );
+        assert_eq!(u.ts, parse_iso8601_to_unix(ts));
+
+        let no_rid = format!(
+            r#"{{"type":"assistant","message":{{"role":"assistant","usage":{{"output_tokens":3}}}},"timestamp":"{ts}"}}"#
+        );
+        let (rid, u) = request_usage_of(&no_rid, 9).expect("usage line");
+        assert!(rid.is_none());
+        assert_eq!((u.input, u.output, u.order), (0, 3, 9));
+    }
+
+    #[test]
+    fn request_usage_of_agrees_with_collect_on_fixture() {
+        let mut out: Vec<RequestUsage> = Vec::new();
+        let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for (order, line) in FIXTURE_MULTIBLOCK.lines().enumerate() {
+            let Some((rid, item)) = request_usage_of(line, order) else {
+                continue;
+            };
+            match rid {
+                Some(rid) => match index.get(&rid) {
+                    Some(&slot) => out[slot] = item,
+                    None => {
+                        index.insert(rid, out.len());
+                        out.push(item);
+                    }
+                },
+                None => out.push(item),
+            }
+        }
+        out.sort_by_key(|e| e.order);
+        assert_eq!(out, collect_request_usage(FIXTURE_MULTIBLOCK.lines()));
+        assert_eq!(out.len(), FIXTURE_REQUESTS);
     }
 }

@@ -36,7 +36,6 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::process::{Command, Stdio};
 
 use chrono::{Datelike, Duration, NaiveTime, Utc};
@@ -438,9 +437,7 @@ fn curl_get(key: &str, url: &str) -> Result<(Vec<u8>, u16)> {
         let mut stdin = child.stdin.take().ok_or_else(|| {
             StatuslineError::other("failed to open curl stdin for the leak-free config")
         })?;
-        stdin.write_all(config.as_bytes()).map_err(|e| {
-            StatuslineError::other(format!("failed to write curl config to stdin: {}", e))
-        })?;
+        crate::ant::fetch::stream_curl_config(&mut stdin, &config)?;
         // Drop closes stdin so curl proceeds; the key leaves memory here.
     }
 
@@ -637,6 +634,17 @@ fn sanitize_stderr(stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn curl_stdin_epipe_is_reported_usage() {
+        let (r, mut w) = std::io::pipe().unwrap();
+        drop(r);
+        let err = crate::ant::fetch::stream_curl_config(&mut w, "url = \"x\"\n")
+            .expect_err("EPIPE must be reported as Err");
+        assert!(err
+            .to_string()
+            .contains("failed to write curl config to stdin"));
+    }
 
     fn cost_env(amounts: &[&[&str]]) -> ReportEnvelope<CostItem> {
         let json_buckets: Vec<String> = amounts

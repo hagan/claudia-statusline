@@ -54,13 +54,13 @@ static GENERATE_CONFIG_DEPRECATION_WARNED: OnceLock<()> = OnceLock::new();
 
 /// Emit the one-shot deprecation note for `statusline generate-config`.
 ///
-/// `OnceLock` + `eprintln!`, the idiom of
+/// `OnceLock` + a stderr note (`cli_eprintln!`), the idiom of
 /// `config::warn_json_backup_legacy_if_set` (`src/config.rs:2318`): it fires at
 /// most once per process and never pollutes stdout, so a script that pipes
 /// `generate-config`'s output keeps parsing exactly what it parsed before.
 fn warn_generate_config_deprecated() {
     GENERATE_CONFIG_DEPRECATION_WARNED.get_or_init(|| {
-        eprintln!(
+        cli_eprintln!(
             "note: `statusline generate-config` is deprecated; use `statusline config generate` instead"
         );
     });
@@ -75,7 +75,7 @@ fn warn_generate_config_deprecated() {
 /// are pinned numerically by `config_generate_writes_restrictive_permissions`.
 fn generate() -> Result<()> {
     let config_path = config::Config::default_config_path()?;
-    println!("Generating example config file at: {:?}", config_path);
+    cli_println!("Generating example config file at: {:?}", config_path);
 
     // Create parent directories with secure permissions (0o700 on Unix)
     if let Some(parent) = config_path.parent() {
@@ -111,8 +111,8 @@ fn generate() -> Result<()> {
     {
         std::fs::write(&config_path, config::Config::example_toml())?;
     }
-    println!("Config file generated successfully!");
-    println!("Edit {} to customize settings", config_path.display());
+    cli_println!("Config file generated successfully!");
+    cli_println!("Edit {} to customize settings", config_path.display());
     Ok(())
 }
 
@@ -327,39 +327,39 @@ fn path(json_output: bool) -> Result<()> {
             "candidates": candidates,
             "misplaced": misplaced,
         });
-        println!("{}", serde_json::to_string(&report)?);
+        cli_println!("{}", serde_json::to_string(&report)?);
     } else {
-        println!("Claudia Statusline Config Path");
-        println!("==============================");
-        println!();
-        println!("Active config:");
+        cli_println!("Claudia Statusline Config Path");
+        cli_println!("==============================");
+        cli_println!();
+        cli_println!("Active config:");
         match (&active, active_source) {
-            (Some(p), Some(src)) => println!("  {} (source: {})", p, src),
+            (Some(p), Some(src)) => cli_println!("  {} (source: {})", p, src),
             // `active` and `active_source` are set together by the resolver.
-            _ => println!("  none found — using defaults"),
+            _ => cli_println!("  none found — using defaults"),
         }
-        println!();
-        println!("Search order:");
+        cli_println!();
+        cli_println!("Search order:");
         for candidate in &resolved.candidates {
             let rendered = match candidate.path.as_ref() {
                 Some(p) => sanitize_for_terminal(&p.display().to_string()),
                 None => String::from("(not set)"),
             };
-            println!(
+            cli_println!(
                 "  {} {}: {}",
                 if candidate.exists { "✅" } else { "❌" },
                 candidate_label(candidate.source),
                 rendered
             );
         }
-        println!();
-        println!("Misplaced config files:");
+        cli_println!();
+        cli_println!("Misplaced config files:");
         if misplaced.is_empty() {
-            println!("  ✅ none found");
+            cli_println!("  ✅ none found");
         } else {
             for m in &misplaced {
-                println!("  ⚠️  {}", m.path);
-                println!("      {}", m.reason);
+                cli_println!("  ⚠️  {}", m.path);
+                cli_println!("      {}", m.reason);
             }
         }
     }
@@ -764,29 +764,29 @@ fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: boo
         });
         // Exactly one compact document, exactly one println — nothing else may
         // reach stdout in this mode.
-        println!("{}", serde_json::to_string(&document)?);
+        cli_println!("{}", serde_json::to_string(&document)?);
     } else {
-        println!("Claudia Statusline Config Validation");
-        println!("====================================");
-        println!();
+        cli_println!("Claudia Statusline Config Validation");
+        cli_println!("====================================");
+        cli_println!();
         match (&target_path, &target_source) {
-            (Some(p), Some(src)) => println!("Target: {} (source: {})", p, src),
-            _ => println!("Target: none found — validating built-in defaults"),
+            (Some(p), Some(src)) => cli_println!("Target: {} (source: {})", p, src),
+            _ => cli_println!("Target: none found — validating built-in defaults"),
         }
         // Named only when it differs, so the common case stays quiet and the
         // D-06 "both files" case is impossible to miss.
         if outcome.target_path != outcome.active_path {
             match (&active_path, &active_source) {
-                (Some(p), Some(src)) => println!("Active: {} (source: {})", p, src),
-                _ => println!("Active: none found — statusline is using built-in defaults"),
+                (Some(p), Some(src)) => cli_println!("Active: {} (source: {})", p, src),
+                _ => cli_println!("Active: none found — statusline is using built-in defaults"),
             }
         }
 
         if !report.notices.is_empty() {
-            println!();
-            println!("Notices:");
+            cli_println!();
+            cli_println!("Notices:");
             for notice in &report.notices {
-                println!(
+                cli_println!(
                     "  - [{}] {}",
                     sanitize_for_terminal(notice.code),
                     sanitize_for_terminal(&notice.message)
@@ -794,16 +794,16 @@ fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: boo
             }
         }
 
-        println!();
-        println!("Findings:");
+        cli_println!();
+        cli_println!("Findings:");
         if report.findings.is_empty() {
-            println!("  ✅ none");
+            cli_println!("  ✅ none");
         } else {
             for finding in &report.findings {
                 // The dotted KEY is the locator. Line/column numbers appear
                 // ONLY inside a whole-document syntax error's message, where
                 // `redact_toml_error` put them, and nowhere else.
-                println!(
+                cli_println!(
                     "  {} {:<7} {}: {}",
                     marker(finding.severity),
                     finding.severity.as_str(),
@@ -813,17 +813,17 @@ fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: boo
             }
         }
 
-        println!();
+        cli_println!();
         // The verdict reports `valid` (no ERRORS) and the exit code SEPARATELY,
         // exactly as the `--json` document does — so a reader of either mode can
         // see that `--strict` moved the exit code without moving the verdict.
-        println!(
+        cli_println!(
             "Result: {} — {} error(s), {} warning(s)",
             if valid { "PASS" } else { "FAIL" },
             errors,
             warnings
         );
-        println!(
+        cli_println!(
             "Exit code: {}{}",
             exit_code,
             if strict && valid && warnings > 0 {
@@ -833,10 +833,10 @@ fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: boo
             }
         );
 
-        println!();
-        println!("Caches:");
+        cli_println!();
+        cli_println!("Caches:");
         if outcome.caches.is_empty() {
-            println!("  (none)");
+            cli_println!("  (none)");
         } else {
             for status in &outcome.caches {
                 let age = status
@@ -853,7 +853,7 @@ fn render_validation(outcome: &ValidationOutcome, json_output: bool, strict: boo
                     Some(d) => format!(" — {}", sanitize_for_terminal(d)),
                     None => String::new(),
                 };
-                println!(
+                cli_println!(
                     "  {:<7} {:<12} age {:<6} {}{}",
                     sanitize_for_terminal(status.name),
                     sanitize_for_terminal(status.state.as_str()),

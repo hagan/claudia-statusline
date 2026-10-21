@@ -65,7 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        mode: [default, git_pv2]
+        mode: [default, git_pv2, turso]
         include:
           - mode: default
             features: ""
@@ -73,6 +73,9 @@ jobs:
           - mode: git_pv2
             features: "--features git_porcelain_v2"
             desc: "Git Porcelain v2"
+          - mode: turso
+            features: "--features turso-sync"
+            desc: "Turso sync"
 
     env:
       NO_COLOR: 1  # Ensure deterministic output for tests
@@ -113,11 +116,13 @@ jobs:
 
     - name: Run tests (${{ matrix.desc }})
       id: test
+      shell: bash
       run: |
+        set -o pipefail  # the tee below must not hide a cargo failure
         start_time=$(date +%s)
 
         # Run tests and capture output
-        if cargo test ${{ matrix.features }} --all-targets 2>&1 | tee test_output.txt; then
+        if cargo test ${{ matrix.features }} --all-targets --no-fail-fast 2>&1 | tee test_output.txt; then
           test_result="✅ PASSED"
           test_status=0
         else
@@ -544,7 +549,9 @@ jobs:
 
     - name: Run isolated token rate tests
       id: isolated_test
+      shell: bash
       run: |
+        set -o pipefail  # the tee below must not hide a cargo failure
         echo "## Isolated Integration Tests" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "These tests require specific config (json_backup=false) and run in isolation." >> $GITHUB_STEP_SUMMARY

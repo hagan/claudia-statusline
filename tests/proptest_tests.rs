@@ -228,6 +228,7 @@ proptest! {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                baseline: None,
             },
         );
 

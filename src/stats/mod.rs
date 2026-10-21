@@ -4,6 +4,7 @@
 //! startup as a recovery fallback when SQLite is missing or unusable (see BREAK-03);
 //! writes are SQLite-only as of v3.0.0.
 
+pub mod accounting;
 mod aggregation;
 mod cache;
 mod persistence;

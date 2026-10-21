@@ -120,6 +120,20 @@ pub struct DisplayConfig {
     /// available regardless of this flag. Opt-in (default false).
     #[serde(default)]
     pub rate_limit_reset_countdown: bool,
+
+    /// Show the legacy (non-layout) subagent segment (`🤖3 30%`: agent transcript
+    /// count and the agents' share of this session's input traffic). Opt-in
+    /// (default false).
+    ///
+    /// This toggles ONLY the legacy segment. In layout/template mode it has no
+    /// effect: the agents scan runs only when the effective template references
+    /// an agents variable (`{agents}`, `{agents_count}`, ...), per D-03.
+    pub show_agents: bool,
+
+    /// Show main-conversation prompt-cache health from the payload
+    /// (`cache 91% miss:2 tools_changed`). Opt-in; useful right after a Claude Code
+    /// update to see whether the cache keeps invalidating.
+    pub show_prompt_cache: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,6 +1590,10 @@ impl Default for DisplayConfig {
             show_rate_limits: false,
             // Reset countdown opt-in (default off; *_reset template vars always available)
             rate_limit_reset_countdown: false,
+            // Subagent attribution is opt-in (AGENT-01)
+            show_agents: false,
+            // Prompt-cache segment opt-in.
+            show_prompt_cache: false,
         }
     }
 }
@@ -2059,6 +2077,8 @@ theme = "dark"
 # show_cost = true
 # show_rate_limits = false           # Pro/Max only: "5h:24% 7d:41%" (absent for API keys)
 # rate_limit_reset_countdown = false # Append reset countdown: "5h:24% (2h13m)"
+# show_agents = false                # Legacy mode only: "🤖3 30%" subagent count + share of input traffic
+# show_prompt_cache = false          # "cache 91% miss:2 tools_changed" (main conversation, CC >= 2.1.251)
 
 # Show token counts in context bar (e.g., "179k/1000k")
 # show_context_tokens = false
@@ -2374,8 +2394,10 @@ static JSON_BACKUP_DEPRECATION_WARNED: OnceLock<()> = OnceLock::new();
 fn warn_json_backup_legacy_if_set(cfg: &Config) {
     if cfg.database.json_backup {
         JSON_BACKUP_DEPRECATION_WARNED.get_or_init(|| {
-            eprintln!(
-                "note: 'json_backup' is ignored in v3.0.0 (writes removed); see MIGRATION_GUIDE.md"
+            // Not `eprintln!`: that panics (abort in release) on a closed stderr.
+            let _ = std::io::Write::write_all(
+                &mut std::io::stderr(),
+                b"note: 'json_backup' is ignored in v3.0.0 (writes removed); see MIGRATION_GUIDE.md\n",
             );
         });
     }

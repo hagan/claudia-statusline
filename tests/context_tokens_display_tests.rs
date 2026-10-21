@@ -287,3 +287,92 @@ fn test_context_tokens_without_transcript() {
     // Clean up temp file
     let _ = std::fs::remove_file(&config_file);
 }
+
+/// Run the binary with a per-test config (inside the test's own TempDir, so it
+/// cannot race the shared per-PID config written by `create_config`) and return
+/// stdout. Asserts the render succeeded.
+fn render_with_own_config(temp_dir: &TempDir, json: &str) -> String {
+    let config_file = temp_dir.path().join("config.toml");
+    std::fs::write(
+        &config_file,
+        "[display]\nshow_context = true\nshow_context_tokens = true\n",
+    )
+    .expect("Failed to write config");
+
+    let output = Command::new(test_support::test_binary())
+        .env("XDG_DATA_HOME", temp_dir.path())
+        .env("XDG_CONFIG_HOME", temp_dir.path())
+        .env("STATUSLINE_CONFIG", &config_file)
+        .env("STATUSLINE_SHOW_CONTEXT_TOKENS", "true")
+        .env_remove("NO_COLOR")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            child.stdin.as_mut().unwrap().write_all(json.as_bytes())?;
+            child.wait_with_output()
+        })
+        .expect("Failed to execute binary");
+
+    assert!(output.status.success(), "Command should succeed");
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
+#[test]
+fn opus_4_6_plus_fallback_is_200k() {
+    // INTEG-01: with no `context_window` in the payload, Opus 4.6+/5+ falls back
+    // to the conservative 200k window (1M is opt-in per session).
+    let _guard = test_support::init();
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    // Context usage counts input tokens only (output is excluded), so 180000
+    // input tokens renders as "180k".
+    let transcript = create_transcript(180000, 1000);
+
+    let json = format!(
+        r#"{{"transcript":"{}","model":{{"id":"claude-opus-4-8","display_name":"Claude Opus 4.8"}}}}"#,
+        transcript.to_str().unwrap()
+    );
+    let stdout = render_with_own_config(&temp_dir, &json);
+
+    assert!(
+        stdout.contains("180k/200k"),
+        "Opus 4.8 fallback window should be 200k. Output: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("/1000k"),
+        "Opus 4.8 fallback must not guess 1M. Output: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(&transcript);
+}
+
+#[test]
+fn payload_window_is_authoritative() {
+    // INTEG-01: a payload-supplied context_window_size is rendered verbatim,
+    // regardless of the model-based fallback.
+    let _guard = test_support::init();
+    let temp_dir = TempDir::new().expect("Failed to create temp dir");
+    let transcript = create_transcript(180000, 1000);
+
+    let json = format!(
+        r#"{{"transcript":"{}","model":{{"id":"claude-opus-4-8","display_name":"Claude Opus 4.8"}},"context_window":{{"context_window_size":1000000,"total_input_tokens":180000}}}}"#,
+        transcript.to_str().unwrap()
+    );
+    let stdout = render_with_own_config(&temp_dir, &json);
+
+    assert!(
+        stdout.contains("180k/1000k"),
+        "Payload context_window_size (1M) must be authoritative. Output: {}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("/200k"),
+        "Model fallback must not override the payload window. Output: {}",
+        stdout
+    );
+
+    let _ = std::fs::remove_file(&transcript);
+}

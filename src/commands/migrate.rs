@@ -14,11 +14,11 @@ pub(crate) fn show_migration_roadmap() -> Result<()> {
     let json_exists = json_path.exists();
     let db_exists = db_path.exists();
 
-    println!("═══════════════════════════════════════════════════════════════");
-    println!("          SQLite Migration Status (v3.0.0+)");
-    println!("═══════════════════════════════════════════════════════════════\n");
-    println!("📊 CURRENT STATUS:\n");
-    println!(
+    cli_println!("═══════════════════════════════════════════════════════════════");
+    cli_println!("          SQLite Migration Status (v3.0.0+)");
+    cli_println!("═══════════════════════════════════════════════════════════════\n");
+    cli_println!("📊 CURRENT STATUS:\n");
+    cli_println!(
         "   Database (SQLite):    {}",
         if db_exists {
             "✓ Exists"
@@ -26,7 +26,7 @@ pub(crate) fn show_migration_roadmap() -> Result<()> {
             "✗ Not found"
         }
     );
-    println!(
+    cli_println!(
         "   Legacy JSON file:     {}",
         if json_exists {
             "✓ Exists"
@@ -34,18 +34,18 @@ pub(crate) fn show_migration_roadmap() -> Result<()> {
             "✗ Not found"
         }
     );
-    println!();
-    println!("   v3.0.0 removed JSON writes; SQLite is the canonical store.");
-    println!("   Legacy stats.json files are read once on startup for recovery only.\n");
+    cli_println!();
+    cli_println!("   v3.0.0 removed JSON writes; SQLite is the canonical store.");
+    cli_println!("   Legacy stats.json files are read once on startup for recovery only.\n");
 
     if json_exists {
-        println!("💡 RECOMMENDED NEXT STEPS:\n");
-        println!("   A leftover stats.json file exists. Archive or delete it:\n");
-        println!("      $ statusline migrate --finalize");
-        println!("      $ statusline migrate --finalize --delete-json\n");
+        cli_println!("💡 RECOMMENDED NEXT STEPS:\n");
+        cli_println!("   A leftover stats.json file exists. Archive or delete it:\n");
+        cli_println!("      $ statusline migrate --finalize");
+        cli_println!("      $ statusline migrate --finalize --delete-json\n");
     } else {
-        println!("✅ MIGRATION COMPLETE:\n");
-        println!("   No leftover JSON file. SQLite-only operation is in effect.\n");
+        cli_println!("✅ MIGRATION COMPLETE:\n");
+        cli_println!("   No leftover JSON file. SQLite-only operation is in effect.\n");
     }
     Ok(())
 }
@@ -56,12 +56,12 @@ pub(crate) fn run_schema_migrations() -> Result<()> {
     use crate::display::Colors;
     use crate::migrations::MigrationRunner;
 
-    println!(
+    cli_println!(
         "{}Running database schema migrations...{}",
         Colors::cyan(),
         Colors::reset()
     );
-    println!();
+    cli_println!();
 
     let db_path = get_data_dir().join("stats.db");
     let mut runner =
@@ -71,7 +71,7 @@ pub(crate) fn run_schema_migrations() -> Result<()> {
         .current_version()
         .map_err(crate::error::StatuslineError::Database)?;
 
-    println!("Current schema version: {}", current_version);
+    cli_println!("Current schema version: {}", current_version);
 
     runner
         .migrate()
@@ -81,9 +81,9 @@ pub(crate) fn run_schema_migrations() -> Result<()> {
         .current_version()
         .map_err(crate::error::StatuslineError::Database)?;
 
-    println!();
+    cli_println!();
     if new_version > current_version {
-        println!(
+        cli_println!(
             "{}✓ Migrated from version {} to {}{}",
             Colors::green(),
             current_version,
@@ -91,14 +91,14 @@ pub(crate) fn run_schema_migrations() -> Result<()> {
             Colors::reset()
         );
     } else {
-        println!(
+        cli_println!(
             "{}✓ Database already at latest version ({}){}",
             Colors::green(),
             new_version,
             Colors::reset()
         );
     }
-    println!();
+    cli_println!();
 
     Ok(())
 }
@@ -107,12 +107,12 @@ pub(crate) fn dump_database_schema() -> Result<()> {
     use crate::display::Colors;
 
     // Print status to stderr so it doesn't pollute the SQL output on stdout
-    eprintln!(
+    cli_eprintln!(
         "{}Generating database schema...{}",
         Colors::cyan(),
         Colors::reset()
     );
-    eprintln!();
+    cli_eprintln!();
 
     // Run all migrations on this temporary database
     let temp_dir = std::env::temp_dir();
@@ -139,22 +139,22 @@ pub(crate) fn dump_database_schema() -> Result<()> {
         result
     };
 
-    println!("-- Turso Database Schema Setup for Claudia Statusline");
-    println!(
+    cli_println!("-- Turso Database Schema Setup for Claudia Statusline");
+    cli_println!(
         "-- Auto-generated from migrations on {}",
         chrono::Local::now().format("%Y-%m-%d")
     );
-    println!("-- This script creates the necessary tables for cloud sync");
-    println!();
+    cli_println!("-- This script creates the necessary tables for cloud sync");
+    cli_println!();
 
     for schema in schemas {
-        println!("{};", schema);
-        println!();
+        cli_println!("{};", schema);
+        cli_println!();
     }
 
-    println!("-- Indexes for better query performance");
-    println!("-- (Indexes are included in the CREATE TABLE statements above)");
-    println!();
+    cli_println!("-- Indexes for better query performance");
+    cli_println!("-- (Indexes are included in the CREATE TABLE statements above)");
+    cli_println!();
 
     // Clean up temp file
     let _ = std::fs::remove_file(&temp_path);
@@ -166,7 +166,7 @@ pub(crate) fn finalize_migration(delete_json: bool) -> Result<()> {
     use chrono::Utc;
     use std::fs;
 
-    println!("🔄 Finalizing migration to SQLite-only mode...\n");
+    cli_println!("🔄 Finalizing migration to SQLite-only mode...\n");
 
     // Get paths
     let json_path = crate::stats::StatsData::get_stats_file_path();
@@ -174,13 +174,13 @@ pub(crate) fn finalize_migration(delete_json: bool) -> Result<()> {
 
     // Check if JSON file exists
     if !json_path.exists() {
-        println!("✅ No JSON file found. Already in SQLite-only mode.");
+        cli_println!("✅ No JSON file found. Already in SQLite-only mode.");
         return Ok(());
     }
 
     // Check if SQLite database exists
     if !sqlite_path.exists() {
-        println!("⚠️  SQLite database not found. Creating and migrating...");
+        cli_println!("⚠️  SQLite database not found. Creating and migrating...");
         // Load from JSON and trigger migration. The value is intentionally discarded;
         // the side effect (JSON→SQLite migration) is what we want.
         warn!("SQLite database absent; loading stats to trigger JSON→SQLite migration");
@@ -188,7 +188,7 @@ pub(crate) fn finalize_migration(delete_json: bool) -> Result<()> {
     }
 
     // Load data from both sources to verify parity
-    println!("📊 Verifying data parity between JSON and SQLite...");
+    cli_println!("📊 Verifying data parity between JSON and SQLite...");
 
     let json_data = if json_path.exists() {
         let contents = fs::read_to_string(&json_path)?;
@@ -207,38 +207,38 @@ pub(crate) fn finalize_migration(delete_json: bool) -> Result<()> {
         let json_total: f64 = json.sessions.values().map(|s| s.cost).sum();
         let sqlite_total: f64 = sqlite.sessions.values().map(|s| s.cost).sum();
 
-        println!("  JSON sessions: {}", json_sessions);
-        println!("  SQLite sessions: {}", sqlite_sessions);
-        println!("  JSON total cost: ${:.2}", json_total);
-        println!("  SQLite total cost: ${:.2}", sqlite_total);
+        cli_println!("  JSON sessions: {}", json_sessions);
+        cli_println!("  SQLite sessions: {}", sqlite_sessions);
+        cli_println!("  JSON total cost: ${:.2}", json_total);
+        cli_println!("  SQLite total cost: ${:.2}", sqlite_total);
 
         // Check for discrepancies
         if json_sessions != sqlite_sessions || (json_total - sqlite_total).abs() > 0.01 {
-            println!("\n⚠️  Warning: Data discrepancy detected!");
-            println!("Please ensure all data has been migrated before finalizing.");
-            println!("You may need to run the statusline normally once to trigger migration.");
+            cli_println!("\n⚠️  Warning: Data discrepancy detected!");
+            cli_println!("Please ensure all data has been migrated before finalizing.");
+            cli_println!("You may need to run the statusline normally once to trigger migration.");
             return Ok(());
         }
 
-        println!("\n✅ Data parity verified!");
+        cli_println!("\n✅ Data parity verified!");
     }
 
     // Archive or delete JSON file
     if delete_json {
-        println!("\n🗑️  Deleting JSON file...");
+        cli_println!("\n🗑️  Deleting JSON file...");
         fs::remove_file(&json_path)?;
-        println!("✅ JSON file deleted: {}", json_path.display());
+        cli_println!("✅ JSON file deleted: {}", json_path.display());
     } else {
         // Archive with timestamp
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
         let archive_path = json_path.with_file_name(format!("stats.json.migrated.{}", timestamp));
-        println!("\n📦 Archiving JSON file...");
+        cli_println!("\n📦 Archiving JSON file...");
         fs::rename(&json_path, &archive_path)?;
-        println!("✅ JSON archived to: {}", archive_path.display());
+        cli_println!("✅ JSON archived to: {}", archive_path.display());
     }
 
     // Update config to disable JSON backup
-    println!("\n📝 Updating configuration...");
+    cli_println!("\n📝 Updating configuration...");
     let config_path = crate::config::Config::default_config_path()?;
 
     // Create config directory if it doesn't exist with secure permissions (0o700 on Unix)
@@ -270,11 +270,11 @@ pub(crate) fn finalize_migration(delete_json: bool) -> Result<()> {
 
     // Save updated config
     config.save(&config_path)?;
-    println!("✅ Configuration normalized: json_backup field reset (no-op in v3.0.0+)");
+    cli_println!("✅ Configuration normalized: json_backup field reset (no-op in v3.0.0+)");
 
-    println!("\n🎉 Migration finalized successfully!");
-    println!("The statusline is now operating in SQLite-only mode.");
-    println!("Performance improvements: ~30% faster reads, better concurrent access");
+    cli_println!("\n🎉 Migration finalized successfully!");
+    cli_println!("The statusline is now operating in SQLite-only mode.");
+    cli_println!("Performance improvements: ~30% faster reads, better concurrent access");
 
     Ok(())
 }

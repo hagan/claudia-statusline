@@ -44,10 +44,13 @@ help:
 	@echo "  $(YELLOW)make clean$(NC)        - Remove build artifacts"
 	@echo "  $(YELLOW)make clean-whitespace$(NC) - Remove trailing whitespace from files"
 	@echo "  $(YELLOW)make test$(NC)         - Run unit and integration tests"
+	@echo "  $(YELLOW)make test-turso$(NC)   - Run the full suite with the turso-sync feature"
 	@echo "  $(YELLOW)make test-sqlite$(NC)  - Run SQLite integration tests"
+	@echo "  $(YELLOW)make test-full$(NC)    - Run test, test-turso and test-sqlite in sequence (no install)"
 	@echo "  $(YELLOW)make test-install$(NC) - Run installation verification"
-	@echo "  $(YELLOW)make test-all$(NC)     - Run all tests"
+	@echo "  $(YELLOW)make test-all$(NC)     - Run test-full, then install and verify the installation"
 	@echo "  $(YELLOW)make test-manual$(NC)  - Run with isolated test database"
+	@echo "  $(YELLOW)make test-hook-isolation$(NC) - Verify hook tests leave a canary data dir untouched"
 	@echo "  $(YELLOW)make clean-test$(NC)   - Remove test database"
 	@echo "  $(YELLOW)make show-db-path$(NC) - Show database paths (prod vs test)"
 	@echo "  $(YELLOW)make check$(NC)        - Check build environment"
@@ -160,13 +163,27 @@ test: debug
 	@echo "$(YELLOW)Using isolated test directories:$(NC)"
 	@echo "  Config: $(TEST_TEMP_DIR)/config"
 	@echo "  Data:   $(TEST_TEMP_DIR)/data"
-	@$(TEST_ENV) $(CARGO) test
+	@$(TEST_ENV) $(CARGO) test --no-fail-fast
+
+# Verify hook tests never touch a real data/cache dir (INTEG-06 canary proof)
+.PHONY: test-hook-isolation
+test-hook-isolation:
+	@echo "$(BLUE)Checking hook tests never touch a real data dir (canary)...$(NC)"
+	@./scripts/check-hook-isolation.sh
+	@echo "$(GREEN)✓$(NC) Hook tests isolated"
+
+# Run the full suite with the turso-sync feature (isolated from production data).
+# No prerequisites: cargo builds the featured binary the integration tests use.
+.PHONY: test-turso
+test-turso:
+	@echo "$(BLUE)Running tests with the turso-sync feature...$(NC)"
+	@$(TEST_ENV) $(CARGO) test --features turso-sync --no-fail-fast
 
 # Run SQLite integration tests
 .PHONY: test-sqlite
 test-sqlite: debug
 	@echo "$(BLUE)Running SQLite integration tests...$(NC)"
-	@$(TEST_ENV) $(CARGO) test sqlite_integration
+	@$(TEST_ENV) $(CARGO) test --test sqlite_integration_tests
 
 # Run installation test
 .PHONY: test-install
@@ -174,9 +191,22 @@ test-install: install
 	@echo "$(BLUE)Running installation tests...$(NC)"
 	@./scripts/test-installation.sh
 
-# Run all tests
+# Run every test suite without installing. The suites share target/debug, so they
+# run as sequential recipe lines (not prerequisites): make -j or an inherited
+# MAKEFLAGS cannot overlap them, and the first failure stops the run. test-sqlite
+# runs last so target/debug ends up built with default features.
+.PHONY: test-full
+test-full:
+	@$(MAKE) --no-print-directory -j1 test
+	@$(MAKE) --no-print-directory -j1 test-turso
+	@$(MAKE) --no-print-directory -j1 test-sqlite
+	@echo "$(GREEN)✓$(NC) Full test suite completed"
+
+# Run all tests, then install and verify the installation (installs to ~/.local/bin)
 .PHONY: test-all
-test-all: test test-sqlite test-install
+test-all:
+	@$(MAKE) --no-print-directory -j1 test-full
+	@$(MAKE) --no-print-directory -j1 test-install
 	@echo "$(GREEN)✓$(NC) All tests completed!"
 	@echo ""
 	@echo "Test 1: Empty input"

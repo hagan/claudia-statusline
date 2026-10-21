@@ -166,12 +166,69 @@ mod tests {
     use super::*;
     use crate::session_state::read_state;
 
+    /// Points HOME and every XDG base dir at a temp dir for the duration of a
+    /// test and restores the previous values on drop (INTEG-06). The hook
+    /// handlers write state files under `dirs::cache_dir()` (macOS:
+    /// `$HOME/Library/Caches`, ignoring XDG_CACHE_HOME) and postcompact opens
+    /// `get_data_dir()/stats.db`, so without this the tests would touch the
+    /// invoking user's real cache and database. Every inherited
+    /// `STATUSLINE_*` / `CLAUDE_*` var (e.g. `STATUSLINE_CONFIG_PATH`) is also
+    /// removed for the duration, so the developer's config never loads. Always
+    /// pair with the serial_test `serial` attribute — env vars are
+    /// process-global.
+    struct HookTestEnv {
+        _dir: tempfile::TempDir,
+        saved: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)>,
+    }
+
+    impl HookTestEnv {
+        const KEYS: [&'static str; 4] =
+            ["HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"];
+
+        fn new() -> Self {
+            let mut saved: Vec<(std::ffi::OsString, Option<std::ffi::OsString>)> = Self::KEYS
+                .iter()
+                .map(|k| (std::ffi::OsString::from(k), std::env::var_os(k)))
+                .collect();
+            for (k, v) in std::env::vars_os() {
+                let name = k.to_string_lossy();
+                if name.starts_with("STATUSLINE_") || name.starts_with("CLAUDE_") {
+                    std::env::remove_var(&k);
+                    saved.push((k, Some(v)));
+                }
+            }
+            let dir = tempfile::TempDir::new().expect("create HookTestEnv temp dir");
+            let home = dir.path().join("home");
+            std::fs::create_dir_all(&home).expect("create isolated HOME");
+            std::env::set_var("HOME", &home);
+            std::env::set_var("XDG_DATA_HOME", dir.path().join("data"));
+            std::env::set_var("XDG_CONFIG_HOME", dir.path().join("config"));
+            std::env::set_var("XDG_CACHE_HOME", dir.path().join("cache"));
+            crate::config::reset_config();
+            HookTestEnv { _dir: dir, saved }
+        }
+    }
+
+    impl Drop for HookTestEnv {
+        fn drop(&mut self) {
+            for (key, value) in &self.saved {
+                match value {
+                    Some(v) => std::env::set_var(key, v),
+                    None => std::env::remove_var(key),
+                }
+            }
+            crate::config::reset_config();
+        }
+    }
+
     fn test_session_id() -> String {
         format!("test-hook-{}", std::process::id())
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_handle_precompact() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-precompact", test_session_id());
 
         // Handle precompact
@@ -189,7 +246,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_handle_stop() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-stop", test_session_id());
 
         // Create state first
@@ -204,7 +263,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_handle_precompact_manual_trigger() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-manual", test_session_id());
 
         handle_precompact(&session_id, "manual").unwrap();
@@ -217,7 +278,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_multiple_precompact_calls() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-multi", test_session_id());
 
         // First call
@@ -237,7 +300,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_stop_without_precompact() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-no-precompact", test_session_id());
 
         // Stop without precompact should not error (idempotent)
@@ -246,7 +311,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_handle_postcompact() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-postcompact", test_session_id());
 
         // Create compacting state first (simulates PreCompact)
@@ -261,7 +328,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_postcompact_without_precompact() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-no-precompact-post", test_session_id());
 
         // PostCompact without PreCompact should not error (idempotent)
@@ -270,7 +339,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_full_compaction_flow() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-full-flow", test_session_id());
 
         // 1. PreCompact: Compaction starts
@@ -290,7 +361,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_postcompact_manual_trigger() {
+        let _env = HookTestEnv::new();
         let session_id = format!("{}-postcompact-manual", test_session_id());
 
         // Create compacting state with manual trigger

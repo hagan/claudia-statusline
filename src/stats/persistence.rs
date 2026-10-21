@@ -12,6 +12,9 @@ use crate::error::{Result, StatuslineError};
 use log::{error, warn};
 use std::fs;
 
+/// Largest legacy stats.json the read-only render path will read.
+const LEGACY_JSON_READ_CAP: u64 = 16 * 1024 * 1024;
+
 impl StatsData {
     pub fn load() -> Self {
         // Phase 2: Try SQLite first, then fall back to JSON
@@ -75,7 +78,12 @@ impl StatsData {
         }
 
         let db = SqliteDatabase::new(&db_path)?;
+        Self::from_db(&db)
+    }
 
+    /// The six SELECT-only queries shared by [`Self::load_from_sqlite`] and
+    /// [`Self::load_read_only`].
+    fn from_db(db: &SqliteDatabase) -> Result<Self> {
         // Load components
         let sessions = db.get_all_sessions()?;
         let daily = db.get_all_daily_stats()?;
@@ -100,6 +108,40 @@ impl StatsData {
         };
 
         Ok(data)
+    }
+
+    /// Read-only stats load for the `update_stats == false` render path (AGENT-04 / SC3).
+    ///
+    /// Opens an existing stats.db with [`SqliteDatabase::open_read_only`] (no create, no
+    /// migration, no repair, no checkpoint). When the database EXISTS but cannot be read
+    /// (an older or drifted schema, a transient `SQLITE_BUSY`, corruption), it returns
+    /// `Self::default()` ("omit values") rather than the legacy stats.json, which v3.0+
+    /// keeps on disk after the one-time migration and may be months stale. Only when no
+    /// database exists does it fall back to a parseable legacy stats.json, read through
+    /// the bounded, non-blocking [`crate::user_file::read_regular_file_capped`] ladder,
+    /// WITHOUT migrating it into SQLite and WITHOUT the corrupt-file backup copy.
+    /// Nothing is ever saved. `load()` and `get_or_load_stats_data()` keep their v3.3.0
+    /// behavior for write paths and the public API.
+    pub(crate) fn load_read_only() -> Self {
+        if let Ok(db_path) = Self::get_sqlite_path() {
+            if db_path.exists() {
+                return SqliteDatabase::open_read_only(&db_path)
+                    .map_err(StatuslineError::Database)
+                    .and_then(|db| Self::from_db(&db))
+                    .unwrap_or_else(|e| {
+                        log::debug!("load_read_only: read-only SQLite load failed: {}", e);
+                        Self::default()
+                    });
+            }
+        }
+
+        crate::user_file::read_regular_file_capped(
+            &Self::get_stats_file_path(),
+            LEGACY_JSON_READ_CAP,
+        )
+        .ok()
+        .and_then(|contents| serde_json::from_str::<Self>(&contents).ok())
+        .unwrap_or_default()
     }
 
     /// Migrate JSON data to SQLite if not already done
@@ -239,6 +281,7 @@ fn ensure_sqlite_initialized() {
 ///             max_tokens_observed: None,
 ///             active_time_seconds: None,
 ///             last_activity: None,
+///             inferred_start_ms: None,
 ///         },
 ///     )
 /// });

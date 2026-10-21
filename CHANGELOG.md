@@ -7,6 +7,206 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.4.0] - 2026-10-21
+
+> **Minor release**: the "PR #76 Integration" milestone. Most of this release comes from PR #76 by Piotr Wąsiewicz (@pwasiewi). Claude Code reports a session's cost with subagents included, but every token field in the payload (`context_window`, `prompt_cache`) describes the main conversation only, so Agent-tool work was invisible; this release reads the agent transcripts to attribute subagent tokens, adds `statusline stats` (including per-Claude-Code-version totals) and a `statusline sessions` browser, and fixes daily and monthly spend under session restarts (#77) and repeated transcript usage blocks (#78). Backward-compatible for CLI users: the default render is byte-identical to 3.3.0, the new segments and variables are opt-in, and the database migrates automatically (migrations 007 and 008, schema v8). The upgrade is not downgrade-safe: running an older binary against a v3.4.0 database is covered in `docs/DATABASE_MIGRATIONS.md`. The library API has breaking changes for crate users (see Changed).
+
+### Added
+
+- **`🤖N xx%` segment (opt-in)**: number of agent transcripts in the session
+  and the agents' share of the session's input traffic (fresh + cache read +
+  cache write). Attribution is off by default. In the legacy layout
+  `display.show_agents` (default false) turns the segment on; in layout/template
+  mode the transcripts are scanned only when the template uses `{agents}`,
+  `{agents_count}`, `{agents_pct}`, `{agents_tokens}` or `{agents_types}`, and
+  `show_agents` has no effect there. The built-in presets are unchanged from
+  3.3.0. Template variables: `{agents}`, `{agents_count}`, `{agents_pct}`,
+  `{agents_tokens}` (`152M/449k` = input traffic / output), `{agents_types}`
+  (`Explore×14 Plan×1`). While a transcript is still being caught up (or an
+  agent file is too large to read), `{agents}` shows the count only and
+  `{agents_pct}`/`{agents_tokens}` are omitted; with more than 256 agent files,
+  or when the `subagents` directory cannot be listed completely, no agent data
+  renders. Agent types and cache causes are sanitized for the terminal,
+  including Unicode direction controls. (@pwasiewi, #76)
+- **Incremental transcript parsing** (`src/agents.rs`): each main/agent file
+  keeps a byte offset and running totals in the new `transcript_progress`
+  table (migration 007), so a render reads only what was appended. The
+  per-file state also stores a file identity, a content fingerprint and the
+  last 32 request contributions. Each request counts once, with its last
+  line's usage, when its lines are within 32 requests of each other, which is
+  how Claude Code writes them (fixes an output-token undercount in earlier
+  development builds). A file is re-read from the start when it is a new file,
+  shorter, or its first 4 KiB or the bytes before the last read position
+  changed. Reads are regular-file-only and non-blocking, and are capped per
+  file (4 MiB), per render (8 MiB in total, including fingerprint and metadata
+  reads) and per transcript (1 GiB); a large file catches up over several
+  renders. Attribution waits at most 250 ms (or the configured
+  `database.busy_timeout_ms`, if lower) for a locked database and then skips
+  saving for that render. (@pwasiewi, #76)
+- **Read-only previews**: a render with `update_stats = false` (library
+  previews via `render_statusline` / `render_from_json`) opens the stats
+  database read-only and never creates, migrates or repairs it. Attribution
+  then advances in memory only, so a very large transcript that has not been
+  read by a normal render yet can stay count-only across previews, and on a
+  database from an older build a preview may omit values until the next
+  normal render upgrades it.
+- **`statusline stats [--by-version | --sessions]`**: main requests, input
+  traffic per request, output per request, agent count/requests and agent share,
+  grouped by the Claude Code `version` that produced each session (now stored
+  in `sessions.claude_version`). A step change between versions is the signal
+  that an update changed agent or context behaviour. Attribution data is
+  collected only for renders that opt in to it (see the `🤖N xx%` entry).
+  (@pwasiewi, #76)
+- **`prompt_cache` payload parsing** (Claude Code >= 2.1.251): `{prompt_cache}`,
+  `{cache_hit}`, `{cache_misses}`, `{cache_miss_cause}`, `{cache_warm}`; opt-in
+  segment via `display.show_prompt_cache` (`cache 91% miss:2 tools_changed`).
+  A wrong-typed or newly shaped field is ignored on its own instead of
+  discarding the whole payload. `{cache_miss_cause}` lists up to 3 causes
+  joined by `,`, each limited to `[a-z0-9_-]` and 40 characters; `{cache_warm}`
+  is omitted when Claude Code reports caching as not observed. All values are
+  sanitized for the terminal. (@pwasiewi, #76)
+- **Stdin mirror (opt-in debugging aid)**: set `STATUSLINE_DEBUG_INPUT` to an
+  absolute path and each render writes its raw payload there, so a new or
+  renamed field after a Claude Code update shows up in `jq .` instead of being
+  guessed. There is no default file; relative values (including `off`) are
+  ignored; an existing symlink or other non-regular target is refused; parent
+  directories are not created. The payload is written to a new 0600 temp file
+  and renamed over the target; a process killed in between can leave a 0600
+  `.slmirror.<pid>.<nanos>.tmp` file beside the target, safe to delete.
+  `last-input.json` files created by earlier development builds of this branch
+  are not removed automatically. (@pwasiewi, #76)
+- **`statusline sessions [list | show | pick]`**: browse the sessions the
+  database knows about. `list` (default) prints them newest first with an
+  index, Claude Code version, model, workspace, main requests, agent count and
+  share (`--all`, `--attributed`, `--limit N`). `show <#|id-prefix>` prints
+  every stored column of one session, its agent transcripts from
+  `transcript_progress` and a ready `claude --resume <id>` line; an ambiguous
+  prefix is refused with the candidates. `pick` is the interactive variant and
+  refuses to run without a terminal on stdin. (@pwasiewi, #76)
+- **`sessions list --here` / `--workspace PATH`** (also on `pick`): restrict the
+  listing to sessions whose workspace is that directory *or below it*, so one
+  project's history can be read without the other projects interleaved;
+  `--here` is `$PWD`. Matching is per path component (`~/proj` never matches
+  `~/proj2`), `~` is expanded and the path canonicalized against the absolute
+  paths stored in `workspace_dir`, and a non-existent path is still queried so a
+  deleted workspace stays listable. The two flags are mutually exclusive and
+  `--limit` applies *after* the filter. Under a filter the `#` column keeps its
+  position in the unfiltered list and so goes non-contiguous — deliberate, since
+  `show <#>` always resolves against the full ordering and renumbering per
+  filter would make a copied number open the wrong session. (@pwasiewi, #76)
+
+### Changed
+
+- **Session cost is cumulative.** `sessions.cost`, `sessions.lines_added` and
+  `sessions.lines_removed` (and the in-memory session totals) now hold the
+  total a session contributed across restarts and `auto_reset` periods, which
+  always equals its share of the daily/monthly totals. Existing rows already
+  match this. Cloud sync push sends this value. The rendered status line still
+  shows Claude Code's own `total_cost_usd`, so the default output is unchanged.
+- **Historical token totals.** Output and cache-creation token totals (session,
+  daily/monthly, token rates, cache ROI) recorded before v3.4.0 may be
+  inflated, typically about 2×. Cost and context % were never affected.
+  Nothing is recomputed: the transcript is only read in part and aggregate
+  sums cannot be split back out. A session running during the upgrade keeps
+  its larger stored totals and its daily token growth pauses until the
+  de-duplicated sum catches up.
+- **Database schema v8.** Migration 008 adds nullable `raw_cost`,
+  `raw_lines_added`, `raw_lines_removed` and `process_start_ms` columns to
+  `sessions` and `session_archive` (the last raw payload counters and inferred
+  process start). No existing data is rewritten; a NULL means "no baseline
+  yet". **Downgrading is unsafe.** After upgrading, `sessions.cost` holds the
+  session's cumulative accounted spend, not the raw payload value. An older
+  binary, or an application still built against an older version of the
+  library, that writes to the same database ignores the new columns and
+  treats `cost` as the raw payload value. Its updates then double-count spend
+  or subtract it from the daily and monthly totals, and v3.4.0 cannot detect
+  or repair this afterwards. Do not run an older statusline against a
+  database v3.4.0 has used. A v3.3.0 binary still running against such a
+  database (a second install or a stale hook) also wipes the v7 and v8
+  columns on `statusline sync --pull`, because its pull uses
+  `INSERT OR REPLACE`, and its live writes overwrite the cumulative `cost`;
+  upgrade every install together. A cloud-sync pull keeps this device's
+  baseline, so the next live update is still measured against the last
+  payload this device saw.
+- **Library API (breaking for crate users).** `utils::clamp_reset_delta_f64`
+  and `utils::clamp_reset_delta_i64` were removed. `SessionUpdate` gains
+  `inferred_start_ms` and now derives `Default`; `SessionStats` gains
+  `baseline`. New: the `stats::accounting` module (`classify`,
+  `RESTART_TOLERANCE_MS`, `Baseline`, `Observation`, `Outcome`) and
+  `SqliteDatabase::update_session_applied`, which returns an `AppliedUpdate`
+  describing exactly what was committed. `SqliteDatabase::upsert_session_direct`
+  (`turso-sync`) takes two new parameters, `active_time_seconds: Option<u64>`
+  and `last_activity: Option<&str>`.
+
+### Fixed
+
+- `statusline <subcommand> | head` panicked with "failed printing to stdout:
+  Broken pipe". Once stdout's reader is gone, further subcommand output is
+  dropped without a message and the command still runs to completion, so it
+  keeps its real exit status: a read-only command exits 0, a command that
+  changes data (`db-maintain`, `context-learning --reset-all --rebuild`,
+  `sync`) finishes its work, and a failure (`config validate` errors,
+  `db-maintain` integrity failure) still exits non-zero. Subcommand notes on
+  stderr are dropped the same way when stderr is closed (`2>&1 | head`)
+  instead of aborting the process. No process-wide signal disposition is
+  changed, so a failed write to a helper such as `curl` is still reported as
+  an error; the statusline render path is unaffected. (@pwasiewi, #76)
+- Transcript token sums counted every line of a response (#78; @pwasiewi, #76). Claude Code
+  writes one transcript line per content block (thinking, text, tool_use, ...),
+  each repeating the same `usage`, which inflated `total_output_tokens` and
+  `total_cache_creation_tokens` about 2.2× (996 lines for 454 requests in one
+  measured session). Both the session/daily token breakdown and the
+  rolling-window token rates now count each API request once: the last line
+  with usage per `requestId` wins, so a first line without usage no longer
+  hides the request, and repeats that are not next to each other are still
+  counted once. Lines without a `requestId` (older transcripts) still count
+  individually.
+- Daily and monthly spend could lose or double-count money when a session's
+  counters dropped (a restart, a correction or an out-of-order update) (#77; @pwasiewi, #76).
+  A restart is now recognised by a drop in cost together with a later
+  inferred process start (now minus `cost.total_duration_ms`, 60 s
+  tolerance), and its new spend counts in full; a drop in only the line
+  counters is a correction;
+  a correction or a stale update (an earlier inferred start together with a
+  counter drop) contributes nothing and never reduces an earlier day. An
+  earlier start without a drop counts as growth, so one late reading cannot
+  freeze a session's totals. A correction followed by growth is no longer counted twice:
+  10.0 → 9.8 → 10.3 now totals 10.30, not 10.50. Lines added/removed follow
+  the same rule, and the `auto_reset` and in-memory paths use the same policy.
+  Without `total_duration_ms` a drop is treated as a correction, so a restart
+  can be undercounted but is never overcounted. Out-of-range payload values
+  (more than 2^32 lines or $10,000,000 per process) are capped before they are
+  counted, so they can no longer overflow the database's integer columns and
+  break later loads, or panic a debug build. The previous "below half =
+  restart" heuristic is gone. See "How spend and token totals are counted" in
+  `docs/USAGE.md`.
+- A fresh database initialized at the same moment by an older and a newer
+  binary could record schema v8 without the v7/v8 columns. The newer binary
+  now re-checks for an existing schema inside its initialization transaction
+  and runs the normal migrations instead. Opening a database also repairs one
+  already in that state: missing v7/v8 columns, the `transcript_progress`
+  table and its index are added (additive DDL only, no rows rewritten). A
+  missing `session_archive` table is recreated empty instead of making every
+  open fail.
+- Migration 007 is idempotent: it adds only the columns that are missing
+  instead of failing on a partially migrated database.
+- Databases built without `turso-sync` now get `sessions.sync_timestamp` and
+  the `sync_meta` table, like a fresh database, so the schema no longer
+  depends on the feature set of the binary that created it.
+- A Turso pull (`statusline sync --pull`) no longer resets local-only columns.
+  It used `INSERT OR REPLACE`, which deletes the row first, so a pull reset
+  subagent attribution, the accounting baseline, token totals, `device_id`,
+  model and workspace, and set the daily `session_count` to 0. The pull now
+  updates only the columns it carries, writes active time and last activity
+  when the remote row has them, and ignores a negative or out-of-range remote
+  active time. A remote row whose cost or line counts (or monthly session
+  count) are negative or not finite is skipped, leaving the local row
+  unchanged.
+- The CI test job now fails when `cargo test` fails (previously masked by
+  piping through `tee`), and it runs the `turso-sync` tests. `make test-turso`
+  runs them locally; `make test-full` runs every suite in sequence without
+  installing.
+
 ## [3.3.0] - 2026-09-28
 
 > **Minor release**: the "Cost Accuracy & Honesty" milestone. A bundled, offline Claude price table powers new opt-in API-equivalent cost variables, an optional out-of-band `statusline ant sync-pricing` keeps prices current without touching the render path, `statusline config validate` checks your config before it silently misbehaves, and `statusline gsd state --json` exposes GSD project state as machine-readable JSON. The render path stays offline and never fails. Fully backward-compatible; no breaking changes.

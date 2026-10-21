@@ -217,6 +217,32 @@ FROM sessions GROUP BY strftime('%Y-%m', start_time, 'localtime');
 ## Advanced Features
 
 <details>
+<summary><b>Subagent Attribution & Session Browser</b></summary>
+
+Claude Code's cost includes subagents, but its token fields describe the main
+conversation only. When you opt in, the statusline reads the agent transcripts
+and shows `🤖3 30%` (agent count, share of input traffic) for sessions that
+have spawned agents. The same data feeds two commands:
+
+```bash
+statusline stats                 # per Claude Code version: spot drift after an update
+statusline stats --sessions      # newest sessions with the same ratios
+
+statusline sessions              # list sessions newest first, with an index
+statusline sessions show 2       # all parameters of one session (+ claude --resume line)
+statusline sessions show fe2e    # ... or by session id prefix
+statusline sessions pick         # interactive picker
+```
+
+Segment toggle: `display.show_agents` (default false; legacy layout only).
+Template variables: `{agents}`, `{agents_count}`, `{agents_pct}`,
+`{agents_tokens}`, `{agents_types}`. In a custom layout, using any `{agents*}`
+variable turns attribution on, and `show_agents` has no effect there.
+Details in [docs/USAGE.md](docs/USAGE.md#session-browser).
+
+</details>
+
+<details>
 <summary><b>Database Maintenance</b></summary>
 
 Keep your stats database optimized:
@@ -644,6 +670,8 @@ We welcome contributions! Please see:
 **Original Inspiration**: [Peter Steinberger's statusline.rs](https://gist.github.com/steipete/8396e512171d31e934f0013e5651691e)
 
 **Current Implementation**: Complete Rust rewrite with persistent stats, cloud sync, and enhanced features.
+
+**Contributors**: Piotr Wąsiewicz ([@pwasiewi](https://github.com/pwasiewi)): subagent attribution, session browser, per-version stats ([#76](https://github.com/hagan/claudia-statusline/pull/76))
 
 **License**: MIT - See [LICENSE](LICENSE)
 

@@ -49,6 +49,7 @@ fn test_stats_data_update_session() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -98,6 +99,7 @@ fn test_stats_save_and_load() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -169,6 +171,7 @@ fn test_session_start_time_tracking() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -191,6 +194,7 @@ fn test_session_start_time_tracking() {
             max_tokens_observed: None,
             active_time_seconds: None,
             last_activity: None,
+            inferred_start_ms: None,
         },
     );
 
@@ -254,6 +258,7 @@ fn test_concurrent_update_safety() {
                         max_tokens_observed: None,
                         active_time_seconds: None,
                         last_activity: None,
+                        inferred_start_ms: None,
                     },
                 )
             });
@@ -344,6 +349,7 @@ fn test_get_session_duration() {
                 max_tokens_observed: None,
                 active_time_seconds: None,
                 last_activity: None,
+                inferred_start_ms: None,
             },
         )
     });
@@ -741,6 +747,7 @@ fn test_public_api_surface() {
         max_tokens_observed: None,
         active_time_seconds: None,
         last_activity: None,
+        baseline: None,
     };
     let _ = DailyStats {
         total_cost: 0.0,
@@ -1127,4 +1134,378 @@ fn test_update_stats_data_migrates_legacy_json_when_db_missing() {
     env::remove_var("XDG_DATA_HOME");
     env::remove_var("XDG_CONFIG_HOME");
     crate::config::reset_config();
+}
+
+/// Isolated XDG env for the in-memory accounting parity tests; restores the previous
+/// values (not just removes them) so `make test`'s TEST_ENV isolation survives.
+struct ParityEnv {
+    _temp: TempDir,
+    prev_data: Option<String>,
+    prev_config: Option<String>,
+}
+
+impl ParityEnv {
+    fn new() -> Self {
+        let temp = TempDir::new().unwrap();
+        let prev_data = env::var("XDG_DATA_HOME").ok();
+        let prev_config = env::var("XDG_CONFIG_HOME").ok();
+        env::set_var("XDG_DATA_HOME", temp.path().join("data"));
+        env::set_var("XDG_CONFIG_HOME", temp.path().join("config"));
+        crate::config::reset_config();
+        ParityEnv {
+            _temp: temp,
+            prev_data,
+            prev_config,
+        }
+    }
+}
+
+impl Drop for ParityEnv {
+    fn drop(&mut self) {
+        match &self.prev_data {
+            Some(v) => env::set_var("XDG_DATA_HOME", v),
+            None => env::remove_var("XDG_DATA_HOME"),
+        }
+        match &self.prev_config {
+            Some(v) => env::set_var("XDG_CONFIG_HOME", v),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+        crate::config::reset_config();
+    }
+}
+
+const PARITY_START_MS: i64 = 1_700_000_000_000;
+const PARITY_HOUR_MS: i64 = 3_600_000;
+
+fn parity_update(cost: f64, start_ms: i64) -> crate::database::SessionUpdate {
+    crate::database::SessionUpdate {
+        cost,
+        lines_added: 0,
+        lines_removed: 0,
+        inferred_start_ms: Some(start_ms),
+        ..Default::default()
+    }
+}
+
+/// ACCT-01/ACCT-02, D-10: the in-memory daily/monthly/all-time totals and the in-memory
+/// session cost equal what the DB committed, through a correction and a restart.
+#[test]
+#[serial]
+fn in_memory_matches_db() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+    let h = PARITY_HOUR_MS;
+    let sid = "parity-session";
+    let today = crate::common::current_date();
+
+    let mut stats = StatsData::default();
+    for (cost, start) in [(10.0, s), (9.8, s), (10.3, s), (0.5, s + h), (1.0, s + h)] {
+        let (daily, _monthly) = stats.update_session(sid, parity_update(cost, start));
+        let db_path = StatsData::get_sqlite_path().unwrap();
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        let db_daily: f64 = conn
+            .query_row(
+                "SELECT total_cost FROM daily_stats WHERE date = ?1",
+                [&today],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            (daily - db_daily).abs() < 1e-9,
+            "after {cost}: in-memory daily {daily} != daily_stats {db_daily}"
+        );
+    }
+
+    let month = crate::common::current_month();
+    let daily = stats.daily.get(&today).unwrap().total_cost;
+    let monthly = stats.monthly.get(&month).unwrap().total_cost;
+    assert!((daily - 11.3).abs() < 1e-9, "daily {daily}");
+    assert!((monthly - 11.3).abs() < 1e-9, "monthly {monthly}");
+    assert!((stats.all_time.total_cost - 11.3).abs() < 1e-9);
+    assert!((stats.sessions[sid].cost - 11.3).abs() < 1e-9);
+}
+
+/// D-10: with the DB unavailable the in-memory path runs the same classifier against its
+/// own baseline (correction contributes nothing, restart counts the new process).
+#[test]
+#[serial]
+fn in_memory_fallback_applies_same_policy_when_db_unavailable() {
+    let _env = ParityEnv::new();
+    // A directory where the DB file should be makes SqliteDatabase::new fail.
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    fs::create_dir_all(&db_path).unwrap();
+    assert!(db_path.is_dir());
+
+    let s = PARITY_START_MS;
+    let h = PARITY_HOUR_MS;
+    let sid = "fallback-session";
+
+    let mut stats = StatsData::default();
+    let mut daily = 0.0;
+    for cost in [10.0, 9.8, 10.3] {
+        daily = stats.update_session(sid, parity_update(cost, s)).0;
+    }
+    assert!(
+        (daily - 10.3).abs() < 1e-9,
+        "daily after correction {daily}"
+    );
+
+    let daily = stats.update_session(sid, parity_update(0.5, s + h)).0;
+    assert!((daily - 10.8).abs() < 1e-9, "daily after restart {daily}");
+    assert!((stats.sessions[sid].cost - 10.8).abs() < 1e-9);
+    assert!((stats.all_time.total_cost - 10.8).abs() < 1e-9);
+}
+
+/// CR-03: untrusted counters near `u64::MAX` and a finite but absurd cost must not panic
+/// the render path, must keep every SQLite counter column an INTEGER (no overflow to
+/// REAL), keep cost totals finite, and leave `load_from_sqlite` working.
+#[test]
+#[serial]
+fn huge_untrusted_counters_do_not_corrupt_db() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+    let h = PARITY_HOUR_MS;
+    let huge = |cost: f64, start_ms: i64| crate::database::SessionUpdate {
+        cost,
+        lines_added: u64::MAX,
+        lines_removed: u64::MAX,
+        inferred_start_ms: Some(start_ms),
+        ..Default::default()
+    };
+
+    let mut stats = StatsData::default();
+    // A normal session first, so the aggregates already hold a value to overflow.
+    stats.update_session(
+        "normal",
+        crate::database::SessionUpdate {
+            cost: 1.0,
+            lines_added: 10,
+            lines_removed: 5,
+            inferred_start_ms: Some(s),
+            ..Default::default()
+        },
+    );
+    let (daily, monthly) = stats.update_session("huge", huge(1e308, s));
+    assert!(
+        daily.is_finite() && monthly.is_finite(),
+        "{daily} {monthly}"
+    );
+    // A restart (cost drop, later start) re-adds the full huge values.
+    let (daily, _) = stats.update_session("huge", huge(1e307, s + h));
+    assert!(daily.is_finite(), "{daily}");
+
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    for (table, cols) in [
+        ("daily_stats", "total_lines_added, total_lines_removed"),
+        ("monthly_stats", "total_lines_added, total_lines_removed"),
+        ("sessions", "lines_added, lines_removed"),
+    ] {
+        let (a, b): (String, String) = conn
+            .query_row(
+                &format!(
+                    "SELECT {} FROM {table} LIMIT 1",
+                    cols.split(", ")
+                        .map(|c| format!("typeof(MAX({c}))"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((a.as_str(), b.as_str()), ("integer", "integer"), "{table}");
+    }
+    let max_cost: f64 = conn
+        .query_row("SELECT MAX(total_cost) FROM daily_stats", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert!(max_cost.is_finite(), "daily total_cost {max_cost}");
+
+    let loaded = StatsData::load_from_sqlite().expect("load_from_sqlite must still work");
+    let today = crate::common::current_date();
+    assert!(loaded.daily[&today].total_cost.is_finite());
+}
+
+/// WR-01: the in-memory daily/monthly cost totals are the totals the DB transaction
+/// committed, so spend another writer (another Claude Code session) committed after this
+/// process loaded its snapshot is not left out of the rendered daily total.
+#[test]
+#[serial]
+fn in_memory_totals_include_concurrent_writer() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+
+    // Snapshot taken before the other writer commits (empty DB).
+    let mut stats = StatsData::default();
+
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let other = crate::database::SqliteDatabase::new(&db_path).unwrap();
+    other
+        .update_session("other-writer", parity_update(5.0, s))
+        .unwrap();
+
+    let (daily, monthly) = stats.update_session("this-writer", parity_update(1.0, s));
+    assert!((daily - 6.0).abs() < 1e-9, "daily {daily}");
+    assert!((monthly - 6.0).abs() < 1e-9, "monthly {monthly}");
+    let today = crate::common::current_date();
+    let month = crate::common::current_month();
+    assert!((stats.daily[&today].total_cost - 6.0).abs() < 1e-9);
+    assert!((stats.monthly[&month].total_cost - 6.0).abs() < 1e-9);
+}
+
+// =============================================================================
+// AGENT-04 / SC3: StatsData::load_read_only (17-11)
+// =============================================================================
+
+fn ro_db_artifacts(dir: &Path) -> Vec<String> {
+    match fs::read_dir(dir) {
+        Ok(rd) => rd
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.starts_with("stats.db"))
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+#[test]
+#[serial]
+fn load_read_only_missing_db_returns_default_and_creates_nothing() {
+    let _env = ParityEnv::new();
+    let data_dir = get_data_dir();
+
+    let loaded = StatsData::load_read_only();
+    assert!(loaded.sessions.is_empty());
+    assert!(loaded.daily.is_empty());
+    assert!(loaded.monthly.is_empty());
+    assert_eq!(loaded.all_time.total_cost, 0.0);
+
+    assert!(
+        ro_db_artifacts(&data_dir).is_empty(),
+        "no stats.db* may be created: {:?}",
+        ro_db_artifacts(&data_dir)
+    );
+}
+
+#[test]
+#[serial]
+fn load_read_only_legacy_json_is_read_not_migrated() {
+    let _env = ParityEnv::new();
+    let data_dir = get_data_dir();
+    fs::create_dir_all(&data_dir).unwrap();
+    let json_path = data_dir.join("stats.json");
+    let json = r#"{
+        "version": "1.0",
+        "created": "2025-08-25T00:00:00Z",
+        "last_updated": "2025-08-25T01:00:00Z",
+        "sessions": {
+            "legacy-session": {
+                "last_updated": "2025-08-25T01:00:00Z",
+                "cost": 7.25,
+                "lines_added": 10,
+                "lines_removed": 5,
+                "start_time": "2025-08-25T00:00:00Z"
+            }
+        },
+        "daily": {},
+        "monthly": {},
+        "all_time": {"total_cost": 7.25, "sessions": 1, "since": "2025-08-25T00:00:00Z"}
+    }"#;
+    fs::write(&json_path, json).unwrap();
+    let before = fs::read(&json_path).unwrap();
+
+    let loaded = StatsData::load_read_only();
+    assert!(loaded.sessions.contains_key("legacy-session"));
+    assert_eq!(loaded.sessions["legacy-session"].cost, 7.25);
+
+    assert!(
+        ro_db_artifacts(&data_dir).is_empty(),
+        "legacy JSON must not be migrated into a new stats.db"
+    );
+    assert_eq!(
+        fs::read(&json_path).unwrap(),
+        before,
+        "stats.json unchanged"
+    );
+    assert!(!data_dir.join("stats.backup").exists(), "no backup copy");
+}
+
+#[test]
+#[serial]
+fn load_read_only_matches_load_on_healthy_db() {
+    let _env = ParityEnv::new();
+    let s = PARITY_START_MS;
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    {
+        let db = crate::database::SqliteDatabase::new(&db_path).unwrap();
+        db.update_session("ro-a", parity_update(2.0, s)).unwrap();
+        db.update_session("ro-b", parity_update(3.5, s + PARITY_HOUR_MS))
+            .unwrap();
+    }
+
+    let rw = StatsData::load_from_sqlite().unwrap();
+    let ro = StatsData::load_read_only();
+
+    let j = |v: &StatsData| {
+        (
+            serde_json::to_value(&v.sessions).unwrap(),
+            serde_json::to_value(&v.daily).unwrap(),
+            serde_json::to_value(&v.monthly).unwrap(),
+            serde_json::to_value(&v.all_time).unwrap(),
+        )
+    };
+    assert_eq!(j(&ro), j(&rw));
+    assert_eq!(ro.sessions.len(), 2);
+}
+
+/// WR-02: an existing but unreadable stats.db (older/drifted schema) must yield
+/// "no values", never the stale legacy stats.json kept on disk after migration.
+#[test]
+#[serial]
+fn load_read_only_unreadable_db_ignores_legacy_json() {
+    let _env = ParityEnv::new();
+    let db_path = StatsData::get_sqlite_path().unwrap();
+    let data_dir = db_path.parent().unwrap().to_path_buf();
+    fs::create_dir_all(&data_dir).unwrap();
+    {
+        let db = crate::database::SqliteDatabase::new(&db_path).unwrap();
+        db.update_session("ro-current", parity_update(2.0, PARITY_START_MS))
+            .unwrap();
+    }
+    {
+        // Simulate an older schema the read path's SELECT cannot satisfy.
+        let c = rusqlite::Connection::open(&db_path).unwrap();
+        c.execute_batch("ALTER TABLE sessions DROP COLUMN raw_cost")
+            .unwrap();
+    }
+    let json = r#"{
+        "version": "1.0",
+        "created": "2025-08-25T00:00:00Z",
+        "last_updated": "2025-08-25T01:00:00Z",
+        "sessions": {
+            "stale-legacy": {
+                "last_updated": "2025-08-25T01:00:00Z",
+                "cost": 99.0,
+                "lines_added": 1,
+                "lines_removed": 1,
+                "start_time": "2025-08-25T00:00:00Z"
+            }
+        },
+        "daily": {},
+        "monthly": {},
+        "all_time": {"total_cost": 99.0, "sessions": 1, "since": "2025-08-25T00:00:00Z"}
+    }"#;
+    fs::write(data_dir.join("stats.json"), json).unwrap();
+
+    let ro = StatsData::load_read_only();
+    assert!(
+        !ro.sessions.contains_key("stale-legacy"),
+        "stale legacy stats.json must not be used when stats.db exists"
+    );
+    assert!(ro.sessions.is_empty());
+    assert_eq!(ro.all_time.total_cost, 0.0);
 }

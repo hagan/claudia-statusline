@@ -88,6 +88,196 @@ statusline health --json
 # }
 ```
 
+### Token Attribution per Claude Code Version
+
+Claude Code's cost figure includes subagents, but every token field it sends
+describes the main conversation only. When you opt in, the statusline reads
+the agent transcripts (`<project>/<session>/subagents/agent-*.jsonl`) and stores
+the result per session, so the `🤖N xx%` segment and the `stats` view can show
+how much of a session's input traffic went to agents.
+
+Attribution is off by default. In the legacy layout, set
+`display.show_agents = true` (default false). In a custom layout, using any of
+`{agents}`, `{agents_count}`, `{agents_pct}`, `{agents_tokens}` or
+`{agents_types}` turns it on, and `show_agents` has no effect there. The
+built-in presets do not include these variables.
+
+While a transcript is still being caught up, or an agent file is too large to
+read, `{agents}` shows the count only (`🤖3`) and `{agents_pct}` /
+`{agents_tokens}` are omitted. An agent file that can never be read (over
+1 GiB, or permission denied) keeps the session count-only for as long as it
+stays that way. That looks the same as catching up; run with `RUST_LOG=debug`
+and look for `agents: transcript file refused` or `agents: transcript file over
+the size cap` to tell them apart. A render reads at most 8 MiB in total
+(4 MiB per file), so a large transcript catches up over several renders; with
+more than 256 agent files, or when the `subagents` directory cannot be listed completely,
+no agent data is shown. Each request is counted once, with its last line's
+usage, when its lines are within 32 requests of each other (how Claude Code
+writes them). Attribution waits at most 250 ms for a locked database and then
+skips saving for that render. It uses the same stats database as the rest of
+statusline (the data directory, `XDG_DATA_HOME`, or the test store under
+`--test-mode`).
+
+`statusline stats` and `statusline sessions` show attribution only for sessions
+that were rendered with attribution on, and count only agent files that a
+render has read and saved.
+
+Attribution is opt-in for these views too (default off: set
+`[display].show_agents = true` in the legacy layout, or add an `{agents}`
+variable to `[layout].format` when a layout preset or format is in use). With
+it off, renders record no attribution: a session rendered only with it off
+shows 0 and is left out of `stats` and `sessions list --attributed`, while
+sessions attributed earlier stay listed. The hint appears only when a view
+has nothing to show or shows a 0: when `stats`, `stats --sessions` or
+`sessions list --attributed` is empty, or `sessions list` / `sessions show`
+shows a session with 0, the view says that attribution is off and how to turn
+it on. It names the config file the command loaded, which can differ from the
+one your renders use (`--config` or environment in `statusLine.command`);
+`statusline config path` shows which file is active. An empty
+`sessions list` (no filter or `--workspace` only) and a missing stats
+database print no hint.
+
+A session that was auto-reset keeps its attribution once it renders again with
+attribution on; a session that never renders again after an older
+reset keeps showing 0. The `sessions` views list the common causes of a 0
+(attribution off when the session rendered, a session older than attribution,
+an auto-reset with no render since); a session can also show 0 because its
+renders skipped saving (database locked past the 250 ms wait) or because it
+shares a main transcript with another session (below).
+
+When a second session shares one main transcript with another session (for
+example two sessions running on the same conversation file), the transcript's
+attribution is saved for the session that recorded it first. The second
+session shows 0 main requests and is excluded from `statusline stats` and
+`sessions list --attributed`.
+
+The prompt-cache variables (`{prompt_cache}`, `{cache_hit}`, `{cache_misses}`,
+`{cache_miss_cause}`, `{cache_warm}`; segment toggle `display.show_prompt_cache`)
+come from Claude Code's `prompt_cache` payload field. `{cache_miss_cause}` lists
+up to 3 causes joined by `,`, each at most 40 characters of `[a-z0-9_-]`.
+
+```bash
+statusline stats                 # per Claude Code version (default)
+statusline stats --sessions      # newest 25 sessions, same ratios
+```
+
+Columns: `main_req` (requests of the main conversation), `in_k/req` (input
+traffic per main request in thousands: fresh + cache read + cache write),
+`out/req`, `agents` (agent transcripts), `agent_req`, `share%` (agent input
+traffic / (agent + main)). A step change between two versions is the signal
+that an update changed agent or context behaviour.
+
+The version in `statusline stats` and `stats --sessions` (`version†`) is the
+latest Claude Code version observed for each session. The by-version view
+therefore groups a session's entire history under its newest version: a session
+that spanned an upgrade counts entirely under that newest version (true
+per-version attribution is not recorded). `cost*` in `stats --sessions` is the
+session total across all CLI processes (resumes included), as accounted into
+daily/monthly totals.
+
+### Session Browser
+
+```bash
+statusline sessions                        # list: newest 25, session number + short id
+statusline sessions list --all             # every recorded session
+statusline sessions list --attributed      # only sessions with attribution data
+statusline sessions list --limit 50
+statusline sessions show 1432              # by session number (# column)
+statusline sessions show '#1432'           # number only, never an id prefix (quote the #)
+statusline sessions show fe2e              # by session id prefix
+statusline sessions pick                   # interactive: list, type a selection, show
+statusline sessions pick --attributed      # interactive, attributed sessions only
+statusline sessions list --here            # only this project: workspace == $PWD or below
+statusline sessions list --workspace ~/src # only that directory tree
+statusline sessions pick --here            # same filter, interactive
+```
+
+`--here` / `--workspace PATH` restrict the listing to sessions whose workspace
+is that directory *or a directory below it*, so running it in a repo root also
+finds sessions opened in its subdirectories. Matching is per path component, so
+`~/proj` never matches `~/proj2`. `~` is expanded and the path canonicalized,
+because the stored workspace is absolute — a path that does not exist is still
+queried verbatim, so a since-deleted workspace remains listable. The two flags
+are mutually exclusive.
+
+`#` is the session's stable number: its rank over all recorded sessions by the
+session's first start (oldest = 1). The first start is the earliest of the
+session's current start time and any start kept in the auto-reset archive, so an
+auto-reset (`burn_rate.mode = "auto_reset"`, which restarts a session's work
+period after an idle gap) does not change the number, and the list's `start`
+column shows that first start. Starts are compared as exact instants, so DST and
+UTC-offset changes do not reorder them. While the recorded sessions stay
+present, render activity, new sessions and auto-resets never change an existing
+number, and a long-lived session that keeps auto-resetting stays at its
+first-start position in the list.
+
+What can still shift numbers:
+
+- `statusline db-maintain` prunes sessions whose last update is older than
+  `retention_days_sessions` (default 90 days). A pruned session leaves the
+  numbering, so sessions that started after it move down by one. Pruning does
+  not delete the auto-reset archive, so if a pruned session that has archived
+  starts is later resumed, it re-enters at its old rank and the sessions that
+  started after it move back up by one.
+- In Turso builds, `statusline sync --pull` can add sessions from another device
+  that started earlier, or replace a session's start time with the remote one;
+  both can shift numbers.
+- Two sessions with the identical start instant are ordered by session id.
+- Sessions whose stored start time cannot be read (legacy records, including a
+  legacy start kept in the auto-reset archive) are numbered first; their first
+  start is unknown, so the list's `start` column shows the unreadable stored
+  value (`?` when it is empty) and `show` prints `first_start unknown`.
+
+The list shows newest first, so `#` counts down. Under any filter
+(`--attributed`, `--here`, `--workspace`) the global number is kept, so the
+column goes non-contiguous, and `show <#>` or the `pick` prompt opens the
+session you looked at. A session's workspace is the last one Claude Code
+reported for it, so a session that moved between directories is listed under
+the most recent one only.
+
+`show` prints the full session id, latest observed Claude Code version, model,
+workspace, start and last-update times (plus a `first_start` line after an
+auto-reset), active time, the session cost (`cost*`: total across all CLI
+processes, resumes included, as accounted into daily/monthly totals), lines
+added/removed, the largest context seen, the payload token totals, main vs
+agent attribution, one row per agent transcript (type, requests, input,
+cache reads, output, size), the main transcript path, and a
+`claude --resume <session_id>` line when the stored id matches the Claude Code
+id charset (`[A-Za-z0-9_-]`, up to 128 characters); otherwise a note says no
+resume command is available (the stored id is not printed there). Every string
+these commands print, including their error messages, is stripped of terminal
+control and escape sequences.
+
+A bare number is read as a session number when one exists, otherwise as an id
+prefix; `#N` is number-only. If a bare number is both an existing session number
+and the prefix of *other* sessions' ids, it is refused as ambiguous when it
+prefixes exactly one other id, or when it has 3 or more digits and prefixes
+several; use `'#N'` for the number or a longer prefix for the id. A 1-2 digit
+number that prefixes several ids still means the number. A *bare* selector
+with a leading zero (`0021`) is only ever an id prefix, since `list` never
+prints numbers that way; after `#` leading zeros are ignored (`'#0021'` is
+session #21). Numbers are independent of `--limit` and filters. An ambiguous
+prefix is refused with the matching ids; `pick` refuses to run without a
+terminal on stdin so it never hangs a script.
+
+Claude Code session ids are random hex, so in a store of a few hundred sessions
+roughly one in three 1-2 digit numbers is also the prefix of exactly one other
+id and is refused as above. The refusal is deliberate (it never opens the wrong
+session), but it means `'#N'` is the reliable form: use it in scripts, aliases
+and habits, and keep bare numbers for quick interactive use.
+
+The raw payload mirror is off by default. Set
+`STATUSLINE_DEBUG_INPUT=/absolute/path.json` to write the raw payload of each
+render there (mode 0600, replaced atomically via a temp file and rename), then
+inspect it with `jq .` after a Claude Code update to spot new or renamed
+fields. Relative paths and values like `off` are ignored. An existing symlink,
+directory, FIFO or other non-regular file at that path is refused and nothing
+is written; parent directories are not created. If the process is killed
+between creating the temp file and renaming it, a `.slmirror.<pid>.<nanos>.tmp`
+file (mode 0600, holding the payload) can be left next to the target; delete it
+by hand. `last-input.json` files left in the data directory by earlier
+development builds can be deleted by hand.
+
 ### Database Maintenance
 
 ```bash
@@ -505,6 +695,79 @@ is the whole point.
 The `STATE.md` frontmatter keys statusline consumes are documented in
 [CONFIGURATION.md](CONFIGURATION.md) under the STATE.md frontmatter contract.
 
+## How spend and token totals are counted
+
+Claude Code reports cumulative counters per CLI process: `cost.total_cost_usd`,
+`cost.total_lines_added` and `cost.total_lines_removed` only ever describe the
+process that is running now. The statusline turns them into daily and monthly
+totals by adding only the *increase* since the last update it saw for that
+session.
+
+A session id can outlive a process (a restart or `--resume`), and a counter can
+also go down within one process (a correction, or an update that arrives out of
+order). To tell these apart the statusline infers when the process started:
+*now minus `cost.total_duration_ms`*. Two starts that differ by 60 seconds or
+less are the same process.
+
+| What the statusline sees | How it is counted |
+|---|---|
+| A counter grows | The increase counts. |
+| A counter drops, same process (start within 60 seconds) | A correction or an out-of-order update: it counts 0, and later growth counts only above the previous peak. Example: 10.00, then 9.80, then 10.30 counts 10.30 in total, not 10.50. |
+| Cost drops and the process started more than 60 seconds later | A restart: the new values count in full. Earlier spend, including yesterday's total, is never reduced. |
+| Only lines added or removed drop and the process started more than 60 seconds later | A correction, not a restart (see the peak rule above). Only a drop in cost can mark a restart. |
+| The update's process started more than 60 seconds *earlier* than the stored one, and a counter dropped | A stale update from an older process: it is ignored. |
+| The update's process started more than 60 seconds *earlier* than the stored one, and nothing dropped | Ordinary growth. The earlier start is kept, because the stored one came from a late reading (for example the machine slept before the status line ran). |
+| No `total_duration_ms`, or a value of 0 | The start is unknown, so the update is treated as the same process (peak rule above). |
+
+Cost, lines added and lines removed are classified together: one update is
+either a restart for all three counters or for none of them. Only a drop in
+cost decides that it is a restart. A later start without a cost drop is
+ordinary growth (or a correction, if a line counter dipped), because current
+Claude Code versions carry the session's totals across a resume.
+
+### Session totals are cumulative
+
+The session total stored in the database (`statusline sessions`, database
+views, cloud sync) is what that session contributed to your daily and monthly
+totals across all of its processes. Example: $10.00 in a first process, then a
+restart and $0.50 in a second one, is stored as $10.50. The status line itself
+still shows Claude Code's current `total_cost_usd`, so after that restart it
+reads `$0.50`.
+
+With `burn_rate.mode = "auto_reset"`, a new work period continues the
+session's cumulative total instead of starting again from zero.
+
+### Known limits
+
+- **Restart without `total_duration_ms`.** If a restart is reported without a
+  duration, it cannot be told apart from a correction. The new process's spend
+  is undercounted until it passes the previous peak. Totals are never
+  overcounted in this case.
+- **Resume restored slightly low.** If Claude Code ever restores a resumed
+  session's cost slightly below the last value the statusline saw, that resume
+  looks like a restart and its cost is counted again. Run with
+  `RUST_LOG=debug` and look for `accounting: restart detected` to spot it.
+- **Out-of-range payload values.** For the daily, monthly and session
+  totals, one process's cost is capped at $10,000,000 and each line counter at
+  4,294,967,296 (2^32). Larger values in a payload are treated as these
+  limits, so a corrupt payload cannot overflow the database. The status line
+  still shows the payload's own cost.
+
+### Token totals
+
+Claude Code writes one transcript line per content block of a response, and
+each line repeats the same `usage`. Each API request is now counted once: the
+last line with usage for a `requestId` wins. Lines without a `requestId`
+(older transcripts) still count individually.
+
+Output and cache-creation token totals recorded before v3.4.0 (session,
+daily/monthly, token rates and cache ROI) may be inflated, typically about 2x.
+Cost and context % were never affected. Existing history is not recomputed:
+the transcript is only read in part and daily/monthly sums cannot be split back
+into sessions. A session that was running during the upgrade keeps its larger
+stored token totals, and its daily token growth pauses until the new
+de-duplicated sum passes the old stored value.
+
 ## JSON Input Format
 
 The statusline accepts JSON via stdin with this format:
@@ -535,6 +798,7 @@ The statusline accepts JSON via stdin with this format:
 - `cost.total_cost_usd` - Session cost in USD (optional)
 - `cost.total_lines_added` - Lines added count (optional)
 - `cost.total_lines_removed` - Lines removed count (optional)
+- `cost.total_duration_ms` - Running time reported by Claude Code, in ms (optional; used to tell restarts from corrections, see [How spend and token totals are counted](#how-spend-and-token-totals-are-counted))
 
 ## Understanding the Output
 
@@ -665,7 +929,8 @@ let json = r#"{
   "model": {"display_name": "Claude 3.5 Sonnet"}
 }"#;
 
-// Preview mode: does not update persistent stats
+// Preview mode: does not update persistent stats. The stats database is
+// opened read-only and is never created, migrated or repaired.
 let line = render_from_json(json, false).expect("render");
 println!("{}", line);
 
@@ -687,6 +952,11 @@ let line = render_statusline(&input, true).expect("render");
 ```
 
 See `examples/embedding_example.rs` for complete example.
+
+Previews with `update_stats = false` open the stats database read-only and
+never create, migrate or repair it. Attribution then advances in memory only,
+so a very large transcript that no normal render has read yet can stay
+count-only across previews.
 
 ## Performance
 
@@ -737,7 +1007,9 @@ grep -c "usage" /path/to/transcript.jsonl
 
 ### Cost tracking not showing
 
-**Cause**: Claude Code not sending cost data, or using old binary
+**Cause**: Claude Code not sending cost data, or using old binary. If the
+daily total looks lower or higher than the session cost on the status line, see
+[How spend and token totals are counted](#how-spend-and-token-totals-are-counted).
 
 **Fix**:
 ```bash

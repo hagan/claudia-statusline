@@ -20,7 +20,7 @@ pub(crate) fn handle_hook_command(action: HookAction) -> Result<()> {
             };
 
             crate::hook_handler::handle_precompact(&sid, &trig)?;
-            println!("PreCompact hook processed for session: {}", sid);
+            cli_println!("PreCompact hook processed for session: {}", sid);
         }
         HookAction::Stop { session_id } => {
             // If CLI arg provided, use it; otherwise read from stdin
@@ -32,7 +32,7 @@ pub(crate) fn handle_hook_command(action: HookAction) -> Result<()> {
             };
 
             crate::hook_handler::handle_stop(&sid)?;
-            println!("Stop hook processed for session: {}", sid);
+            cli_println!("Stop hook processed for session: {}", sid);
         }
         HookAction::Postcompact { session_id } => {
             // If CLI arg provided, use it; otherwise read from stdin
@@ -44,7 +44,7 @@ pub(crate) fn handle_hook_command(action: HookAction) -> Result<()> {
             };
 
             crate::hook_handler::handle_postcompact(&sid)?;
-            println!("PostCompact hook processed for session: {}", sid);
+            cli_println!("PostCompact hook processed for session: {}", sid);
         }
     }
     Ok(())

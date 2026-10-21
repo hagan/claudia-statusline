@@ -145,7 +145,9 @@ pub fn fetch_models(cfg: &AntConfig) -> Result<FetchOutcome> {
     // One-time best-effort note for the profile path: profile selection via
     // ANT_PROFILE is unverified against the installed `ant` (RESEARCH OQ1).
     if let CredentialMode::Profile(name) = &mode {
-        eprintln!(
+        // Not `eprintln!`: that panics (abort in release) on a closed stderr.
+        let _ = writeln!(
+            std::io::stderr(),
             "note: selecting ant profile '{}' is best-effort (ANT_PROFILE); \
              verify your ant version honors it",
             name
@@ -330,9 +332,7 @@ fn fetch_page_curl(after_id: Option<&str>) -> Result<ModelsPage> {
         let mut stdin = child.stdin.take().ok_or_else(|| {
             StatuslineError::other("failed to open curl stdin for the leak-free config")
         })?;
-        stdin.write_all(config.as_bytes()).map_err(|e| {
-            StatuslineError::other(format!("failed to write curl config to stdin: {}", e))
-        })?;
+        stream_curl_config(&mut stdin, &config)?;
         // Drop closes stdin so curl proceeds; the key leaves memory here.
     }
 
@@ -358,6 +358,19 @@ fn fetch_page_curl(after_id: Option<&str>) -> Result<ModelsPage> {
     }
 
     parse_page(&output.stdout)
+}
+
+/// Stream the leak-free curl config (which carries the API key) into curl's
+/// stdin.
+///
+/// A write failure here -- notably EPIPE when curl closes its stdin early --
+/// MUST surface as `Err`: there is no global SIGPIPE disposition (INTEG-02), so
+/// the failure arrives as an `io::Error` rather than a silent signal death.
+/// Never map `BrokenPipe` to `Ok`. The error text is static plus the
+/// `io::Error`; it never contains the config contents.
+pub(crate) fn stream_curl_config(w: &mut impl Write, cfg: &str) -> Result<()> {
+    w.write_all(cfg.as_bytes())
+        .map_err(|e| StatuslineError::other(format!("failed to write curl config to stdin: {}", e)))
 }
 
 /// Parse a single page of JSON into a tolerant `ModelsPage`, mapping a serde
@@ -527,6 +540,31 @@ fn sanitize_stderr(stderr: &[u8]) -> String {
 mod tests {
     use super::*;
     use serial_test::serial;
+
+    #[test]
+    fn curl_stdin_epipe_is_reported() {
+        let (r, mut w) = std::io::pipe().unwrap();
+        drop(r);
+        let err = stream_curl_config(&mut w, "header = \"x-api-key: sk-ant-x\"\n")
+            .expect_err("EPIPE must be reported as Err");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to write curl config to stdin"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            !msg.contains("sk-ant-"),
+            "error must not leak the key: {msg}"
+        );
+    }
+
+    #[test]
+    fn curl_stdin_config_written_verbatim() {
+        let cfg = "header = \"x-api-key: k\"\nurl = \"https://example\"\n";
+        let mut sink: Vec<u8> = Vec::new();
+        stream_curl_config(&mut sink, cfg).unwrap();
+        assert_eq!(sink, cfg.as_bytes());
+    }
 
     fn cfg_with_profile(p: &str) -> AntConfig {
         AntConfig {

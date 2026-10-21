@@ -182,6 +182,23 @@ pub fn get_device_id() -> String {
     )
 }
 
+/// Is `id` a session ID that is safe to join into a filesystem path?
+///
+/// True iff `id` is 1..=128 bytes long and every byte is ASCII alphanumeric,
+/// `-` or `_` (byte-based, so any multi-byte UTF-8 is rejected). Validate the
+/// payload `session_id` with this BEFORE any path construction (the agents
+/// scan builds `<parent>/<sid>/subagents`, AGENT-03); Phase 18 reuses it for
+/// the `claude --resume` line. `.` is excluded, so `.`, `..` and hidden names
+/// are impossible, as are separators, NUL and control bytes.
+///
+/// Callers must never log or echo a rejected value.
+pub fn is_valid_session_id(id: &str) -> bool {
+    (1..=128).contains(&id.len())
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +277,42 @@ mod tests {
         // Should be stable (same ID on multiple calls - SHA-256 is deterministic)
         let device_id2 = get_device_id();
         assert_eq!(device_id, device_id2);
+    }
+
+    #[test]
+    fn session_id_accepts_charset() {
+        let long = "a".repeat(128);
+        for ok in [
+            "0a1b2c3d-0000-4000-8000-000000000001",
+            "sess-1",
+            "A_b-9",
+            "a",
+            long.as_str(),
+        ] {
+            assert!(is_valid_session_id(ok), "{ok:?} should be accepted");
+        }
+    }
+
+    #[test]
+    fn session_id_rejects_unsafe() {
+        let too_long = "a".repeat(129);
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../x",
+            "/abs",
+            "a/b",
+            "a\\b",
+            "a.b",
+            "a b",
+            "a\0b",
+            "\x1b[31m",
+            "\u{e9}",
+            "\u{ff41}",
+            too_long.as_str(),
+        ] {
+            assert!(!is_valid_session_id(bad), "{bad:?} should be rejected");
+        }
     }
 }

@@ -566,3 +566,21 @@ fn test_full_pipeline_orchestrator_to_template() {
     assert!(result.contains("S4.5"), "Pipeline output: {}", result);
     assert!(result.contains("$5.00"), "Pipeline output: {}", result);
 }
+
+/// AGENT-01: the built-in presets are the v3.3.0 strings (no `{agents}`).
+/// Literals copied from `git show v3.3.0:src/layout/presets.rs`.
+#[test]
+fn presets_match_v3_3_0() {
+    assert_eq!(
+        PRESET_DEFAULT,
+        "{directory}{sep}{git}{sep}{context}{sep}{model}{sep}{cost}"
+    );
+    assert_eq!(
+        PRESET_DETAILED,
+        "{directory}{sep}{git}\n{context}{sep}{model}{sep}{duration}{sep}{cost}"
+    );
+    assert_eq!(
+        PRESET_POWER,
+        "{directory}{sep}{git}{sep}{context}\n{model}{sep}{duration}{sep}{lines}{sep}{cost}"
+    );
+}

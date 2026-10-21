@@ -90,18 +90,18 @@ pub(crate) fn show_health_report(json_output: bool) -> Result<()> {
             "session_count": session_count,
             "earliest_session": earliest_session,
         });
-        println!("{}", serde_json::to_string(&health)?);
+        cli_println!("{}", serde_json::to_string(&health)?);
     } else {
         // Output as human-readable text
-        println!("Claudia Statusline Health Report");
-        println!("================================");
-        println!();
-        println!("Configuration:");
-        println!("  Database path: {}", db_path.display());
-        println!("  Database exists: {}", if db_exists { "✅" } else { "❌" });
-        println!("  JSON path: {}", json_path.display());
-        println!("  JSON exists: {}", if json_exists { "✅" } else { "❌" });
-        println!(
+        cli_println!("Claudia Statusline Health Report");
+        cli_println!("================================");
+        cli_println!();
+        cli_println!("Configuration:");
+        cli_println!("  Database path: {}", db_path.display());
+        cli_println!("  Database exists: {}", if db_exists { "✅" } else { "❌" });
+        cli_println!("  JSON path: {}", json_path.display());
+        cli_println!("  JSON exists: {}", if json_exists { "✅" } else { "❌" });
+        cli_println!(
             "  Legacy json_backup field: {} (informational; not a runtime toggle in v3.0.0+)",
             if config.database.json_backup {
                 "set"
@@ -109,16 +109,16 @@ pub(crate) fn show_health_report(json_output: bool) -> Result<()> {
                 "unset"
             }
         );
-        println!();
-        println!("Statistics:");
-        println!("  Today's total: ${:.2}", today_total);
-        println!("  Month total: ${:.2}", month_total);
-        println!("  All-time total: ${:.2}", all_time_total);
-        println!("  Session count: {}", session_count);
+        cli_println!();
+        cli_println!("Statistics:");
+        cli_println!("  Today's total: ${:.2}", today_total);
+        cli_println!("  Month total: ${:.2}", month_total);
+        cli_println!("  All-time total: ${:.2}", all_time_total);
+        cli_println!("  Session count: {}", session_count);
         if let Some(earliest) = earliest_session {
-            println!("  Earliest session: {}", earliest);
+            cli_println!("  Earliest session: {}", earliest);
         } else {
-            println!("  Earliest session: N/A");
+            cli_println!("  Earliest session: N/A");
         }
     }
 

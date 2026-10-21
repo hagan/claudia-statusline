@@ -325,18 +325,28 @@ impl SyncManager {
             })?;
             let active_time_seconds: Option<i64> = row.get(6).ok();
             let last_activity: Option<String> = row.get(7).ok();
+            let Some((cost, lines_added, lines_removed)) =
+                remote_counters(cost, lines_added, lines_removed)
+            else {
+                warn!("Skipping pulled session {session_id}: negative or non-finite cost/lines");
+                continue;
+            };
 
             sessions.insert(
                 session_id,
                 crate::stats::SessionStats {
                     cost,
-                    lines_added: lines_added as u64,
-                    lines_removed: lines_removed as u64,
+                    lines_added,
+                    lines_removed,
                     last_updated,
                     start_time,
                     max_tokens_observed: None, // Sync doesn't track token counts
-                    active_time_seconds: active_time_seconds.map(|t| t as u64),
+                    active_time_seconds: remote_active_seconds(active_time_seconds),
                     last_activity,
+                    // The baseline is not carried by Turso; the pull UPSERT does not list
+                    // raw_* / process_start_ms, so this device's baseline is preserved in the
+                    // DB (Phase 16 D-07). This in-memory value is only used for the merge.
+                    baseline: None,
                 },
             );
         }
@@ -369,12 +379,19 @@ impl SyncManager {
                 StatuslineError::Sync(format!("Failed to get lines_removed: {}", e))
             })?;
 
+            let Some((total_cost, lines_added, lines_removed)) =
+                remote_counters(total_cost, lines_added, lines_removed)
+            else {
+                warn!("Skipping pulled daily stats {date}: negative or non-finite cost/lines");
+                continue;
+            };
+
             daily_stats.insert(
                 date,
                 crate::stats::DailyStats {
                     total_cost,
-                    lines_added: lines_added as u64,
-                    lines_removed: lines_removed as u64,
+                    lines_added,
+                    lines_removed,
                     sessions: Vec::new(),
                 },
             );
@@ -412,13 +429,23 @@ impl SyncManager {
                 StatuslineError::Sync(format!("Failed to get session_count: {}", e))
             })?;
 
+            let (Some((total_cost, lines_added, lines_removed)), Ok(session_count)) = (
+                remote_counters(total_cost, lines_added, lines_removed),
+                usize::try_from(session_count),
+            ) else {
+                warn!(
+                    "Skipping pulled monthly stats {month}: negative or non-finite cost/lines/session_count"
+                );
+                continue;
+            };
+
             monthly_stats.insert(
                 month,
                 crate::stats::MonthlyStats {
                     total_cost,
-                    sessions: session_count as usize,
-                    lines_added: lines_added as u64,
-                    lines_removed: lines_removed as u64,
+                    sessions: session_count,
+                    lines_added,
+                    lines_removed,
                 },
             );
         }
@@ -636,6 +663,8 @@ impl SyncManager {
                             remote_stats.cost,
                             remote_stats.lines_added,
                             remote_stats.lines_removed,
+                            remote_stats.active_time_seconds,
+                            remote_stats.last_activity.as_deref(),
                         )?;
                         sessions_pulled += 1;
                     }
@@ -706,10 +735,58 @@ pub struct PullResult {
     pub dry_run: bool,
 }
 
+/// Convert a pulled `active_time_seconds` value to the local representation.
+///
+/// Remote activity seconds are untrusted: a negative value is treated as absent so the
+/// local value is kept (D-08).
+pub(crate) fn remote_active_seconds(raw: Option<i64>) -> Option<u64> {
+    raw.and_then(|t| u64::try_from(t).ok())
+}
+
+/// Validate a pulled row's cost and line counters.
+///
+/// Remote rows are untrusted (D-08). A negative or non-finite cost, or a negative line
+/// count, would overwrite the local totals with nonsense, so the whole row is rejected
+/// (`None`) and the local row is left untouched.
+pub(crate) fn remote_counters(
+    cost: f64,
+    lines_added: i64,
+    lines_removed: i64,
+) -> Option<(f64, u64, u64)> {
+    if !cost.is_finite() || cost < 0.0 {
+        return None;
+    }
+    Some((
+        cost,
+        u64::try_from(lines_added).ok()?,
+        u64::try_from(lines_removed).ok()?,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::TursoConfig;
+
+    #[test]
+    fn remote_counters_rejects_invalid_and_keeps_valid() {
+        assert_eq!(remote_counters(1.5, 10, 2), Some((1.5, 10, 2)));
+        assert_eq!(remote_counters(0.0, 0, 0), Some((0.0, 0, 0)));
+        assert_eq!(remote_counters(-0.01, 10, 2), None);
+        assert_eq!(remote_counters(f64::NAN, 10, 2), None);
+        assert_eq!(remote_counters(f64::INFINITY, 10, 2), None);
+        assert_eq!(remote_counters(1.0, -1, 2), None);
+        assert_eq!(remote_counters(1.0, 10, i64::MIN), None);
+    }
+
+    #[test]
+    fn remote_active_seconds_rejects_negative_and_keeps_valid() {
+        assert_eq!(remote_active_seconds(Some(-1)), None);
+        assert_eq!(remote_active_seconds(Some(i64::MIN)), None);
+        assert_eq!(remote_active_seconds(Some(0)), Some(0));
+        assert_eq!(remote_active_seconds(Some(5)), Some(5));
+        assert_eq!(remote_active_seconds(None), None);
+    }
 
     #[test]
     fn test_sync_manager_disabled() {

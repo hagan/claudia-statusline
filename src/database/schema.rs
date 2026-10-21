@@ -17,8 +17,52 @@ CREATE TABLE IF NOT EXISTS sessions (
     total_cache_read_tokens INTEGER DEFAULT 0,
     total_cache_creation_tokens INTEGER DEFAULT 0,
     active_time_seconds INTEGER DEFAULT 0,
-    last_activity TEXT
+    last_activity TEXT,
+    claude_version TEXT,
+    agent_count INTEGER DEFAULT 0,
+    agent_requests INTEGER DEFAULT 0,
+    agent_input_tokens INTEGER DEFAULT 0,
+    agent_output_tokens INTEGER DEFAULT 0,
+    main_requests INTEGER DEFAULT 0,
+    main_input_tokens INTEGER DEFAULT 0,
+    main_output_tokens INTEGER DEFAULT 0,
+    -- v8 (migration 008): raw payload baseline + inferred process start; NULL = no baseline yet
+    raw_cost REAL,
+    raw_lines_added INTEGER,
+    raw_lines_removed INTEGER,
+    process_start_ms INTEGER
 );
+
+-- Incremental transcript parse state (v7): one row per main/subagent transcript
+-- file. `offset` is the byte position after the last complete line consumed;
+-- `size` is the examined end: the byte position up to which the reader has
+-- examined the file (it equals the file size only once a render reached EOF, so a
+-- budget-limited partial read never looks caught up); `mtime` holds nanoseconds
+-- since the epoch. `last_request_id` is retained for compatibility and no longer
+-- written: it is superseded by `request_window`, a JSON object holding the last 32
+-- request contributions and a skip-line flag. `file_id` is "dev:ino" on unix;
+-- `fingerprint` is a short hex digest of the file head and the bytes before
+-- `offset`. Absolute totals (not deltas) so a row can be recomputed by deleting it.
+CREATE TABLE IF NOT EXISTS transcript_progress (
+    path TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    is_agent INTEGER NOT NULL DEFAULT 0,
+    agent_type TEXT,
+    size INTEGER NOT NULL DEFAULT 0,
+    mtime INTEGER NOT NULL DEFAULT 0,
+    offset INTEGER NOT NULL DEFAULT 0,
+    last_request_id TEXT,
+    file_id TEXT,
+    fingerprint TEXT,
+    request_window TEXT,
+    requests INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transcript_progress_session ON transcript_progress(session_id);
 
 -- Daily aggregates (materialized for performance, includes v6 token columns)
 CREATE TABLE IF NOT EXISTS daily_stats (
@@ -121,7 +165,12 @@ CREATE TABLE IF NOT EXISTS session_archive (
     last_activity TEXT,
     model_name TEXT,
     workspace_dir TEXT,
-    device_id TEXT
+    device_id TEXT,
+    -- v8 (migration 008): raw payload baseline + inferred process start; NULL = no baseline yet
+    raw_cost REAL,
+    raw_lines_added INTEGER,
+    raw_lines_removed INTEGER,
+    process_start_ms INTEGER
 );
 
 -- Indexes for session_archive
@@ -129,8 +178,35 @@ CREATE INDEX IF NOT EXISTS idx_archive_session ON session_archive(session_id);
 CREATE INDEX IF NOT EXISTS idx_archive_date ON session_archive(DATE(archived_at));
 "#;
 
+/// What one update_session transaction committed: totals read back after the write plus the
+/// deltas and baseline it applied. The in-memory stats path adopts these totals and deltas
+/// instead of re-deriving them (D-10).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AppliedUpdate {
+    /// `daily_stats.total_cost` for today after the write.
+    pub day_total: f64,
+    /// `monthly_stats.total_cost` for this month after the write.
+    pub month_total: f64,
+    /// Cumulative accounted session cost (`sessions.cost`) after the write.
+    pub session_total: f64,
+    /// Cumulative accounted session lines added after the write.
+    pub session_lines_added: i64,
+    /// Cumulative accounted session lines removed after the write.
+    pub session_lines_removed: i64,
+    /// Cost delta added to the daily/monthly aggregates.
+    pub cost_delta: f64,
+    /// Lines-added delta added to the daily/monthly aggregates.
+    pub lines_added_delta: i64,
+    /// Lines-removed delta added to the daily/monthly aggregates.
+    pub lines_removed_delta: i64,
+    /// How the classifier interpreted this observation.
+    pub kind: crate::stats::accounting::Kind,
+    /// Raw baseline stored for the next comparison.
+    pub baseline: crate::stats::accounting::Baseline,
+}
+
 /// Parameters for updating a session in the database
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct SessionUpdate {
     pub cost: f64,
     pub lines_added: u64,
@@ -142,6 +218,10 @@ pub struct SessionUpdate {
     pub max_tokens_observed: Option<u32>,
     pub active_time_seconds: Option<u64>,
     pub last_activity: Option<String>,
+    /// Inferred process start (`now - cost.total_duration_ms`, ms since epoch) sampled at
+    /// payload-read time; None = unknown start, which makes the accounting classifier fall
+    /// back to high-water (D-01, D-02, D-17).
+    pub inferred_start_ms: Option<i64>,
 }
 
 impl SessionUpdate {

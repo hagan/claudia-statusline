@@ -32,17 +32,70 @@
 //! to `/dev/zero` is refused from metadata. `read_target_config` already made
 //! this choice, and one ladder must not give two answers.
 //!
-//! # Residual (NOT closed here)
+//! # Residual R-2 (stat -> open TOCTOU): closed on known unix targets
 //!
-//! The stat -> open gap is WR-03 / residual R-2 (TOCTOU): a node swapped for a
-//! FIFO between the metadata check and `File::open` can still block the open.
-//! Closing it needs `O_NONBLOCK` + `fstat` on the opened descriptor and is a
-//! separate item. The validation engine's `classify_cache` deliberately
-//! keeps its own copy of this ladder and is not changed by this module.
+//! WR-03 / residual R-2: a node swapped for a FIFO between the metadata check
+//! and the open could block a plain `File::open`. [`open_regular_nonblocking`]
+//! closes it on the targets where [`O_NONBLOCK`] is known (macOS, iOS and the
+//! BSDs; Linux on x86_64, aarch64, x86, arm and riscv64): the open uses
+//! `O_NONBLOCK`, so opening a raced-in FIFO returns at once, and the opened
+//! descriptor is `fstat`ed — it must be a regular file with the same
+//! `(dev, ino)` the lstat ladder approved, or it is refused without a read. On
+//! any other target `O_NONBLOCK` is `None` and the ladder falls back to the
+//! pre-existing behavior (the residual remains there). The validation
+//! engine's `classify_cache` deliberately keeps its own copy of this ladder and
+//! is not changed by this module.
 
-use std::fs::FileType;
-use std::io::ErrorKind;
+use std::fs::{File, FileType, Metadata};
+use std::io::{ErrorKind, Read, Seek, SeekFrom};
 use std::path::{Component, Path};
+
+/// Per-platform `O_NONBLOCK` open flag, without a `libc` dependency (the
+/// Phase 14 guard in `tests/broken_pipe_tests.rs` forbids one). Values come
+/// from the platform headers (`<sys/fcntl.h>` on Darwin/BSD,
+/// `<asm-generic/fcntl.h>` on Linux) and are pinned by the
+/// `nonblocking_open_refuses_fifo` watchdog test: a wrong value blocks the open
+/// on a FIFO and fails that test. `None` means "unknown target": the ladder
+/// falls back to the plain open (residual R-2 remains on that target).
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+pub(crate) const O_NONBLOCK: Option<i32> = Some(0x0004);
+#[cfg(all(
+    target_os = "linux",
+    any(
+        target_arch = "x86_64",
+        target_arch = "aarch64",
+        target_arch = "x86",
+        target_arch = "arm",
+        target_arch = "riscv64"
+    )
+))]
+pub(crate) const O_NONBLOCK: Option<i32> = Some(0o4000);
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly",
+    all(
+        target_os = "linux",
+        any(
+            target_arch = "x86_64",
+            target_arch = "aarch64",
+            target_arch = "x86",
+            target_arch = "arm",
+            target_arch = "riscv64"
+        )
+    )
+)))]
+pub(crate) const O_NONBLOCK: Option<i32> = None;
 
 /// Why [`read_regular_file_capped`] refused or failed. Value-free: no variant
 /// carries the path or any file contents.
@@ -85,17 +138,31 @@ pub fn is_safe_file_stem(name: &str) -> bool {
     }
 }
 
-/// Read `path` as UTF-8 text if and only if it is (or links to) a regular file
-/// of at most `cap` bytes. Non-regular nodes are refused from metadata without
-/// ever being opened. See the module docs for the ladder and its residual.
-pub fn read_regular_file_capped(path: &Path, cap: u64) -> Result<String, CappedReadError> {
+/// Open `path` read-only if and only if it is a regular file, never blocking
+/// on a FIFO or device. Returns the open file and its `fstat` metadata.
+///
+/// The lstat ladder runs first and refuses every non-regular node WITHOUT
+/// opening it (`NotFound`, `Stat`, `DanglingSymlink`, `TargetStat`,
+/// `NotRegular`). A symlink is followed to its target when `follow` is true
+/// (config/theme reads: dotfiles managers link these) and refused as
+/// `NotRegular(symlink)` when `follow` is false (agent transcripts and meta).
+/// The approved node is then opened via [`open_fd_nonblocking_verified`], which
+/// closes the stat -> open race on known targets (see the module docs).
+pub fn open_regular_nonblocking(
+    path: &Path,
+    follow: bool,
+) -> Result<(File, Metadata), CappedReadError> {
     let link_md = match std::fs::symlink_metadata(path) {
         Ok(md) => md,
         Err(e) if e.kind() == ErrorKind::NotFound => return Err(CappedReadError::NotFound),
         Err(e) => return Err(CappedReadError::Stat(e.kind())),
     };
 
-    let md = if link_md.file_type().is_symlink() {
+    let link_ft = link_md.file_type();
+    let md = if link_ft.is_symlink() {
+        if !follow {
+            return Err(CappedReadError::NotRegular(link_ft));
+        }
         match std::fs::metadata(path) {
             Ok(md) => md,
             Err(e) if e.kind() == ErrorKind::NotFound => {
@@ -112,16 +179,81 @@ pub fn read_regular_file_capped(path: &Path, cap: u64) -> Result<String, CappedR
         // MANDATORY early return: never open a FIFO or device.
         return Err(CappedReadError::NotRegular(ft));
     }
+
+    open_fd_nonblocking_verified(path, &md)
+}
+
+/// The OPEN step of [`open_regular_nonblocking`]: open `path` with
+/// `O_NONBLOCK` (when known for this target), `fstat` the descriptor, refuse a
+/// non-regular node and, on unix, refuse a node whose `(dev, ino)` differs from
+/// `expected` (the node the lstat ladder approved). A refused descriptor is
+/// dropped unread.
+pub(crate) fn open_fd_nonblocking_verified(
+    path: &Path,
+    expected: &Metadata,
+) -> Result<(File, Metadata), CappedReadError> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    if let Some(flag) = O_NONBLOCK {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(flag);
+    }
+    let file = match opts.open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Err(CappedReadError::NotFound),
+        Err(e) => return Err(CappedReadError::Read(e.kind())),
+    };
+    let md = file
+        .metadata()
+        .map_err(|e| CappedReadError::Read(e.kind()))?;
+    let ft = md.file_type();
+    if !ft.is_file() {
+        return Err(CappedReadError::NotRegular(ft));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if (md.dev(), md.ino()) != (expected.dev(), expected.ino()) {
+            return Err(CappedReadError::Read(ErrorKind::Other));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = expected;
+    Ok((file, md))
+}
+
+/// Read at most `cap` bytes of `file` starting at `offset`. The allocation is
+/// bounded by `min(cap, 64 KiB)` up front and by `cap` overall; it is never
+/// sized from the file length. An offset at or past EOF yields an empty Vec.
+pub fn read_range_capped(
+    file: &mut File,
+    offset: u64,
+    cap: u64,
+) -> Result<Vec<u8>, CappedReadError> {
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|e| CappedReadError::Read(e.kind()))?;
+    let initial = cap.min(64 * 1024) as usize;
+    let mut buf = Vec::with_capacity(initial);
+    Read::by_ref(file)
+        .take(cap)
+        .read_to_end(&mut buf)
+        .map_err(|e| CappedReadError::Read(e.kind()))?;
+    Ok(buf)
+}
+
+/// Read `path` as UTF-8 text if and only if it is (or links to) a regular file
+/// of at most `cap` bytes. Non-regular nodes are refused from metadata without
+/// ever being opened, through the same non-blocking ladder as
+/// [`open_regular_nonblocking`]. See the module docs.
+pub fn read_regular_file_capped(path: &Path, cap: u64) -> Result<String, CappedReadError> {
+    let (file, md) = open_regular_nonblocking(path, true)?;
     if md.len() > cap {
         return Err(CappedReadError::TooLarge);
     }
 
     let mut buf = String::new();
-    let read = std::fs::File::open(path).and_then(|f| {
-        use std::io::Read;
-        f.take(cap.saturating_add(1)).read_to_string(&mut buf)
-    });
-    if let Err(e) = read {
+    if let Err(e) = file.take(cap.saturating_add(1)).read_to_string(&mut buf) {
         return Err(CappedReadError::Read(e.kind()));
     }
     if buf.len() as u64 > cap {
@@ -306,5 +438,151 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("read_regular_file_capped BLOCKED on a FIFO: it must decide from metadata");
         assert!(refused, "a FIFO must be refused as NotRegular(fifo)");
+    }
+
+    // ---- Non-blocking, fd-verified ladder (AGENT-02, residual R-2) ----
+
+    /// Call the OPEN step directly on a FIFO (bypassing the lstat refusal), as
+    /// if a FIFO had been swapped in after the stat. With the right O_NONBLOCK
+    /// constant the open returns at once and the fstat refuses it; a wrong
+    /// constant blocks the worker and the watchdog fails the test.
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_refuses_fifo() {
+        use std::os::unix::fs::FileTypeExt;
+        let d = TempDir::new().unwrap();
+        let reg = d.path().join("reg.jsonl");
+        std::fs::write(&reg, "x").unwrap();
+        let regular_md = std::fs::metadata(&reg).unwrap();
+        let p = d.path().join("fifo.jsonl");
+        test_fifo::make_fifo(&p);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let r = open_fd_nonblocking_verified(&p, &regular_md);
+            let _ = tx.send(matches!(r, Err(CappedReadError::NotRegular(ft)) if ft.is_fifo()));
+        });
+        let refused = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("open_fd_nonblocking_verified BLOCKED on a FIFO: O_NONBLOCK is wrong");
+        assert!(
+            refused,
+            "a FIFO must be refused from fstat as NotRegular(fifo)"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_refuses_fifo_from_lstat() {
+        use std::os::unix::fs::FileTypeExt;
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("fifo.jsonl");
+        test_fifo::make_fifo(&p);
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let ok = [false, true].iter().all(|&follow| {
+                matches!(
+                    open_regular_nonblocking(&p, follow),
+                    Err(CappedReadError::NotRegular(ft)) if ft.is_fifo()
+                )
+            });
+            let _ = tx.send(ok);
+        });
+        let refused = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("open_regular_nonblocking BLOCKED on a FIFO");
+        assert!(
+            refused,
+            "a FIFO must be refused as NotRegular(fifo) for both follow modes"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_refuses_symlink_when_not_following() {
+        let d = TempDir::new().unwrap();
+        let target = d.path().join("real.jsonl");
+        std::fs::write(&target, "ok").unwrap();
+        let link = d.path().join("link.jsonl");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        match open_regular_nonblocking(&link, false) {
+            Err(CappedReadError::NotRegular(ft)) => assert!(ft.is_symlink()),
+            other => panic!("expected NotRegular(symlink), got {other:?}"),
+        }
+        let (_f, md) = open_regular_nonblocking(&link, true).expect("follow=true opens target");
+        assert!(md.is_file());
+        assert_eq!(md.len(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn nonblocking_open_detects_swapped_inode() {
+        let d = TempDir::new().unwrap();
+        let a = d.path().join("a.jsonl");
+        let b = d.path().join("b.jsonl");
+        std::fs::write(&a, "a").unwrap();
+        std::fs::write(&b, "b").unwrap();
+        let md_a = std::fs::metadata(&a).unwrap();
+        assert!(matches!(
+            open_fd_nonblocking_verified(&b, &md_a),
+            Err(CappedReadError::Read(ErrorKind::Other))
+        ));
+        // Same node: accepted.
+        assert!(open_fd_nonblocking_verified(&a, &md_a).is_ok());
+    }
+
+    #[test]
+    fn nonblocking_open_refuses_directory_and_missing() {
+        let d = TempDir::new().unwrap();
+        match open_regular_nonblocking(d.path(), true) {
+            Err(CappedReadError::NotRegular(ft)) => assert!(ft.is_dir()),
+            other => panic!("expected NotRegular(dir), got {other:?}"),
+        }
+        assert!(matches!(
+            open_regular_nonblocking(&d.path().join("nope"), false),
+            Err(CappedReadError::NotFound)
+        ));
+        #[cfg(unix)]
+        {
+            let link = d.path().join("dangling");
+            std::os::unix::fs::symlink(d.path().join("gone"), &link).unwrap();
+            assert!(matches!(
+                open_regular_nonblocking(&link, true),
+                Err(CappedReadError::DanglingSymlink)
+            ));
+        }
+    }
+
+    #[test]
+    fn read_range_capped_bounds() {
+        let d = TempDir::new().unwrap();
+        let p = d.path().join("big.jsonl");
+        let data: Vec<u8> = (0..10_000u32).map(|i| (i % 251) as u8).collect();
+        std::fs::write(&p, &data).unwrap();
+        let (mut f, _md) = open_regular_nonblocking(&p, false).unwrap();
+
+        assert_eq!(read_range_capped(&mut f, 100, 50).unwrap(), &data[100..150]);
+        assert!(read_range_capped(&mut f, 20_000, 50).unwrap().is_empty());
+        assert_eq!(
+            read_range_capped(&mut f, 9_990, 1_000).unwrap(),
+            &data[9_990..]
+        );
+        // A huge cap never sizes the allocation from the cap or the file.
+        let all = read_range_capped(&mut f, 0, u64::MAX).unwrap();
+        assert_eq!(all, data);
+    }
+
+    #[test]
+    fn o_nonblock_constant_known_on_ci_targets() {
+        #[cfg(any(
+            target_os = "macos",
+            all(
+                target_os = "linux",
+                any(target_arch = "x86_64", target_arch = "aarch64")
+            )
+        ))]
+        assert!(O_NONBLOCK.is_some());
+        let _ = O_NONBLOCK;
     }
 }

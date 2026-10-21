@@ -1915,6 +1915,79 @@ fn the_price_gate_name_list_covers_every_builder_price_variable() {
     );
 }
 
+/// Extract the body of `src/display.rs`'s agents-gate name list (D-03).
+fn agent_gate_name_list() -> String {
+    let source = read_src("src/display.rs");
+    let marker = format!("const AGENT{}_VARS: &[&str]", "");
+    let start = source
+        .find(&marker)
+        .expect("src/display.rs must declare the agents-gate name list constant");
+    let rest = &source[start..];
+    let end = rest
+        .find("];")
+        .expect("the agents-gate name list must terminate with `];`");
+    rest[..end].to_string()
+}
+
+/// Every distinct `agents*` string literal in the PRODUCTION portion of
+/// `src/layout/variables.rs` (before its first `#[cfg(test)]`).
+fn builder_agents_variable_names() -> Vec<String> {
+    let source = read_src("src/layout/variables.rs");
+    let production = match source.find("#[cfg(test)]") {
+        Some(idx) => &source[..idx],
+        None => &source[..],
+    };
+    let needle = "\"agents";
+    let mut names: Vec<String> = Vec::new();
+    for line in production.lines() {
+        let code = code_portion(line);
+        let mut from = 0usize;
+        while let Some(rel) = code[from..].find(needle) {
+            let open = from + rel + 1;
+            let Some(close_rel) = code[open..].find('"') else {
+                break;
+            };
+            let name = &code[open..open + close_rel];
+            if name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !names.iter().any(|n| n == name)
+            {
+                names.push(name.to_string());
+            }
+            from = open + close_rel + 1;
+        }
+    }
+    names.sort();
+    names
+}
+
+/// The D-03 gate's name list cannot silently fall behind the builder.
+///
+/// FAILURE MODE: a new `agents*` builder variable missing from `AGENT_VARS`
+/// would render nothing in a template that uses only that name, because the
+/// attribution scan never runs for it (opt-in invariant, T-17-26).
+#[test]
+fn agent_gate_covers_every_builder_agents_key() {
+    let names = builder_agents_variable_names();
+    assert!(
+        names.len() >= 5,
+        "the builder scan recovered only {} agents variable name(s) ({names:?}); \
+         fewer than the five known to exist, so this guard would pass vacuously",
+        names.len()
+    );
+    let list = agent_gate_name_list();
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|n| !list.contains(format!("\"{n}\"").as_str()))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "src/display.rs AGENT_VARS omits agents variable(s) the builder inserts: \
+         {missing:?}\nScanned builder names: {names:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Group 5b: THE SEPARATOR IS NOT A SUBSTITUTION SURFACE, AND A SUBSTITUTED
 // VALUE IS NOT A TEMPLATE (Plan 11-11, round-4 review CR-01 / CR-02)

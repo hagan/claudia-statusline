@@ -40,6 +40,64 @@ pub struct StatuslineInput {
     pub exceeds_200k_tokens: Option<bool>,
     /// Claude Code version string (e.g. "2.1.90").
     pub version: Option<String>,
+    /// Prompt-cache statistics for the MAIN conversation (Claude Code >= 2.1.251).
+    /// Subagent requests are not counted here (documented upstream).
+    ///
+    /// Lenient: a `prompt_cache` of the wrong type becomes `None` instead of
+    /// failing the whole payload (which would fall back to
+    /// `StatuslineInput::default()` and blank workspace, model and cost).
+    #[serde(default, deserialize_with = "lenient_object")]
+    pub prompt_cache: Option<PromptCache>,
+}
+
+/// Type-tolerant optional field (Phase 11 rule: a wrong-typed optional upstream
+/// dimension drops the DIMENSION, never the payload).
+///
+/// Deserializes any JSON value, then tries `T`; a value of the wrong type maps to
+/// `None`. `#[serde(default, ...)]` is required alongside it: serde only calls
+/// `deserialize_with` when the field is present.
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
+}
+
+/// [`lenient`] for struct-typed fields that must arrive as a JSON object.
+///
+/// serde's derived struct visitor also accepts a JSON array (positional
+/// fields), so `[1, 2]` would otherwise become an all-`None` struct. Anything
+/// that is not an object is `None`.
+fn lenient_object<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match value {
+        Some(v @ serde_json::Value::Object(_)) => serde_json::from_value(v).ok(),
+        _ => None,
+    })
+}
+
+/// Type-tolerant string list: keeps only the string elements of an array
+/// (`[1, "tools_changed", null]` -> `["tools_changed"]`); a non-array is `None`.
+fn lenient_str_vec<'de, D>(d: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(match value {
+        Some(serde_json::Value::Array(items)) => Some(
+            items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect(),
+        ),
+        _ => None,
+    })
 }
 
 /// Reasoning effort level (`effort`).
@@ -47,6 +105,51 @@ pub struct StatuslineInput {
 pub struct Effort {
     /// One of `low`, `medium`, `high`, `xhigh`, `max`.
     pub level: Option<String>,
+}
+
+/// Prompt-cache statistics (`prompt_cache`). All fields optional: the object
+/// appears only after the first API response and its shape may grow. Every
+/// field is lenient: a wrong-typed value becomes `None` and the rest of the
+/// object is kept. Unknown fields are ignored.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptCache {
+    /// Whether the cache is currently warm.
+    #[serde(default, deserialize_with = "lenient")]
+    pub warm: Option<bool>,
+    /// Whether caching was observed at all. Upstream docs: "false means prompt
+    /// caching is off, or your provider or gateway doesn't report it".
+    #[serde(default, deserialize_with = "lenient")]
+    pub caching_observed: Option<bool>,
+    /// Cache lifetime tier, `5m` or `1h`.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    #[serde(default, deserialize_with = "lenient")]
+    pub ttl: Option<String>,
+    /// Fraction of requests served from cache, 0.0..=1.0.
+    #[serde(default, deserialize_with = "lenient")]
+    pub hit_ratio: Option<f64>,
+    /// Requests observed this session.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    #[serde(default, deserialize_with = "lenient")]
+    pub requests: Option<u64>,
+    /// Cache misses this session.
+    #[serde(default, deserialize_with = "lenient")]
+    pub misses: Option<u64>,
+    /// Why the most recent miss happened.
+    #[serde(default, deserialize_with = "lenient_object")]
+    pub last_miss_cause: Option<PromptCacheMissCause>,
+    /// Miss count per cause, e.g. `{"tools_changed": 2}`.
+    #[allow(dead_code)] // Public API - parsed for library consumers
+    #[serde(default, deserialize_with = "lenient")]
+    pub miss_causes: Option<std::collections::HashMap<String, u64>>,
+}
+
+/// Cause list attached to the latest prompt-cache miss.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PromptCacheMissCause {
+    /// Cause identifiers, e.g. `tools_changed`, `system_prompt_changed`.
+    /// Non-string elements are dropped; a non-array value is `None`.
+    #[serde(default, deserialize_with = "lenient_str_vec")]
+    pub causes: Option<Vec<String>>,
 }
 
 /// Live context-window usage reported directly by Claude Code.
@@ -358,6 +461,13 @@ pub struct TranscriptEntry {
     pub message: TranscriptMessage,
     /// ISO 8601 formatted timestamp
     pub timestamp: String,
+    /// API request this line belongs to. Claude Code writes ONE line PER CONTENT
+    /// BLOCK of a response (thinking, text, tool_use, ...), each repeating the
+    /// request's `usage`. Consumers de-duplicate through
+    /// `utils::collect_request_usage`: per requestId, the last line with non-empty
+    /// usage wins. Absent in older transcripts, in which case each line counts.
+    #[serde(rename = "requestId", default)]
+    pub request_id: Option<String>,
 }
 
 /// Message within a transcript entry
@@ -913,5 +1023,103 @@ mod tests {
         assert!(cost.total_cost_usd.is_none());
         assert!(cost.total_lines_added.is_none());
         assert!(cost.total_lines_removed.is_none());
+    }
+
+    // ---- Phase 17 (F2): per-field lenient prompt_cache ----
+
+    const DOCUMENTED_PROMPT_CACHE: &str = r#"{"warm":true,"caching_observed":true,"ttl":"1h","expires_at":1738429200,"requests":14,"misses":2,"expected_rebuilds":1,"hit_ratio":0.91,"cache_write_tokens":352000,"miss_recache_tokens":310200,"last_miss_at":1738425230,"last_miss_cause":{"causes":["tools_changed"],"tools_added":2,"tools_removed":0},"miss_causes":{"tools_changed":2},"recache_tokens_if_cold":45000}"#;
+
+    fn input_with_prompt_cache(prompt_cache: &str) -> StatuslineInput {
+        let json = format!(
+            r#"{{"workspace":{{"current_dir":"/tmp"}},"model":{{"display_name":"Opus 4.5"}},"prompt_cache":{}}}"#,
+            prompt_cache
+        );
+        serde_json::from_str(&json).expect("payload must parse despite prompt_cache shape")
+    }
+
+    #[test]
+    fn prompt_cache_lenient_documented_example() {
+        let pc: PromptCache = serde_json::from_str(DOCUMENTED_PROMPT_CACHE).unwrap();
+        assert_eq!(pc.warm, Some(true));
+        assert_eq!(pc.caching_observed, Some(true));
+        assert_eq!(pc.ttl.as_deref(), Some("1h"));
+        assert_eq!(pc.hit_ratio, Some(0.91));
+        assert_eq!(pc.requests, Some(14));
+        assert_eq!(pc.misses, Some(2));
+        assert_eq!(
+            pc.last_miss_cause.and_then(|c| c.causes),
+            Some(vec!["tools_changed".to_string()])
+        );
+        assert_eq!(pc.miss_causes.unwrap().get("tools_changed"), Some(&2));
+
+        // And inside a whole payload.
+        let input = input_with_prompt_cache(DOCUMENTED_PROMPT_CACHE);
+        assert_eq!(input.prompt_cache.unwrap().misses, Some(2));
+    }
+
+    #[test]
+    fn prompt_cache_lenient_wrong_typed_fields() {
+        let pc: PromptCache = serde_json::from_str(
+            r#"{"misses":"2","hit_ratio":"high","warm":"yes","ttl":"5m","requests":9,"caching_observed":1}"#,
+        )
+        .unwrap();
+        assert_eq!(pc.misses, None);
+        assert_eq!(pc.hit_ratio, None);
+        assert_eq!(pc.warm, None);
+        assert_eq!(pc.caching_observed, None);
+        assert_eq!(pc.ttl.as_deref(), Some("5m"));
+        assert_eq!(pc.requests, Some(9));
+    }
+
+    #[test]
+    fn prompt_cache_lenient_causes_elements() {
+        let c: PromptCacheMissCause =
+            serde_json::from_str(r#"{"causes":[1,"tools_changed",null]}"#).unwrap();
+        assert_eq!(c.causes, Some(vec!["tools_changed".to_string()]));
+
+        let c: PromptCacheMissCause =
+            serde_json::from_str(r#"{"causes":"tools_changed"}"#).unwrap();
+        assert_eq!(c.causes, None);
+
+        let pc: PromptCache =
+            serde_json::from_str(r#"{"last_miss_cause":{"causes":"tools_changed"},"misses":3}"#)
+                .unwrap();
+        assert_eq!(pc.misses, Some(3));
+        assert_eq!(pc.last_miss_cause.and_then(|c| c.causes), None);
+    }
+
+    #[test]
+    fn prompt_cache_lenient_whole_object_wrong_type() {
+        for bad in [r#""garbage""#, "7", "[1,2]", "true"] {
+            let input = input_with_prompt_cache(bad);
+            assert_eq!(
+                input
+                    .workspace
+                    .as_ref()
+                    .and_then(|w| w.current_dir.as_deref()),
+                Some("/tmp"),
+                "workspace lost for prompt_cache = {bad}"
+            );
+            assert_eq!(
+                input.model.as_ref().and_then(|m| m.display_name.as_deref()),
+                Some("Opus 4.5"),
+                "model lost for prompt_cache = {bad}"
+            );
+            assert!(input.prompt_cache.is_none(), "prompt_cache = {bad}");
+        }
+    }
+
+    #[test]
+    fn prompt_cache_lenient_keeps_payload() {
+        let input = input_with_prompt_cache(r#"{"misses":"2"}"#);
+        assert_eq!(
+            input
+                .workspace
+                .as_ref()
+                .and_then(|w| w.current_dir.as_deref()),
+            Some("/tmp")
+        );
+        let pc = input.prompt_cache.expect("object kept, bad field dropped");
+        assert_eq!(pc.misses, None);
     }
 }

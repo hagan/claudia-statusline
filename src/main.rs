@@ -26,6 +26,10 @@ use std::env;
 use std::io::{self, Read};
 use std::path::PathBuf;
 
+// Out of alphabetical order on purpose: macro_rules! textual scoping requires it before `mod commands;`.
+#[macro_use]
+mod cli_output;
+mod agents;
 mod ant;
 mod commands;
 mod common;
@@ -109,7 +113,81 @@ pub(crate) struct Cli {
 }
 
 #[derive(Subcommand)]
+enum SessionsAction {
+    /// List sessions newest first, each with its stable session number (#) for `show` (default)
+    List {
+        /// Show every session instead of the newest 25
+        #[arg(long)]
+        all: bool,
+        /// Only sessions with attribution data (main_requests > 0); attribution is opt-in:
+        /// [display].show_agents = true with the legacy layout, or an {agents} variable in
+        /// [layout].format with a layout preset/format (show_agents has no effect there)
+        #[arg(long)]
+        attributed: bool,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        /// Only sessions whose workspace is this directory or below it
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<String>,
+        /// Shorthand for --workspace $PWD: only this project's sessions
+        #[arg(long, conflicts_with = "workspace")]
+        here: bool,
+    },
+    /// Print all parameters of one session: its # from the list (or `#N`) or a session id prefix
+    Show {
+        /// Session number (# column of `list`; quote `'#N'` for number only, the reliable
+        /// form: a bare number that is also another session's id prefix is refused) or
+        /// session id prefix
+        selector: String,
+    },
+    /// Interactive: list, read a selection from the terminal, show it
+    Pick {
+        /// Show every session instead of the newest 25
+        #[arg(long)]
+        all: bool,
+        /// Only sessions with attribution data (main_requests > 0); attribution is opt-in:
+        /// [display].show_agents = true with the legacy layout, or an {agents} variable in
+        /// [layout].format with a layout preset/format (show_agents has no effect there)
+        #[arg(long)]
+        attributed: bool,
+        /// Number of sessions to show
+        #[arg(long, default_value_t = 25)]
+        limit: usize,
+        /// Only sessions whose workspace is this directory or below it
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<String>,
+        /// Shorthand for --workspace $PWD: only this project's sessions
+        #[arg(long, conflicts_with = "workspace")]
+        here: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum Commands {
+    /// Token attribution per Claude Code version (default) or per session:
+    /// main requests, input traffic and output per request, subagent share.
+    /// Compare rows across versions to spot a behaviour change after an update.
+    /// Attribution is opt-in: with the legacy layout set [display].show_agents = true;
+    /// with a layout preset or [layout].format add an {agents} variable to the format
+    /// (show_agents has no effect there). Until then these views are empty.
+    Stats {
+        /// Group by Claude Code version (default view)
+        #[arg(long)]
+        by_version: bool,
+
+        /// List the most recent sessions instead
+        #[arg(long)]
+        sessions: bool,
+    },
+
+    /// Browse recorded sessions: list them newest first, pick one, print its
+    /// parameters (model, workspace, tokens, agent transcripts, resume line).
+    Sessions {
+        #[command(subcommand)]
+        action: Option<SessionsAction>,
+    },
+
     /// DEPRECATED alias for `statusline config generate`.
     ///
     /// Hidden from `--help` but still dispatched verbatim so no existing script
@@ -417,7 +495,7 @@ fn main() -> Result<()> {
 
     // Handle version-full flag
     if cli.version_full {
-        print!("{}", version_string());
+        cli_print!("{}", version_string());
         return Ok(());
     }
 
@@ -461,6 +539,50 @@ fn main() -> Result<()> {
             }
             Commands::Health { json } => {
                 return commands::health::show_health_report(json);
+            }
+            Commands::Stats {
+                by_version,
+                sessions,
+            } => {
+                if let Err(e) = commands::stats::show_stats(by_version, sessions) {
+                    cli_eprintln!("error: {}", commands::error_for_terminal(&e));
+                    std::process::exit(1);
+                }
+                return Ok(());
+            }
+            Commands::Sessions { action } => {
+                let res = match action.unwrap_or(SessionsAction::List {
+                    all: false,
+                    attributed: false,
+                    limit: 25,
+                    workspace: None,
+                    here: false,
+                }) {
+                    SessionsAction::List {
+                        all,
+                        attributed,
+                        limit,
+                        workspace,
+                        here,
+                    } => commands::sessions::workspace_filter(workspace, here)
+                        .and_then(|ws| commands::sessions::list(all, attributed, limit, ws)),
+                    SessionsAction::Show { selector } => commands::sessions::show(&selector),
+                    SessionsAction::Pick {
+                        all,
+                        attributed,
+                        limit,
+                        workspace,
+                        here,
+                    } => commands::sessions::workspace_filter(workspace, here)
+                        .and_then(|ws| commands::sessions::pick(all, attributed, limit, ws)),
+                };
+                // Selection mistakes are user-facing: plain text, not Debug, and
+                // sanitized (errors can embed env-derived paths or stored text).
+                if let Err(e) = res {
+                    cli_eprintln!("error: {}", commands::error_for_terminal(&e));
+                    std::process::exit(1);
+                }
+                return Ok(());
             }
 
             #[cfg(feature = "turso-sync")]
@@ -506,6 +628,7 @@ fn main() -> Result<()> {
     // Read JSON from stdin
     let mut buffer = String::new();
     io::stdin().read_to_string(&mut buffer)?;
+    mirror_input(&buffer);
 
     // Parse input
     let input: StatuslineInput = match serde_json::from_str(&buffer) {
@@ -532,13 +655,13 @@ fn main() -> Result<()> {
 
     // Early exit for empty or home directory only
     if current_dir.is_empty() || current_dir == "~" {
-        print!("{}~{}", Colors::directory(), Colors::reset());
+        cli_print!("{}~{}", Colors::directory(), Colors::reset());
         return Ok(());
     }
 
     // Update stats and resolve today's daily total via the single shared
     // implementation (see src/render.rs). The binary always updates stats.
-    let daily_total = render::update_stats_and_daily_total(&input, true);
+    let (daily_total, agents) = render::update_stats_and_daily_total(&input, true);
 
     // Format and print output
     format_output(
@@ -555,10 +678,93 @@ fn main() -> Result<()> {
             exceeds_200k: input.exceeds_200k_tokens,
             version: input.version.as_deref(),
             repo: input.workspace.as_ref().and_then(|w| w.repo.as_ref()),
+            agents: agents.as_ref(),
+            prompt_cache: input.prompt_cache.as_ref(),
         },
     );
 
     Ok(())
+}
+
+/// Optionally keep a copy of the last raw stdin payload, so a Claude Code
+/// update that adds, renames or drops a field can be seen with `jq . <file>`
+/// instead of guessed. Called before parsing so malformed payloads are kept too.
+///
+/// Opt-in only: the mirror is written solely when `STATUSLINE_DEBUG_INPUT` is
+/// an ABSOLUTE path. There is no default file; unset, empty, relative or
+/// non-path values (`off`, `0`) write nothing. The payload carries paths and the
+/// session id, so it is never written implicitly (PCACHE-02).
+///
+/// Safety: an existing symlink, FIFO, directory or other non-regular node at
+/// the target is refused (lstat). The payload goes into a NEW owner-only (0600)
+/// temp file in the target's directory (`create_new`), which is then renamed
+/// over the target, so the target path itself is never opened: a node swapped
+/// in after the check is replaced, never followed or blocked on. Parent
+/// directories are never created. In a sticky world-writable directory,
+/// replacing another user's file fails and the mirror is skipped.
+///
+/// The temp file is named `.slmirror.<pid>.<nanos>.tmp`. A failed write or
+/// rename removes it, but the release profile uses `panic = "abort"`, so a
+/// crash or kill between create and rename can leave that 0600 file (holding
+/// the payload) next to the target; it is safe to delete by hand.
+///
+/// Best-effort: any failure here is silent and never affects the render.
+fn mirror_input(payload: &str) {
+    use std::io::Write as _;
+
+    let Some(raw) = env::var_os("STATUSLINE_DEBUG_INPUT") else {
+        return;
+    };
+    let target = PathBuf::from(raw);
+    if !target.is_absolute() {
+        return;
+    }
+
+    match std::fs::symlink_metadata(&target) {
+        Ok(meta) if meta.file_type().is_file() => {}
+        Ok(_) => return, // symlink, FIFO, directory, device, socket
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return,
+    }
+
+    let (Some(parent), Some(_)) = (target.parent(), target.file_name()) else {
+        return;
+    };
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Short fixed-format name (at most ~50 bytes), independent of the target
+    // name, so a target name near NAME_MAX cannot make `create_new` fail with
+    // ENAMETOOLONG and silently disable the mirror.
+    let tmp = parent.join(format!(".slmirror.{}.{}.tmp", std::process::id(), nanos));
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let Ok(mut file) = opts.open(&tmp) else {
+        return;
+    };
+
+    // Exact 0600 regardless of umask.
+    #[cfg(unix)]
+    let perms_ok = {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .is_ok()
+    };
+    #[cfg(not(unix))]
+    let perms_ok = true;
+    let ok = perms_ok && file.write_all(payload.as_bytes()).is_ok();
+    drop(file);
+
+    if !ok || std::fs::rename(&tmp, &target).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
 }
 
 #[cfg(test)]

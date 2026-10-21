@@ -20,14 +20,31 @@ use crate::models::StatuslineInput;
 ///    available (independent of cost), and
 /// 3. runs adaptive context learning when it is enabled in config.
 ///
-/// When `update_stats` is `false`, or no session/cost is present, it performs no writes
-/// for that step and simply reads back today's accumulated daily total.
+/// When `update_stats` is `false`, it performs no database writes at all: today's daily
+/// total is read through a read-only open (`StatsData::load_read_only`) that never
+/// creates, migrates, repairs or checkpoints stats.db (AGENT-04). When `update_stats` is
+/// `true` but no session/cost is present, that step performs no write and reads back the
+/// existing daily total.
 ///
-/// The returned value is the daily total observed immediately after the cost update
+/// The returned daily total is the one observed immediately after the cost update
 /// (the later max-token write does not change the returned figure), matching the prior
-/// behavior of both call sites.
-pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool) -> f64 {
+/// behavior of both call sites. The second element is the main/agent token attribution
+/// for the session (see `agents::scan`). Attribution runs only when the user opted in
+/// (`crate::display::agents_requested`): in legacy mode via `[display].show_agents`, in
+/// layout/template mode only when the effective template references an agents variable
+/// (`show_agents` has no effect there, D-03); and only when a session and transcript are
+/// present. Otherwise it is `None` with no filesystem or database access. Attribution is
+/// persisted inside `agents::scan` only when `update_stats` is `true`; read-only renders
+/// open the database read-only and never write.
+pub fn update_stats_and_daily_total(
+    input: &StatuslineInput,
+    update_stats: bool,
+) -> (f64, Option<crate::agents::AgentsSummary>) {
     use crate::{common, config, stats, utils};
+
+    // Sample "now" before any transcript read or DB open: lock waits (busy_timeout 10 s plus
+    // retries) would otherwise inflate the inferred process start (RESEARCH Pitfall 3).
+    let now_ms = crate::stats::accounting::unix_now_ms();
 
     let model_name = input.model.as_ref().and_then(|m| m.detection_name());
     let transcript_path = input.transcript.as_deref();
@@ -67,6 +84,12 @@ pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool)
                             // at this SessionUpdate construction site. v3.0.0 cleanup per CONTEXT.md D-13.
                             active_time_seconds: None,
                             last_activity: None,
+                            // Inferred process start for restart/correction classification
+                            // (stats::accounting, D-01/D-17); None when duration is unknown.
+                            inferred_start_ms: crate::stats::accounting::inferred_start_ms(
+                                cost.total_duration_ms,
+                                now_ms,
+                            ),
                         },
                     )
                 });
@@ -80,8 +103,9 @@ pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool)
             stats::get_daily_total(&stats::get_or_load_stats_data())
         }
     } else {
-        // Not updating stats — just read back today's accumulated daily total.
-        stats::get_daily_total(&stats::get_or_load_stats_data())
+        // Not updating stats — read back today's accumulated daily total through a
+        // read-only open (AGENT-04): never creates, migrates or repairs stats.db.
+        stats::get_daily_total(&crate::stats::StatsData::load_read_only())
     };
 
     // 2. Track max_tokens_observed for compaction detection.
@@ -145,5 +169,23 @@ pub fn update_stats_and_daily_total(input: &StatuslineInput, update_stats: bool)
         }
     }
 
-    daily_total
+    // 4. Main/agent token attribution, gated on opt-in (AGENT-01, D-03): without it
+    //    no agent file is read and no attribution row is touched. The gate is
+    //    evaluated before session_id/transcript_path are consulted and lives here,
+    //    not in main.rs/lib.rs, so both render roots share it (Pitfall 8).
+    //    `agents::scan` persists its state only when `update_stats` is true (one
+    //    IMMEDIATE transaction, derived session totals); read-only renders open
+    //    stats.db read-only and never write (AGENT-04).
+    let agents = if crate::display::agents_requested(config::get_config()) {
+        match (session_id, transcript_path) {
+            (Some(sid), Some(t)) => {
+                crate::agents::scan(sid, t, input.version.as_deref(), update_stats)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
+
+    (daily_total, agents)
 }

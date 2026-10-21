@@ -1,6 +1,6 @@
 //! Variable builder for creating the template substitution HashMap.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use super::format::{format_rate_with_unit, format_token_count, resolve_color_override};
 use crate::config::{
@@ -1042,6 +1042,128 @@ impl VariableBuilder {
         self
     }
 
+    /// Set subagent-attribution variables from `agents::scan`:
+    /// `{agents}` (`🤖3 30%`), `{agents_count}`, `{agents_pct}` (`30%`),
+    /// `{agents_tokens}` (`152M/449k` = input traffic / output),
+    /// `{agents_types}` (`Explore×2 general-purpose×1`).
+    ///
+    /// - Nothing is inserted when `agent_files == 0`, complete or not (no `🤖0`).
+    /// - D-04: while the summary is incomplete (`complete == false`), `{agents}`
+    ///   is the count only (`🤖3`), `{agents_count}` renders, and
+    ///   `{agents_pct}` / `{agents_tokens}` are absent.
+    /// - Agent type names are untrusted: [`normalize_agent_types`] sanitizes
+    ///   them (contract rule 1), strips bidi/format controls, restricts the
+    ///   charset and caps them at 64 chars x 16 entries. Every other value is a
+    ///   crate-formatted number (rule 3). Each value is wrapped
+    ///   `{color}{inner}{reset}`; the wrapped string is never sanitized (rule 2).
+    pub fn agents(
+        mut self,
+        summary: &crate::agents::AgentsSummary,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        if !summary.has_agents() {
+            return self;
+        }
+        let paint = |s: String| format!("{}{}{}", color, s, reset);
+        let n = summary.agent_files;
+        self.variables
+            .insert("agents_count".to_string(), paint(n.to_string()));
+        let combined = if summary.complete {
+            let pct = summary.agent_share_percent().map(|p| format!("{:.0}%", p));
+            if let Some(p) = &pct {
+                self.variables
+                    .insert("agents_pct".to_string(), paint(p.clone()));
+            }
+            self.variables.insert(
+                "agents_tokens".to_string(),
+                paint(format!(
+                    "{}/{}",
+                    crate::agents::short_tokens(summary.agents.input_traffic()),
+                    crate::agents::short_tokens(summary.agents.output_tokens)
+                )),
+            );
+            match pct {
+                Some(p) => format!("🤖{} {}", n, p),
+                None => format!("🤖{}", n),
+            }
+        } else {
+            format!("🤖{}", n)
+        };
+        let types: Vec<String> = normalize_agent_types(&summary.agent_types)
+            .iter()
+            .map(|(t, c)| format!("{}×{}", t, c))
+            .collect();
+        if !types.is_empty() {
+            self.variables
+                .insert("agents_types".to_string(), paint(types.join(" ")));
+        }
+        self.variables.insert("agents".to_string(), paint(combined));
+        self
+    }
+
+    /// Set prompt-cache variables from the payload's `prompt_cache` object:
+    /// `{cache_hit}` (`91%`), `{cache_misses}`, `{cache_miss_cause}`,
+    /// `{cache_warm}` (`warm`/`cold`) and the combined `{prompt_cache}`.
+    ///
+    /// - `{cache_hit}`: only for a finite hit ratio within `0..=1`
+    ///   ([`valid_hit_ratio`]).
+    /// - `{cache_misses}`: whenever the payload has a count, including `0`.
+    /// - `{cache_miss_cause}` (D-02): up to 3 causes joined by `,`, each
+    ///   sanitized (contract rule 1), stripped of bidi/format controls,
+    ///   restricted to `[a-z0-9_-]` and capped at [`MAX_CAUSE_CHARS`]
+    ///   ([`normalize_miss_causes`]).
+    /// - `{cache_warm}`: only when `warm` is known and `caching_observed` is not
+    ///   `false` (caching off or unreported means warm/cold is meaningless).
+    /// - `{prompt_cache}`: `cache N%`, then `miss:N` and the causes when there
+    ///   was at least one miss, space-joined; absent when empty. The legacy
+    ///   segment renders the same text.
+    ///
+    /// Numbers are crate-formatted (rule 3); each value is wrapped
+    /// `{color}{inner}{reset}` and the wrapped string is never sanitized (rule 2).
+    pub fn prompt_cache(
+        mut self,
+        pc: &crate::models::PromptCache,
+        color: &str,
+        reset: &str,
+    ) -> Self {
+        let paint = |s: String| format!("{}{}{}", color, s, reset);
+        let mut combined = Vec::new();
+        if let Some(r) = valid_hit_ratio(pc) {
+            let s = format!("{:.0}%", r * 100.0);
+            combined.push(format!("cache {}", s));
+            self.variables.insert("cache_hit".to_string(), paint(s));
+        }
+        let misses = pc.misses.unwrap_or(0);
+        if let Some(m) = pc.misses {
+            self.variables
+                .insert("cache_misses".to_string(), paint(m.to_string()));
+        }
+        if misses > 0 {
+            combined.push(format!("miss:{}", misses));
+        }
+        if let Some(causes) = normalize_miss_causes(pc) {
+            if misses > 0 {
+                combined.push(causes.clone());
+            }
+            self.variables
+                .insert("cache_miss_cause".to_string(), paint(causes));
+        }
+        if let Some(w) = pc.warm {
+            if pc.caching_observed != Some(false) {
+                self.variables.insert(
+                    "cache_warm".to_string(),
+                    paint(if w { "warm" } else { "cold" }.to_string()),
+                );
+            }
+        }
+        if !combined.is_empty() {
+            self.variables
+                .insert("prompt_cache".to_string(), paint(combined.join(" ")));
+        }
+        self
+    }
+
     /// Set session-metadata variables from the modern payload:
     /// `{effort}` (e.g. `xhigh`), `{cc_version}` (e.g. `v2.1.90`), `{over_200k}`
     /// (`200k+` when the response crossed the fixed 200k threshold), and
@@ -1436,6 +1558,102 @@ impl VariableBuilder {
     pub fn build(self) -> HashMap<String, String> {
         self.variables
     }
+}
+
+/// Longest single prompt-cache miss cause rendered, in characters (D-02 width cap).
+pub(crate) const MAX_CAUSE_CHARS: usize = 40;
+/// Most prompt-cache miss causes rendered at once (D-02).
+const MAX_CAUSES_SHOWN: usize = 3;
+/// Longest agent type name rendered, in characters.
+pub(crate) const MAX_AGENT_TYPE_DISPLAY_CHARS: usize = 64;
+/// Most distinct agent types rendered in `{agents_types}`.
+pub(crate) const MAX_AGENT_TYPES_SHOWN: usize = 16;
+
+/// Unicode bidi embedding/override/isolate controls and invisible format
+/// characters that can reorder or hide adjacent statusline text: U+061C (ALM),
+/// U+200B..=U+200F (zero-width space/joiners, LRM/RLM), U+202A..=U+202E
+/// (embeddings and overrides), U+2060..=U+2064 (word joiner, invisible
+/// operators), U+2066..=U+2069 (isolates) and U+FEFF (zero-width no-break
+/// space). [`sanitize_for_terminal`] removes ANSI and C0/C1 controls but NOT
+/// these, so every normalizer for attacker-influenced text (agent types,
+/// prompt-cache miss causes) drops them explicitly.
+pub(crate) fn is_bidi_or_format_control(c: char) -> bool {
+    matches!(
+        c,
+        '\u{061C}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{FEFF}'
+    )
+}
+
+/// `{cache_miss_cause}` text (D-02), shared by the builder and the legacy
+/// segment so both render one rule: each cause is passed through
+/// [`sanitize_for_terminal`], stripped of [`is_bidi_or_format_control`]
+/// characters, restricted to `[a-z0-9_-]` (anything else is dropped), and
+/// truncated to [`MAX_CAUSE_CHARS`]; empty results are skipped; the first
+/// three kept causes are joined with `,`. `None` when nothing survives.
+pub(crate) fn normalize_miss_causes(pc: &crate::models::PromptCache) -> Option<String> {
+    let causes = pc.last_miss_cause.as_ref()?.causes.as_ref()?;
+    let kept: Vec<String> = causes
+        .iter()
+        .filter_map(|raw| {
+            let c: String = sanitize_for_terminal(raw)
+                .chars()
+                .filter(|&c| !is_bidi_or_format_control(c))
+                .filter(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+                .take(MAX_CAUSE_CHARS)
+                .collect();
+            (!c.is_empty()).then_some(c)
+        })
+        .take(MAX_CAUSES_SHOWN)
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(","))
+}
+
+/// Display form of the agent-type map. Each name (untrusted `.meta.json`
+/// `agentType` text, possibly via the database) is passed through
+/// [`sanitize_for_terminal`], stripped of [`is_bidi_or_format_control`]
+/// characters, restricted to alphanumerics plus `-_:.` (covers `Explore`,
+/// `general-purpose`, `plugin:agent`, dotted names), truncated char-safely to
+/// [`MAX_AGENT_TYPE_DISPLAY_CHARS`]; empty names are skipped. Counts are
+/// re-aggregated because two raw names can normalize to the same key, and
+/// only the first [`MAX_AGENT_TYPES_SHOWN`] keys in sorted order are kept.
+///
+/// Unicode is allowed on purpose (17-06 plan choice), unlike the ASCII-only
+/// cause charset: agent types are names that can be non-English (`é`, CJK).
+/// The accepted residual is that `char::is_alphanumeric` also admits
+/// combining marks, strong RTL letters and double-width glyphs. These carry no
+/// terminal escapes and no explicit bidi controls (both stripped above), and
+/// their volume is bounded by the 64-char x 16-entry caps, but they can still
+/// shift alignment or reorder adjacent text in bidi-aware or width-sensitive
+/// terminals. Tightening to `is_ascii_alphanumeric` would trade that for
+/// dropping legitimate non-ASCII names.
+pub(crate) fn normalize_agent_types(types: &BTreeMap<String, u32>) -> BTreeMap<String, u32> {
+    let mut out: BTreeMap<String, u32> = BTreeMap::new();
+    for (raw, n) in types {
+        let name: String = sanitize_for_terminal(raw)
+            .chars()
+            .filter(|&c| !is_bidi_or_format_control(c))
+            .filter(|&c| c.is_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
+            .take(MAX_AGENT_TYPE_DISPLAY_CHARS)
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let slot = out.entry(name).or_insert(0);
+        *slot = slot.saturating_add(*n);
+    }
+    out.into_iter().take(MAX_AGENT_TYPES_SHOWN).collect()
+}
+
+/// The payload hit ratio when it is usable: finite and within `0.0..=1.0`.
+/// Anything else (null, NaN, infinite, out of range) renders no hit figure.
+pub(crate) fn valid_hit_ratio(pc: &crate::models::PromptCache) -> Option<f64> {
+    pc.hit_ratio
+        .filter(|r| r.is_finite() && (0.0..=1.0).contains(r))
 }
 
 #[cfg(test)]
@@ -2183,5 +2401,304 @@ mod api_equiv_cost_tests {
             by_model.contains("claude-opus-4-8:$0.50"),
             "priceable model still prices, got {by_model:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod agents_prompt_cache_tests {
+    //! AGENT-06 / PCACHE-01 builder semantics (D-02, D-04) and the shared
+    //! normalizers. Color/reset are empty unless a test is about the wrap.
+    use super::*;
+    use crate::agents::{AgentsSummary, TranscriptTotals};
+    use crate::models::{PromptCache, PromptCacheMissCause};
+
+    const BIDI: &[(u32, u32)] = &[
+        (0x061C, 0x061C),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x2064),
+        (0x2066, 0x2069),
+        (0xFEFF, 0xFEFF),
+    ];
+
+    fn bidi_points() -> Vec<char> {
+        BIDI.iter()
+            .flat_map(|&(a, b)| (a..=b).filter_map(char::from_u32))
+            .collect()
+    }
+
+    fn pc_with_causes(causes: &[&str]) -> PromptCache {
+        PromptCache {
+            misses: Some(2),
+            hit_ratio: Some(0.91),
+            last_miss_cause: Some(PromptCacheMissCause {
+                causes: Some(causes.iter().map(|s| s.to_string()).collect()),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn pc_vars(pc: &PromptCache) -> HashMap<String, String> {
+        VariableBuilder::new().prompt_cache(pc, "", "").build()
+    }
+
+    fn summary(agent_files: u32, complete: bool) -> AgentsSummary {
+        AgentsSummary {
+            main: TranscriptTotals {
+                input_tokens: 70_000,
+                ..Default::default()
+            },
+            agents: TranscriptTotals {
+                input_tokens: 30_000,
+                output_tokens: 2_000,
+                ..Default::default()
+            },
+            agent_files,
+            agent_types: BTreeMap::new(),
+            complete,
+        }
+    }
+
+    fn agent_vars(s: &AgentsSummary) -> HashMap<String, String> {
+        VariableBuilder::new().agents(s, "", "").build()
+    }
+
+    const AGENT_KEYS: &[&str] = &[
+        "agents",
+        "agents_count",
+        "agents_pct",
+        "agents_tokens",
+        "agents_types",
+    ];
+
+    #[test]
+    fn prompt_cache_cause_joined_max_three() {
+        let pc = pc_with_causes(&[
+            "tools_changed",
+            "system_prompt_changed",
+            "ttl_expired_5m",
+            "likely_server_side",
+        ]);
+        let v = pc_vars(&pc);
+        assert_eq!(
+            v.get("cache_miss_cause").map(String::as_str),
+            Some("tools_changed,system_prompt_changed,ttl_expired_5m")
+        );
+    }
+
+    #[test]
+    fn prompt_cache_cause_charset_restricted() {
+        let pc = pc_with_causes(&[
+            "Tools_Changed",
+            "\u{1b}[31mttl\u{7}",
+            "a\u{202e}b",
+            "",
+            "..",
+        ]);
+        let v = pc_vars(&pc);
+        let got = v.get("cache_miss_cause").expect("cause present");
+        assert_eq!(got, "ools_hanged,ttl,ab");
+        assert!(got
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "_,-".contains(c)));
+    }
+
+    #[test]
+    fn prompt_cache_cause_length_capped() {
+        let long = "a".repeat(10_000);
+        let v = pc_vars(&pc_with_causes(&[&long]));
+        assert_eq!(v.get("cache_miss_cause").unwrap(), &"a".repeat(40));
+        let v = pc_vars(&pc_with_causes(&[&long, &long, &long]));
+        assert_eq!(
+            v.get("cache_miss_cause").unwrap().len(),
+            3 * MAX_CAUSE_CHARS + 2
+        );
+    }
+
+    #[test]
+    fn prompt_cache_cause_all_invalid_absent() {
+        let v = pc_vars(&pc_with_causes(&["UPPER", ""]));
+        assert!(!v.contains_key("cache_miss_cause"));
+        assert_eq!(
+            v.get("prompt_cache").map(String::as_str),
+            Some("cache 91% miss:2")
+        );
+    }
+
+    #[test]
+    fn prompt_cache_semantics_table() {
+        let base = PromptCache {
+            hit_ratio: Some(0.91),
+            ..Default::default()
+        };
+        assert_eq!(pc_vars(&base).get("cache_hit").unwrap(), "91%");
+        for bad in [
+            None,
+            Some(f64::NAN),
+            Some(1.5),
+            Some(-0.1),
+            Some(f64::INFINITY),
+        ] {
+            let pc = PromptCache {
+                hit_ratio: bad,
+                ..Default::default()
+            };
+            let v = pc_vars(&pc);
+            assert!(!v.contains_key("cache_hit"), "{:?}", bad);
+            assert!(!v.contains_key("prompt_cache"), "{:?}", bad);
+        }
+        let zero = PromptCache {
+            hit_ratio: Some(0.91),
+            misses: Some(0),
+            ..Default::default()
+        };
+        let v = pc_vars(&zero);
+        assert_eq!(v.get("cache_misses").unwrap(), "0");
+        assert_eq!(v.get("prompt_cache").unwrap(), "cache 91%");
+
+        let v = pc_vars(&pc_with_causes(&["tools_changed"]));
+        assert_eq!(
+            v.get("prompt_cache").unwrap(),
+            "cache 91% miss:2 tools_changed"
+        );
+
+        let warm = |w: Option<bool>, obs: Option<bool>| {
+            pc_vars(&PromptCache {
+                warm: w,
+                caching_observed: obs,
+                ..Default::default()
+            })
+            .get("cache_warm")
+            .cloned()
+        };
+        assert_eq!(warm(Some(true), Some(true)).as_deref(), Some("warm"));
+        assert_eq!(warm(Some(false), None).as_deref(), Some("cold"));
+        assert_eq!(warm(Some(false), Some(false)), None);
+        assert_eq!(warm(Some(true), Some(false)), None);
+        assert_eq!(warm(None, Some(true)), None);
+    }
+
+    #[test]
+    fn normalizers_strip_bidi_and_format_controls() {
+        let points = bidi_points();
+        assert_eq!(points.len(), 1 + 5 + 5 + 5 + 4 + 1);
+        for cp in points {
+            assert!(is_bidi_or_format_control(cp), "U+{:04X}", cp as u32);
+            let mut types = BTreeMap::new();
+            types.insert(format!("Ex{}plore", cp), 1u32);
+            let n = normalize_agent_types(&types);
+            assert_eq!(
+                n.keys().collect::<Vec<_>>(),
+                vec!["Explore"],
+                "U+{:04X}",
+                cp as u32
+            );
+            let cause = format!("tools{}_changed", cp);
+            let pc = pc_with_causes(&[&cause]);
+            assert_eq!(
+                normalize_miss_causes(&pc).as_deref(),
+                Some("tools_changed"),
+                "U+{:04X}",
+                cp as u32
+            );
+        }
+        for c in ['a', 'Z', '0', 'é', '-', '\u{2065}', '\u{200A}'] {
+            assert!(!is_bidi_or_format_control(c), "{:?}", c);
+        }
+    }
+
+    #[test]
+    fn agents_builder_complete() {
+        let v = agent_vars(&summary(3, true));
+        assert_eq!(v.get("agents").unwrap(), "🤖3 30%");
+        assert_eq!(v.get("agents_count").unwrap(), "3");
+        assert_eq!(v.get("agents_pct").unwrap(), "30%");
+        assert_eq!(v.get("agents_tokens").unwrap(), "30k/2k");
+    }
+
+    #[test]
+    fn agents_builder_incomplete_shows_count_only() {
+        let v = agent_vars(&summary(3, false));
+        assert_eq!(v.get("agents").unwrap(), "🤖3");
+        assert_eq!(v.get("agents_count").unwrap(), "3");
+        assert!(!v.contains_key("agents_pct"));
+        assert!(!v.contains_key("agents_tokens"));
+    }
+
+    #[test]
+    fn agents_builder_zero_agents_renders_nothing() {
+        for complete in [false, true] {
+            let mut s = summary(0, complete);
+            s.agent_types.insert("Explore".to_string(), 1);
+            let v = agent_vars(&s);
+            for k in AGENT_KEYS {
+                assert!(!v.contains_key(*k), "{} with complete={}", k, complete);
+            }
+        }
+    }
+
+    #[test]
+    fn agents_types_sanitized_and_reaggregated() {
+        let mut s = summary(4, true);
+        s.agent_types.insert("Explore".to_string(), 2);
+        s.agent_types.insert("Exp\u{1b}[0mlore".to_string(), 1);
+        s.agent_types.insert("x\u{202e}y".to_string(), 1);
+        let v = agent_vars(&s);
+        assert_eq!(v.get("agents_types").unwrap(), "Explore×3 xy×1");
+        // Inserted even while incomplete (D-04 hides only the share/tokens).
+        s.complete = false;
+        assert_eq!(
+            agent_vars(&s).get("agents_types").unwrap(),
+            "Explore×3 xy×1"
+        );
+    }
+
+    #[test]
+    fn agents_types_truncated_and_capped() {
+        let mut s = summary(1, true);
+        s.agent_types.insert("b".repeat(100), 1);
+        let v = agent_vars(&s);
+        assert_eq!(
+            v.get("agents_types").unwrap(),
+            &format!("{}×1", "b".repeat(64))
+        );
+
+        let mut s = summary(20, true);
+        for i in 0..20 {
+            s.agent_types.insert(format!("type{:02}", i), 1);
+        }
+        let v = agent_vars(&s);
+        let shown = v.get("agents_types").unwrap();
+        assert_eq!(shown.split(' ').count(), MAX_AGENT_TYPES_SHOWN);
+        assert!(shown.starts_with("type00×1"));
+        assert!(!shown.contains("type16"));
+    }
+
+    #[test]
+    fn builder_values_wrap_color_outside_sanitized_inner() {
+        let (color, reset) = ("\x1b[90m", "\x1b[0m");
+        let mut s = summary(3, true);
+        s.agent_types
+            .insert("Ex\u{1b}[31mplore\u{202e}".to_string(), 1);
+        let mut vars = VariableBuilder::new()
+            .agents(&s, color, reset)
+            .prompt_cache(
+                &PromptCache {
+                    warm: Some(true),
+                    ..pc_with_causes(&["\u{1b}]52;c;cHdu\u{7}tools_changed", "\u{1b}[31mx"])
+                },
+                color,
+                reset,
+            )
+            .build();
+        vars.retain(|k, _| k.starts_with("agents") || k.contains("cache"));
+        assert_eq!(vars.len(), 10, "{:?}", vars.keys().collect::<Vec<_>>());
+        for (k, v) in &vars {
+            assert!(v.starts_with(color), "{}", k);
+            assert!(v.ends_with(reset), "{}", k);
+            let inner = &v[color.len()..v.len() - reset.len()];
+            assert!(!inner.contains('\u{1b}'), "{}: {:?}", k, inner);
+            assert!(!inner.contains('\u{202e}'), "{}: {:?}", k, inner);
+        }
     }
 }

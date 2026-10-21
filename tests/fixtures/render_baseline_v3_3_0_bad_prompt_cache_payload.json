@@ -1,0 +1,22 @@
+{
+  "session_id": "0a1b2c3d-0000-4000-8000-000000000001",
+  "transcript_path": "__TRANSCRIPT_PATH__",
+  "cwd": "/tmp",
+  "model": {
+    "id": "claude-opus-4-5-20251101",
+    "display_name": "Opus 4.5"
+  },
+  "workspace": {
+    "current_dir": "/tmp",
+    "project_dir": "/tmp"
+  },
+  "version": "2.0.0",
+  "cost": {
+    "total_cost_usd": 1.2345,
+    "total_duration_ms": 600000,
+    "total_api_duration_ms": 120000,
+    "total_lines_added": 42,
+    "total_lines_removed": 7
+  },
+  "prompt_cache": {"misses":"2","hit_ratio":"high","warm":"yes","last_miss_cause":{"causes":"tools_changed"}}
+}

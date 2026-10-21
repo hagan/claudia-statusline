@@ -5,6 +5,7 @@
 
 use crate::config;
 use crate::git::{format_git_info, get_git_status};
+use crate::layout::variables::{normalize_miss_causes, valid_hit_ratio};
 use crate::layout::{LayoutRenderer, VariableBuilder};
 use crate::models::{
     CompactionState, ContextUsage, ContextWindow, Cost, ModelType, RateLimitWindow, RateLimits,
@@ -30,6 +31,107 @@ pub struct PayloadExtras<'a> {
     pub version: Option<&'a str>,
     /// Repository identity parsed by Claude Code from the `origin` remote.
     pub repo: Option<&'a Repo>,
+    /// Main/agent token attribution from `agents::scan` (absent without a session
+    /// or transcript). Drives the `🤖N xx%` segment and the `{agents*}` variables.
+    pub agents: Option<&'a crate::agents::AgentsSummary>,
+    /// Main-conversation prompt-cache statistics from the payload (CC >= 2.1.251).
+    pub prompt_cache: Option<&'a crate::models::PromptCache>,
+}
+
+/// Every `{agents*}` variable the builder can insert (D-03 gate list).
+///
+/// Mirrors `PRICE_VARS` in [`format_statusline_with_layout`]: the gate is the OR
+/// of an AST half (`uses_variable_prefix_in_output("agents")`, fail-closed) and
+/// this brace-exact RAW half (`uses_variable`), which also covers templates such
+/// as `{{agents}}` whose leading `{{` the parser consumes as an escaped literal
+/// while `render()` still resolves `agents`. The list cannot drift from the
+/// builder silently: `agent_gate_covers_every_builder_agents_key` in
+/// `tests/ant_invariant_tests.rs` scans `src/layout/variables.rs` and fails by
+/// name when a new `agents*` key is not listed here.
+pub(crate) const AGENT_VARS: &[&str] = &[
+    "agents",
+    "agents_count",
+    "agents_pct",
+    "agents_tokens",
+    "agents_types",
+];
+
+/// Whether the layout-template system renders this statusline (a non-empty
+/// `[layout].format` or a non-default preset); otherwise the legacy segment
+/// renderer runs.
+pub(crate) fn uses_layout_system(cfg: &config::Config) -> bool {
+    !cfg.layout.format.is_empty() || cfg.layout.preset.to_lowercase() != "default"
+}
+
+/// The template the layout renderer actually renders: `[layout].format` when
+/// set, otherwise the named preset's format.
+pub(crate) fn effective_template(layout: &config::LayoutConfig) -> String {
+    if layout.format.is_empty() {
+        crate::layout::get_preset_format(&layout.preset).to_string()
+    } else {
+        layout.format.clone()
+    }
+}
+
+/// Whether this render needs subagent attribution (D-03).
+///
+/// - Legacy mode: `[display].show_agents`.
+/// - Layout/template mode: `show_agents` has NO effect on scanning. The scan
+///   runs only when the effective template (the same one
+///   [`format_statusline_with_layout`] renders, resolved separately here, so
+///   a user preset file edited between the two reads can make them disagree
+///   for one render) references an agents
+///   variable. The prefix half is fail-closed in the sense that matters: an
+///   unknown `{agents_typo}` causes an unneeded scan, never a missing value.
+pub(crate) fn agents_requested(cfg: &config::Config) -> bool {
+    if !uses_layout_system(cfg) {
+        return cfg.display.show_agents;
+    }
+    let r = LayoutRenderer::with_format(&effective_template(&cfg.layout), &cfg.layout.separator);
+    r.uses_variable_prefix_in_output("agents") || AGENT_VARS.iter().any(|v| r.uses_variable(v))
+}
+
+/// `🤖3 30%`: number of agent transcripts and the agents' share of the session's
+/// input traffic. `None` when the session has not spawned agents (`agent_files
+/// == 0`, complete or not: never `🤖0`), so the segment costs no width in
+/// ordinary sessions. While the summary is incomplete the count is shown alone
+/// (`🤖3`, D-04), matching the `{agents}` builder variable.
+fn format_agents(summary: &crate::agents::AgentsSummary) -> Option<String> {
+    if !summary.has_agents() {
+        return None;
+    }
+    if !summary.complete {
+        return Some(format!("🤖{}", summary.agent_files));
+    }
+    let pct = summary
+        .agent_share_percent()
+        .map(|p| format!(" {:.0}%", p))
+        .unwrap_or_default();
+    Some(format!("🤖{}{}", summary.agent_files, pct))
+}
+
+/// `cache 91% miss:2 tools_changed`: hit ratio, miss count, latest miss causes.
+/// Same rule as the `{prompt_cache}` builder variable: the hit figure only for
+/// a valid ratio ([`valid_hit_ratio`]), `miss:N` and the causes only when there
+/// was a miss, causes normalized by [`normalize_miss_causes`] (D-02: up to 3,
+/// `[a-z0-9_-]`, sanitized, bidi/format controls stripped, 40 chars each).
+/// `None` when nothing is known.
+fn format_prompt_cache(pc: &crate::models::PromptCache) -> Option<String> {
+    let mut parts = Vec::new();
+    if let Some(r) = valid_hit_ratio(pc) {
+        parts.push(format!("cache {:.0}%", r * 100.0));
+    }
+    if let Some(m) = pc.misses.filter(|&m| m > 0) {
+        parts.push(format!("miss:{}", m));
+        if let Some(c) = normalize_miss_causes(pc) {
+            parts.push(c);
+        }
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
 }
 
 /// Build a [`ContextUsage`] from Claude Code's payload `context_window`, used in
@@ -444,7 +546,8 @@ fn format_statusline_string(
         if !db_path.exists() {
             return None;
         }
-        match crate::database::SqliteDatabase::new(&db_path) {
+        // Read-only open (AGENT-04): this handle only reads token rates.
+        match crate::database::SqliteDatabase::open_read_only(&db_path) {
             Ok(db) => Some(db),
             Err(e) => {
                 log::debug!("Display: failed to open SQLite db at {:?}: {}", db_path, e);
@@ -638,6 +741,23 @@ fn format_statusline_string(
         }
     }
 
+    // 7a. Subagent attribution: agent count and share of input traffic. Silent
+    //     unless the session spawned agents. This is the only place the tokens
+    //     burned by Agent-tool work become visible; the payload's token fields
+    //     describe the main conversation alone.
+    if display_config.show_agents {
+        if let Some(s) = extras.agents.and_then(format_agents) {
+            parts.push(format!("{}{}{}", Colors::light_gray(), s, Colors::reset()));
+        }
+    }
+
+    // 7a'. Prompt-cache health of the main conversation (opt-in).
+    if display_config.show_prompt_cache {
+        if let Some(s) = extras.prompt_cache.and_then(format_prompt_cache) {
+            parts.push(format!("{}{}{}", Colors::light_gray(), s, Colors::reset()));
+        }
+    }
+
     // 7b. Rate limits (Pro/Max subscription windows). Opt-in via config; absent
     //     for API-key usage so it renders nothing unless the payload carries them.
     if display_config.show_rate_limits {
@@ -689,19 +809,21 @@ fn format_statusline_with_layout(
     let reset = Colors::reset();
     let components = &layout_config.components;
 
-    // Resolve the effective template ONCE per render, then build the ONE
-    // renderer this function will use. `LayoutRenderer`'s `from_config` is
-    // identical to `with_format` apart from where the template string comes
-    // from (empty `format` => the named preset), so computing it here and
-    // calling `with_format` is behavior-preserving while giving us two things:
-    // the preset file is resolved at most once, and the pricing gate below
-    // queries the SAME renderer that will produce the output — it cannot drift
-    // from the template actually rendered.
-    let effective_template = if layout_config.format.is_empty() {
-        crate::layout::get_preset_format(&layout_config.preset).to_string()
-    } else {
-        layout_config.format.clone()
-    };
+    // Resolve the effective template once in this function, then build the
+    // ONE renderer it will use. `LayoutRenderer`'s `from_config` is identical
+    // to `with_format` apart from where the template string comes from (empty
+    // `format` => the named preset), so computing it here and calling
+    // `with_format` is behavior-preserving, and the pricing gate below queries
+    // the SAME renderer that will produce the output: it cannot drift from the
+    // template actually rendered.
+    //
+    // This is not the only resolution per render. The D-03 agents gate
+    // (`agents_requested`, called earlier from `render.rs`) resolves the
+    // effective template separately, so a user preset file is read twice. If
+    // that file changes between the two reads, the gate and this renderer can
+    // disagree for one render. The only effect is a missing or empty
+    // `{agents}` value for that render; it never blocks or fails the line.
+    let effective_template = effective_template(layout_config);
     let renderer = LayoutRenderer::with_format(&effective_template, &layout_config.separator);
 
     // Build variables using VariableBuilder with component configs
@@ -894,6 +1016,20 @@ fn format_statusline_with_layout(
             &Colors::light_gray(),
             &reset,
         );
+    }
+
+    // Subagent attribution: {agents}, {agents_count}, {agents_pct}, {agents_tokens},
+    // {agents_types}. Opt-in: no preset references them (17-01), so they render
+    // only from a custom format. All absent in sessions without agents
+    // (clean_separators then drops an adjacent separator).
+    if let Some(summary) = extras.agents {
+        builder = builder.agents(summary, &Colors::light_gray(), &reset);
+    }
+
+    // Prompt cache (main conversation): {prompt_cache}, {cache_hit}, {cache_misses},
+    // {cache_miss_cause}, {cache_warm}. Absent before the first API response.
+    if let Some(pc) = extras.prompt_cache {
+        builder = builder.prompt_cache(pc, &Colors::light_gray(), &reset);
     }
 
     // Session metadata (opt-in template variables): {effort}, {cc_version},
@@ -1131,13 +1267,16 @@ fn format_statusline_with_layout(
         if let Some(db) = crate::stats::StatsData::get_sqlite_path()
             .ok()
             .filter(|p| p.exists())
-            .and_then(|p| match crate::database::SqliteDatabase::new(&p) {
-                Ok(db) => Some(db),
-                Err(e) => {
-                    log::debug!("Display: failed to open SQLite db at {:?}: {}", p, e);
-                    None
-                }
-            })
+            // Read-only open (AGENT-04): this handle only reads token rates.
+            .and_then(
+                |p| match crate::database::SqliteDatabase::open_read_only(&p) {
+                    Ok(db) => Some(db),
+                    Err(e) => {
+                        log::debug!("Display: failed to open SQLite db at {:?}: {}", p, e);
+                        None
+                    }
+                },
+            )
         {
             if let Some(token_rates) = crate::stats::calculate_token_rates_with_db_and_transcript(
                 sid,
@@ -1194,8 +1333,7 @@ fn format_output_with_config(
     let full_config = config::get_config();
 
     // Check if custom layout is configured (non-empty format OR non-default preset)
-    let use_layout_system = !full_config.layout.format.is_empty()
-        || full_config.layout.preset.to_lowercase() != "default";
+    let use_layout_system = uses_layout_system(full_config);
 
     let output = if use_layout_system {
         format_statusline_with_layout(
@@ -1220,7 +1358,14 @@ fn format_output_with_config(
             display_config,
         )
     };
-    print!("{}", output);
+    // Non-exiting write: this path is compiled into the library too, so a closed
+    // stdout must never exit or panic here. Bytes are identical to `print!`.
+    {
+        use std::io::Write;
+        let mut out = std::io::stdout().lock();
+        let _ = out.write_all(output.as_bytes());
+        let _ = out.flush();
+    }
 }
 
 /// Format output to a string instead of printing.
@@ -1249,8 +1394,7 @@ pub fn format_output_to_string(
     // the shared `api_usage`/`session_meta` wiring — a main↔lib divergence
     // (CLAUDE.md high-blast-radius note). Routing identically here is what makes
     // the single display.rs wiring reach BOTH render paths (Pitfall 6).
-    let use_layout_system = !full_config.layout.format.is_empty()
-        || full_config.layout.preset.to_lowercase() != "default";
+    let use_layout_system = uses_layout_system(full_config);
 
     if use_layout_system {
         format_statusline_with_layout(
@@ -1626,6 +1770,126 @@ fn format_token_count_for_display(count: u64) -> String {
 mod tests {
     use super::*;
     use crate::models::{ContextWindow, RateLimitWindow, RateLimits};
+
+    // ---- 17-06: D-03 gate predicate and D-02/D-04 legacy segments ----
+
+    fn cfg_with(preset: &str, format: &str, show_agents: bool) -> config::Config {
+        let mut c = config::Config::default();
+        c.layout.preset = preset.to_string();
+        c.layout.format = format.to_string();
+        c.display.show_agents = show_agents;
+        c
+    }
+
+    fn agents_summary(files: u32, complete: bool) -> crate::agents::AgentsSummary {
+        crate::agents::AgentsSummary {
+            main: crate::agents::TranscriptTotals {
+                input_tokens: 70,
+                ..Default::default()
+            },
+            agents: crate::agents::TranscriptTotals {
+                input_tokens: 30,
+                ..Default::default()
+            },
+            agent_files: files,
+            agent_types: Default::default(),
+            complete,
+        }
+    }
+
+    #[test]
+    fn agents_requested_legacy_follows_show_agents() {
+        assert!(!agents_requested(&cfg_with("default", "", false)));
+        assert!(agents_requested(&cfg_with("default", "", true)));
+    }
+
+    #[test]
+    fn agents_requested_layout_ignores_show_agents() {
+        assert!(!agents_requested(&cfg_with("detailed", "", true)));
+        assert!(!agents_requested(&cfg_with("power", "", true)));
+        assert!(!agents_requested(&cfg_with("power", "", false)));
+    }
+
+    #[test]
+    fn agents_requested_custom_format_with_agents_var() {
+        for v in [
+            "agents",
+            "agents_count",
+            "agents_pct",
+            "agents_tokens",
+            "agents_types",
+        ] {
+            let f = format!("{{directory}} {{{}}}", v);
+            assert!(agents_requested(&cfg_with("default", &f, false)), "{}", f);
+        }
+    }
+
+    #[test]
+    fn agents_requested_custom_format_without_agents_var() {
+        assert!(!agents_requested(&cfg_with(
+            "default",
+            "{directory} {model}",
+            true
+        )));
+        // Escaped literal: the oracle is the renderer's real output, not the
+        // detector. The predicate must be true exactly when render() would
+        // substitute an agents value.
+        let format = "{{agents}}";
+        let mut vars = std::collections::HashMap::new();
+        vars.insert("agents".to_string(), "SENTINEL_AGENTS".to_string());
+        let out = LayoutRenderer::with_format(format, " ").render(&vars);
+        let substituted = out.contains("SENTINEL_AGENTS");
+        assert_eq!(
+            agents_requested(&cfg_with("default", format, false)),
+            substituted,
+            "render output: {:?}",
+            out
+        );
+    }
+
+    #[test]
+    fn legacy_format_agents_incomplete_count_only() {
+        assert_eq!(
+            format_agents(&agents_summary(3, false)).as_deref(),
+            Some("🤖3")
+        );
+        assert_eq!(
+            format_agents(&agents_summary(3, true)).as_deref(),
+            Some("🤖3 30%")
+        );
+    }
+
+    #[test]
+    fn legacy_format_agents_zero_agents_absent() {
+        assert_eq!(format_agents(&agents_summary(0, false)), None);
+        assert_eq!(format_agents(&agents_summary(0, true)), None);
+    }
+
+    #[test]
+    fn legacy_format_prompt_cache_uses_normalized_causes() {
+        let pc = |causes: &[&str]| crate::models::PromptCache {
+            misses: Some(2),
+            hit_ratio: Some(0.91),
+            last_miss_cause: Some(crate::models::PromptCacheMissCause {
+                causes: Some(causes.iter().map(|s| s.to_string()).collect()),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            format_prompt_cache(&pc(&["tools_changed", "system_prompt_changed"])).as_deref(),
+            Some("cache 91% miss:2 tools_changed,system_prompt_changed")
+        );
+        let out = format_prompt_cache(&pc(&["\u{1b}[31mtools\u{202e}_changed\u{7}"])).unwrap();
+        assert!(!out.contains('\u{1b}'), "{:?}", out);
+        assert!(!out.contains('\u{202e}'), "{:?}", out);
+        assert_eq!(out, "cache 91% miss:2 tools_changed");
+        // Invalid ratio: no hit figure, legacy agrees with the builder.
+        let bad = crate::models::PromptCache {
+            hit_ratio: Some(f64::NAN),
+            ..Default::default()
+        };
+        assert_eq!(format_prompt_cache(&bad), None);
+    }
 
     #[test]
     fn test_format_rate_limits() {
