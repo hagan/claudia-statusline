@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.4.0] - 2026-10-20
+## [3.4.0] - 2026-10-21
 
 > **Minor release**: the "PR #76 Integration" milestone. Most of this release comes from PR #76 by Piotr Wąsiewicz (@pwasiewi). Claude Code reports a session's cost with subagents included, but every token field in the payload (`context_window`, `prompt_cache`) describes the main conversation only, so Agent-tool work was invisible; this release reads the agent transcripts to attribute subagent tokens, adds `statusline stats` (including per-Claude-Code-version totals) and a `statusline sessions` browser, and fixes daily and monthly spend under session restarts (#77) and repeated transcript usage blocks (#78). Backward-compatible for CLI users: the default render is byte-identical to 3.3.0, the new segments and variables are opt-in, and the database migrates automatically (migrations 007 and 008, schema v8). The upgrade is not downgrade-safe: running an older binary against a v3.4.0 database is covered in `docs/DATABASE_MIGRATIONS.md`. The library API has breaking changes for crate users (see Changed).
 
